@@ -1,2 +1,2 @@
-gradio>=4.0.0
-anthropic>=0.20.0
+gradio==4.32.2
+anthropic==0.25.0

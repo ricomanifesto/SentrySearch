@@ -14,7 +14,7 @@ SentrySearch leverages Anthropic's Claude with web search capabilities to genera
 
 ## 🚀 Live Demo
 
-**Access SentrySearch Here**: [https:<update>](https://<update>.github.io/sentrysearch)
+**Access SentrySearch Here**: [SentrySearch](https://huggingface.co/spaces/ricomanifesto/SentrySearch)
 
 ## 📖 Usage
 
