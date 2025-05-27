@@ -6,9 +6,7 @@ import json
 import anthropic
 from typing import Dict, Any, Optional, Callable
 from datetime import datetime
-from models import ThreatProfile
 import re
-from threat_intel_schema import ThreatIntelligenceProfile
 from pydantic import ValidationError
 
 
