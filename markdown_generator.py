@@ -19,6 +19,20 @@ def format_date(date_str: str) -> str:
         return date_str
 
 
+def format_quality_score(score: float) -> str:
+    """Format quality score with emoji indicator"""
+    if score >= 4.5:
+        return f"✅ {score}/5.0 (Excellent)"
+    elif score >= 4.0:
+        return f"✅ {score}/5.0 (Good)"
+    elif score >= 3.5:
+        return f"⚠️ {score}/5.0 (Acceptable)"
+    elif score >= 3.0:
+        return f"⚠️ {score}/5.0 (Needs Improvement)"
+    else:
+        return f"❌ {score}/5.0 (Poor)"
+
+
 def generate_markdown(data):
     """Generate markdown report from threat intelligence data"""
     
@@ -34,6 +48,14 @@ def generate_markdown(data):
         
         md.append(f"# 🛡️ Threat Intelligence Profile: {core.get('name', 'Unknown Tool')}")
         md.append("")
+        
+        # NEW: Add quality score badge if available
+        if '_quality_assessment' in data:
+            quality = data['_quality_assessment']
+            overall_score = quality.get('overall_score', 0)
+            md.append(f"**Quality Score**: {format_quality_score(overall_score)}")
+            md.append("")
+        
         md.append("---")
         md.append("")
         
@@ -54,7 +76,8 @@ def generate_markdown(data):
         md.append(f"| **Trust Score** | {core.get('trustScore', 'Unknown')} |")
         md.append("")
         
-        # Web Search Sources (NEW SECTION)
+        # [All existing section generation code remains the same...]
+        # Web Search Sources
         print("MARKDOWN DEBUG: Starting web search sources section...")
         web_sources = data.get("webSearchSources", {})
         if isinstance(web_sources, dict):
@@ -101,23 +124,6 @@ def generate_markdown(data):
                         md.append(f"- **Key Findings**: {findings}")
                         md.append("")
             
-            # Additional Resources
-            additional = web_sources.get("additionalResources", [])
-            if additional and isinstance(additional, list):
-                md.append("### 🔗 Additional Resources")
-                md.append("")
-                for resource in additional:
-                    if isinstance(resource, dict):
-                        title = resource.get('title', 'Unknown Resource')
-                        url = resource.get('url', '')
-                        description = resource.get('description', 'No description')
-                        
-                        if url:
-                            md.append(f"- **[{title}]({url})**: {description}")
-                        else:
-                            md.append(f"- **{title}**: {description}")
-                md.append("")
-            
             # Data Quality Assessment
             freshness = web_sources.get("dataFreshness", "")
             reliability = web_sources.get("sourceReliability", "")
@@ -130,6 +136,8 @@ def generate_markdown(data):
                     md.append(f"**Source Reliability**: {reliability}")
                 md.append("")
 
+        # [Continue with all other existing sections...]
+        
         # Tool Overview
         print("MARKDOWN DEBUG: Starting tool overview section...")
         overview = data.get("toolOverview", {})
@@ -211,6 +219,9 @@ def generate_markdown(data):
             md.append("## 🎛️ Command and Control")
             md.append("")
             
+            md.append(f"**Communication Methods**: {c2.get('communicationMethods', 'Unknown')}")
+            md.append("")
+            
             # Common Commands
             commands = c2.get("commonCommands", [])
             if commands and isinstance(commands, list):
@@ -264,6 +275,13 @@ def generate_markdown(data):
                 md.append("")
                 md.append(f"**Likelihood Rating**: {risk.get('likelihoodRating', 'Unknown')}")
                 md.append("")
+                
+                risk_factors = risk.get('riskFactors', [])
+                if risk_factors and isinstance(risk_factors, list):
+                    md.append("**Risk Factors**:")
+                    for factor in risk_factors:
+                        md.append(f"- {factor}")
+                    md.append("")
             
             # Entities
             entities = threat_intel.get("entities", {})
@@ -422,6 +440,16 @@ def generate_markdown(data):
                         else:
                             md.append(f"- {title} - {date} (Relevance: {relevance})")
                 md.append("")
+            
+            mitre = references.get("mitreAttackMapping", "")
+            if mitre:
+                md.append(f"**MITRE ATT&CK Mapping**: {mitre}")
+                md.append("")
+            
+            cves = references.get("cveReferences", "")
+            if cves:
+                md.append(f"**CVE References**: {cves}")
+                md.append("")
         
         # Integration
         integration = data.get("integration", {})
@@ -521,6 +549,61 @@ def generate_markdown(data):
                             md.append(f"- **{name}** ({resource_type}) - [{url}]({url}) - {focus}")
                         else:
                             md.append(f"- **{name}** ({resource_type}) - {focus}")
+                md.append("")
+        
+        # NEW: Quality Assessment Section
+        if '_quality_assessment' in data:
+            md.append("## 📊 Quality Assessment Report")
+            md.append("")
+            
+            quality = data['_quality_assessment']
+            summary = quality.get('summary', {})
+            
+            # Summary statistics
+            md.append("### Summary")
+            md.append("")
+            md.append(f"- **Overall Quality Score**: {format_quality_score(quality.get('overall_score', 0))}")
+            md.append(f"- **Sections Evaluated**: {summary.get('total_sections', 0)}")
+            md.append(f"- **Sections Passed**: {summary.get('passed_sections', 0)}")
+            md.append(f"- **Sections Failed**: {summary.get('failed_sections', 0)}")
+            md.append("")
+            
+            # Section scores
+            if 'section_validations' in quality:
+                md.append("### Section Scores")
+                md.append("")
+                md.append("| Section | Score | Status |")
+                md.append("|---------|-------|--------|")
+                
+                for section_name, validation in quality['section_validations'].items():
+                    scores = validation.get('scores', {})
+                    overall = scores.get('overall', 0)
+                    recommendation = validation.get('recommendation', 'UNKNOWN')
+                    status_emoji = "✅" if recommendation == "PASS" else "⚠️" if recommendation == "ENHANCE" else "❌"
+                    md.append(f"| {section_name} | {overall:.1f}/5.0 | {status_emoji} {recommendation} |")
+                md.append("")
+            
+            # Top recommendations
+            recommendations = quality.get('recommendations', [])
+            if recommendations:
+                md.append("### Improvement Recommendations")
+                md.append("")
+                for i, rec in enumerate(recommendations[:5], 1):
+                    md.append(f"{i}. {rec}")
+                md.append("")
+            
+            # Consistency check
+            consistency = quality.get('consistency', {})
+            if consistency:
+                md.append("### Cross-Section Consistency")
+                md.append("")
+                md.append(f"**Consistency Score**: {consistency.get('consistency_score', 0)}/5.0")
+                inconsistencies = consistency.get('inconsistencies', [])
+                if inconsistencies:
+                    md.append("")
+                    md.append("**Issues Found**:")
+                    for issue in inconsistencies:
+                        md.append(f"- {issue}")
                 md.append("")
         
         print("MARKDOWN DEBUG: Completed all sections successfully")

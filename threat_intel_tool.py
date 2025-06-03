@@ -8,12 +8,16 @@ from typing import Dict, Any, Optional, Callable
 from datetime import datetime
 import re
 from pydantic import ValidationError
+from section_validator import SectionValidator, SectionImprover
 
 
 class ThreatIntelTool:
     def __init__(self, api_key):
         """Initialize the Claude client with the provided API key"""
         self.client = anthropic.Anthropic(api_key=api_key)
+        self.validator = SectionValidator(self.client)  # NEW
+        self.improver = SectionImprover(self.client)   # NEW
+        self.enable_quality_control = True              # NEW - can be toggled
     
     def get_threat_intelligence(self, tool_name: str, progress_callback=None):
         """
@@ -24,7 +28,7 @@ class ThreatIntelTool:
             progress_callback: Optional callback for progress updates
             
         Returns:
-            dict: Threat intelligence data
+            dict: Threat intelligence data with quality assessment
         """
         try:
             if progress_callback:
@@ -32,6 +36,7 @@ class ThreatIntelTool:
             
             print(f"DEBUG: Starting threat intelligence generation for: {tool_name}")
             
+            # [Original prompt and generation code remains the same until after JSON parsing]
             prompt = f"""Generate a comprehensive threat intelligence profile for: {tool_name}
 
 Use web search to gather current information. Return ONLY a complete JSON object with all sections below:
@@ -229,7 +234,7 @@ Use web search extensively. Populate with real current data about {tool_name}.""
             print(f"DEBUG: Extracted JSON length: {len(json_text)} characters")
             
             if progress_callback:
-                progress_callback(0.9, "🔍 Parsing JSON response...")
+                progress_callback(0.75, "🔍 Parsing JSON response...")
             
             try:
                 json_data = json.loads(json_text)
@@ -246,8 +251,38 @@ Use web search extensively. Populate with real current data about {tool_name}.""
             if not isinstance(json_data, dict):
                 raise ValueError(f"Invalid response format: Expected JSON object but got {type(json_data).__name__}")
             
-            print(f"DEBUG: Validation successful. JSON contains {len(json_data)} top-level keys")
-            print(f"DEBUG: Keys present: {list(json_data.keys())}")
+            print(f"DEBUG: Initial generation successful. JSON contains {len(json_data)} top-level keys")
+            
+            # NEW: Quality Control Phase
+            if self.enable_quality_control:
+                if progress_callback:
+                    progress_callback(0.8, "🔍 Running quality validation...")
+                
+                # Validate the complete profile
+                validation_results = self.validator.validate_complete_profile(
+                    json_data, progress_callback
+                )
+                
+                # If improvement is needed, attempt to fix weak sections
+                if validation_results['needs_improvement']:
+                    if progress_callback:
+                        progress_callback(0.9, "🔧 Improving weak sections...")
+                    
+                    json_data = self._improve_weak_sections(
+                        json_data, validation_results, progress_callback
+                    )
+                    
+                    # Re-validate after improvements
+                    if progress_callback:
+                        progress_callback(0.95, "✅ Final validation...")
+                    
+                    final_validation = self.validator.validate_complete_profile(json_data)
+                    json_data['_quality_assessment'] = final_validation
+                else:
+                    # Attach original validation results
+                    json_data['_quality_assessment'] = validation_results
+                
+                print(f"DEBUG: Quality control complete. Overall score: {validation_results['overall_score']}")
             
             if progress_callback:
                 progress_callback(1.0, "✅ Analysis complete!")
@@ -263,6 +298,45 @@ Use web search extensively. Populate with real current data about {tool_name}.""
             if progress_callback:
                 progress_callback(1.0, f"❌ Error: {str(e)}")
             raise e
+    
+    def _improve_weak_sections(self, profile: dict, validation_results: dict, 
+                              progress_callback: Optional[Callable] = None) -> dict:
+        """
+        Improve sections that failed validation
+        
+        Args:
+            profile: Current threat intelligence profile
+            validation_results: Validation results indicating weak sections
+            progress_callback: Optional progress callback
+            
+        Returns:
+            Improved profile
+        """
+        improved_profile = profile.copy()
+        sections_to_improve = []
+        
+        # Identify sections needing improvement
+        for section_name, validation in validation_results['section_validations'].items():
+            if validation.get('recommendation') in ['RETRY', 'ENHANCE']:
+                if validation.get('is_critical') or validation.get('scores', {}).get('overall', 0) < 3.0:
+                    sections_to_improve.append((section_name, validation))
+        
+        # Improve each weak section
+        for i, (section_name, validation) in enumerate(sections_to_improve[:3]):  # Limit to top 3
+            if progress_callback:
+                progress = 0.9 + (0.05 * i / len(sections_to_improve))
+                progress_callback(progress, f"🔧 Improving {section_name}...")
+            
+            current_content = improved_profile.get(section_name, {})
+            improved_content = self.improver.improve_section(
+                section_name, current_content, validation
+            )
+            
+            if improved_content != current_content:
+                improved_profile[section_name] = improved_content
+                print(f"DEBUG: Improved section: {section_name}")
+        
+        return improved_profile
 
     def save_to_file(self, data: Dict[str, Any], filename: str = None) -> str:
         """Save the threat intelligence data to a JSON file."""
