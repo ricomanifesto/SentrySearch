@@ -40,14 +40,13 @@ SECTION_CRITERIA = {
         "critical": True
     },
     "detectionAndMitigation": {
-        "required_fields": ["yaraRules", "sigmaRules", "iocs", "behavioralIndicators"],
+        "required_fields": ["iocs", "behavioralIndicators"],
         "quality_checks": [
             "IOCs should be properly formatted and valid",
-            "YARA rules should follow correct syntax",
-            "Sigma rules should be actionable",
             "Should include both network and host-based indicators",
             "Behavioral indicators should be specific, not generic",
-            "IOCs should include context (why they're indicators)"
+            "IOCs should include context (why they're indicators)",
+            "Should have actionable detection guidance"
         ],
         "min_score": 4.0,
         "critical": True

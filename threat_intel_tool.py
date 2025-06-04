@@ -15,9 +15,9 @@ class ThreatIntelTool:
     def __init__(self, api_key):
         """Initialize the Claude client with the provided API key"""
         self.client = anthropic.Anthropic(api_key=api_key)
-        self.validator = SectionValidator(self.client)  # NEW
-        self.improver = SectionImprover(self.client)   # NEW
-        self.enable_quality_control = True              # NEW - can be toggled
+        self.validator = SectionValidator(self.client)
+        self.improver = SectionImprover(self.client)
+        self.enable_quality_control = True
     
     def get_threat_intelligence(self, tool_name: str, progress_callback=None):
         """
@@ -36,179 +36,209 @@ class ThreatIntelTool:
             
             print(f"DEBUG: Starting threat intelligence generation for: {tool_name}")
             
-            # [Original prompt and generation code remains the same until after JSON parsing]
+            # UPDATED PROMPT - Works with web search tool
             prompt = f"""Generate a comprehensive threat intelligence profile for: {tool_name}
 
-Use web search to gather current information. Return ONLY a complete JSON object with all sections below:
+Today's date is {datetime.now().strftime('%B %d, %Y')}.
+
+Please use web search to find the most current information about {tool_name}, including:
+- Recent vulnerabilities and exploits
+- Technical details and architecture
+- Indicators of compromise (IOCs)
+- Threat actor associations
+- Detection methods and mitigations
+- Recent security advisories or reports
+
+Focus on finding information from 2024-2025 when possible.
+
+Based on your research, create a comprehensive profile in the following JSON format:
 
 {{
   "coreMetadata": {{
     "name": "{tool_name}",
-    "version": "Latest known version",
-    "category": "Tool category (RAT/Backdoor/RMM/etc)",
+    "version": "Latest known version from research",
+    "category": "Tool category (RAT/Backdoor/Trojan/etc)",
     "profileId": "TI_{tool_name.upper().replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}",
-    "profileAuthor": "Claude AI",
+    "profileAuthor": "Claude AI with Web Search",
     "createdDate": "{datetime.now().strftime('%Y-%m-%d')}",
     "lastUpdated": "{datetime.now().strftime('%Y-%m-%d')}",
     "profileVersion": "1.0",
     "tlpClassification": "TLP:AMBER",
-    "trustScore": "Assessment based on source reliability"
+    "trustScore": "Based on source quality"
   }},
   "webSearchSources": {{
-    "searchQueriesUsed": ["search terms used"],
-    "primarySources": [{{
-      "url": "https://source-url.com",
-      "title": "Source title",
-      "domain": "domain.com",
-      "accessDate": "{datetime.now().strftime('%Y-%m-%d')}",
-      "relevanceScore": "High/Medium/Low",
-      "contentType": "Report/Article/Database",
-      "keyFindings": "Key information from source"
-    }}],
-    "searchStrategy": "How you approached the research",
-    "dataFreshness": "Currency of information found",
-    "sourceReliability": "Source trustworthiness assessment"
+    "searchQueriesUsed": ["List the search queries you used"],
+    "primarySources": [
+      {{
+        "url": "Actual URL from search results",
+        "title": "Actual title from search results",
+        "domain": "Domain name",
+        "accessDate": "{datetime.now().strftime('%Y-%m-%d')}",
+        "relevanceScore": "High/Medium/Low",
+        "contentType": "Report/Article/Advisory/Blog/Database",
+        "keyFindings": "Key information this source provided"
+      }}
+    ],
+    "searchStrategy": "Brief description of your search approach",
+    "dataFreshness": "How recent the information is",
+    "sourceReliability": "Assessment of source credibility"
   }},
   "toolOverview": {{
-    "description": "Tool description from research",
-    "primaryPurpose": "Main purpose",
-    "targetAudience": "Typical users",
-    "knownAliases": ["aliases found"],
-    "firstSeen": "Discovery/release date",
-    "lastUpdated": "Recent activity",
-    "currentStatus": "Current status"
+    "description": "Comprehensive description based on findings",
+    "primaryPurpose": "Main purpose of the tool",
+    "targetAudience": "Who typically uses it (legitimate and malicious)",
+    "knownAliases": ["Alternative names found"],
+    "firstSeen": "First discovery/release date",
+    "lastUpdated": "Most recent activity",
+    "currentStatus": "Active/Inactive/Unknown"
   }},
   "technicalDetails": {{
-    "architecture": "Technical architecture",
-    "operatingSystems": ["supported OS"],
-    "dependencies": ["dependencies"],
-    "encryption": "Encryption methods",
+    "architecture": "Technical architecture details",
+    "operatingSystems": ["Supported operating systems"],
+    "dependencies": ["Required dependencies"],
+    "encryption": "Encryption methods used",
     "obfuscation": "Obfuscation techniques",
-    "persistence": ["persistence methods"],
-    "capabilities": ["key capabilities"]
+    "persistence": ["Persistence mechanisms"],
+    "capabilities": ["Key capabilities and features"]
   }},
   "commandAndControl": {{
-    "communicationMethods": "C2 communication",
-    "commandProtocols": [{{
-      "protocolName": "Protocol",
-      "encoding": "Encoding method",
-      "encryption": "Encryption used",
-      "detectionNotes": "Detection guidance"
-    }}],
-    "beaconingPatterns": [{{
-      "pattern": "Pattern description",
-      "frequency": "Frequency details",
-      "indicators": ["indicators"]
-    }}],
-    "commonCommands": ["commands"]
+    "communicationMethods": "C2 communication methods",
+    "commandProtocols": [
+      {{
+        "protocolName": "Protocol name",
+        "encoding": "Encoding method",
+        "encryption": "Encryption used",
+        "detectionNotes": "Detection guidance"
+      }}
+    ],
+    "beaconingPatterns": [
+      {{
+        "pattern": "Pattern description",
+        "frequency": "Beacon frequency",
+        "indicators": ["Network indicators"]
+      }}
+    ],
+    "commonCommands": ["Common commands used"]
   }},
   "threatIntelligence": {{
     "entities": {{
-      "threatActors": [{{
-        "name": "Actor name",
-        "attribution": "Attribution level",
-        "activityTimeframe": "Activity period"
-      }}],
-      "campaigns": [{{
-        "name": "Campaign name",
-        "timeframe": "Campaign period",
-        "targetSectors": ["sectors"],
-        "geographicFocus": "Geography"
-      }}]
+      "threatActors": [
+        {{
+          "name": "Threat actor name",
+          "attribution": "Attribution confidence",
+          "activityTimeframe": "When active"
+        }}
+      ],
+      "campaigns": [
+        {{
+          "name": "Campaign name",
+          "timeframe": "Campaign timeframe",
+          "targetSectors": ["Targeted sectors"],
+          "geographicFocus": "Geographic targets"
+        }}
+      ]
     }},
     "riskAssessment": {{
-      "overallRisk": "Risk level",
+      "overallRisk": "High/Medium/Low",
       "impactRating": "Impact assessment",
       "likelihoodRating": "Likelihood assessment",
-      "riskFactors": ["risk factors"]
+      "riskFactors": ["Key risk factors"]
     }}
   }},
   "forensicArtifacts": {{
-    "fileSystemArtifacts": ["file artifacts"],
-    "registryArtifacts": ["registry keys"],
-    "networkArtifacts": ["network indicators"],
-    "memoryArtifacts": ["memory patterns"],
-    "logArtifacts": ["log patterns"]
+    "fileSystemArtifacts": ["File paths and names"],
+    "registryArtifacts": ["Registry keys"],
+    "networkArtifacts": ["Network artifacts"],
+    "memoryArtifacts": ["Memory artifacts"],
+    "logArtifacts": ["Log patterns"]
   }},
   "detectionAndMitigation": {{
-    "yaraRules": ["YARA rules"],
-    "sigmaRules": ["Sigma rules"],
     "iocs": {{
-      "hashes": ["file hashes"],
-      "domains": ["malicious domains"],
-      "ips": ["malicious IPs"],
-      "urls": ["malicious URLs"],
-      "filenames": ["malicious files"]
+      "hashes": ["File hashes"],
+      "domains": ["Malicious domains"],
+      "ips": ["Malicious IP addresses"],
+      "urls": ["Malicious URLs"],
+      "filenames": ["Malicious filenames"]
     }},
-    "behavioralIndicators": ["behaviors"]
+    "behavioralIndicators": ["Behavioral patterns for detection"]
   }},
   "mitigationAndResponse": {{
-    "preventiveMeasures": ["prevention steps"],
-    "detectionMethods": ["detection methods"],
-    "responseActions": ["response actions"],
-    "recoveryGuidance": ["recovery steps"]
+    "preventiveMeasures": ["Prevention recommendations"],
+    "detectionMethods": ["Detection methods"],
+    "responseActions": ["Incident response actions"],
+    "recoveryGuidance": ["Recovery steps"]
   }},
   "referencesAndIntelligenceSharing": {{
-    "sources": [{{
-      "title": "Reference title",
-      "url": "https://reference.url",
-      "date": "2024-01-01",
-      "relevanceScore": "High"
-    }}],
-    "mitreAttackMapping": "MITRE techniques",
+    "sources": [
+      {{
+        "title": "Source title",
+        "url": "URL from search results",
+        "date": "Publication date",
+        "relevanceScore": "High/Medium/Low"
+      }}
+    ],
+    "mitreAttackMapping": "MITRE ATT&CK techniques",
     "cveReferences": "Related CVEs",
-    "additionalReferences": ["references"]
+    "additionalReferences": ["Other relevant sources"]
   }},
   "integration": {{
-    "siemIntegration": "SIEM guidance",
-    "threatHuntingQueries": ["hunting queries"],
-    "automatedResponse": "Automation guidance"
+    "siemIntegration": "SIEM integration guidance",
+    "threatHuntingQueries": ["Threat hunting queries"],
+    "automatedResponse": "Automation recommendations"
   }},
   "lineage": {{
-    "variants": ["variants"],
-    "evolution": "Evolution description",
-    "relationships": ["related tools"]
+    "variants": ["Known variants"],
+    "evolution": "Evolution of the tool",
+    "relationships": ["Related tools"]
   }},
   "contextualAnalysis": {{
     "usageContexts": {{
-      "legitimateUse": "Legitimate uses",
-      "maliciousUse": "Malicious uses",
-      "dualUseConsiderations": "Dual-use notes"
+      "legitimateUse": "Legitimate use cases",
+      "maliciousUse": "Malicious applications",
+      "dualUseConsiderations": "Dual-use considerations"
     }},
     "trendAnalysis": {{
       "industryImpact": "Industry impact",
-      "futureOutlook": "Future trends",
-      "adoptionTrend": "Adoption patterns"
+      "futureOutlook": "Future outlook",
+      "adoptionTrend": "Adoption trends"
     }}
   }},
   "operationalGuidance": {{
-    "validationCriteria": ["validation criteria"],
-    "communityResources": [{{
-      "resourceType": "Type",
-      "name": "Resource name",
-      "url": "https://resource.url",
-      "focus": "Focus area"
-    }}]
+    "validationCriteria": ["Validation criteria"],
+    "communityResources": [
+      {{
+        "resourceType": "Type of resource",
+        "name": "Resource name",
+        "url": "URL from search",
+        "focus": "Resource focus"
+      }}
+    ]
   }}
 }}
 
-Use web search extensively. Populate with real current data about {tool_name}."""
+Return ONLY the JSON object with the information you found. If you cannot find information for certain sections, indicate that clearly in the content rather than making up information."""
 
             if progress_callback:
-                progress_callback(0.2, "🤖 Sending request to Claude...")
+                progress_callback(0.2, "🤖 Researching with web search...")
             
-            print("DEBUG: Sending request to Claude API...")
-            print("DEBUG: Using max_tokens = 8192")
+            print("DEBUG: Sending request to Claude API with web search tool enabled...")
             
-            # Generate the threat intelligence using Claude with CORRECT token limit
+            # Generate threat intelligence using Claude with ACTUAL web search tool
             response = self.client.messages.create(
-                model="claude-3-5-sonnet-20241022",
-                max_tokens=8192,  # EXPLICITLY set to 8192 - the maximum allowed
+                model="claude-sonnet-4-20250514",
+                max_tokens=8192,
                 temperature=0.3,
                 messages=[{
                     "role": "user", 
                     "content": prompt
-                }]
+                }],
+                # Enable the web search tool
+                tools=[
+                    {
+                        "type": "web_search_20250305",
+                        "name": "web_search"
+                    }
+                ]
             )
             
             print("DEBUG: Received response from Claude API")
@@ -216,7 +246,37 @@ Use web search extensively. Populate with real current data about {tool_name}.""
             if progress_callback:
                 progress_callback(0.7, "📊 Processing response...")
             
-            response_text = response.content[0].text.strip()
+            # Extract the final text response from the content blocks
+            response_text = ""
+            
+            # According to the docs, the response will have multiple content blocks
+            # We need to find the final text blocks that contain our JSON
+            if hasattr(response, 'content') and response.content:
+                # Look for text blocks after tool use
+                text_blocks = []
+                found_tool_result = False
+                
+                for content in response.content:
+                    # Track when we've seen tool results
+                    if hasattr(content, 'type'):
+                        if content.type == 'web_search_tool_result':
+                            found_tool_result = True
+                        # Collect text blocks that come after tool results
+                        elif content.type == 'text' and found_tool_result:
+                            if hasattr(content, 'text'):
+                                text_blocks.append(content.text)
+                
+                # If we found text after tool results, use that
+                if text_blocks:
+                    response_text = " ".join(text_blocks)
+                else:
+                    # Fallback: collect all text blocks
+                    for content in response.content:
+                        if hasattr(content, 'type') and content.type == 'text':
+                            if hasattr(content, 'text'):
+                                response_text += content.text + "\n"
+            
+            response_text = response_text.strip()
             print(f"DEBUG: Response length: {len(response_text)} characters")
             print(f"DEBUG: Response preview: {response_text[:200]}...")
             
@@ -253,7 +313,7 @@ Use web search extensively. Populate with real current data about {tool_name}.""
             
             print(f"DEBUG: Initial generation successful. JSON contains {len(json_data)} top-level keys")
             
-            # NEW: Quality Control Phase
+            # Quality control phase
             if self.enable_quality_control:
                 if progress_callback:
                     progress_callback(0.8, "🔍 Running quality validation...")
