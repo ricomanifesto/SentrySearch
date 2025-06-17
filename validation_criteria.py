@@ -83,6 +83,37 @@ SECTION_CRITERIA = {
         ],
         "min_score": 3.5,
         "critical": True
+    },
+    "mlGuidance": {
+        "required_fields": ["content", "threatCharacteristics"],
+        "quality_checks": [
+            "ML approaches should be specific to the threat type and behavior patterns",
+            "Should include implementation complexity assessments",
+            "Should reference relevant industry case studies or papers",
+            "Should provide actionable detection methodologies",
+            "Should include data requirements and expected accuracy",
+            "Should leverage all available context from completed threat profile",
+            "Should demonstrate understanding of threat's attack vectors and TTPs"
+        ],
+        "min_score": 4.0,
+        "critical": False,
+        "enhancement_prompt": """Enhance this ML guidance section by searching for additional relevant machine learning detection approaches for this specific threat.
+
+Current threat context from completed profile:
+- Threat Name: {threat_name}
+- Attack Vectors: {attack_vectors}
+- Behavior Patterns: {behavior_patterns}
+- Technical Details: {technical_context}
+- C2 Methods: {c2_context}
+- IOCs: {ioc_context}
+
+Search for ML approaches that specifically address:
+1. Detection of the identified attack vectors
+2. Behavioral analysis for the specific behavior patterns
+3. ML techniques for similar threat types
+4. Case studies from companies that faced similar threats
+
+Provide specific, actionable ML guidance that leverages all the threat intelligence context gathered."""
     }
 }
 

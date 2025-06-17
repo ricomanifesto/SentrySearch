@@ -1,5 +1,6 @@
 """
 Core Threat Intelligence Tool for generating threat profiles using Claude AI with web search
+Enhanced with ML-based anomaly detection guidance
 """
 import os
 import json
@@ -8,7 +9,10 @@ from typing import Dict, Any, Optional, Callable
 from datetime import datetime
 import re
 from pydantic import ValidationError
+import time
+import random
 from section_validator import SectionValidator, SectionImprover
+from ml_guidance_generator import MLGuidanceGenerator, ThreatCharacteristics
 
 
 class ThreatIntelTool:
@@ -18,6 +22,17 @@ class ThreatIntelTool:
         self.validator = SectionValidator(self.client)
         self.improver = SectionImprover(self.client)
         self.enable_quality_control = True
+        
+        
+        # Initialize ML guidance generator
+        try:
+            self.ml_guidance_generator = MLGuidanceGenerator(self.client)
+            self.enable_ml_guidance = True
+            print("DEBUG: ML guidance generator initialized successfully")
+        except Exception as e:
+            print(f"DEBUG: ML guidance generator initialization failed: {e}")
+            self.ml_guidance_generator = None
+            self.enable_ml_guidance = False
     
     def get_threat_intelligence(self, tool_name: str, progress_callback=None):
         """
@@ -36,22 +51,32 @@ class ThreatIntelTool:
             
             print(f"DEBUG: Starting threat intelligence generation for: {tool_name}")
             
-            # UPDATED PROMPT - Works with web search tool
-            prompt = f"""Generate a comprehensive threat intelligence profile for: {tool_name}
+            # ENHANCED PROMPT - Triggers Claude's research mode with comprehensive web search
+            prompt = f"""Conduct comprehensive research and deep dive analysis to generate a detailed threat intelligence profile for: {tool_name}
 
 Today's date is {datetime.now().strftime('%B %d, %Y')}.
 
-Please use web search to find the most current information about {tool_name}, including:
-- Recent vulnerabilities and exploits
-- Technical details and architecture
-- Indicators of compromise (IOCs)
-- Threat actor associations
-- Detection methods and mitigations
-- Recent security advisories or reports
+CRITICAL: You MUST use the web_search_20250305 tool extensively to find the most current, verified information. Do NOT hallucinate or invent URLs, sources, or information. All sources must be real and accessible through your web_search_20250305 tool.
 
-Focus on finding information from 2024-2025 when possible.
+Please perform a thorough deep dive research using the web_search_20250305 tool to find comprehensive information about {tool_name}, including:
+- Recent vulnerabilities and exploits (search for CVEs, security advisories)
+- Technical details and architecture (search for technical analyses, documentation)
+- Indicators of compromise (IOCs) (search for threat intelligence reports, IOC feeds)
+- Threat actor associations (search for attribution reports, campaign analyses)
+- Detection methods and mitigations (search for security vendor reports, YARA rules)
+- Recent security advisories or reports (search across security vendor sites, MITRE, NIST)
 
-Based on your research, create a comprehensive profile in the following JSON format:
+SEARCH STRATEGY: Use multiple specific search queries to gather comprehensive intelligence:
+1. "{tool_name} malware analysis"
+2. "{tool_name} threat intelligence report"
+3. "{tool_name} IOCs indicators compromise"
+4. "{tool_name} detection signatures YARA"
+5. "{tool_name} vulnerability CVE"
+6. "{tool_name} security advisory"
+
+Focus on finding information from 2024-2025 when possible, but include relevant historical context.
+
+Based on your comprehensive research findings, create a detailed profile in the following JSON format:
 
 {{
   "coreMetadata": {{
@@ -67,21 +92,21 @@ Based on your research, create a comprehensive profile in the following JSON for
     "trustScore": "Based on source quality"
   }},
   "webSearchSources": {{
-    "searchQueriesUsed": ["List the search queries you used"],
+    "searchQueriesUsed": ["REQUIRED: List the actual search queries you executed"],
     "primarySources": [
       {{
-        "url": "Actual URL from search results",
-        "title": "Actual title from search results",
-        "domain": "Domain name",
+        "url": "REQUIRED: Real, accessible URL from your web_search_20250305 tool results - NO hallucinated URLs",
+        "title": "REQUIRED: Actual title from the web_search_20250305 tool results",
+        "domain": "REQUIRED: Actual domain name from web_search_20250305 tool results",
         "accessDate": "{datetime.now().strftime('%Y-%m-%d')}",
-        "relevanceScore": "High/Medium/Low",
-        "contentType": "Report/Article/Advisory/Blog/Database",
-        "keyFindings": "Key information this source provided"
+        "relevanceScore": "High/Medium/Low based on content relevance",
+        "contentType": "Report/Article/Advisory/Blog/Database/Documentation",
+        "keyFindings": "REQUIRED: Specific information extracted from this real source"
       }}
     ],
-    "searchStrategy": "Brief description of your search approach",
-    "dataFreshness": "How recent the information is",
-    "sourceReliability": "Assessment of source credibility"
+    "searchStrategy": "REQUIRED: Describe your actual web_search_20250305 tool approach and methodology",
+    "dataFreshness": "REQUIRED: How recent the web_search_20250305 tool information is",
+    "sourceReliability": "REQUIRED: Assessment based on actual domain authority and content quality from web_search_20250305 tool"
   }},
   "toolOverview": {{
     "description": "Comprehensive description based on findings",
@@ -172,7 +197,7 @@ Based on your research, create a comprehensive profile in the following JSON for
     "sources": [
       {{
         "title": "Source title",
-        "url": "URL from search results",
+        "url": "URL from web_search_20250305 tool results",
         "date": "Publication date",
         "relevanceScore": "High/Medium/Low"
       }}
@@ -209,22 +234,30 @@ Based on your research, create a comprehensive profile in the following JSON for
       {{
         "resourceType": "Type of resource",
         "name": "Resource name",
-        "url": "URL from search",
+        "url": "URL from web_search_20250305 tool",
         "focus": "Resource focus"
       }}
     ]
   }}
 }}
 
-Return ONLY the JSON object with the information you found. If you cannot find information for certain sections, indicate that clearly in the content rather than making up information."""
+CRITICAL INSTRUCTIONS FOR OUTPUT:
+1. Return ONLY the JSON object populated with verified information from your web_search_20250305 tool results
+2. NEVER invent, hallucinate, or fabricate URLs, sources, or technical details
+3. If you cannot find information for certain sections through the web_search_20250305 tool, explicitly state "No verified information found through web_search_20250305 tool" rather than making up content
+4. All URLs in webSearchSources and referencesAndIntelligenceSharing MUST be real URLs from your actual web_search_20250305 tool results
+5. Cross-reference claims across multiple sources when possible using the web_search_20250305 tool
+6. If web_search_20250305 tool results are limited, acknowledge this limitation in the relevant sections
+
+Remember: Accuracy and source verification through the web_search_20250305 tool are more important than completeness. Real, verified information from web_search_20250305 is infinitely more valuable than hallucinated content."""
 
             if progress_callback:
                 progress_callback(0.2, "🤖 Researching with web search...")
             
             print("DEBUG: Sending request to Claude API with web search tool enabled...")
             
-            # Generate threat intelligence using Claude with ACTUAL web search tool
-            response = self.client.messages.create(
+            # Generate threat intelligence using Claude with retry logic
+            response = self._api_call_with_retry(
                 model="claude-sonnet-4-20250514",
                 max_tokens=8192,
                 temperature=0.3,
@@ -232,65 +265,98 @@ Return ONLY the JSON object with the information you found. If you cannot find i
                     "role": "user", 
                     "content": prompt
                 }],
-                # Enable the web search tool
-                tools=[
-                    {
-                        "type": "web_search_20250305",
-                        "name": "web_search"
-                    }
-                ]
+                tools=[{
+                    "type": "web_search_20250305",
+                    "name": "web_search"
+                }]
             )
             
-            print("DEBUG: Received response from Claude API")
+            # Extract initial web search sources from the main response
+            initial_sources = self.validator._extract_web_search_sources_from_response(
+                response, 'initial_research', tool_name
+            )
+            self.validator.web_search_sources.extend(initial_sources)
+            print(f"DEBUG: Captured {len(initial_sources)} initial web search sources")
             
-            if progress_callback:
-                progress_callback(0.7, "📊 Processing response...")
-            
-            # Extract the final text response from the content blocks
+            # Extract response text (existing logic)
             response_text = ""
-            
-            # According to the docs, the response will have multiple content blocks
-            # We need to find the final text blocks that contain our JSON
             if hasattr(response, 'content') and response.content:
-                # Look for text blocks after tool use
                 text_blocks = []
                 found_tool_result = False
                 
                 for content in response.content:
-                    # Track when we've seen tool results
                     if hasattr(content, 'type'):
                         if content.type == 'web_search_tool_result':
                             found_tool_result = True
-                        # Collect text blocks that come after tool results
                         elif content.type == 'text' and found_tool_result:
                             if hasattr(content, 'text'):
                                 text_blocks.append(content.text)
                 
-                # If we found text after tool results, use that
                 if text_blocks:
                     response_text = " ".join(text_blocks)
                 else:
-                    # Fallback: collect all text blocks
                     for content in response.content:
                         if hasattr(content, 'type') and content.type == 'text':
                             if hasattr(content, 'text'):
                                 response_text += content.text + "\n"
             
             response_text = response_text.strip()
+            
+            print("DEBUG: Received response from Claude API")
+            
+            if progress_callback:
+                progress_callback(0.7, "📊 Processing response...")
             print(f"DEBUG: Response length: {len(response_text)} characters")
             print(f"DEBUG: Response preview: {response_text[:200]}...")
             
-            # Find the JSON content in the response
-            json_start = response_text.find('{')
-            json_end = response_text.rfind('}') + 1
+            # Find the JSON content in the response using bracket matching
+            json_text = None
+            json_start = -1
             
-            print(f"DEBUG: JSON boundaries - start: {json_start}, end: {json_end}")
-            
-            if json_start == -1 or json_end == 0:
+            # Find the first opening brace
+            start_pos = response_text.find('{')
+            if start_pos == -1:
                 print(f"DEBUG: No JSON found in response")
                 raise ValueError(f"No JSON found in response. Response preview: {response_text[:1000]}")
             
-            json_text = response_text[json_start:json_end]
+            # Use bracket matching to find the complete JSON object
+            brace_count = 0
+            json_end = -1
+            in_string = False
+            escape_next = False
+            
+            for i in range(start_pos, len(response_text)):
+                char = response_text[i]
+                
+                if escape_next:
+                    escape_next = False
+                    continue
+                    
+                if char == '\\' and in_string:
+                    escape_next = True
+                    continue
+                    
+                if char == '"' and not escape_next:
+                    in_string = not in_string
+                    continue
+                    
+                if not in_string:
+                    if char == '{':
+                        brace_count += 1
+                    elif char == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            json_end = i + 1
+                            break
+            
+            if json_end == -1:
+                print(f"DEBUG: No complete JSON object found in response")
+                raise ValueError(f"No complete JSON object found in response. Response preview: {response_text[:1000]}")
+            
+            json_text = response_text[start_pos:json_end]
+            json_start = start_pos
+            
+            print(f"DEBUG: JSON boundaries - start: {json_start}, end: {json_end}")
             print(f"DEBUG: Extracted JSON length: {len(json_text)} characters")
             
             if progress_callback:
@@ -313,14 +379,30 @@ Return ONLY the JSON object with the information you found. If you cannot find i
             
             print(f"DEBUG: Initial generation successful. JSON contains {len(json_data)} top-level keys")
             
-            # Quality control phase
+            # Generate ML guidance BEFORE quality control to leverage all context
+            if self.enable_ml_guidance and self.ml_guidance_generator:
+                if progress_callback:
+                    progress_callback(0.75, "🤖 Generating ML detection guidance...")
+                
+                try:
+                    ml_guidance = self._generate_ml_guidance(json_data, tool_name)
+                    if ml_guidance:
+                        json_data['mlGuidance'] = ml_guidance
+                        print("DEBUG: ML guidance generated successfully")
+                    else:
+                        print("DEBUG: No ML guidance generated")
+                except Exception as e:
+                    print(f"DEBUG: ML guidance generation failed: {e}")
+                    # Continue without ML guidance - don't fail the entire process
+            
+            # Quality control phase - now includes ML guidance validation
             if self.enable_quality_control:
                 if progress_callback:
                     progress_callback(0.8, "🔍 Running quality validation...")
                 
-                # Validate the complete profile
+                # Validate the complete profile including ML guidance
                 validation_results = self.validator.validate_complete_profile(
-                    json_data, progress_callback
+                    json_data, progress_callback, tool_name
                 )
                 
                 # If improvement is needed, attempt to fix weak sections
@@ -336,13 +418,19 @@ Return ONLY the JSON object with the information you found. If you cannot find i
                     if progress_callback:
                         progress_callback(0.95, "✅ Final validation...")
                     
-                    final_validation = self.validator.validate_complete_profile(json_data)
+                    final_validation = self.validator.validate_complete_profile(json_data, None, tool_name)
                     json_data['_quality_assessment'] = final_validation
                 else:
                     # Attach original validation results
                     json_data['_quality_assessment'] = validation_results
                 
                 print(f"DEBUG: Quality control complete. Overall score: {validation_results['overall_score']}")
+                
+                # Add comprehensive web search sources section to the main profile if available
+                if hasattr(self.validator, 'web_search_sources') and self.validator.web_search_sources:
+                    comprehensive_sources = self.validator.generate_comprehensive_sources_section()
+                    json_data['comprehensiveWebSearchSources'] = comprehensive_sources
+                    print(f"DEBUG: Added comprehensive sources section to main profile with {len(self.validator.web_search_sources)} sources")
             
             if progress_callback:
                 progress_callback(1.0, "✅ Analysis complete!")
@@ -362,7 +450,7 @@ Return ONLY the JSON object with the information you found. If you cannot find i
     def _improve_weak_sections(self, profile: dict, validation_results: dict, 
                               progress_callback: Optional[Callable] = None) -> dict:
         """
-        Improve sections that failed validation
+        Improve sections that failed validation (legacy method - now handled in validator)
         
         Args:
             profile: Current threat intelligence profile
@@ -372,31 +460,332 @@ Return ONLY the JSON object with the information you found. If you cannot find i
         Returns:
             Improved profile
         """
+        # This method is now largely replaced by the iterative validation in SectionValidator
+        # Keep minimal implementation for backward compatibility
         improved_profile = profile.copy()
         sections_to_improve = []
         
-        # Identify sections needing improvement
+        # Identify only critical sections needing immediate improvement
         for section_name, validation in validation_results['section_validations'].items():
-            if validation.get('recommendation') in ['RETRY', 'ENHANCE']:
-                if validation.get('is_critical') or validation.get('scores', {}).get('overall', 0) < 3.0:
-                    sections_to_improve.append((section_name, validation))
+            if validation.get('recommendation') == 'RETRY' and validation.get('is_critical'):
+                sections_to_improve.append((section_name, validation))
         
-        # Improve each weak section
-        for i, (section_name, validation) in enumerate(sections_to_improve[:3]):  # Limit to top 3
+        # Improve only critical sections (web search enhancement handled in validator)
+        for i, (section_name, validation) in enumerate(sections_to_improve[:2]):  # Limit to top 2 critical
             if progress_callback:
-                progress = 0.9 + (0.05 * i / len(sections_to_improve))
-                progress_callback(progress, f"🔧 Improving {section_name}...")
+                progress = 0.9 + (0.05 * i / max(len(sections_to_improve), 1))
+                progress_callback(progress, f"🔧 Critical fix for {section_name}...")
             
             current_content = improved_profile.get(section_name, {})
+            
+            # Improve section without caching
             improved_content = self.improver.improve_section(
                 section_name, current_content, validation
             )
             
             if improved_content != current_content:
                 improved_profile[section_name] = improved_content
-                print(f"DEBUG: Improved section: {section_name}")
+                print(f"DEBUG: Critical improvement for section: {section_name}")
         
         return improved_profile
+    
+    def _generate_ml_guidance(self, threat_data: Dict, tool_name: str) -> Optional[Dict]:
+        """
+        Generate comprehensive ML-based anomaly detection guidance leveraging all threat context
+        
+        Args:
+            threat_data: Complete threat intelligence profile with all sections
+            tool_name: Name of the threat/tool
+            
+        Returns:
+            ML guidance data or None if generation fails
+        """
+        try:
+            # Extract enhanced threat characteristics from the COMPLETE profile
+            threat_characteristics = self._extract_enhanced_threat_characteristics(threat_data, tool_name)
+            
+            # Generate ML guidance using full context
+            ml_guidance_markdown = self.ml_guidance_generator.generate_enhanced_ml_guidance_section(
+                threat_characteristics, threat_data
+            )
+            
+            if ml_guidance_markdown:
+                return {
+                    'enabled': True,
+                    'content': ml_guidance_markdown,
+                    'threatCharacteristics': {
+                        'name': threat_characteristics.threat_name,
+                        'type': threat_characteristics.threat_type,
+                        'attackVectors': threat_characteristics.attack_vectors,
+                        'behaviorPatterns': threat_characteristics.behavior_patterns,
+                        'timeCharacteristics': threat_characteristics.time_characteristics
+                    },
+                    'contextUsed': {
+                        'technicalDetails': bool(threat_data.get('technicalDetails')),
+                        'commandAndControl': bool(threat_data.get('commandAndControl')),
+                        'detectionAndMitigation': bool(threat_data.get('detectionAndMitigation')),
+                        'threatIntelligence': bool(threat_data.get('threatIntelligence')),
+                        'forensicArtifacts': bool(threat_data.get('forensicArtifacts'))
+                    },
+                    'generatedAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'generator': 'Agentic RAG with Full Context',
+                    'qualityScore': 0.0  # Will be filled by validator
+                }
+            else:
+                return None
+                
+        except Exception as e:
+            print(f"DEBUG: ML guidance generation error: {e}")
+            return {
+                'enabled': False,
+                'error': str(e),
+                'fallbackGuidance': 'Consider implementing statistical anomaly detection and behavioral analysis for this threat type.',
+                'qualityScore': 0.0
+            }
+    
+    def _extract_enhanced_threat_characteristics(self, threat_data: Dict, tool_name: str) -> ThreatCharacteristics:
+        """
+        Extract enhanced threat characteristics from the COMPLETE threat intelligence profile
+        
+        Args:
+            threat_data: Complete threat intelligence profile with all sections
+            tool_name: Name of the threat/tool
+            
+        Returns:
+            Enhanced ThreatCharacteristics with context from all sections
+        """
+        
+        # Start with basic extraction
+        characteristics = self._extract_threat_characteristics(threat_data, tool_name)
+        
+        # Enhance with additional context from completed sections
+        if threat_data.get('technicalDetails'):
+            tech_details = threat_data['technicalDetails']
+            # Add technical context to behavior patterns
+            if tech_details.get('capabilities'):
+                for capability in tech_details['capabilities'][:3]:  # Top 3 capabilities
+                    if isinstance(capability, dict) and capability.get('name'):
+                        characteristics.behavior_patterns.append(capability['name'].lower().replace(' ', '_'))
+                    elif isinstance(capability, str):
+                        characteristics.behavior_patterns.append(capability.lower().replace(' ', '_'))
+        
+        if threat_data.get('commandAndControl'):
+            c2_data = threat_data['commandAndControl']
+            # Add C2 methods to attack vectors
+            if c2_data.get('communicationMethods'):
+                for method in c2_data['communicationMethods'][:2]:  # Top 2 methods
+                    if isinstance(method, dict) and method.get('protocol'):
+                        characteristics.attack_vectors.append(f"c2_{method['protocol'].lower()}")
+                    elif isinstance(method, str):
+                        characteristics.attack_vectors.append(f"c2_{method.lower()}")
+        
+        if threat_data.get('detectionAndMitigation'):
+            detection_data = threat_data['detectionAndMitigation']
+            # Add behavioral indicators to behavior patterns
+            if detection_data.get('behavioralIndicators'):
+                for indicator in detection_data['behavioralIndicators'][:3]:  # Top 3 indicators
+                    if isinstance(indicator, dict) and indicator.get('behavior'):
+                        characteristics.behavior_patterns.append(indicator['behavior'].lower().replace(' ', '_'))
+                    elif isinstance(indicator, str):
+                        characteristics.behavior_patterns.append(indicator.lower().replace(' ', '_'))
+        
+        # Remove duplicates and clean up
+        characteristics.attack_vectors = list(set(characteristics.attack_vectors))
+        characteristics.behavior_patterns = list(set(characteristics.behavior_patterns))
+        
+        return characteristics
+    
+    def _extract_threat_characteristics(self, threat_data: Dict, tool_name: str) -> ThreatCharacteristics:
+        """
+        Extract threat characteristics from the threat intelligence profile
+        
+        Args:
+            threat_data: Complete threat intelligence profile
+            tool_name: Name of the threat/tool
+            
+        Returns:
+            ThreatCharacteristics object for ML guidance generation
+        """
+        # Extract metadata
+        core_metadata = threat_data.get('coreMetadata', {})
+        category = core_metadata.get('category', 'malware').lower()
+        
+        # Map category to threat type
+        threat_type_mapping = {
+            'rat': 'malware',
+            'backdoor': 'malware', 
+            'trojan': 'malware',
+            'ransomware': 'malware',
+            'botnet': 'malware',
+            'apt': 'apt',
+            'framework': 'post_exploitation_framework',
+            'tool': 'attack_tool'
+        }
+        
+        threat_type = threat_type_mapping.get(category, 'malware')
+        
+        # Extract attack vectors from technical details
+        technical_details = threat_data.get('technicalDetails', {})
+        operating_systems = technical_details.get('operatingSystems', [])
+        capabilities = technical_details.get('capabilities', [])
+        
+        attack_vectors = []
+        if any('network' in str(cap).lower() for cap in capabilities):
+            attack_vectors.append('network')
+        if any('email' in str(cap).lower() for cap in capabilities):
+            attack_vectors.append('email')
+        if any('web' in str(cap).lower() for cap in capabilities):
+            attack_vectors.append('web')
+        if any('memory' in str(cap).lower() or 'injection' in str(cap).lower() for cap in capabilities):
+            attack_vectors.append('memory_injection')
+        if any('lateral' in str(cap).lower() for cap in capabilities):
+            attack_vectors.append('lateral_movement')
+        
+        # Add OS-specific attack vectors based on supported operating systems
+        for os_name in operating_systems:
+            os_lower = str(os_name).lower()
+            if 'windows' in os_lower:
+                if 'windows_specific' not in attack_vectors:
+                    attack_vectors.append('windows_specific')
+            elif 'linux' in os_lower or 'unix' in os_lower:
+                if 'unix_like' not in attack_vectors:
+                    attack_vectors.append('unix_like')
+            elif 'mac' in os_lower or 'darwin' in os_lower:
+                if 'macos_specific' not in attack_vectors:
+                    attack_vectors.append('macos_specific')
+            elif 'android' in os_lower:
+                if 'mobile' not in attack_vectors:
+                    attack_vectors.append('mobile')
+            elif 'ios' in os_lower:
+                if 'mobile' not in attack_vectors:
+                    attack_vectors.append('mobile')
+        
+        # Default to network if no specific vectors found
+        if not attack_vectors:
+            attack_vectors = ['network']
+        
+        # Extract target assets
+        threat_intel = threat_data.get('threatIntelligence', {})
+        campaigns = threat_intel.get('entities', {}).get('campaigns', [])
+        target_assets = []
+        
+        for campaign in campaigns:
+            sectors = campaign.get('targetSectors', [])
+            for sector in sectors:
+                if 'financial' in str(sector).lower():
+                    target_assets.append('financial_data')
+                elif 'healthcare' in str(sector).lower():
+                    target_assets.append('healthcare_data')
+                elif 'government' in str(sector).lower():
+                    target_assets.append('government_systems')
+                elif 'corporate' in str(sector).lower():
+                    target_assets.append('corporate_networks')
+        
+        # Add OS-specific target assets if not already identified from campaigns
+        if not target_assets:
+            target_assets = ['corporate_networks', 'endpoints']
+            
+        # Enhance target assets based on operating systems
+        for os_name in operating_systems:
+            os_lower = str(os_name).lower()
+            if 'windows' in os_lower and 'windows_endpoints' not in target_assets:
+                target_assets.append('windows_endpoints')
+            elif ('linux' in os_lower or 'unix' in os_lower) and 'linux_servers' not in target_assets:
+                target_assets.append('linux_servers')
+            elif ('mac' in os_lower or 'darwin' in os_lower) and 'macos_endpoints' not in target_assets:
+                target_assets.append('macos_endpoints')
+            elif ('android' in os_lower or 'ios' in os_lower) and 'mobile_devices' not in target_assets:
+                target_assets.append('mobile_devices')
+        
+        # Extract behavior patterns from capabilities and C2
+        behavior_patterns = []
+        persistence_mechanisms = technical_details.get('persistence', [])
+        if persistence_mechanisms:
+            behavior_patterns.append('persistence')
+        
+        c2_data = threat_data.get('commandAndControl', {})
+        if c2_data.get('communicationMethods'):
+            behavior_patterns.append('command_control')
+        
+        # Check for common behaviors in capabilities
+        for cap in capabilities:
+            cap_lower = str(cap).lower()
+            if 'exfiltrat' in cap_lower:
+                behavior_patterns.append('data_exfiltration')
+            elif 'lateral' in cap_lower:
+                behavior_patterns.append('lateral_movement')
+            elif 'credential' in cap_lower:
+                behavior_patterns.append('credential_harvesting')
+        
+        if not behavior_patterns:
+            behavior_patterns = ['persistence', 'command_control']
+        
+        # Determine time characteristics
+        beaconing_patterns = c2_data.get('beaconingPatterns', [])
+        if beaconing_patterns:
+            # Check beacon frequency
+            frequencies = [pattern.get('frequency', '') for pattern in beaconing_patterns]
+            if any('continuous' in str(freq).lower() or 'persistent' in str(freq).lower() for freq in frequencies):
+                time_characteristics = 'persistent'
+            elif any('periodic' in str(freq).lower() or 'regular' in str(freq).lower() for freq in frequencies):
+                time_characteristics = 'periodic'
+            else:
+                time_characteristics = 'burst'
+        else:
+            time_characteristics = 'persistent'  # Default assumption
+        
+        return ThreatCharacteristics(
+            threat_name=tool_name,
+            threat_type=threat_type,
+            attack_vectors=attack_vectors,
+            target_assets=target_assets,
+            behavior_patterns=behavior_patterns,
+            time_characteristics=time_characteristics
+        )
+    
+    
+    def _api_call_with_retry(self, **kwargs):
+        """Make API call with intelligent retry logic using retry-after header"""
+        max_retries = 3  # Reduced since we're using smarter delays
+        base_delay = 5   # Minimum delay between retries
+        
+        for attempt in range(max_retries):
+            try:
+                print(f"DEBUG: Making API call attempt {attempt + 1}/{max_retries}")
+                return self.client.messages.create(**kwargs)
+                
+            except anthropic.RateLimitError as e:
+                if attempt == max_retries - 1:  # Last attempt
+                    print(f"DEBUG: Rate limit exceeded after {max_retries} attempts")
+                    raise e
+                
+                # Check if the error response has retry-after information
+                retry_after = None
+                if hasattr(e, 'response') and e.response:
+                    retry_after_header = e.response.headers.get('retry-after')
+                    if retry_after_header:
+                        try:
+                            retry_after = float(retry_after_header)
+                            print(f"DEBUG: API provided retry-after: {retry_after} seconds")
+                        except (ValueError, TypeError):
+                            pass
+                
+                # Use retry-after if available, otherwise exponential backoff
+                if retry_after:
+                    delay = retry_after + random.uniform(1, 3)  # Add small jitter
+                else:
+                    # Fallback: exponential backoff with reasonable delays
+                    delay = base_delay * (2 ** attempt) + random.uniform(1, 5)
+                    # Cap at 2 minutes since token bucket refills continuously
+                    delay = min(delay, 120)
+                
+                print(f"DEBUG: Rate limit hit. Waiting {delay:.1f} seconds before retry {attempt + 2}")
+                time.sleep(delay)
+                
+            except Exception as e:
+                # For non-rate-limit errors, fail immediately
+                print(f"DEBUG: Non-rate-limit error: {e}")
+                raise e
 
     def save_to_file(self, data: Dict[str, Any], filename: str = None) -> str:
         """Save the threat intelligence data to a JSON file."""
