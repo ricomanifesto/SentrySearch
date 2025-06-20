@@ -63,6 +63,8 @@ class EnrichedChunk:
     keywords: List[str]
     chunk_index: int
     content_hash: str
+    bm25_terms: List[str] = None  # Additional search terms for BM25
+    faq_questions: List[str] = None  # FAQ-style questions
 
 
 class ContentExtractor:
@@ -189,7 +191,7 @@ class ContentEnricher:
                 raise e
     
     def enrich_chunk(self, chunk: str, source: MLPaperSource) -> Dict[str, str]:
-        """Enrich a chunk with summary, keywords, and question-like format"""
+        """Enrich a chunk with summary, keywords, question-like format, and BM25-optimized metadata"""
         
         prompt = f"""
 Analyze this text chunk from a machine learning anomaly detection paper/blog and provide:
@@ -197,6 +199,8 @@ Analyze this text chunk from a machine learning anomaly detection paper/blog and
 1. QUESTION_FORMAT: Rewrite the chunk content as if it's answering questions about the ML approach
 2. SUMMARY: A 2-line summary of what this chunk covers
 3. KEYWORDS: 5-8 relevant technical keywords (comma-separated)
+4. BM25_TERMS: Additional search terms for BM25 retrieval (comma-separated, include variations, synonyms, acronyms)
+5. FAQ_QUESTIONS: 2-3 potential questions this chunk could answer (pipe-separated)
 
 Source Context:
 - Company: {source.company}
@@ -210,6 +214,8 @@ Format your response as:
 QUESTION_FORMAT: [rewritten content]
 SUMMARY: [summary]
 KEYWORDS: [keywords]
+BM25_TERMS: [search terms with variations]
+FAQ_QUESTIONS: [question1|question2|question3]
 """
         
         try:
@@ -235,7 +241,9 @@ KEYWORDS: [keywords]
             return {
                 'question_format': chunk,
                 'summary': f"Content about {source.ml_techniques[0]} implementation at {source.company}",
-                'keywords': ', '.join(source.ml_techniques + [source.company.lower(), 'anomaly detection'])
+                'keywords': ', '.join(source.ml_techniques + [source.company.lower(), 'anomaly detection']),
+                'bm25_terms': ', '.join(source.ml_techniques + [source.company.lower(), 'ml', 'detection', 'analysis']),
+                'faq_questions': f"How does {source.company} implement {source.ml_techniques[0]}?|What is {source.ml_techniques[0]} used for?"
             }
     
     def _parse_enrichment_response(self, response: str) -> Dict[str, str]:
@@ -243,7 +251,9 @@ KEYWORDS: [keywords]
         result = {
             'question_format': '',
             'summary': '',
-            'keywords': ''
+            'keywords': '',
+            'bm25_terms': '',
+            'faq_questions': ''
         }
         
         lines = response.split('\n')
@@ -260,6 +270,12 @@ KEYWORDS: [keywords]
             elif line.startswith('KEYWORDS:'):
                 current_field = 'keywords'
                 result[current_field] = line.replace('KEYWORDS:', '').strip()
+            elif line.startswith('BM25_TERMS:'):
+                current_field = 'bm25_terms'
+                result[current_field] = line.replace('BM25_TERMS:', '').strip()
+            elif line.startswith('FAQ_QUESTIONS:'):
+                current_field = 'faq_questions'
+                result[current_field] = line.replace('FAQ_QUESTIONS:', '').strip()
             elif current_field and line:
                 result[current_field] += ' ' + line
         
@@ -307,6 +323,10 @@ class DocumentProcessor:
                 chunk_index=i,
                 content_hash=content_hash
             )
+            
+            # Add BM25-specific metadata to chunk
+            chunk.bm25_terms = enrichment.get('bm25_terms', '').split(', ') if enrichment.get('bm25_terms') else []
+            chunk.faq_questions = enrichment.get('faq_questions', '').split('|') if enrichment.get('faq_questions') else []
             
             enriched_chunks.append(chunk)
             
@@ -403,7 +423,9 @@ Content: {chunk.enriched_content}
                     'keywords': '|'.join(chunk.keywords),
                     'chunk_summary': chunk.chunk_summary,
                     'chunk_index': chunk.chunk_index,
-                    'content_hash': chunk.content_hash
+                    'content_hash': chunk.content_hash,
+                    'bm25_terms': '|'.join(chunk.bm25_terms) if chunk.bm25_terms else '',
+                    'faq_questions': '|'.join(chunk.faq_questions) if chunk.faq_questions else ''
                 })
                 ids.append(chunk.chunk_id)
             

@@ -18,6 +18,7 @@ import json
 import logging
 import time
 import random
+import hashlib
 from typing import List, Dict, Optional, Tuple, Set
 from dataclasses import dataclass
 import re
@@ -25,6 +26,7 @@ import re
 from anthropic import Anthropic
 import anthropic
 from ml_knowledge_base_builder import KnowledgeBaseStorage
+from bm25_retriever import BM25Retriever, BM25SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,10 @@ class MLRetrievalResult:
     ml_techniques: List[str]
     implementation_details: str
     applicability_score: float
+    retrieval_method: str = 'unknown'  # 'vector', 'bm25', or 'hybrid'
+    bm25_score: float = 0.0
+    hybrid_score: float = 0.0
+    matched_terms: List[str] = None
 
 
 class QueryOptimizer:
@@ -315,19 +321,21 @@ class SourceIdentifier:
 
 
 class EnhancedRetriever:
-    """Enhanced hybrid retriever with post-processing"""
+    """Enhanced hybrid retriever with vector search + BM25 and post-processing"""
     
     def __init__(self, knowledge_base: KnowledgeBaseStorage):
         self.knowledge_base = knowledge_base
+        self.bm25_retriever = BM25Retriever(knowledge_base)
     
     def retrieve_with_context(self, optimized_query: OptimizedQuery, 
                             source_selection: SourceSelection,
                             max_results: int = 10) -> List[MLRetrievalResult]:
-        """Retrieve and rank results with context-aware processing"""
+        """Hybrid retrieval using both vector search and BM25, with context-aware processing"""
         
-        all_results = []
+        vector_results = []
+        bm25_results = []
         
-        # Search with each optimized query
+        # 1. Vector Search - Search with each optimized query
         for query in optimized_query.optimized_queries:
             results = self.knowledge_base.search(query, n_results=max_results)
             
@@ -338,14 +346,32 @@ class EnhancedRetriever:
                 
                 if company in source_selection.relevant_companies:
                     ml_result = self._create_ml_result(result, optimized_query, source_selection)
-                    all_results.append(ml_result)
+                    ml_result.retrieval_method = 'vector'
+                    vector_results.append(ml_result)
         
-        # Post-process results
+        # 2. BM25 Search - Search with each optimized query
+        for query in optimized_query.optimized_queries:
+            bm25_search_results = self.bm25_retriever.search(query, n_results=max_results)
+            
+            for bm25_result in bm25_search_results:
+                # Filter by relevant sources
+                company = bm25_result.metadata.get('company', '')
+                
+                if company in source_selection.relevant_companies:
+                    # Convert BM25 result to ML result format
+                    ml_result = self._create_ml_result_from_bm25(bm25_result, optimized_query, source_selection)
+                    ml_result.retrieval_method = 'bm25'
+                    bm25_results.append(ml_result)
+        
+        # 3. Combine and deduplicate results
+        all_results = self._fuse_hybrid_results(vector_results, bm25_results)
+        
+        # 4. Post-process results
         processed_results = self._post_process_results(all_results)
         
-        # Rank by combined relevance and applicability
+        # 5. Rank by hybrid score combining relevance and applicability
         ranked_results = sorted(processed_results, 
-                              key=lambda x: (x.applicability_score * x.relevance_score), 
+                              key=lambda x: x.hybrid_score, 
                               reverse=True)
         
         return ranked_results[:max_results]
@@ -371,15 +397,21 @@ class EnhancedRetriever:
         content = search_result['document']
         implementation_details = self._extract_implementation_details(content)
         
-        return MLRetrievalResult(
+        result = MLRetrievalResult(
             content=content,
             metadata=metadata,
             relevance_score=search_result['score'],
             source_paper=metadata.get('source_title', ''),
             ml_techniques=list(paper_techniques),
             implementation_details=implementation_details,
-            applicability_score=applicability_score
+            applicability_score=applicability_score,
+            retrieval_method='vector'
         )
+        
+        # Calculate hybrid score (for vector results, this is just the combination)
+        result.hybrid_score = (result.relevance_score * 0.6 + result.applicability_score * 0.4)
+        
+        return result
     
     def _extract_implementation_details(self, content: str) -> str:
         """Extract key implementation details from content"""
@@ -415,6 +447,113 @@ class EnhancedRetriever:
                 deduplicated.append(result)
         
         return deduplicated
+    
+    def _create_ml_result_from_bm25(self, bm25_result: BM25SearchResult, 
+                                   optimized_query: OptimizedQuery,
+                                   source_selection: SourceSelection) -> MLRetrievalResult:
+        """Convert BM25 search result to ML result format"""
+        
+        metadata = bm25_result.metadata
+        
+        # Calculate applicability score based on technique overlap
+        ml_techniques_raw = metadata.get('ml_techniques', '')
+        ml_techniques_str = str(ml_techniques_raw) if ml_techniques_raw else ''
+        paper_techniques = set(str(t).strip() for t in ml_techniques_str.split('|') if str(t).strip())
+        relevant_techniques = set(source_selection.relevant_techniques)
+        
+        technique_overlap = len(paper_techniques.intersection(relevant_techniques))
+        applicability_score = min(technique_overlap / max(len(relevant_techniques), 1), 1.0)
+        
+        # Extract implementation details from content
+        implementation_details = self._extract_implementation_details(bm25_result.content)
+        
+        result = MLRetrievalResult(
+            content=bm25_result.content,
+            metadata=metadata,
+            relevance_score=bm25_result.relevance_score,
+            source_paper=metadata.get('source_title', ''),
+            ml_techniques=list(paper_techniques),
+            implementation_details=implementation_details,
+            applicability_score=applicability_score,
+            retrieval_method='bm25',
+            bm25_score=bm25_result.bm25_score,
+            matched_terms=bm25_result.matched_terms
+        )
+        
+        # Calculate hybrid score (for BM25 results, give more weight to exact matches)
+        bm25_weight = min(bm25_result.bm25_score / 5.0, 1.0)  # Normalize BM25 score
+        term_match_bonus = len(bm25_result.matched_terms) * 0.1  # Bonus for matched terms
+        result.hybrid_score = (bm25_weight * 0.5 + result.applicability_score * 0.4 + term_match_bonus)
+        
+        return result
+    
+    def _fuse_hybrid_results(self, vector_results: List[MLRetrievalResult], 
+                           bm25_results: List[MLRetrievalResult]) -> List[MLRetrievalResult]:
+        """Fuse vector and BM25 results using reciprocal rank fusion"""
+        
+        # Create dictionaries for fast lookup
+        vector_lookup = {self._get_result_key(r): r for r in vector_results}
+        bm25_lookup = {self._get_result_key(r): r for r in bm25_results}
+        
+        # Get all unique result keys
+        all_keys = set(vector_lookup.keys()) | set(bm25_lookup.keys())
+        
+        fused_results = []
+        
+        for key in all_keys:
+            vector_result = vector_lookup.get(key)
+            bm25_result = bm25_lookup.get(key)
+            
+            if vector_result and bm25_result:
+                # Both methods found this result - create hybrid
+                hybrid_result = self._create_hybrid_result(vector_result, bm25_result)
+                fused_results.append(hybrid_result)
+            elif vector_result:
+                # Only vector search found this
+                fused_results.append(vector_result)
+            elif bm25_result:
+                # Only BM25 found this
+                fused_results.append(bm25_result)
+        
+        return fused_results
+    
+    def _get_result_key(self, result: MLRetrievalResult) -> str:
+        """Generate a unique key for a result based on content hash"""
+        # Use first 100 characters of content as key to detect near-duplicates
+        content_key = result.content[:100] if result.content else ""
+        return hashlib.md5(content_key.encode()).hexdigest()[:16]
+    
+    def _create_hybrid_result(self, vector_result: MLRetrievalResult, 
+                            bm25_result: MLRetrievalResult) -> MLRetrievalResult:
+        """Create a hybrid result by combining vector and BM25 results"""
+        
+        # Use vector result as base and enhance with BM25 data
+        hybrid_result = MLRetrievalResult(
+            content=vector_result.content,
+            metadata=vector_result.metadata,
+            relevance_score=max(vector_result.relevance_score, bm25_result.relevance_score),
+            source_paper=vector_result.source_paper,
+            ml_techniques=vector_result.ml_techniques,
+            implementation_details=vector_result.implementation_details,
+            applicability_score=max(vector_result.applicability_score, bm25_result.applicability_score),
+            retrieval_method='hybrid',
+            bm25_score=bm25_result.bm25_score,
+            matched_terms=bm25_result.matched_terms
+        )
+        
+        # Calculate enhanced hybrid score using reciprocal rank fusion concept
+        vector_score = vector_result.hybrid_score
+        bm25_score = bm25_result.hybrid_score
+        
+        # Reciprocal rank fusion with k=60 (standard value)
+        k = 60
+        vector_rank = 1.0 / (k + vector_score * 100)  # Convert score to rank
+        bm25_rank = 1.0 / (k + bm25_score * 100)
+        
+        # Combine ranks and add bonus for being found by both methods
+        hybrid_result.hybrid_score = (vector_rank + bm25_rank) + 0.2  # 0.2 bonus for hybrid
+        
+        return hybrid_result
 
 
 class MLAgenticRetriever:
@@ -540,7 +679,11 @@ class MLAgenticRetriever:
                     'source_company': str(best_result.metadata.get('company', '')),
                     'source_paper': str(best_result.source_paper),
                     'applicability_score': best_result.applicability_score,
-                    'relevance_score': best_result.relevance_score
+                    'relevance_score': best_result.relevance_score,
+                    'retrieval_method': best_result.retrieval_method,
+                    'hybrid_score': best_result.hybrid_score,
+                    'bm25_score': best_result.bm25_score,
+                    'matched_terms': best_result.matched_terms if best_result.matched_terms else []
                 }
                 
                 guidance['ml_approaches'].append(approach)

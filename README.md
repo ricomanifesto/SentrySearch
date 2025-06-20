@@ -1,3 +1,15 @@
+---
+title: SentrySearch
+emoji: 🔍
+colorFrom: blue
+colorTo: purple
+sdk: gradio
+sdk_version: 4.44.0
+app_file: app.py
+pinned: false
+license: mit
+---
+
 # 🔍 SentrySearch
 
 **AI-Powered Threat Intelligence Platform**
@@ -12,11 +24,7 @@ SentrySearch leverages Anthropic's Claude with web search capabilities to genera
 - **Dual Intelligence**: Understand both attack tools and why technologies are targeted
 - **Export Capabilities**: Download reports as structured markdown files
 
-## 🚀 Live Demo
-
-**Access SentrySearch Here**: [SentrySearch](https://huggingface.co/spaces/ricomanifesto/SentrySearch)
-
-## 📖 Usage
+## 🚀 How to Use
 
 1. **Get API Key**: Sign up at [Anthropic Console](https://console.anthropic.com/) and get your API key
 2. **Enter Target**: Input any malware name, attack tool, or technology (e.g., "ShadowPad", "SAP NetWeaver", "AnyDesk")
@@ -24,36 +32,32 @@ SentrySearch leverages Anthropic's Claude with web search capabilities to genera
 4. **Review Sources**: Check the "Web Search Sources" section to see research methodology
 5. **Download Report**: Export the markdown report for further analysis
 
-## 🎯 Use Cases
+## 🎯 Example Queries
 
 ### Attack Tools & Malware
-- Understanding capabilities and persistence mechanisms
-- Getting current IOCs and detection rules
-- Learning about associated threat actors
+- `ShadowPad` - Advanced backdoor malware
+- `Cobalt Strike` - Penetration testing framework
+- `BumbleBee` - Malware loader
+- `StealC` - Information stealer
 
 ### Targeted Technologies
-- Understanding why systems are attractive targets
-- Identifying attack surfaces and common vulnerabilities
-- Assessing business risk and impact
+- `SAP NetWeaver` - Enterprise application platform
+- `Microsoft Exchange` - Email server platform
+- `VMware vCenter` - Virtualization management
+- `AnyDesk` - Remote desktop software
 
-## 🔧 Configuration
+## 🔧 Technical Details
 
-The application uses these key components:
-- **Gradio**: Web interface framework
-- **Anthropic Claude 3.5**: AI model with web search
-- **Real-time Research**: Current threat intelligence gathering
-
-## 📊 Output Format
-
-Each threat intelligence profile includes:
-- **Core Metadata**: Classification, trust scores, timeline
-- **Web Search Sources**: Research methodology and source verification
-- **Technical Details**: Architecture, capabilities, dependencies
-- **Threat Intelligence**: Associated actors, campaigns, risk assessment
-- **Detection & Mitigation**: Detection and response guidance
-- **Operational Context**: Business impact, deployment patterns
+Built with:
+- **Anthropic Claude** with web search capabilities
+- **Gradio** for the interactive web interface
+- **Real-time research** for current threat intelligence
 
 ## 📚 Related Projects
 
 - [SentryDigest](https://github.com/ricomanifesto/SentryDigest) - Cybersecurity news aggregator
 - [SentryInsight](https://github.com/ricomanifesto/SentryInsight) - AI-powered threat analysis
+
+---
+
+**⚠️ Note**: This tool requires an Anthropic API key. The key is only used for your session and is not stored.

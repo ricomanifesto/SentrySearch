@@ -8,3 +8,4 @@ requests>=2.31.0
 beautifulsoup4>=4.12.0
 tenacity
 python-dateutil>=2.8.0
+rank-bm25>=0.2.2
