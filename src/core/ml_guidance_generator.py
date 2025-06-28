@@ -21,7 +21,7 @@ import logging
 from datetime import datetime
 
 from pydantic import BaseModel, Field, validator
-from ml_agentic_retriever import MLAgenticRetriever, ThreatCharacteristics
+from search.ml_agentic_retriever import MLAgenticRetriever, ThreatCharacteristics
 from anthropic import Anthropic
 import anthropic
 

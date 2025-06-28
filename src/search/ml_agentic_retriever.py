@@ -25,8 +25,8 @@ import re
 
 from anthropic import Anthropic
 import anthropic
-from ml_knowledge_base_builder import KnowledgeBaseStorage
-from bm25_retriever import BM25Retriever, BM25SearchResult
+from data.ml_knowledge_base_builder import KnowledgeBaseStorage
+from search.bm25_retriever import BM25Retriever, BM25SearchResult
 
 logger = logging.getLogger(__name__)
 

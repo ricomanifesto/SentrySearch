@@ -1,0 +1,26 @@
+# Cloudflare Workers configuration for SentrySearch Hybrid Search
+
+name = "sentry-search-hybrid"
+main = "worker.js"
+compatibility_date = "2023-12-01"
+
+# KV Namespace binding
+[[kv_namespaces]]
+binding = "SENTRY_KV"
+id = "f97c6c83f96f4b548307ccb1ffaa2668"
+preview_id = "3fdb32abdd9d472d9d0506297dde4587"
+
+# Environment variables (non-secret)
+[vars]
+ENVIRONMENT = "production"
+MAX_SEARCH_RESULTS = "50"
+DEFAULT_SEARCH_TIMEOUT = "30000"
+
+# Routes (configure after deployment)
+# routes = [
+#   { pattern = "sentry-search.your-domain.com/*", zone_name = "your-domain.com" }
+# ]
+
+# Resource limits (removed for free plan compatibility)
+# [limits]
+# cpu_ms = 30000

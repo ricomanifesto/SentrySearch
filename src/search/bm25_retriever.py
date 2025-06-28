@@ -24,7 +24,7 @@ import pickle
 
 from rank_bm25 import BM25Okapi
 import numpy as np
-from ml_knowledge_base_builder import KnowledgeBaseStorage
+from data.ml_knowledge_base_builder import KnowledgeBaseStorage
 
 logger = logging.getLogger(__name__)
 

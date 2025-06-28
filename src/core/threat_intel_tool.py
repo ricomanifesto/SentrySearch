@@ -11,8 +11,8 @@ import re
 from pydantic import ValidationError
 import time
 import random
-from section_validator import SectionValidator, SectionImprover
-from ml_guidance_generator import MLGuidanceGenerator, ThreatCharacteristics
+from core.section_validator import SectionValidator, SectionImprover
+from core.ml_guidance_generator import MLGuidanceGenerator, ThreatCharacteristics
 
 
 class ThreatIntelTool:

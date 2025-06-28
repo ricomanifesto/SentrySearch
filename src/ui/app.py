@@ -1,27 +1,23 @@
 """
 🔍 SentrySearch - Threat Intelligence Profile Generator
 """
-import os
 import gradio as gr
-from datetime import datetime
-from threat_intel_tool import ThreatIntelTool
-from markdown_generator import generate_markdown
-import json
-import tempfile
+from core.threat_intel_tool import ThreatIntelTool
+from core.markdown_generator import generate_markdown
 
 
 def generate_threat_profile(api_key, tool_name, enable_quality_control, progress=gr.Progress()):
-    """Generate threat intelligence profile with progress tracking"""
+    """Generate threat intelligence profile using original implementation"""
     if not api_key.strip():
-        return "❌ Please enter your Anthropic API key", None, None, None
+        return "❌ Please enter your Anthropic API key", None
     
     if not tool_name.strip():
-        return "❌ Please enter a tool name", None, None, None
+        return "❌ Please enter a tool name", None
     
     try:
-        # Initialize the tool with the API key
+        # Initialize the threat intelligence tool with the API key
         tool = ThreatIntelTool(api_key)
-        tool.enable_quality_control = enable_quality_control  # NEW
+        tool.enable_quality_control = enable_quality_control
         
         # Generate threat intelligence
         progress(0.1, "🔄 Initializing threat intelligence generation...")
@@ -34,28 +30,19 @@ def generate_threat_profile(api_key, tool_name, enable_quality_control, progress
         progress(0.98, "📝 Generating markdown report...")
         markdown_content = generate_markdown(threat_data)
         
-        # Create temporary file for markdown download
-        temp_dir = tempfile.gettempdir()
-        md_filename = f"threat_intel_{tool_name.replace(' ', '_').lower()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
-        md_filepath = os.path.join(temp_dir, md_filename)
-        
-        # Write markdown to temporary file
-        with open(md_filepath, 'w', encoding='utf-8') as f:
-            f.write(markdown_content)
-        
-        # NEW: Extract quality assessment for display
+        # Extract quality assessment for display
         quality_data = None
         if '_quality_assessment' in threat_data:
             quality_data = threat_data['_quality_assessment']
         
         progress(1.0, "✅ Threat intelligence profile generated successfully!")
         
-        return None, markdown_content, md_filepath, quality_data
+        return markdown_content, quality_data
         
     except Exception as e:
         error_msg = f"Error generating profile: {str(e)}"
         progress(1.0, f"❌ {error_msg}")
-        return error_msg, None, None, None
+        return error_msg, None
 
 
 def create_ui():
@@ -96,27 +83,13 @@ def create_ui():
                     enable_quality = gr.Checkbox(
                         label="Enable Quality Control Validation",
                         value=True,
-                        info="Use LLM-as-Judge to validate and improve content quality"
+                        info="Use LLM-as-a-Judge to validate and improve content quality"
                     )
                     
                     with gr.Row():
                         generate_btn = gr.Button("🚀 Generate Profile", variant="primary", size="lg")
                         clear_btn = gr.Button("🗑️ Clear", variant="secondary")
             
-            with gr.Column(scale=1):
-                # Status and download section
-                with gr.Group():
-                    gr.Markdown("### 📊 Status & Export")
-                    error_output = gr.Textbox(
-                        label="Status",
-                        interactive=False,
-                        visible=False
-                    )
-                    download_file = gr.File(
-                        label="📥 Download Markdown Report",
-                        interactive=False,
-                        visible=True
-                    )
         
         # Results section
         with gr.Row():
@@ -139,22 +112,22 @@ def create_ui():
         generate_btn.click(
             fn=generate_threat_profile,
             inputs=[api_key_input, tool_input, enable_quality],
-            outputs=[error_output, markdown_output, download_file, quality_output],
+            outputs=[markdown_output, quality_output],
             show_progress=True
         )
         
         # Clear functionality
         def clear_all():
-            return "", "", True, None, None, None
+            return "", "", True, None, None
         
         clear_btn.click(
             fn=clear_all,
-            outputs=[api_key_input, tool_input, enable_quality, markdown_output, download_file, quality_output]
+            outputs=[api_key_input, tool_input, enable_quality, markdown_output, quality_output]
         )
     
     interface.launch(
         server_name="0.0.0.0",
-        server_port=7860,
+        server_port=7861,
         share=False,
         show_error=True,
         show_api=False
