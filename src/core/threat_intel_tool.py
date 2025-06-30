@@ -1,6 +1,6 @@
 """
 Core Threat Intelligence Tool for generating threat profiles using Claude AI with web search
-Enhanced with ML-based anomaly detection guidance
+Enhanced with ML-based anomaly detection guidance and trace export for annotator integration
 """
 import os
 import json
@@ -11,18 +11,35 @@ import re
 from pydantic import ValidationError
 import time
 import random
-from core.section_validator import SectionValidator, SectionImprover
-from core.ml_guidance_generator import MLGuidanceGenerator, ThreatCharacteristics
+from src.core.section_validator import SectionValidator, SectionImprover
+from src.core.ml_guidance_generator import MLGuidanceGenerator, ThreatCharacteristics
+from src.core.trace_exporter import get_trace_exporter
+from src.core.performance_metrics import PerformanceTracker
 
 
 class ThreatIntelTool:
-    def __init__(self, api_key):
+    def __init__(self, api_key, enable_tracing=True, trace_export_dir="./traces", enable_metrics=True, metrics_file="performance_metrics.jsonl"):
         """Initialize the Claude client with the provided API key"""
         self.client = anthropic.Anthropic(api_key=api_key)
         self.validator = SectionValidator(self.client)
         self.improver = SectionImprover(self.client)
         self.enable_quality_control = True
         
+        # Initialize performance metrics tracking
+        self.enable_metrics = enable_metrics
+        if self.enable_metrics:
+            self.performance_tracker = PerformanceTracker(metrics_file)
+            print(f"DEBUG: Performance metrics enabled, logging to {metrics_file}")
+        else:
+            self.performance_tracker = None
+        
+        # Initialize trace exporter
+        self.enable_tracing = enable_tracing
+        if self.enable_tracing:
+            self.trace_exporter = get_trace_exporter(trace_export_dir)
+            print(f"DEBUG: Trace exporter initialized, export directory: {trace_export_dir}")
+        else:
+            self.trace_exporter = None
         
         # Initialize ML guidance generator
         try:
@@ -45,11 +62,29 @@ class ThreatIntelTool:
         Returns:
             dict: Threat intelligence data with quality assessment
         """
+        # Start trace
+        trace_id = None
+        if self.enable_tracing and self.trace_exporter:
+            trace_id = self.trace_exporter.start_trace(tool_name)
+            self.trace_exporter.log_stage_start("initialization")
+        
         try:
             if progress_callback:
                 progress_callback(0.1, "🔍 Initializing research...")
             
             print(f"DEBUG: Starting threat intelligence generation for: {tool_name}")
+            
+            if self.enable_tracing and self.trace_exporter:
+                self.trace_exporter.log_stage_end("initialization")
+            
+            # Start performance tracking
+            if self.enable_metrics and self.performance_tracker:
+                self.performance_tracker.start_request(
+                    query=tool_name,
+                    model="claude-sonnet-4-20250514",
+                    prompt_type="threat_intel_main",
+                    cache_enabled=False  # Baseline measurement
+                )
             
             # ENHANCED PROMPT - Triggers Claude's research mode with comprehensive web search
             prompt = f"""Conduct comprehensive research and deep dive analysis to generate a detailed threat intelligence profile for: {tool_name}
@@ -251,12 +286,22 @@ CRITICAL INSTRUCTIONS FOR OUTPUT:
 
 Remember: Accuracy and source verification through the web_search_20250305 tool are more important than completeness. Real, verified information from web_search_20250305 is infinitely more valuable than hallucinated content."""
 
+            # Record prompt details for metrics
+            if self.enable_metrics and self.performance_tracker:
+                self.performance_tracker.record_prompt_details(prompt, cache_enabled=False)
+
             if progress_callback:
                 progress_callback(0.2, "🤖 Researching with web search...")
             
             print("DEBUG: Sending request to Claude API with web search tool enabled...")
+            print(f"DEBUG: Prompt size: {len(prompt)} characters")
+            
+            # Log web search stage
+            if self.enable_tracing and self.trace_exporter:
+                self.trace_exporter.log_stage_start("web_search")
             
             # Generate threat intelligence using Claude with retry logic
+            api_start_time = time.time()
             response = self._api_call_with_retry(
                 model="claude-sonnet-4-20250514",
                 max_tokens=8192,
@@ -270,6 +315,19 @@ Remember: Accuracy and source verification through the web_search_20250305 tool 
                     "name": "web_search"
                 }]
             )
+            
+            # Record API response metrics
+            if self.enable_metrics and self.performance_tracker:
+                api_end_time = time.time()
+                time_to_first_token = api_end_time - api_start_time  # Approximate
+                self.performance_tracker.record_api_response(
+                    response, 
+                    cache_hit=False,  # Baseline - no caching
+                    time_to_first_token=time_to_first_token
+                )
+            
+            if self.enable_tracing and self.trace_exporter:
+                self.trace_exporter.log_stage_end("web_search")
             
             # Extract initial web search sources from the main response
             initial_sources = self.validator._extract_web_search_sources_from_response(
@@ -365,9 +423,19 @@ Remember: Accuracy and source verification through the web_search_20250305 tool 
             try:
                 json_data = json.loads(json_text)
                 print("DEBUG: JSON parsing successful")
+                
+                # Record successful parsing
+                if self.enable_metrics and self.performance_tracker:
+                    self.performance_tracker.record_parsing_result(True)
+                    
             except json.JSONDecodeError as e:
                 print(f"DEBUG: JSON parsing failed: {e}")
                 print(f"DEBUG: JSON text preview: {json_text[:500]}")
+                
+                # Record failed parsing
+                if self.enable_metrics and self.performance_tracker:
+                    self.performance_tracker.record_parsing_result(False, str(e))
+                    
                 raise ValueError(f"Invalid JSON in response: {str(e)}. JSON preview: {json_text[:500]}")
             
             if not json_data:
@@ -384,15 +452,33 @@ Remember: Accuracy and source verification through the web_search_20250305 tool 
                 if progress_callback:
                     progress_callback(0.75, "🤖 Generating ML detection guidance...")
                 
+                if self.enable_tracing and self.trace_exporter:
+                    self.trace_exporter.log_stage_start("ml_guidance")
+                
                 try:
                     ml_guidance = self._generate_ml_guidance(json_data, tool_name)
                     if ml_guidance:
                         json_data['mlGuidance'] = ml_guidance
                         print("DEBUG: ML guidance generated successfully")
+                        
+                        # Log ML guidance for tracing
+                        if self.enable_tracing and self.trace_exporter:
+                            # Extract ML techniques from the guidance
+                            ml_techniques = []
+                            if isinstance(ml_guidance, dict) and 'content' in ml_guidance:
+                                # This would need to be enhanced to extract structured ML techniques
+                                # For now, log basic info
+                                pass
+                            self.trace_exporter.log_stage_end("ml_guidance", success=True)
                     else:
                         print("DEBUG: No ML guidance generated")
+                        if self.enable_tracing and self.trace_exporter:
+                            self.trace_exporter.log_stage_end("ml_guidance", success=False)
                 except Exception as e:
                     print(f"DEBUG: ML guidance generation failed: {e}")
+                    if self.enable_tracing and self.trace_exporter:
+                        self.trace_exporter.log_error(str(e), "ml_guidance")
+                        self.trace_exporter.log_stage_end("ml_guidance", success=False, error=str(e))
                     # Continue without ML guidance - don't fail the entire process
             
             # Quality control phase - now includes ML guidance validation
@@ -400,10 +486,17 @@ Remember: Accuracy and source verification through the web_search_20250305 tool 
                 if progress_callback:
                     progress_callback(0.8, "🔍 Running quality validation...")
                 
+                if self.enable_tracing and self.trace_exporter:
+                    self.trace_exporter.log_stage_start("quality_validation")
+                
                 # Validate the complete profile including ML guidance
                 validation_results = self.validator.validate_complete_profile(
                     json_data, progress_callback, tool_name
                 )
+                
+                if self.enable_tracing and self.trace_exporter:
+                    self.trace_exporter.log_quality_metrics(validation_results)
+                    self.trace_exporter.log_stage_end("quality_validation")
                 
                 # If improvement is needed, attempt to fix weak sections
                 if validation_results['needs_improvement']:
@@ -435,6 +528,37 @@ Remember: Accuracy and source verification through the web_search_20250305 tool 
             if progress_callback:
                 progress_callback(1.0, "✅ Analysis complete!")
             
+            # Complete performance tracking
+            if self.enable_metrics and self.performance_tracker:
+                metrics = self.performance_tracker.finish_request()
+                if metrics:
+                    print(f"DEBUG: Request completed - Latency: {metrics.latency_ms}ms, Cost: ${metrics.total_cost:.4f}")
+            
+            # Complete trace and export
+            if self.enable_tracing and self.trace_exporter:
+                try:
+                    # Log comprehensive trace data
+                    self.trace_exporter.log_threat_characteristics(json_data.get('coreMetadata', {}))
+                    self.trace_exporter.log_final_guidance(json_data.get('final_guidance', ''))
+                    
+                    # Log web search sources if available
+                    if hasattr(self.validator, 'web_search_sources') and self.validator.web_search_sources:
+                        self.trace_exporter.log_web_search_sources(self.validator.web_search_sources)
+                    
+                    # Complete and export trace
+                    trace_file = self.trace_exporter.complete_trace(json_data)
+                    print(f"DEBUG: Trace exported to {trace_file}")
+                    
+                    # Add trace metadata to response
+                    json_data['_trace_metadata'] = {
+                        'trace_id': trace_id,
+                        'trace_file': trace_file,
+                        'export_enabled': True
+                    }
+                except Exception as trace_error:
+                    print(f"DEBUG: Trace export failed: {trace_error}")
+                    # Don't fail the main process for trace export errors
+            
             return json_data
         
         except Exception as e:
@@ -442,6 +566,21 @@ Remember: Accuracy and source verification through the web_search_20250305 tool 
             print(f"DEBUG: Exception type: {type(e)}")
             import traceback
             traceback.print_exc()
+            
+            # Record error in performance metrics
+            if self.enable_metrics and self.performance_tracker:
+                self.performance_tracker.record_error(e)
+                self.performance_tracker.finish_request()
+            
+            # Log error to trace if available
+            if self.enable_tracing and self.trace_exporter:
+                try:
+                    self.trace_exporter.log_error(str(e), "main_process")
+                    # Try to complete trace even on error
+                    error_trace_file = self.trace_exporter.complete_trace()
+                    print(f"DEBUG: Error trace exported to {error_trace_file}")
+                except Exception as trace_error:
+                    print(f"DEBUG: Failed to export error trace: {trace_error}")
             
             if progress_callback:
                 progress_callback(1.0, f"❌ Error: {str(e)}")
@@ -506,7 +645,8 @@ Remember: Accuracy and source verification through the web_search_20250305 tool 
             
             # Generate ML guidance using full context
             ml_guidance_markdown = self.ml_guidance_generator.generate_enhanced_ml_guidance_section(
-                threat_characteristics, threat_data
+                threat_characteristics, threat_data, 
+                trace_exporter=self.trace_exporter if self.enable_tracing else None
             )
             
             if ml_guidance_markdown:

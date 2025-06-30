@@ -25,8 +25,8 @@ import re
 
 from anthropic import Anthropic
 import anthropic
-from data.ml_knowledge_base_builder import KnowledgeBaseStorage
-from search.bm25_retriever import BM25Retriever, BM25SearchResult
+from src.data.ml_knowledge_base_builder import KnowledgeBaseStorage
+from src.search.bm25_retriever import BM25Retriever, BM25SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -329,13 +329,26 @@ class EnhancedRetriever:
     
     def retrieve_with_context(self, optimized_query: OptimizedQuery, 
                             source_selection: SourceSelection,
-                            max_results: int = 10) -> List[MLRetrievalResult]:
+                            max_results: int = 10,
+                            trace_exporter=None) -> List[MLRetrievalResult]:
         """Hybrid retrieval using both vector search and BM25, with context-aware processing"""
         
         vector_results = []
         bm25_results = []
         
+        # Log query optimization to trace
+        if trace_exporter:
+            trace_exporter.log_query_optimization(
+                optimized_query.original_query,
+                optimized_query.optimized_queries,
+                optimized_query.reasoning,
+                optimized_query.ml_focus_areas
+            )
+        
         # 1. Vector Search - Search with each optimized query
+        if trace_exporter:
+            trace_exporter.log_stage_start("vector_retrieval")
+        
         for query in optimized_query.optimized_queries:
             results = self.knowledge_base.search(query, n_results=max_results)
             
@@ -349,7 +362,16 @@ class EnhancedRetriever:
                     ml_result.retrieval_method = 'vector'
                     vector_results.append(ml_result)
         
+        if trace_exporter:
+            trace_exporter.log_stage_end("vector_retrieval", result_count=len(vector_results))
+            # Convert to format expected by trace exporter
+            vector_trace_results = [self._convert_to_trace_format(r) for r in vector_results]
+            trace_exporter.log_retrieval_results(vector_trace_results, "vector")
+        
         # 2. BM25 Search - Search with each optimized query
+        if trace_exporter:
+            trace_exporter.log_stage_start("bm25_retrieval")
+        
         for query in optimized_query.optimized_queries:
             bm25_search_results = self.bm25_retriever.search(query, n_results=max_results)
             
@@ -363,7 +385,16 @@ class EnhancedRetriever:
                     ml_result.retrieval_method = 'bm25'
                     bm25_results.append(ml_result)
         
+        if trace_exporter:
+            trace_exporter.log_stage_end("bm25_retrieval", result_count=len(bm25_results))
+            # Convert to format expected by trace exporter
+            bm25_trace_results = [self._convert_to_trace_format(r) for r in bm25_results]
+            trace_exporter.log_retrieval_results(bm25_trace_results, "bm25")
+        
         # 3. Combine and deduplicate results
+        if trace_exporter:
+            trace_exporter.log_stage_start("hybrid_fusion")
+        
         all_results = self._fuse_hybrid_results(vector_results, bm25_results)
         
         # 4. Post-process results
@@ -374,7 +405,27 @@ class EnhancedRetriever:
                               key=lambda x: x.hybrid_score, 
                               reverse=True)
         
-        return ranked_results[:max_results]
+        final_results = ranked_results[:max_results]
+        
+        # Log hybrid fusion results
+        if trace_exporter:
+            trace_exporter.log_stage_end("hybrid_fusion", final_result_count=len(final_results))
+            # Convert to format expected by trace exporter
+            hybrid_trace_results = [self._convert_to_trace_format(r) for r in final_results]
+            trace_exporter.log_retrieval_results(hybrid_trace_results, "hybrid")
+            
+            # Log hybrid scoring if available
+            if final_results:
+                avg_vector_score = sum(r.relevance_score for r in final_results) / len(final_results)
+                avg_bm25_score = sum(getattr(r, 'bm25_score', 0) for r in final_results) / len(final_results)
+                avg_hybrid_score = sum(r.hybrid_score for r in final_results) / len(final_results)
+                avg_applicability_score = sum(r.applicability_score for r in final_results) / len(final_results)
+                
+                trace_exporter.log_hybrid_scoring(
+                    avg_vector_score, avg_bm25_score, avg_hybrid_score, avg_applicability_score
+                )
+        
+        return final_results
     
     def _create_ml_result(self, search_result: Dict, 
                          optimized_query: OptimizedQuery,
@@ -447,6 +498,18 @@ class EnhancedRetriever:
                 deduplicated.append(result)
         
         return deduplicated
+    
+    def _convert_to_trace_format(self, ml_result: MLRetrievalResult) -> Dict:
+        """Convert MLRetrievalResult to format expected by trace exporter"""
+        return {
+            "content": ml_result.content,
+            "metadata": ml_result.metadata,
+            "score": ml_result.relevance_score,
+            "method": ml_result.retrieval_method,
+            "matched_terms": getattr(ml_result, 'matched_terms', None),
+            "source_company": ml_result.metadata.get('company'),
+            "ml_techniques": ml_result.ml_techniques
+        }
     
     def _create_ml_result_from_bm25(self, bm25_result: BM25SearchResult, 
                                    optimized_query: OptimizedQuery,
@@ -570,7 +633,7 @@ class MLAgenticRetriever:
         
         logger.info("ML Agentic Retriever initialized")
     
-    def get_ml_guidance(self, threat_characteristics: ThreatCharacteristics) -> Dict:
+    def get_ml_guidance(self, threat_characteristics: ThreatCharacteristics, trace_exporter=None) -> Dict:
         """Get comprehensive ML guidance for threat detection"""
         
         try:
@@ -588,7 +651,8 @@ class MLAgenticRetriever:
             
             # Step 3: Enhanced Retrieval
             ml_results = self.enhanced_retriever.retrieve_with_context(
-                optimized_query, source_selection, max_results=8
+                optimized_query, source_selection, max_results=8,
+                trace_exporter=trace_exporter
             )
             logger.info(f"Retrieved {len(ml_results)} relevant ML approaches")
             
@@ -604,7 +668,7 @@ class MLAgenticRetriever:
             return self._create_fallback_guidance(threat_characteristics)
     
     def get_enhanced_ml_guidance(self, threat_characteristics: ThreatCharacteristics, 
-                               complete_threat_data: Dict) -> Dict:
+                               complete_threat_data: Dict, trace_exporter=None) -> Dict:
         """Get enhanced ML guidance leveraging complete threat intelligence context"""
         
         try:
@@ -622,7 +686,8 @@ class MLAgenticRetriever:
             
             # Step 3: Enhanced Retrieval with threat context
             ml_results = self.enhanced_retriever.retrieve_with_context(
-                optimized_query, source_selection, max_results=10  # More results for enhanced mode
+                optimized_query, source_selection, max_results=10,  # More results for enhanced mode
+                trace_exporter=trace_exporter
             )
             logger.info(f"Retrieved {len(ml_results)} relevant ML approaches")
             

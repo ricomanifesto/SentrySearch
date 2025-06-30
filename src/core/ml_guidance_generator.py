@@ -21,7 +21,8 @@ import logging
 from datetime import datetime
 
 from pydantic import BaseModel, Field, validator
-from search.ml_agentic_retriever import MLAgenticRetriever, ThreatCharacteristics
+# Import Workers-based retriever (production system)
+from src.search.ml_workers_retriever import MLWorkersRetriever, ThreatCharacteristics
 from anthropic import Anthropic
 import anthropic
 
@@ -83,10 +84,17 @@ class MLGuidanceSection:
 class MLGuidanceGenerator:
     """Generates comprehensive ML guidance in markdown format"""
     
-    def __init__(self, anthropic_client, knowledge_base_path: str = "./ml_knowledge_base"):
+    def __init__(self, anthropic_client):
         self.client = anthropic_client
-        self.ml_retriever = MLAgenticRetriever(anthropic_client, knowledge_base_path)
-        logger.info("ML Guidance Generator initialized")
+        
+        # Initialize Workers-based retriever (production system)
+        workers_url = os.getenv('WORKERS_URL')
+        if not workers_url:
+            raise ValueError("WORKERS_URL environment variable is required for ML retriever")
+        
+        self.ml_retriever = MLWorkersRetriever(anthropic_client, workers_url)
+        self.retriever_type = 'workers'
+        logger.info(f"ML Guidance Generator initialized with Workers retriever: {workers_url}")
     
     def _api_call_with_retry(self, **kwargs):
         """Make API call with intelligent retry logic using retry-after header"""
@@ -129,13 +137,13 @@ class MLGuidanceGenerator:
                 raise e
     
     def generate_enhanced_ml_guidance_section(self, threat_characteristics: ThreatCharacteristics, 
-                                            complete_threat_data: Dict) -> str:
+                                            complete_threat_data: Dict, trace_exporter=None) -> str:
         """Generate enhanced ML guidance leveraging all threat intelligence context"""
         
         try:
             # Get ML guidance from agentic retriever with enhanced context
-            ml_guidance_raw = self.ml_retriever.get_enhanced_ml_guidance(
-                threat_characteristics, complete_threat_data
+            ml_guidance_raw = self.ml_retriever.get_ml_guidance(
+                threat_characteristics, trace_exporter=trace_exporter
             )
             
             if not ml_guidance_raw or 'error' in ml_guidance_raw:
@@ -163,7 +171,7 @@ class MLGuidanceGenerator:
         
         try:
             # Get ML guidance from agentic retriever
-            ml_guidance_raw = self.ml_retriever.get_ml_guidance(threat_characteristics)
+            ml_guidance_raw = self.ml_retriever.get_ml_guidance(threat_characteristics, trace_exporter=None)
             
             if not ml_guidance_raw or 'error' in ml_guidance_raw:
                 return self._generate_fallback_section(threat_characteristics)

@@ -1,119 +1,52 @@
-# SentrySearch
 
-AI-powered threat intelligence platform with hybrid search capabilities and dual deployment options.
+# 🔍 SentrySearch
 
-## 🚀 Quick Start
+**AI-Powered Threat Intelligence Platform**
 
-```bash
-# Install dependencies
-pip install -r requirements.txt
+SentrySearch leverages Anthropic's Claude with web search capabilities to generate comprehensive threat intelligence profiles for malware, attack tools, and targeted technologies.
 
-# Run application (auto-detects best structure)
-python run_app.py
-```
+## 🌟 Features
 
-## 🏗️ Architecture Options
+- **Real-time Web Research**: Uses Anthropic's web search API for current threat intelligence
+- **Comprehensive Profiles**: Technical details, threat landscape, detection guidance
+- **Source Transparency**: Shows exactly what sources were used for research
+- **Dual Intelligence**: Understand both attack tools and why technologies are targeted
+- **Export Capabilities**: Download reports as structured markdown files
 
-### **Production System (Recommended)**
-- **Frontend**: Gradio web interface
-- **Backend**: Cloudflare Workers + Pinecone
-- **Search**: Hybrid vector + keyword search
-- **Performance**: 50x faster (40ms response times)
-- **Deployment**: Global edge via Cloudflare
+## 🚀 How to Use
 
-### **Local Development System**
-- **Frontend**: Gradio web interface  
-- **Backend**: ChromaDB + local BM25
-- **Search**: Local vector + keyword search
-- **Performance**: Local processing (2000ms response times)
-- **Deployment**: Single machine
+1. **Get API Key**: Sign up at [Anthropic Console](https://console.anthropic.com/) and get your API key
+2. **Enter Target**: Input any malware name, attack tool, or technology (e.g., "ShadowPad", "SAP NetWeaver", "AnyDesk")
+3. **Generate Profile**: Click "Generate Profile" to create comprehensive threat intelligence
+4. **Review Sources**: Check the "Web Search Sources" section to see research methodology
+5. **Download Report**: Export the markdown report for further analysis
 
-## 📁 Project Structure
+## 🎯 Example Queries
 
-```
-├── src/                    # Core application (organized)
-├── docs/                   # Complete documentation
-├── data/
-│   ├── kv_data/           # Production search data
-│   ├── traces/            # Execution traces
-│   └── legacy/            # ChromaDB system backup
-├── scripts/               # Utilities and migration tools
-├── tests/                 # Test suite
-├── worker.js              # Cloudflare Workers
-├── app.py                 # Legacy entry point (compatibility)
-├── ml_knowledge_base/     # ChromaDB vector database
-└── run_app.py            # Universal launcher
-```
+### Attack Tools & Malware
+- `ShadowPad` - Advanced backdoor malware
+- `Cobalt Strike` - Penetration testing framework
+- `BumbleBee` - Malware loader
+- `StealC` - Information stealer
 
-## 🔧 Environment Setup
+### Targeted Technologies
+- `SAP NetWeaver` - Enterprise application platform
+- `Microsoft Exchange` - Email server platform
+- `VMware vCenter` - Virtualization management
+- `AnyDesk` - Remote desktop software
 
-### For Production (Workers + Pinecone)
-```bash
-export WORKERS_URL="https://your-worker.workers.dev"
-export ANTHROPIC_API_KEY="your-api-key"
-```
+## 🔧 Technical Details
 
-### For Local Development (ChromaDB)
-```bash
-export ML_RETRIEVER_MODE="chromadb"
-export ANTHROPIC_API_KEY="your-api-key"
-```
+Built with:
+- **Anthropic Claude** with web search capabilities
+- **Gradio** for the interactive web interface
+- **Real-time research** for current threat intelligence
 
-## 🎯 Features
+## 📚 Related Projects
 
-- **Threat Intelligence Generation**: AI-powered security analysis
-- **Dual ML Systems**: Production Workers + local ChromaDB
-- **Tracing & Debugging**: Comprehensive execution traces
-- **Quality Control**: Automated content validation
-- **Company Expertise**: Industry-specific recommendations
-- **Hybrid Search**: Vector + keyword relevance
-
-## 📖 Documentation
-
-- [Migration Journey](docs/MIGRATION_BLOG_POST.md) - Complete architecture story
-- [Configuration Guide](docs/CONFIGURATION_GUIDE.md) - Setup instructions  
-- [Project Structure](PROJECT_STRUCTURE.md) - Detailed organization
-
-## 🔄 System Compatibility
-
-This repository supports both the original ChromaDB system and the new production Workers system:
-
-- **Automatic Detection**: Chooses best available system
-- **Graceful Fallbacks**: Workers failures fall back to ChromaDB
-- **Legacy Preservation**: Original system fully maintained
-- **Future Ready**: Production deployment capability
-
-## 🚀 Deployment Options
-
-### Local Development
-```bash
-python run_app.py
-```
-
-### Cloudflare Workers
-```bash
-wrangler deploy
-```
-
-### Legacy Compatibility
-```bash
-python app.py  # Direct legacy execution
-```
-
-## 📊 Performance Comparison
-
-| System | Response Time | Deployment | Capacity |
-|--------|---------------|------------|----------|
-| ChromaDB (Local) | 2000ms | Single machine | 10-50 users |
-| Workers + Pinecone | 40ms | Global edge | 1000+ users |
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create feature branch
-3. Test with both systems
-4. Submit pull request
+- [SentryDigest](https://github.com/ricomanifesto/SentryDigest) - Cybersecurity news aggregator
+- [SentryInsight](https://github.com/ricomanifesto/SentryInsight) - AI-powered threat analysis
 
 ---
 
-*This project demonstrates production-ready AI architecture while maintaining full backward compatibility.*
+**⚠️ Note**: This tool requires an Anthropic API key. The key is only used for your session and is not stored.

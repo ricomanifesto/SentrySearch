@@ -8,7 +8,7 @@ import anthropic
 from typing import Optional, List
 from datetime import datetime
 import re
-from validation_criteria import SECTION_CRITERIA, VALIDATION_PROMPTS
+from src.core.validation_criteria import SECTION_CRITERIA, VALIDATION_PROMPTS
 
 
 class SectionValidator:
@@ -18,12 +18,12 @@ class SectionValidator:
         self.validation_history = []
         self.web_search_sources = []  # Track all web search sources across validation
     
-    def _extract_json_from_text(self, text: str) -> Optional[dict]:
+    def _extract_json_with_bracket_matching(self, text: str) -> Optional[dict]:
         """
-        Extract JSON from text using multiple strategies for robust parsing
+        Extract JSON using proper bracket matching for complex nested structures
         
         Args:
-            text: Text containing JSON
+            text: Text potentially containing JSON
             
         Returns:
             Parsed JSON dict or None if parsing fails
@@ -31,24 +31,9 @@ class SectionValidator:
         if not text or not text.strip():
             return None
         
-        # Strategy 1: Try to parse the entire text as JSON
-        try:
-            return json.loads(text.strip())
-        except json.JSONDecodeError:
-            pass
-        
-        # Strategy 2: Look for JSON code blocks
-        import re
-        json_blocks = re.findall(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
-        for block in json_blocks:
-            try:
-                return json.loads(block.strip())
-            except json.JSONDecodeError:
-                continue
-        
-        # Strategy 3: Find the largest valid JSON object using bracket matching
-        json_start = text.find('{')
-        if json_start == -1:
+        # Find the first opening brace
+        start_pos = text.find('{')
+        if start_pos == -1:
             return None
         
         # Use bracket matching to find the complete JSON object
@@ -57,7 +42,7 @@ class SectionValidator:
         in_string = False
         escape_next = False
         
-        for i in range(json_start, len(text)):
+        for i in range(start_pos, len(text)):
             char = text[i]
             
             if escape_next:
@@ -84,92 +69,183 @@ class SectionValidator:
         if json_end == -1:
             return None
         
-        json_text = text[json_start:json_end]
+        json_text = text[start_pos:json_end]
         
-        # Strategy 4: Try to fix common JSON issues
         try:
             return json.loads(json_text)
         except json.JSONDecodeError as e:
-            # Try to fix truncated JSON by adding missing closing braces
-            try:
-                # Count unclosed braces and add them
-                open_braces = json_text.count('{') - json_text.count('}')
-                if open_braces > 0:
-                    fixed_json = json_text + '}' * open_braces
-                    return json.loads(fixed_json)
-            except json.JSONDecodeError:
-                pass
+            # Try to fix common issues
+            return self._fix_and_parse_json(json_text)
+    
+    def _fix_and_parse_json(self, json_text: str) -> Optional[dict]:
+        """
+        Attempt to fix common JSON issues and parse
+        
+        Args:
+            json_text: Potentially malformed JSON text
             
-            # Try to fix trailing comma issues
-            try:
-                # Remove trailing commas before closing brackets
-                fixed_json = re.sub(r',(\s*[}\]])', r'\1', json_text)
+        Returns:
+            Parsed JSON dict or None if all fixes fail
+        """
+        import re
+        
+        # Strategy 1: Fix trailing commas
+        try:
+            fixed_json = re.sub(r',(\s*[}\]])', r'\1', json_text)
+            return json.loads(fixed_json)
+        except json.JSONDecodeError:
+            pass
+        
+        # Strategy 2: Try to fix unclosed braces
+        try:
+            open_braces = json_text.count('{') - json_text.count('}')
+            if open_braces > 0:
+                fixed_json = json_text + '}' * open_braces
                 return json.loads(fixed_json)
-            except json.JSONDecodeError:
-                pass
+        except json.JSONDecodeError:
+            pass
+        
+        # Strategy 3: Try to handle incomplete strings
+        try:
+            # Find the last complete field and truncate there
+            last_complete_field = json_text.rfind('",')
+            if last_complete_field > 0:
+                truncated_json = json_text[:last_complete_field + 1]
+                # Add missing closing braces
+                open_braces = truncated_json.count('{') - truncated_json.count('}')
+                if open_braces > 0:
+                    truncated_json += '}' * open_braces
+                return json.loads(truncated_json)
+        except json.JSONDecodeError:
+            pass
+        
+        # Strategy 4: Try to extract valid JSON fields piece by piece
+        try:
+            lines = json_text.split('\n')
+            partial_obj = {}
+            current_field = None
+            current_value = []
             
-            # Try to handle incomplete strings at the end
-            try:
-                # Find the last complete field and truncate there
-                last_complete_field = json_text.rfind('",') 
-                if last_complete_field > 0:
-                    truncated_json = json_text[:last_complete_field + 1]
-                    # Count unclosed braces and add them
-                    open_braces = truncated_json.count('{') - truncated_json.count('}')
-                    if open_braces > 0:
-                        truncated_json += '}' * open_braces
-                    return json.loads(truncated_json)
-            except json.JSONDecodeError:
-                pass
+            for line in lines:
+                line = line.strip()
+                if line.startswith('"') and ':' in line:
+                    # Save previous field if exists
+                    if current_field and current_value:
+                        try:
+                            value_str = '\n'.join(current_value)
+                            if value_str.endswith(','):
+                                value_str = value_str[:-1]
+                            partial_obj[current_field] = json.loads(value_str)
+                        except:
+                            pass
+                    
+                    # Extract new field
+                    field_match = re.match(r'\s*"([^"]+)"\s*:\s*(.*)', line)
+                    if field_match:
+                        current_field = field_match.group(1)
+                        current_value = [field_match.group(2)]
+                elif current_field:
+                    current_value.append(line)
             
-            # Try to extract just the first level of the JSON object
-            try:
-                # Parse as much as we can at the root level
-                partial_obj = {}
-                lines = json_text.split('\n')
-                current_field = None
-                current_value = []
-                
-                for line in lines:
-                    line = line.strip()
-                    if '"' in line and ':' in line and not line.startswith('"'):
-                        # This looks like a field definition
-                        if current_field and current_value:
-                            # Save previous field if we have one
-                            try:
-                                value_str = '\n'.join(current_value)
-                                if value_str.endswith(','):
-                                    value_str = value_str[:-1]
-                                partial_obj[current_field] = json.loads(value_str)
-                            except:
-                                pass
-                        
-                        # Extract field name
-                        field_match = re.match(r'\s*"([^"]+)"\s*:\s*(.*)', line)
-                        if field_match:
-                            current_field = field_match.group(1)
-                            current_value = [field_match.group(2)]
-                    elif current_field:
-                        current_value.append(line)
-                
-                # Add the last field if we have one
-                if current_field and current_value:
-                    try:
-                        value_str = '\n'.join(current_value)
-                        if value_str.endswith(','):
-                            value_str = value_str[:-1]
-                        partial_obj[current_field] = json.loads(value_str)
-                    except:
-                        pass
-                
-                if partial_obj:
-                    return partial_obj
-            except:
-                pass
+            # Add the last field
+            if current_field and current_value:
+                try:
+                    value_str = '\n'.join(current_value)
+                    if value_str.endswith(','):
+                        value_str = value_str[:-1]
+                    partial_obj[current_field] = json.loads(value_str)
+                except:
+                    pass
             
-            print(f"DEBUG: JSON parsing error: {e}")
-            print(f"DEBUG: JSON text preview: {json_text[:500]}")
+            if partial_obj:
+                return partial_obj
+                
+        except Exception:
+            pass
+        
+        return None
+    
+    def _extract_json_from_text(self, text: str) -> Optional[dict]:
+        """
+        Extract JSON from text using multiple strategies for robust parsing
+        
+        Args:
+            text: Text containing JSON
+            
+        Returns:
+            Parsed JSON dict or None if parsing fails
+        """
+        if not text or not text.strip():
             return None
+        
+        # Strategy 1: Try to parse the entire text as JSON
+        try:
+            return json.loads(text.strip())
+        except json.JSONDecodeError:
+            pass
+        
+        # Strategy 2: Look for JSON code blocks with improved extraction
+        import re
+        
+        # Find code blocks and extract JSON using proper bracket matching
+        code_block_patterns = [
+            r'```json\s*(.*?)\s*```',
+            r'```\s*(.*?)\s*```',
+            r'```json\s*(.*?)$',
+            r'```\s*(.*?)$'
+        ]
+        
+        for pattern in code_block_patterns:
+            matches = re.findall(pattern, text, re.DOTALL)
+            for match in matches:
+                # Use bracket matching to extract complete JSON from the match
+                json_obj = self._extract_json_with_bracket_matching(match.strip())
+                if json_obj:
+                    return json_obj
+        
+        # Strategy 3: Direct bracket matching on the entire text
+        json_obj = self._extract_json_with_bracket_matching(text)
+        if json_obj:
+            return json_obj
+        
+        # Strategy 4: Look for JSON starting after common prefixes
+        prefixes_to_try = [
+            "Based on my web searches",
+            "Here's the enhanced",
+            "I now have comprehensive",
+            "Let me compile",
+            "Based on the information",
+            "Here is the enhanced",
+            "Let me search for",
+            "Now let me search",
+            "Based on my research",
+            "I'll now enhance",
+            "Let me enhance"
+        ]
+        
+        for prefix in prefixes_to_try:
+            prefix_pos = text.find(prefix)
+            if prefix_pos != -1:
+                # Look for JSON after this prefix
+                remaining_text = text[prefix_pos:]
+                json_obj = self._extract_json_with_bracket_matching(remaining_text)
+                if json_obj:
+                    return json_obj
+        
+        # Strategy 5: Look for JSON at the very end of the text (common pattern)
+        # Split by lines and look for the last substantial JSON block
+        lines = text.split('\n')
+        for i in range(len(lines) - 1, -1, -1):
+            if lines[i].strip().startswith('{'):
+                # Found a line starting with {, try to extract JSON from here to end
+                remaining_lines = lines[i:]
+                remaining_text = '\n'.join(remaining_lines)
+                json_obj = self._extract_json_with_bracket_matching(remaining_text)
+                if json_obj:
+                    return json_obj
+        
+        print(f"DEBUG: No valid JSON found in text. Preview: {text[:300]}...")
+        return None
     
     def _api_call_with_retry(self, **kwargs):
         """Make API call with intelligent retry logic using retry-after header"""
@@ -332,8 +408,16 @@ class SectionValidator:
             sections_needing_improvement = []
             for section_name, validation in results['section_validations'].items():
                 overall_score = validation.get('scores', {}).get('overall', 0)
+                print(f"DEBUG: Section {section_name} has overall score: {overall_score}")
                 if overall_score < 4.0 and overall_score > 0:
                     sections_needing_improvement.append(section_name)
+                    print(f"DEBUG: Added {section_name} to improvement list (score: {overall_score})")
+                elif overall_score >= 4.0:
+                    print(f"DEBUG: Section {section_name} has sufficient score: {overall_score}")
+                else:
+                    print(f"DEBUG: Section {section_name} has score 0 (likely validation error)")
+            
+            print(f"DEBUG: {len(sections_needing_improvement)} sections need improvement: {sections_needing_improvement}")
             
             # Perform iterative improvements
             for attempt in range(2, max_validation_attempts + 1):
@@ -357,6 +441,9 @@ class SectionValidator:
                         )
                         
                         if enhanced_content and enhanced_content != profile[section_name]:
+                            # Store old score before updating
+                            old_score = results['section_validations'][section_name].get('scores', {}).get('overall', 0)
+                            
                             # Update profile with enhanced content
                             profile[section_name] = enhanced_content
                             
@@ -366,7 +453,6 @@ class SectionValidator:
                             results['validation_attempts'][section_name] = attempt
                             
                             new_score = new_validation.get('scores', {}).get('overall', 0)
-                            old_score = results['section_validations'][section_name].get('scores', {}).get('overall', 0)
                             
                             print(f"DEBUG: Enhanced {section_name} - Score improved from {old_score} to {new_score}")
                             
@@ -461,7 +547,7 @@ class SectionValidator:
         total_score = 0
         total_weight = 0
         
-        for section_name, validation in results['section_validations'].items():
+        for _, validation in results['section_validations'].items():
             scores = validation.get('scores', {})
             overall = scores.get('overall', 0)
             
@@ -600,13 +686,20 @@ Enhance the section by:
 - Adding recent threat intelligence findings
 - Including authoritative source references
 
-Return the enhanced section content in the same JSON structure, ensuring all new information is properly sourced and technically accurate.
+CRITICAL REQUIREMENTS:
+- Return ONLY the enhanced JSON content for this section
+- Do NOT include any explanatory text, summaries, or markdown
+- Start your response directly with the opening brace {{
+- End your response with the closing brace }}
+- Maintain the exact same JSON structure as the input
+- Only include information from real sources found through web_search_20250305
+- Do not fabricate URLs or technical details
 
-CRITICAL: Only include information from real sources found through web_search_20250305. Do not fabricate URLs or technical details."""
+Your entire response must be valid JSON that can be directly parsed."""
 
             response = self._api_call_with_retry(
                 model="claude-sonnet-4-20250514",
-                max_tokens=2000,  # Reduced to prevent truncation
+                max_tokens=4000,  # Increased to allow for complete JSON responses
                 temperature=0.3,
                 messages=[{"role": "user", "content": prompt}],
                 tools=[{
@@ -626,23 +719,48 @@ CRITICAL: Only include information from real sources found through web_search_20
                 text_blocks = []
                 found_tool_result = False
                 
-                for content_block in response.content:
-                    if hasattr(content_block, 'type'):
-                        if content_block.type == 'web_search_tool_result':
-                            found_tool_result = True
-                        elif content_block.type == 'text' and found_tool_result:
-                            if hasattr(content_block, 'text'):
-                                text_blocks.append(content_block.text)
+                print(f"DEBUG: Processing {len(response.content)} content blocks for {section_name}")
                 
+                for i, content_block in enumerate(response.content):
+                    block_type = getattr(content_block, 'type', 'unknown')
+                    print(f"DEBUG: Block {i}: type={block_type}")
+                    
+                    if block_type == 'web_search_tool_result':
+                        found_tool_result = True
+                        print(f"DEBUG: Found web search tool result")
+                    elif block_type == 'text':
+                        if hasattr(content_block, 'text'):
+                            text_content = content_block.text
+                            print(f"DEBUG: Text block contains {len(text_content)} characters")
+                            
+                            # If we found tool results, only use text that comes after them
+                            if found_tool_result:
+                                text_blocks.append(text_content)
+                            else:
+                                # If no tool results yet, still collect text (might be explanation)
+                                response_text += text_content + "\n"
+                
+                # Prefer text blocks that come after tool results
                 if text_blocks:
                     response_text = " ".join(text_blocks)
+                    print(f"DEBUG: Using post-tool-result text: {len(response_text)} chars")
+                elif response_text:
+                    print(f"DEBUG: Using all text blocks: {len(response_text)} chars")
                 else:
+                    # Fallback: collect all text content
                     for content_block in response.content:
                         if hasattr(content_block, 'type') and content_block.type == 'text':
                             if hasattr(content_block, 'text'):
                                 response_text += content_block.text + "\n"
+                    print(f"DEBUG: Fallback text collection: {len(response_text)} chars")
             
             response_text = response_text.strip()
+            print(f"DEBUG: Final response text length: {len(response_text)}")
+            
+            if response_text:
+                print(f"DEBUG: Response preview for {section_name}: {response_text[:300]}...")
+            else:
+                print(f"DEBUG: No response text found for {section_name}")
             
             # Extract JSON from response using proper bracket matching
             enhanced_content = self._extract_json_from_text(response_text)
@@ -1167,139 +1285,68 @@ class SectionImprover:
         except json.JSONDecodeError:
             pass
         
-        # Strategy 2: Look for JSON code blocks
+        # Strategy 2: Look for JSON code blocks with improved extraction
         import re
-        json_blocks = re.findall(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
-        for block in json_blocks:
-            try:
-                return json.loads(block.strip())
-            except json.JSONDecodeError:
-                continue
         
-        # Strategy 3: Find the largest valid JSON object using bracket matching
-        json_start = text.find('{')
-        if json_start == -1:
-            return None
+        # Find code blocks and extract JSON using proper bracket matching
+        code_block_patterns = [
+            r'```json\s*(.*?)\s*```',
+            r'```\s*(.*?)\s*```',
+            r'```json\s*(.*?)$',
+            r'```\s*(.*?)$'
+        ]
         
-        # Use bracket matching to find the complete JSON object
-        brace_count = 0
-        json_end = -1
-        in_string = False
-        escape_next = False
+        for pattern in code_block_patterns:
+            matches = re.findall(pattern, text, re.DOTALL)
+            for match in matches:
+                # Use bracket matching to extract complete JSON from the match
+                json_obj = self._extract_json_with_bracket_matching(match.strip())
+                if json_obj:
+                    return json_obj
         
-        for i in range(json_start, len(text)):
-            char = text[i]
-            
-            if escape_next:
-                escape_next = False
-                continue
-                
-            if char == '\\' and in_string:
-                escape_next = True
-                continue
-                
-            if char == '"' and not escape_next:
-                in_string = not in_string
-                continue
-                
-            if not in_string:
-                if char == '{':
-                    brace_count += 1
-                elif char == '}':
-                    brace_count -= 1
-                    if brace_count == 0:
-                        json_end = i + 1
-                        break
+        # Strategy 3: Direct bracket matching on the entire text
+        json_obj = self._extract_json_with_bracket_matching(text)
+        if json_obj:
+            return json_obj
         
-        if json_end == -1:
-            return None
+        # Strategy 4: Look for JSON starting after common prefixes
+        prefixes_to_try = [
+            "Based on my web searches",
+            "Here's the enhanced",
+            "I now have comprehensive",
+            "Let me compile",
+            "Based on the information",
+            "Here is the enhanced",
+            "Let me search for",
+            "Now let me search",
+            "Based on my research",
+            "I'll now enhance",
+            "Let me enhance"
+        ]
         
-        json_text = text[json_start:json_end]
+        for prefix in prefixes_to_try:
+            prefix_pos = text.find(prefix)
+            if prefix_pos != -1:
+                # Look for JSON after this prefix
+                remaining_text = text[prefix_pos:]
+                json_obj = self._extract_json_with_bracket_matching(remaining_text)
+                if json_obj:
+                    return json_obj
         
-        # Strategy 4: Try to fix common JSON issues
-        try:
-            return json.loads(json_text)
-        except json.JSONDecodeError as e:
-            # Try to fix truncated JSON by adding missing closing braces
-            try:
-                # Count unclosed braces and add them
-                open_braces = json_text.count('{') - json_text.count('}')
-                if open_braces > 0:
-                    fixed_json = json_text + '}' * open_braces
-                    return json.loads(fixed_json)
-            except json.JSONDecodeError:
-                pass
-            
-            # Try to fix trailing comma issues
-            try:
-                # Remove trailing commas before closing brackets
-                fixed_json = re.sub(r',(\s*[}\]])', r'\1', json_text)
-                return json.loads(fixed_json)
-            except json.JSONDecodeError:
-                pass
-            
-            # Try to handle incomplete strings at the end
-            try:
-                # Find the last complete field and truncate there
-                last_complete_field = json_text.rfind('",') 
-                if last_complete_field > 0:
-                    truncated_json = json_text[:last_complete_field + 1]
-                    # Count unclosed braces and add them
-                    open_braces = truncated_json.count('{') - truncated_json.count('}')
-                    if open_braces > 0:
-                        truncated_json += '}' * open_braces
-                    return json.loads(truncated_json)
-            except json.JSONDecodeError:
-                pass
-            
-            # Try to extract just the first level of the JSON object
-            try:
-                # Parse as much as we can at the root level
-                partial_obj = {}
-                lines = json_text.split('\n')
-                current_field = None
-                current_value = []
-                
-                for line in lines:
-                    line = line.strip()
-                    if '"' in line and ':' in line and not line.startswith('"'):
-                        # This looks like a field definition
-                        if current_field and current_value:
-                            # Save previous field if we have one
-                            try:
-                                value_str = '\n'.join(current_value)
-                                if value_str.endswith(','):
-                                    value_str = value_str[:-1]
-                                partial_obj[current_field] = json.loads(value_str)
-                            except:
-                                pass
-                        
-                        # Extract field name
-                        field_match = re.match(r'\s*"([^"]+)"\s*:\s*(.*)', line)
-                        if field_match:
-                            current_field = field_match.group(1)
-                            current_value = [field_match.group(2)]
-                    elif current_field:
-                        current_value.append(line)
-                
-                # Add the last field if we have one
-                if current_field and current_value:
-                    try:
-                        value_str = '\n'.join(current_value)
-                        if value_str.endswith(','):
-                            value_str = value_str[:-1]
-                        partial_obj[current_field] = json.loads(value_str)
-                    except:
-                        pass
-                
-                if partial_obj:
-                    return partial_obj
-            except:
-                pass
-            
-            print(f"DEBUG: JSON parsing error: {e}")
-            print(f"DEBUG: JSON text preview: {json_text[:500]}")
-            return None
+        # Strategy 5: Look for JSON at the very end of the text (common pattern)
+        # Split by lines and look for the last substantial JSON block
+        lines = text.split('\n')
+        for i in range(len(lines) - 1, -1, -1):
+            if lines[i].strip().startswith('{'):
+                # Found a line starting with {, try to extract JSON from here to end
+                remaining_lines = lines[i:]
+                remaining_text = '\n'.join(remaining_lines)
+                json_obj = self._extract_json_with_bracket_matching(remaining_text)
+                if json_obj:
+                    return json_obj
+        
+        print(f"DEBUG: No valid JSON found in text. Preview: {text[:300]}...")
+        return None
     
     def _api_call_with_retry(self, **kwargs):
         """Make API call with intelligent retry logic using retry-after header"""

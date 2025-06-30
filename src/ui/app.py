@@ -2,8 +2,8 @@
 🔍 SentrySearch - Threat Intelligence Profile Generator
 """
 import gradio as gr
-from core.threat_intel_tool import ThreatIntelTool
-from core.markdown_generator import generate_markdown
+from src.core.threat_intel_tool_cached import ThreatIntelToolCached
+from src.core.markdown_generator import generate_markdown
 
 
 def generate_threat_profile(api_key, tool_name, enable_quality_control, progress=gr.Progress()):
@@ -15,8 +15,11 @@ def generate_threat_profile(api_key, tool_name, enable_quality_control, progress
         return "❌ Please enter a tool name", None
     
     try:
-        # Initialize the threat intelligence tool with the API key
-        tool = ThreatIntelTool(api_key)
+        # Initialize the threat intelligence tool with the API key and tracing enabled
+        import os
+        trace_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "traces")
+        os.makedirs(trace_dir, exist_ok=True)
+        tool = ThreatIntelToolCached(api_key, enable_tracing=True, trace_export_dir=trace_dir)
         tool.enable_quality_control = enable_quality_control
         
         # Generate threat intelligence
@@ -127,8 +130,8 @@ def create_ui():
     
     interface.launch(
         server_name="0.0.0.0",
-        server_port=7861,
-        share=False,
+        server_port=7860,
+        share=True,
         show_error=True,
         show_api=False
     )

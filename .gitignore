@@ -57,6 +57,9 @@ main.py
 *.tmp
 *.temp
 
+# Development configuration
+.cursorrules
+
 # Node modules (if any)
 node_modules/
 
