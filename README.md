@@ -2,7 +2,7 @@
 # 🔍 SentrySearch
 
 <div align="center">
-  <img src="docs/assets/logo.png" alt="SentrySearch Logo" width="200" />
+  <img src="docs/assets/logo.png" alt="SentrySearch Logo" width="400" />
 </div>
 
 **AI-Powered Threat Intelligence Platform**
