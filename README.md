@@ -1,6 +1,10 @@
 
 # 🔍 SentrySearch
 
+<div align="center">
+  <img src="docs/assets/logo.png" alt="SentrySearch Logo" width="200" />
+</div>
+
 **AI-Powered Threat Intelligence Platform**
 
 SentrySearch leverages Anthropic's Claude with web search capabilities to generate comprehensive threat intelligence profiles for malware, attack tools, and targeted technologies.
