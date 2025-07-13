@@ -57,8 +57,9 @@ Thumbs.db
 /data/
 /docs/
 backup_*/
-main.py
-app.py
+# Legacy main files (keep API files)
+/main.py
+/app.py
 
 # Performance and metrics data
 performance_metrics*.jsonl
