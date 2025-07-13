@@ -11,6 +11,13 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+# Try to load environment variables if available
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 class S3StorageManager:
     def __init__(self):
         self.bucket_name = os.getenv('AWS_S3_BUCKET', 'sentrysearch-reports')
@@ -21,14 +28,21 @@ class S3StorageManager:
     def _initialize_client(self):
         """Initialize S3 client with credentials from environment"""
         try:
+            access_key = os.getenv('AWS_ACCESS_KEY_ID')
+            secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
+            
+            if not access_key or not secret_key:
+                logger.error(f"AWS credentials not found. ACCESS_KEY: {'set' if access_key else 'not set'}, SECRET_KEY: {'set' if secret_key else 'not set'}")
+                raise NoCredentialsError()
+            
             # AWS credentials from environment variables or IAM role
             self.s3_client = boto3.client(
                 's3',
                 region_name=self.region,
-                aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-                aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
+                aws_access_key_id=access_key,
+                aws_secret_access_key=secret_key
             )
-            logger.info(f"S3 client initialized for bucket: {self.bucket_name}")
+            logger.info(f"S3 client initialized for bucket: {self.bucket_name} in region: {self.region}")
         except NoCredentialsError:
             logger.error("AWS credentials not found. Please configure AWS credentials.")
             raise

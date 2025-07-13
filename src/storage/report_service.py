@@ -123,7 +123,9 @@ class ReportStorageService:
                     category: Optional[str] = None,
                     threat_type: Optional[str] = None,
                     min_quality_score: Optional[float] = None,
-                    search_query: Optional[str] = None) -> List[Dict[str, Any]]:
+                    search_query: Optional[str] = None,
+                    sort_by: str = "created_at",
+                    sort_order: str = "desc") -> List[Dict[str, Any]]:
         """List reports with filtering and pagination"""
         try:
             with self.db_manager.get_session() as session:
@@ -148,8 +150,12 @@ class ReportStorageService:
                     )
                     query = query.filter(search_filter)
                 
-                # Order by creation date (newest first)
-                query = query.order_by(desc(Report.created_at))
+                # Dynamic sorting
+                sort_column = getattr(Report, sort_by, Report.created_at)
+                if sort_order.lower() == "asc":
+                    query = query.order_by(sort_column)
+                else:
+                    query = query.order_by(desc(sort_column))
                 
                 # Apply pagination
                 query = query.offset(offset).limit(limit)
@@ -166,18 +172,22 @@ class ReportStorageService:
         """Get basic statistics about stored reports"""
         try:
             with self.db_manager.get_session() as session:
+                from sqlalchemy import func
+                
                 total_reports = session.query(Report).count()
                 
                 # Count by category
                 category_counts = session.query(
-                    Report.category, 
-                    session.query(Report).filter(Report.category == Report.category).count()
-                ).group_by(Report.category).all()
+                    Report.category,
+                    func.count(Report.id)
+                ).group_by(Report.category).filter(
+                    Report.category.isnot(None)
+                ).all()
                 
                 # Average quality score
                 avg_quality = session.query(
-                    session.query(Report.quality_score).filter(Report.quality_score.isnot(None))
-                ).scalar()
+                    func.avg(Report.quality_score)
+                ).filter(Report.quality_score.isnot(None)).scalar()
                 
                 return {
                     'total_reports': total_reports,
@@ -238,6 +248,158 @@ class ReportStorageService:
         except Exception as e:
             logger.error(f"Error getting download URL: {e}")
             raise
+    
+    def test_connection(self) -> bool:
+        """Test database connection for health checks"""
+        try:
+            with self.db_manager.get_session() as session:
+                from sqlalchemy import text
+                session.execute(text("SELECT 1"))
+                return True
+        except Exception as e:
+            logger.error(f"Database connection test failed: {e}")
+            return False
+    
+    def count_reports(self, **filters) -> int:
+        """Count total reports with optional filters"""
+        try:
+            with self.db_manager.get_session() as session:
+                query = session.query(Report)
+                
+                # Apply same filters as list_reports
+                if filters.get('category'):
+                    query = query.filter(Report.category == filters['category'])
+                if filters.get('threat_type'):
+                    query = query.filter(Report.threat_type == filters['threat_type'])
+                if filters.get('min_quality_score') is not None:
+                    query = query.filter(Report.quality_score >= filters['min_quality_score'])
+                if filters.get('search_query'):
+                    search_filter = or_(
+                        Report.tool_name.ilike(f'%{filters["search_query"]}%'),
+                        Report.category.ilike(f'%{filters["search_query"]}%'),
+                        Report.threat_type.ilike(f'%{filters["search_query"]}%')
+                    )
+                    query = query.filter(search_filter)
+                if filters.get('created_after'):
+                    query = query.filter(Report.created_at >= filters['created_after'])
+                
+                return query.count()
+        except Exception as e:
+            logger.error(f"Error counting reports: {e}")
+            return 0
+    
+    def search_reports(self, **kwargs) -> List[Dict[str, Any]]:
+        """Advanced search - currently uses same logic as list_reports"""
+        return self.list_reports(**kwargs)
+    
+    def count_search_results(self, **filters) -> int:
+        """Count search results - currently uses same logic as count_reports"""
+        return self.count_reports(**filters)
+    
+    def get_unique_threat_types(self) -> List[str]:
+        """Get list of unique threat types"""
+        try:
+            with self.db_manager.get_session() as session:
+                results = session.query(Report.threat_type).distinct().filter(
+                    Report.threat_type.isnot(None),
+                    Report.threat_type != ''
+                ).all()
+                return [r[0] for r in results if r[0]]
+        except Exception as e:
+            logger.error(f"Error getting threat types: {e}")
+            return []
+    
+    def get_unique_categories(self) -> List[str]:
+        """Get list of unique categories"""
+        try:
+            with self.db_manager.get_session() as session:
+                results = session.query(Report.category).distinct().filter(
+                    Report.category.isnot(None),
+                    Report.category != ''
+                ).all()
+                return [r[0] for r in results if r[0]]
+        except Exception as e:
+            logger.error(f"Error getting categories: {e}")
+            return []
+    
+    def get_popular_tags(self, limit: int = 50) -> List[str]:
+        """Get most popular tags"""
+        try:
+            with self.db_manager.get_session() as session:
+                # For now, return unique values from search_tags arrays
+                # In a production system, you'd want proper tag frequency counting
+                results = session.query(Report.search_tags).filter(
+                    Report.search_tags.isnot(None)
+                ).all()
+                
+                all_tags = []
+                for result in results:
+                    if result[0]:  # search_tags is a list
+                        all_tags.extend(result[0])
+                
+                # Count frequency and return most popular
+                from collections import Counter
+                tag_counts = Counter(all_tags)
+                return [tag for tag, count in tag_counts.most_common(limit)]
+                
+        except Exception as e:
+            logger.error(f"Error getting popular tags: {e}")
+            return []
+    
+    def get_threat_type_stats(self) -> Dict[str, int]:
+        """Get threat type distribution"""
+        try:
+            with self.db_manager.get_session() as session:
+                from sqlalchemy import func
+                results = session.query(
+                    Report.threat_type,
+                    func.count(Report.id)
+                ).group_by(Report.threat_type).filter(
+                    Report.threat_type.isnot(None),
+                    Report.threat_type != ''
+                ).all()
+                
+                return {threat_type: count for threat_type, count in results}
+        except Exception as e:
+            logger.error(f"Error getting threat type stats: {e}")
+            return {}
+    
+    def get_quality_score_distribution(self) -> Dict[str, Any]:
+        """Get quality score statistics and distribution"""
+        try:
+            with self.db_manager.get_session() as session:
+                from sqlalchemy import func
+                
+                # Get average quality score
+                avg_quality = session.query(func.avg(Report.quality_score)).filter(
+                    Report.quality_score.isnot(None)
+                ).scalar()
+                
+                # Get distribution buckets
+                quality_scores = session.query(Report.quality_score).filter(
+                    Report.quality_score.isnot(None)
+                ).all()
+                
+                scores = [float(score[0]) for score in quality_scores if score[0] is not None]
+                
+                # Create distribution buckets
+                buckets = {
+                    "0.0-1.0": len([s for s in scores if 0.0 <= s < 1.0]),
+                    "1.0-2.0": len([s for s in scores if 1.0 <= s < 2.0]),
+                    "2.0-3.0": len([s for s in scores if 2.0 <= s < 3.0]),
+                    "3.0-4.0": len([s for s in scores if 3.0 <= s < 4.0]),
+                    "4.0-5.0": len([s for s in scores if 4.0 <= s <= 5.0])
+                }
+                
+                return {
+                    "average": float(avg_quality) if avg_quality else 0.0,
+                    "distribution": buckets,
+                    "total_scored": len(scores)
+                }
+                
+        except Exception as e:
+            logger.error(f"Error getting quality score distribution: {e}")
+            return {"average": 0.0, "distribution": {}, "total_scored": 0}
 
 # Global report storage service instance
 report_service = ReportStorageService()

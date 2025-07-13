@@ -55,6 +55,7 @@ Thumbs.db
 
 # Application specific  
 /data/
+/docs/
 backup_*/
 main.py
 app.py
@@ -80,8 +81,12 @@ test_*.py
 # Gradio flagged directory
 flagged/
 
-# Node modules (if any)
+# Node modules
 node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local
 
 # Cloudflare
 .wrangler/
