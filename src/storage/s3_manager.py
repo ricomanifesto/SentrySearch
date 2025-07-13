@@ -3,7 +3,7 @@ S3 storage manager for SentrySearch report content
 """
 import os
 import boto3
-from botocore.exceptions import ClientError, NoCredentialsError
+from botocore.exceptions import ClientError
 import logging
 from typing import Optional, Dict, Any
 import json
@@ -23,7 +23,13 @@ class S3StorageManager:
         self.bucket_name = os.getenv('AWS_S3_BUCKET', 'sentrysearch-reports')
         self.region = os.getenv('AWS_REGION', 'us-east-1')
         self.s3_client = None
-        self._initialize_client()
+        self._initialized = False
+    
+    def _ensure_initialized(self):
+        """Ensure S3 client is initialized (lazy initialization)"""
+        if not self._initialized:
+            self._initialize_client()
+            self._initialized = True
     
     def _initialize_client(self):
         """Initialize S3 client with credentials from environment"""
@@ -32,8 +38,10 @@ class S3StorageManager:
             secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
             
             if not access_key or not secret_key:
-                logger.error(f"AWS credentials not found. ACCESS_KEY: {'set' if access_key else 'not set'}, SECRET_KEY: {'set' if secret_key else 'not set'}")
-                raise NoCredentialsError()
+                logger.warning(f"AWS credentials not found. ACCESS_KEY: {'set' if access_key else 'not set'}, SECRET_KEY: {'set' if secret_key else 'not set'}")
+                logger.warning("S3 storage will be disabled")
+                self.s3_client = None
+                return
             
             # AWS credentials from environment variables or IAM role
             self.s3_client = boto3.client(
@@ -43,12 +51,10 @@ class S3StorageManager:
                 aws_secret_access_key=secret_key
             )
             logger.info(f"S3 client initialized for bucket: {self.bucket_name} in region: {self.region}")
-        except NoCredentialsError:
-            logger.error("AWS credentials not found. Please configure AWS credentials.")
-            raise
         except Exception as e:
-            logger.error(f"Error initializing S3 client: {e}")
-            raise
+            logger.warning(f"Error initializing S3 client: {e}")
+            logger.warning("S3 storage will be disabled")
+            self.s3_client = None
     
     def create_bucket_if_not_exists(self):
         """Create S3 bucket if it doesn't exist"""
@@ -85,6 +91,11 @@ class S3StorageManager:
     
     def upload_markdown_report(self, report_id: str, markdown_content: str) -> str:
         """Upload markdown report content to S3"""
+        self._ensure_initialized()
+        if not self.s3_client:
+            logger.warning("S3 client not available, skipping upload")
+            return None
+            
         key = f"reports/{report_id}/report.md"
         
         try:
@@ -107,6 +118,11 @@ class S3StorageManager:
     
     def upload_trace_data(self, report_id: str, trace_data: Dict[Any, Any]) -> str:
         """Upload trace data to S3"""
+        self._ensure_initialized()
+        if not self.s3_client:
+            logger.warning("S3 client not available, skipping upload")
+            return None
+            
         key = f"reports/{report_id}/trace.json"
         
         try:
@@ -129,6 +145,11 @@ class S3StorageManager:
     
     def download_content(self, s3_key: str) -> str:
         """Download content from S3"""
+        self._ensure_initialized()
+        if not self.s3_client:
+            logger.warning("S3 client not available, cannot download")
+            return ""
+            
         try:
             response = self.s3_client.get_object(
                 Bucket=self.bucket_name,
@@ -143,6 +164,11 @@ class S3StorageManager:
     
     def get_presigned_url(self, s3_key: str, expiration: int = 3600) -> str:
         """Generate presigned URL for temporary access"""
+        self._ensure_initialized()
+        if not self.s3_client:
+            logger.warning("S3 client not available, cannot generate presigned URL")
+            return ""
+            
         try:
             url = self.s3_client.generate_presigned_url(
                 'get_object',
@@ -156,6 +182,11 @@ class S3StorageManager:
     
     def delete_report_files(self, report_id: str):
         """Delete all files for a report"""
+        self._ensure_initialized()
+        if not self.s3_client:
+            logger.warning("S3 client not available, cannot delete files")
+            return
+            
         try:
             # List all objects with the report prefix
             response = self.s3_client.list_objects_v2(
@@ -179,6 +210,11 @@ class S3StorageManager:
     
     def list_report_files(self, report_id: str) -> list:
         """List all files for a report"""
+        self._ensure_initialized()
+        if not self.s3_client:
+            logger.warning("S3 client not available, cannot list files")
+            return []
+            
         try:
             response = self.s3_client.list_objects_v2(
                 Bucket=self.bucket_name,
