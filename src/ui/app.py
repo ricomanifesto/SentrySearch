@@ -2,8 +2,24 @@
 🔍 SentrySearch - Threat Intelligence Profile Generator
 """
 import gradio as gr
+import os
+import pandas as pd
+import uuid
+from datetime import datetime
 from src.core.threat_intel_tool_cached import ThreatIntelToolCached
 from src.core.markdown_generator import generate_markdown
+
+# Import cloud storage if enabled
+try:
+    from src.storage import report_service, create_tables, test_connection
+    STORAGE_ENABLED = os.getenv('ENABLE_REPORT_STORAGE', 'true').lower() == 'true'
+    if STORAGE_ENABLED:
+        print("✅ Cloud storage enabled")
+    else:
+        print("⚠️ Cloud storage disabled")
+except ImportError as e:
+    print(f"⚠️ Cloud storage not available: {e}")
+    STORAGE_ENABLED = False
 
 
 def generate_threat_profile(api_key, tool_name, enable_quality_control, progress=gr.Progress()):
@@ -40,12 +56,120 @@ def generate_threat_profile(api_key, tool_name, enable_quality_control, progress
         
         progress(1.0, "✅ Threat intelligence profile generated successfully!")
         
+        # Store report in cloud storage if enabled
+        if STORAGE_ENABLED:
+            try:
+                report_data = {
+                    'id': threat_data.get('id', str(uuid.uuid4())),
+                    'tool_name': tool_name,
+                    'category': threat_data.get('category', 'unknown'),
+                    'threat_type': threat_data.get('threatType', 'unknown'),
+                    'quality_score': quality_data.get('overall_score') if quality_data else None,
+                    'processing_time_ms': threat_data.get('_processing_time_ms'),
+                    'threat_data': threat_data,
+                    'quality_assessment': quality_data,
+                    'markdown_content': markdown_content,
+                    'trace_data': threat_data.get('_trace_data'),
+                    'search_tags': [tool_name.lower(), threat_data.get('category', '').lower()]
+                }
+                
+                report_service.store_report(report_data, api_key)
+                print(f"✅ Report stored in cloud: {report_data['id']}")
+            except Exception as e:
+                print(f"⚠️ Could not store report in cloud: {e}")
+        
         return markdown_content, quality_data
         
     except Exception as e:
         error_msg = f"Error generating profile: {str(e)}"
         progress(1.0, f"❌ {error_msg}")
         return error_msg, None
+
+
+def load_report_list():
+    """Load list of reports from cloud storage"""
+    if not STORAGE_ENABLED:
+        return pd.DataFrame(columns=['Tool Name', 'Category', 'Quality Score', 'Created', 'ID'])
+    
+    try:
+        reports = report_service.list_reports(limit=50)
+        
+        if not reports:
+            return pd.DataFrame(columns=['Tool Name', 'Category', 'Quality Score', 'Created', 'ID'])
+        
+        # Convert to DataFrame for display
+        df_data = []
+        for report in reports:
+            df_data.append({
+                'Tool Name': report.get('tool_name', 'Unknown'),
+                'Category': report.get('category', 'Unknown'),
+                'Quality Score': f"{report.get('quality_score', 0):.2f}" if report.get('quality_score') else 'N/A',
+                'Created': report.get('created_at', '').split('T')[0] if report.get('created_at') else 'Unknown',
+                'ID': report.get('id', '')
+            })
+        
+        return pd.DataFrame(df_data)
+    
+    except Exception as e:
+        print(f"Error loading reports: {e}")
+        return pd.DataFrame(columns=['Tool Name', 'Category', 'Quality Score', 'Created', 'ID'])
+
+
+def view_report(report_id):
+    """View a specific report by ID"""
+    if not STORAGE_ENABLED or not report_id:
+        return "Storage not enabled or no report selected", None
+    
+    try:
+        report = report_service.get_report(report_id, include_content=True)
+        
+        if not report:
+            return "Report not found", None
+        
+        markdown_content = report.get('markdown_content', 'No content available')
+        quality_data = report.get('quality_assessment')
+        
+        return markdown_content, quality_data
+    
+    except Exception as e:
+        return f"Error loading report: {e}", None
+
+
+def search_reports(query, category_filter):
+    """Search reports with filters"""
+    if not STORAGE_ENABLED:
+        return pd.DataFrame(columns=['Tool Name', 'Category', 'Quality Score', 'Created', 'ID'])
+    
+    try:
+        # Apply filters
+        category = category_filter if category_filter != "All" else None
+        search_query = query.strip() if query.strip() else None
+        
+        reports = report_service.list_reports(
+            limit=50,
+            search_query=search_query,
+            category=category
+        )
+        
+        if not reports:
+            return pd.DataFrame(columns=['Tool Name', 'Category', 'Quality Score', 'Created', 'ID'])
+        
+        # Convert to DataFrame
+        df_data = []
+        for report in reports:
+            df_data.append({
+                'Tool Name': report.get('tool_name', 'Unknown'),
+                'Category': report.get('category', 'Unknown'),
+                'Quality Score': f"{report.get('quality_score', 0):.2f}" if report.get('quality_score') else 'N/A',
+                'Created': report.get('created_at', '').split('T')[0] if report.get('created_at') else 'Unknown',
+                'ID': report.get('id', '')
+            })
+        
+        return pd.DataFrame(df_data)
+    
+    except Exception as e:
+        print(f"Error searching reports: {e}")
+        return pd.DataFrame(columns=['Tool Name', 'Category', 'Quality Score', 'Created', 'ID'])
 
 
 def create_ui():
@@ -64,52 +188,111 @@ def create_ui():
         </div>
         """)
         
-        # Main interface layout
-        with gr.Row():
-            with gr.Column(scale=2):
-                # Input section
-                with gr.Group():
-                    gr.Markdown("### 🎯 Configuration & Target Selection")
-                    api_key_input = gr.Textbox(
-                        label="🔑 Anthropic API Key",
-                        placeholder="Enter your Anthropic API key (sk-ant-...)",
-                        type="password",
-                        lines=1
-                    )
-                    tool_input = gr.Textbox(
-                        label="Tool/Threat Name",
-                        placeholder="Enter the name of a tool, malware, or threat (e.g., 'Cobalt Strike', 'ShadowPad')",
-                        lines=1
-                    )
-                    
-                    # NEW: Quality control toggle
-                    enable_quality = gr.Checkbox(
-                        label="Enable Quality Control Validation",
-                        value=True,
-                        info="Use LLM-as-a-Judge to validate and improve content quality"
-                    )
-                    
-                    with gr.Row():
-                        generate_btn = gr.Button("🚀 Generate Profile", variant="primary", size="lg")
-                        clear_btn = gr.Button("🗑️ Clear", variant="secondary")
-            
-        
-        # Results section
-        with gr.Row():
-            with gr.Column():
-                with gr.Tab("📄 Threat Intelligence Report"):
-                    markdown_output = gr.Markdown(
-                        value="Enter your API key and tool name, then click **Generate Profile** to create a threat intelligence report.",
-                        height=600
-                    )
+        # Main interface layout using tabs
+        with gr.Tabs():
+            # Tab 1: Generate New Report
+            with gr.Tab("🚀 Generate Report"):
+                with gr.Row():
+                    with gr.Column(scale=2):
+                        # Input section
+                        with gr.Group():
+                            gr.Markdown("### 🎯 Configuration & Target Selection")
+                            api_key_input = gr.Textbox(
+                                label="🔑 Anthropic API Key",
+                                placeholder="Enter your Anthropic API key (sk-ant-...)",
+                                type="password",
+                                lines=1
+                            )
+                            tool_input = gr.Textbox(
+                                label="Tool/Threat Name",
+                                placeholder="Enter the name of a tool, malware, or threat (e.g., 'Cobalt Strike', 'ShadowPad')",
+                                lines=1
+                            )
+                            
+                            # Quality control toggle
+                            enable_quality = gr.Checkbox(
+                                label="Enable Quality Control Validation",
+                                value=True,
+                                info="Use LLM-as-a-Judge to validate and improve content quality"
+                            )
+                            
+                            with gr.Row():
+                                generate_btn = gr.Button("🚀 Generate Profile", variant="primary", size="lg")
+                                clear_btn = gr.Button("🗑️ Clear", variant="secondary")
                 
-                # NEW: Quality Assessment Tab
-                with gr.Tab("📊 Quality Assessment"):
-                    quality_output = gr.JSON(
-                        label="Quality Validation Results",
-                        value=None,
-                        height=600
-                    )
+                # Results section
+                with gr.Row():
+                    with gr.Column():
+                        with gr.Tab("📄 Threat Intelligence Report"):
+                            markdown_output = gr.Markdown(
+                                value="Enter your API key and tool name, then click **Generate Profile** to create a threat intelligence report.",
+                                height=600
+                            )
+                        
+                        # Quality Assessment Tab
+                        with gr.Tab("📊 Quality Assessment"):
+                            quality_output = gr.JSON(
+                                label="Quality Validation Results",
+                                value=None,
+                                height=600
+                            )
+            
+            # Tab 2: Report Library
+            with gr.Tab("📚 Report Library"):
+                with gr.Row():
+                    with gr.Column():
+                        gr.Markdown("### 🗂️ Saved Reports")
+                        
+                        # Search and filter controls
+                        with gr.Row():
+                            search_input = gr.Textbox(
+                                label="Search Reports",
+                                placeholder="Search by tool name, category, or threat type...",
+                                lines=1
+                            )
+                            category_filter = gr.Dropdown(
+                                choices=["All", "malware", "apt", "tool", "vulnerability", "unknown"],
+                                value="All",
+                                label="Filter by Category"
+                            )
+                            search_btn = gr.Button("🔍 Search", variant="secondary")
+                            refresh_btn = gr.Button("🔄 Refresh", variant="secondary")
+                        
+                        # Report list
+                        report_list = gr.Dataframe(
+                            headers=["Tool Name", "Category", "Quality Score", "Created", "ID"],
+                            value=load_report_list(),
+                            interactive=False,
+                            height=400
+                        )
+                        
+                        # Report actions
+                        with gr.Row():
+                            selected_report_id = gr.Textbox(
+                                label="Selected Report ID",
+                                placeholder="Click on a report row to select it, then copy the ID here",
+                                lines=1
+                            )
+                            view_btn = gr.Button("👁️ View Report", variant="primary")
+                            download_btn = gr.Button("💾 Download", variant="secondary")
+                
+                # Report viewer
+                with gr.Row():
+                    with gr.Column():
+                        gr.Markdown("### 📖 Report Viewer")
+                        
+                        with gr.Tab("📄 Report Content"):
+                            viewed_report = gr.Markdown(
+                                value="Select a report from the library above and click **View Report** to display its content.",
+                                height=600
+                            )
+                        
+                        with gr.Tab("📊 Report Quality"):
+                            viewed_quality = gr.JSON(
+                                label="Quality Assessment",
+                                value=None,
+                                height=600
+                            )
         
         # Event handlers
         generate_btn.click(
@@ -126,6 +309,44 @@ def create_ui():
         clear_btn.click(
             fn=clear_all,
             outputs=[api_key_input, tool_input, enable_quality, markdown_output, quality_output]
+        )
+        
+        # Report library event handlers
+        search_btn.click(
+            fn=search_reports,
+            inputs=[search_input, category_filter],
+            outputs=[report_list]
+        )
+        
+        refresh_btn.click(
+            fn=load_report_list,
+            outputs=[report_list]
+        )
+        
+        view_btn.click(
+            fn=view_report,
+            inputs=[selected_report_id],
+            outputs=[viewed_report, viewed_quality]
+        )
+        
+        # Download functionality
+        def get_download_link(report_id):
+            if not STORAGE_ENABLED or not report_id:
+                return "Storage not enabled or no report selected"
+            
+            try:
+                url = report_service.get_download_url(report_id, 'markdown')
+                if url:
+                    return f"[Download Report]({url})"
+                else:
+                    return "Download not available"
+            except Exception as e:
+                return f"Error generating download link: {e}"
+        
+        download_btn.click(
+            fn=get_download_link,
+            inputs=[selected_report_id],
+            outputs=[gr.Markdown(visible=False)]  # We'll improve this later
         )
     
     interface.launch(

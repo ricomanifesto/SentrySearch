@@ -26,10 +26,22 @@ venv/
 env/
 ENV/
 
-# Environment variables
+# Environment variables (keep .env.example)
 .env
 .env.local
 .env.production
+.env.development
+.env.staging
+
+# Terraform
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/terraform.tfvars
+terraform/*.tfvars
+terraform/tfplan
+terraform/*.tfplan
 
 # IDEs
 .vscode/
@@ -43,12 +55,17 @@ Thumbs.db
 
 # Application specific  
 /data/
-docs/
-tests/
-scripts/
 backup_*/
-PROJECT_STRUCTURE.md
 main.py
+app.py
+
+# Performance and metrics data
+performance_metrics*.jsonl
+*.json
+*.jsonl
+
+# Temporary test files
+test_*.py
 
 # Logs
 *.log
@@ -59,6 +76,9 @@ main.py
 
 # Development configuration
 .cursorrules
+
+# Gradio flagged directory
+flagged/
 
 # Node modules (if any)
 node_modules/
