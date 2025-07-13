@@ -25,10 +25,15 @@ if __name__ == "__main__":
     print("📖 API Documentation: http://localhost:8001/api/docs")
     print("🔍 Health Check: http://localhost:8001/api/health")
     
+    # Get port from environment (Railway sets this automatically)
+    port = int(os.getenv("PORT", 8001))
+    
+    print(f"🚀 Starting on port {port}")
+    
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8001,
-        reload=True,
+        port=port,
+        reload=False,  # Disable reload in production
         log_level="info"
     )

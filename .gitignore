@@ -63,8 +63,12 @@ backup_*/
 
 # Performance and metrics data
 performance_metrics*.jsonl
-*.json
-*.jsonl
+data/*.json
+data/*.jsonl
+# Allow config files
+!railway.json
+!package.json
+!frontend/package.json
 
 # Temporary test files
 test_*.py
