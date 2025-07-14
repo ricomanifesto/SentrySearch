@@ -66,15 +66,14 @@ export default function AnalyticsPage() {
   }
 
   // Use analytics data or fallback to dashboard data with proper type safety
-  const data = analytics || dashboard || {};
-  const overview = (data as Record<string, unknown>)?.overview || (data as Record<string, unknown>)?.summary || {};
-  const overviewData = overview as Record<string, unknown>;
+  const data: Record<string, unknown> = (analytics as unknown as Record<string, unknown>) || (dashboard as unknown as Record<string, unknown>) || {};
+  const overview: Record<string, unknown> = (data.overview as Record<string, unknown>) || (data.summary as Record<string, unknown>) || {};
   
   const stats = {
-    total_reports: Number(overviewData?.total_reports || 0),
-    reports_24h: Number(overviewData?.reports_last_24h || overviewData?.reports_this_week || 0),
-    avg_quality: Number(overviewData?.avg_quality_score || overviewData?.average_quality_score || 0),
-    success_rate: Number(overviewData?.success_rate || 0.95),
+    total_reports: Number(overview.total_reports || 0),
+    reports_24h: Number(overview.reports_last_24h || overview.reports_this_week || 0),
+    avg_quality: Number(overview.avg_quality_score || overview.average_quality_score || 0),
+    success_rate: Number(overview.success_rate || 0.95),
   };
 
   return (
