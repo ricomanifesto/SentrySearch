@@ -64,7 +64,7 @@ class Report(Base):
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'quality_score': float(self.quality_score) if self.quality_score else None,
             'confidence_score': float(self.confidence_score) if self.confidence_score else None,
-            'processing_time_ms': self.processing_time_ms,
+            'processing_time_ms': self.processing_time_ms or 0,
             'ml_techniques': self.ml_techniques,
             'is_flagged': self.is_flagged,
             'is_favorite': self.is_favorite
