@@ -60,7 +60,7 @@ class ReportResponse(BaseModel):
     threat_type: str
     quality_score: float
     created_at: datetime
-    processing_time_ms: int
+    processing_time_ms: int = 0
     content_preview: Optional[str] = None
 
 class ReportDetail(ReportResponse):
