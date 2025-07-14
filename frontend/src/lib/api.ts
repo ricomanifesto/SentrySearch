@@ -302,7 +302,7 @@ class SentrySearchAPI {
   }
 
   // Activity tracking
-  async getActivities(_userId?: string): Promise<Record<string, unknown>[]> {
+  async getActivities(): Promise<Record<string, unknown>[]> {
     // Mock implementation
     return [];
   }

@@ -22,11 +22,11 @@ import {
 import { api } from '@/lib/api';
 import { formatDate, formatRelativeTime } from '@/lib/utils';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Button } from '@/components/ui/Button';
 import { Select } from '@/components/ui/Select';
 import { Badge } from '@/components/ui/Badge';
 
-interface AnalyticsData {
+// AnalyticsData interface removed - using direct API responses
+interface AnalyticsOverview {
   overview: {
     total_reports: number;
     reports_last_24h: number;
@@ -147,7 +147,7 @@ export default function AnalyticsPage() {
           <CardContent className="py-6">
             <div className="flex items-center">
               <div className="flex-shrink-0">
-                <TrendingUpIcon className="h-8 w-8 text-green-600" />
+                <ArrowTrendingUpIcon className="h-8 w-8 text-green-600" />
               </div>
               <div className="ml-4">
                 <p className="text-sm font-medium text-gray-500">Avg Quality Score</p>
