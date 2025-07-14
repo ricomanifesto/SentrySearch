@@ -37,7 +37,7 @@ app = FastAPI(
 # CORS middleware for frontend integration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3003", "https://*.vercel.app"],
+    allow_origins=["http://localhost:3000", "http://localhost:3003", "https://sentry-search.vercel.app", "https://*.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
