@@ -25,33 +25,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Select } from '@/components/ui/Select';
 import { Badge } from '@/components/ui/Badge';
 
-// AnalyticsData interface removed - using direct API responses
-interface AnalyticsOverview {
-  overview: {
-    total_reports: number;
-    reports_last_24h: number;
-    reports_last_7d: number;
-    reports_last_30d: number;
-    avg_quality_score: number;
-    avg_processing_time_ms: number;
-    most_common_threat_type: string;
-    success_rate: number;
-  };
-  trends: {
-    daily_reports: Array<{ date: string; count: number }>;
-    threat_type_distribution: Array<{ threat_type: string; count: number; percentage: number }>;
-    quality_score_distribution: Array<{ range: string; count: number; percentage: number }>;
-    processing_time_trends: Array<{ date: string; avg_time_ms: number }>;
-  };
-  recent_activity: Array<{
-    id: string;
-    tool_name: string;
-    quality_score: number;
-    processing_time_ms: number;
-    created_at: string;
-    threat_type?: string;
-  }>;
-}
+// Interfaces removed - using direct API responses for simplicity
 
 const timeRangeOptions = [
   { value: '7d', label: 'Last 7 Days' },
