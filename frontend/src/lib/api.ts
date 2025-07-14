@@ -222,7 +222,7 @@ class SentrySearchAPI {
   }
 
   // Admin endpoints (mock data for now)
-  async getUsers(): Promise<any[]> {
+  async getUsers(): Promise<Record<string, unknown>[]> {
     // Mock data until backend implementation
     return [
       {
@@ -250,7 +250,7 @@ class SentrySearchAPI {
     ];
   }
 
-  async getSystemStatus(): Promise<any> {
+  async getSystemStatus(): Promise<Record<string, unknown>> {
     // Mock data until backend implementation
     return {
       api_health: 'healthy',
@@ -263,18 +263,10 @@ class SentrySearchAPI {
     };
   }
 
-  async updateUser(userId: string, data: any): Promise<any> {
-    // Mock implementation
-    return { success: true };
-  }
-
-  async deleteUser(userId: string): Promise<any> {
-    // Mock implementation
-    return { success: true };
-  }
+  // User management methods removed - not currently needed
 
   // Export functionality
-  async exportReports(config: any): Promise<string> {
+  async exportReports(config: Record<string, unknown>): Promise<string> {
     // Mock implementation - generate sample export data
     const timestamp = new Date().toISOString();
     
@@ -310,7 +302,7 @@ class SentrySearchAPI {
   }
 
   // Activity tracking
-  async getActivities(userId?: string, limit: number = 10): Promise<any[]> {
+  async getActivities(_userId?: string, _limit: number = 10): Promise<Record<string, unknown>[]> {
     // Mock implementation
     return [];
   }

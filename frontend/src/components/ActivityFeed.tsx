@@ -14,7 +14,6 @@ import {
   UserIcon,
   ClockIcon,
   ExclamationTriangleIcon,
-  CheckCircleIcon,
   ArrowDownTrayIcon,
   PlusIcon,
   TrashIcon,
