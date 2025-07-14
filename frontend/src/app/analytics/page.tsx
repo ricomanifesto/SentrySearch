@@ -11,7 +11,7 @@ import {
 } from '@heroicons/react/24/outline';
 
 import { api } from '@/lib/api';
-import { formatDate, formatRelativeTime } from '@/lib/utils';
+import { formatRelativeTime } from '@/lib/utils';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Select } from '@/components/ui/Select';
 import { Badge } from '@/components/ui/Badge';
@@ -65,14 +65,16 @@ export default function AnalyticsPage() {
     );
   }
 
-  // Use analytics data or fallback to dashboard data
+  // Use analytics data or fallback to dashboard data with proper type safety
   const data = analytics || dashboard || {};
-  const overview = data.overview || data.summary || {};
+  const overview = (data as Record<string, unknown>)?.overview || (data as Record<string, unknown>)?.summary || {};
+  const overviewData = overview as Record<string, unknown>;
+  
   const stats = {
-    total_reports: overview.total_reports || 0,
-    reports_24h: overview.reports_last_24h || overview.reports_this_week || 0,
-    avg_quality: overview.avg_quality_score || overview.average_quality_score || 0,
-    success_rate: overview.success_rate || 0.95,
+    total_reports: Number(overviewData?.total_reports || 0),
+    reports_24h: Number(overviewData?.reports_last_24h || overviewData?.reports_this_week || 0),
+    avg_quality: Number(overviewData?.avg_quality_score || overviewData?.average_quality_score || 0),
+    success_rate: Number(overviewData?.success_rate || 0.95),
   };
 
   return (
@@ -176,18 +178,18 @@ export default function AnalyticsPage() {
               <CardTitle>Recent Reports</CardTitle>
             </CardHeader>
             <CardContent>
-              {data.recent_activity && data.recent_activity.length > 0 ? (
+              {(data as Record<string, unknown>)?.recent_activity && Array.isArray((data as Record<string, unknown>).recent_activity) && ((data as Record<string, unknown>).recent_activity as Record<string, unknown>[]).length > 0 ? (
                 <div className="space-y-4">
-                  {data.recent_activity.slice(0, 5).map((activity: any, index: number) => (
+                  {((data as Record<string, unknown>).recent_activity as Record<string, unknown>[]).slice(0, 5).map((activity: Record<string, unknown>, index: number) => (
                     <div key={index} className="flex items-center justify-between py-2 border-b border-gray-100 last:border-b-0">
                       <div>
-                        <p className="font-medium text-gray-900">{activity.tool_name || `Report ${index + 1}`}</p>
+                        <p className="font-medium text-gray-900">{(activity?.tool_name as string) || `Report ${index + 1}`}</p>
                         <p className="text-sm text-gray-500">
-                          {activity.created_at ? formatRelativeTime(activity.created_at) : 'Recently'}
+                          {activity?.created_at ? formatRelativeTime(activity.created_at as string) : 'Recently'}
                         </p>
                       </div>
                       <Badge variant="success">
-                        Score: {(activity.quality_score || 4.0).toFixed(1)}
+                        Score: {Number(activity?.quality_score || 4.0).toFixed(1)}
                       </Badge>
                     </div>
                   ))}
@@ -206,24 +208,31 @@ export default function AnalyticsPage() {
               <CardTitle>Threat Distribution</CardTitle>
             </CardHeader>
             <CardContent>
-              {data.threat_distribution && Object.keys(data.threat_distribution).length > 0 ? (
+              {(data as Record<string, unknown>)?.threat_distribution && typeof (data as Record<string, unknown>).threat_distribution === 'object' && Object.keys((data as Record<string, unknown>).threat_distribution as Record<string, unknown>).length > 0 ? (
                 <div className="space-y-4">
-                  {Object.entries(data.threat_distribution).slice(0, 5).map(([type, count]: [string, any]) => (
-                    <div key={type} className="flex items-center justify-between">
-                      <span className="text-sm font-medium text-gray-700 capitalize">
-                        {type.replace('_', ' ')}
-                      </span>
-                      <div className="flex items-center">
-                        <div className="w-24 bg-gray-200 rounded-full h-2 mr-3">
-                          <div 
-                            className="bg-blue-600 h-2 rounded-full" 
-                            style={{ width: `${Math.min((count / Math.max(...Object.values(data.threat_distribution)) * 100), 100)}%` }}
-                          ></div>
+                  {Object.entries((data as Record<string, unknown>).threat_distribution as Record<string, unknown>).slice(0, 5).map(([type, count]: [string, unknown]) => {
+                    const countNum = Number(count || 0);
+                    const threatDist = (data as Record<string, unknown>).threat_distribution as Record<string, unknown>;
+                    const maxValue = Math.max(...Object.values(threatDist).map(v => Number(v || 0)));
+                    const percentage = maxValue > 0 ? Math.min((countNum / maxValue * 100), 100) : 0;
+                    
+                    return (
+                      <div key={type} className="flex items-center justify-between">
+                        <span className="text-sm font-medium text-gray-700 capitalize">
+                          {type.replace('_', ' ')}
+                        </span>
+                        <div className="flex items-center">
+                          <div className="w-24 bg-gray-200 rounded-full h-2 mr-3">
+                            <div 
+                              className="bg-blue-600 h-2 rounded-full" 
+                              style={{ width: `${percentage}%` }}
+                            ></div>
+                          </div>
+                          <span className="text-sm text-gray-500">{countNum}</span>
                         </div>
-                        <span className="text-sm text-gray-500">{count}</span>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="text-center py-8">

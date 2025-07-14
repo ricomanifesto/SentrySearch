@@ -28,7 +28,7 @@ import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { Badge } from '@/components/ui/Badge';
 
-interface ExportConfig {
+interface ExportConfig extends Record<string, unknown> {
   format: 'json' | 'csv' | 'markdown' | 'pdf' | 'xml';
   include_content: boolean;
   include_metadata: boolean;
@@ -144,7 +144,7 @@ export default function ExportPage() {
   };
 
   const getFormatPreview = () => {
-    const selectedFormat = formatOptions.find(f => f.format === config.format);
+    const selectedFormat = formatOptions.find(f => f.value === config.format);
     return selectedFormat ? selectedFormat.description : '';
   };
 

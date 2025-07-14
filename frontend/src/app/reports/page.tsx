@@ -67,8 +67,8 @@ export default function ReportsPage() {
 
   // Debounced search
   const debouncedSearch = useMemo(
-    () => debounce((query: string) => {
-      setFilters(prev => ({ ...prev, query }));
+    () => debounce((query: unknown) => {
+      setFilters(prev => ({ ...prev, query: query as string }));
       setCurrentPage(1);
     }, 300),
     []

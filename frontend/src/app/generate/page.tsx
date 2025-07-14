@@ -115,7 +115,7 @@ export default function GeneratePage() {
                   label="Analysis Type"
                   options={analysisTypeOptions}
                   value={formData.analysis_type}
-                  onChange={(e) => setFormData(prev => ({ ...prev, analysis_type: e.target.value }))}
+                  onChange={(e) => setFormData(prev => ({ ...prev, analysis_type: e.target.value as 'comprehensive' | 'quick' | 'custom' }))}
                   helpText="Choose the depth and scope of analysis"
                   disabled={isLoading}
                 />

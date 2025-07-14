@@ -80,7 +80,7 @@ interface ActivityFeedProps {
 export function ActivityFeed({ userId, limit = 10, showHeader = true, compact = false }: ActivityFeedProps) {
   const { data: activities, isLoading, error } = useQuery({
     queryKey: ['activities', userId, limit],
-    queryFn: () => api.getActivities(userId, limit),
+    queryFn: () => api.getActivities(),
     refetchInterval: 30000, // Refresh every 30 seconds
   });
 
@@ -191,11 +191,11 @@ export function ActivityFeed({ userId, limit = 10, showHeader = true, compact = 
         ) : (
           <div className="space-y-4">
             {displayActivities.slice(0, limit).map((activity) => {
-              const Icon = getActivityIcon(activity.type);
-              const iconColor = getActivityColor(activity.type);
+              const Icon = getActivityIcon(activity.type as string);
+              const iconColor = getActivityColor(activity.type as string);
               
               return (
-                <div key={activity.id} className="flex items-start space-x-3">
+                <div key={activity.id as string} className="flex items-start space-x-3">
                   <div className={`flex-shrink-0 p-2 rounded-full bg-gray-100 ${iconColor}`}>
                     <Icon className="h-4 w-4" />
                   </div>
@@ -204,23 +204,23 @@ export function ActivityFeed({ userId, limit = 10, showHeader = true, compact = 
                     <div className="flex items-start justify-between">
                       <div className="flex-1">
                         <p className={`text-sm font-medium text-gray-900 ${compact ? 'truncate' : ''}`}>
-                          {activity.description}
+                          {activity.description as string}
                         </p>
                         
                         <div className="flex items-center space-x-2 mt-1">
-                          {activity.username && (
+                          {(activity.username as string) && (
                             <span className="text-xs text-gray-600">
-                              by {activity.username}
+                              by {activity.username as string}
                             </span>
                           )}
                           <span className="text-xs text-gray-500">
-                            {formatRelativeTime(activity.created_at)}
+                            {formatRelativeTime(activity.created_at as string)}
                           </span>
                         </div>
                         
-                        {!compact && activity.metadata && (
+                        {!compact && (activity.metadata as Record<string, unknown>) && (
                           <div className="flex flex-wrap gap-1 mt-2">
-                            {Object.entries(activity.metadata).map(([key, value]) => (
+                            {Object.entries(activity.metadata as Record<string, unknown>).map(([key, value]) => (
                               <Badge key={key} variant="default" size="sm">
                                 {key}: {String(value)}
                               </Badge>
@@ -229,8 +229,8 @@ export function ActivityFeed({ userId, limit = 10, showHeader = true, compact = 
                         )}
                       </div>
                       
-                      <Badge variant={getSeverityVariant(activity.severity)} size="sm">
-                        {activity.severity}
+                      <Badge variant={getSeverityVariant(activity.severity as string)} size="sm">
+                        {activity.severity as string}
                       </Badge>
                     </div>
                   </div>
