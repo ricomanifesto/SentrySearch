@@ -115,7 +115,7 @@ export default function ExportPage() {
     })) || [])
   ], [filterOptions]);
 
-  const handleConfigChange = (key: keyof ExportConfig, value: any) => {
+  const handleConfigChange = (key: keyof ExportConfig, value: string | boolean | string[] | number | undefined) => {
     setConfig(prev => ({ ...prev, [key]: value }));
   };
 

@@ -21,9 +21,8 @@ import {
 
 import { api } from '@/lib/api';
 import { formatDate, formatRelativeTime, formatProcessingTime, debounce } from '@/lib/utils';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
+import { Card, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { Badge } from '@/components/ui/Badge';
 

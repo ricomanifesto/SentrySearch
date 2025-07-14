@@ -31,7 +31,7 @@ interface ActivityEvent {
   user_id?: string;
   username?: string;
   description: string;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
   created_at: string;
   severity: 'info' | 'warning' | 'error' | 'success';
 }
