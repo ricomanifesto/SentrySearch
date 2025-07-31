@@ -16,7 +16,7 @@ load_dotenv()
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 # Import and run the main application
-from app import create_ui
+from ui.app import create_ui
 
 if __name__ == "__main__":
     create_ui()

@@ -20,7 +20,7 @@ class ReportStorageService:
         self.db_manager = db_manager
         self.s3_manager = s3_manager
     
-    def store_report(self, report_data: Dict[str, Any], api_key: str = None) -> str:
+    def store_report(self, report_data: Dict[str, Any], api_key: str = None, user_id: str = None) -> str:
         """Store a complete report with metadata in PostgreSQL and content in S3"""
         try:
             # Generate API key hash for user association
@@ -68,6 +68,7 @@ class ReportStorageService:
                     markdown_s3_key=markdown_s3_key,
                     trace_s3_key=trace_s3_key,
                     api_key_hash=api_key_hash,
+                    user_id=user_id,
                     is_flagged=report_data.get('is_flagged', False),
                     version=report_data.get('version', '1.0'),
                     search_tags=report_data.get('search_tags', [])
@@ -125,13 +126,17 @@ class ReportStorageService:
                     min_quality_score: Optional[float] = None,
                     search_query: Optional[str] = None,
                     sort_by: str = "created_at",
-                    sort_order: str = "desc") -> List[Dict[str, Any]]:
+                    sort_order: str = "desc",
+                    user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """List reports with filtering and pagination"""
         try:
             with self.db_manager.get_session() as session:
                 query = session.query(Report)
                 
                 # Apply filters
+                if user_id:
+                    query = query.filter(Report.user_id == user_id)
+                    
                 if category:
                     query = query.filter(Report.category == category)
                 
@@ -267,6 +272,8 @@ class ReportStorageService:
                 query = session.query(Report)
                 
                 # Apply same filters as list_reports
+                if filters.get('user_id'):
+                    query = query.filter(Report.user_id == filters['user_id'])
                 if filters.get('category'):
                     query = query.filter(Report.category == filters['category'])
                 if filters.get('threat_type'):

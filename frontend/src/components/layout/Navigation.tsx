@@ -7,6 +7,7 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useAuth } from '@/contexts/AuthContext';
 import {
   MagnifyingGlassIcon,
   DocumentTextIcon,
@@ -16,6 +17,9 @@ import {
   XMarkIcon,
   ShieldCheckIcon,
   ArrowDownTrayIcon,
+  UserIcon,
+  ArrowRightOnRectangleIcon,
+  Cog6ToothIcon,
 } from '@heroicons/react/24/outline';
 import { cn } from '@/lib/utils';
 
@@ -34,9 +38,10 @@ const adminNavigation = [
 export function Navigation() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const pathname = usePathname();
+  const { user, signOut } = useAuth();
   
-  // For demo purposes, assume user is admin
-  const isAdmin = true;
+  // User is admin if logged in
+  const isAdmin = !!user;
   const allNavigation = isAdmin ? [...navigation, ...adminNavigation] : navigation;
 
   return (
@@ -100,6 +105,47 @@ export function Navigation() {
 
           {/* Desktop right side */}
           <div className="hidden sm:flex sm:items-center sm:space-x-4">
+            {user ? (
+              <>
+                <Link
+                  href="/settings"
+                  className="text-gray-500 hover:text-gray-700 p-2 rounded-md hover:bg-gray-100"
+                  title="Settings"
+                >
+                  <Cog6ToothIcon className="h-5 w-5" />
+                </Link>
+                <div className="flex items-center space-x-3">
+                  <div className="flex items-center space-x-2">
+                    <UserIcon className="h-5 w-5 text-gray-400" />
+                    <span className="text-sm text-gray-700">
+                      {user.user_metadata?.name || user.email}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => signOut()}
+                    className="text-gray-500 hover:text-gray-700 p-2 rounded-md hover:bg-gray-100"
+                    title="Sign out"
+                  >
+                    <ArrowRightOnRectangleIcon className="h-5 w-5" />
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="flex space-x-2">
+                <Link
+                  href="/auth/signin"
+                  className="text-gray-500 hover:text-gray-700 px-3 py-2 rounded-md text-sm font-medium"
+                >
+                  Sign in
+                </Link>
+                <Link
+                  href="/auth/signup"
+                  className="bg-blue-600 text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium"
+                >
+                  Sign up
+                </Link>
+              </div>
+            )}
             {/* Health status indicator */}
             <div className="flex items-center space-x-2">
               <div className="h-2 w-2 bg-green-400 rounded-full"></div>

@@ -7,7 +7,7 @@ Optimized for Vercel Hobby Plan deployment.
 
 import os
 import sys
-from fastapi import FastAPI, HTTPException, Query, Depends
+from fastapi import FastAPI, HTTPException, Query, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from storage.report_service import report_service
 from core.threat_intel_tool import ThreatIntelTool
+from auth.supabase_auth import AuthenticatedUser, verify_jwt_token, get_user_api_key, get_optional_user
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -95,6 +96,7 @@ def get_pagination_params(
         sort_order=sort_order
     )
 
+
 # API Routes
 
 @app.get("/")
@@ -124,6 +126,7 @@ async def health_check():
 @app.get("/api/reports", response_model=Dict[str, Any])
 async def list_reports(
     pagination: PaginationParams = Depends(get_pagination_params),
+    user: Optional[AuthenticatedUser] = Depends(get_optional_user),
     query: Optional[str] = Query(None, description="Search query"),
     threat_type: Optional[str] = Query(None, description="Filter by threat type"),
     min_quality: Optional[float] = Query(None, ge=0, le=5, description="Minimum quality score")
@@ -141,6 +144,10 @@ async def list_reports(
             filters['threat_type'] = threat_type
         if min_quality:
             filters['min_quality_score'] = min_quality
+        
+        # Add user filter if authenticated
+        if user:
+            filters['user_id'] = user.id
             
         # Get reports
         reports = report_service.list_reports(
@@ -183,12 +190,20 @@ async def list_reports(
         raise HTTPException(status_code=500, detail=f"Failed to list reports: {str(e)}")
 
 @app.get("/api/reports/{report_id}", response_model=ReportDetail)
-async def get_report(report_id: str, include_content: bool = Query(True)):
+async def get_report(
+    report_id: str, 
+    include_content: bool = Query(True),
+    user: Optional[AuthenticatedUser] = Depends(get_optional_user)
+):
     """Get specific report by ID"""
     try:
         report = report_service.get_report(report_id, include_content=include_content)
         
         if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
+        
+        # Check if user owns this report (if authenticated)
+        if user and report.get('user_id') != user.id:
             raise HTTPException(status_code=404, detail="Report not found")
             
         return ReportDetail(
@@ -210,24 +225,19 @@ async def get_report(report_id: str, include_content: bool = Query(True)):
         raise HTTPException(status_code=500, detail=f"Failed to get report: {str(e)}")
 
 @app.post("/api/reports", response_model=Dict[str, str])
-async def create_report(report_request: ReportCreate):
+async def create_report(
+    report_request: ReportCreate,
+    user: AuthenticatedUser = Depends(verify_jwt_token),
+    api_key: str = Depends(get_user_api_key)
+):
     """Generate new threat intelligence report"""
     try:
-        # Initialize threat intel tool if needed
-        global threat_intel_tool
-        if threat_intel_tool is None:
-            api_key = os.getenv('ANTHROPIC_API_KEY')
-            if not api_key:
-                raise HTTPException(
-                    status_code=500,
-                    detail="ANTHROPIC_API_KEY environment variable not set"
-                )
-            threat_intel_tool = ThreatIntelTool(api_key)
+        # Initialize threat intel tool with user's API key
+        threat_intel_tool = ThreatIntelTool(api_key)
         
         # Generate threat intelligence
         result = threat_intel_tool.get_threat_intelligence(
-            tool_name=report_request.tool_name,
-            enable_ml_guidance=report_request.enable_ml_guidance
+            tool_name=report_request.tool_name
         )
         
         if not result or 'error' in result:
@@ -236,8 +246,8 @@ async def create_report(report_request: ReportCreate):
                 detail=f"Failed to generate threat intelligence: {result.get('error', 'Unknown error')}"
             )
         
-        # Store the report
-        report_id = report_service.store_report(result, api_key="frontend-generated")
+        # Store the report with user ID
+        report_id = report_service.store_report(result, api_key="user-api-key", user_id=user.id)
         
         return {
             "report_id": report_id,
@@ -251,9 +261,21 @@ async def create_report(report_request: ReportCreate):
         raise HTTPException(status_code=500, detail=f"Failed to create report: {str(e)}")
 
 @app.delete("/api/reports/{report_id}")
-async def delete_report(report_id: str):
+async def delete_report(
+    report_id: str,
+    user: AuthenticatedUser = Depends(verify_jwt_token)
+):
     """Delete specific report"""
     try:
+        # First check if report exists and user owns it
+        report = report_service.get_report(report_id, include_content=False)
+        
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
+        
+        if report.get('user_id') != user.id:
+            raise HTTPException(status_code=404, detail="Report not found")
+        
         success = report_service.delete_report(report_id)
         
         if not success:
