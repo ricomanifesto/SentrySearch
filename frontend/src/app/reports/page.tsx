@@ -121,7 +121,8 @@ export default function ReportsPage() {
   const hasActiveFilters = filters.query || filters.threat_type || filters.min_quality;
 
   return (
-    <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8">
+    <div className="min-h-screen bg-gray-50 py-8">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-8">
         <div>
@@ -371,6 +372,7 @@ export default function ReportsPage() {
           )}
         </>
       )}
+      </div>
     </div>
   );
 }
