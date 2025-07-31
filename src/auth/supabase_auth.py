@@ -18,9 +18,12 @@ supabase_url = os.getenv("NEXT_PUBLIC_SUPABASE_URL")
 service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 if not supabase_url or not service_key:
-    raise ValueError("Missing Supabase configuration. Check NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY")
-
-supabase: Client = create_client(supabase_url, service_key)
+    print("Warning: Missing Supabase configuration. Authentication will not work.")
+    print(f"NEXT_PUBLIC_SUPABASE_URL: {'✓' if supabase_url else '✗'}")
+    print(f"SUPABASE_SERVICE_ROLE_KEY: {'✓' if service_key else '✗'}")
+    supabase = None
+else:
+    supabase: Client = create_client(supabase_url, service_key)
 
 class AuthenticatedUser:
     """Represents an authenticated user from Supabase"""
@@ -42,6 +45,9 @@ async def verify_jwt_token(authorization: Optional[str] = Header(None)) -> Authe
     Raises:
         HTTPException: If token is invalid or missing
     """
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Authentication service unavailable")
+        
     if not authorization:
         raise HTTPException(status_code=401, detail="Authorization header required")
     
@@ -81,6 +87,9 @@ async def get_user_api_key(user: AuthenticatedUser = Depends(verify_jwt_token)) 
     Raises:
         HTTPException: If database query fails
     """
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Authentication service unavailable")
+        
     try:
         response = supabase.table('user_profiles').select('anthropic_api_key_encrypted').eq('id', user.id).single().execute()
         
