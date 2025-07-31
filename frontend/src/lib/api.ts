@@ -6,6 +6,7 @@
  */
 
 import axios, { AxiosInstance } from 'axios';
+import { createClient } from './supabase';
 
 // Types
 export interface Report {
@@ -105,6 +106,7 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 class SentrySearchAPI {
   private client: AxiosInstance;
+  private supabase = createClient();
 
   constructor() {
     this.client = axios.create({
@@ -114,6 +116,20 @@ class SentrySearchAPI {
         'Content-Type': 'application/json',
       },
     });
+
+    // Add auth token interceptor
+    this.client.interceptors.request.use(
+      async (config) => {
+        const { data: { session } } = await this.supabase.auth.getSession();
+        if (session?.access_token) {
+          config.headers.Authorization = `Bearer ${session.access_token}`;
+        }
+        return config;
+      },
+      (error) => {
+        return Promise.reject(error);
+      }
+    );
 
     // Request interceptor for logging (development only)
     if (process.env.NODE_ENV === 'development') {
