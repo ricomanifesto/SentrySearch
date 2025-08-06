@@ -385,6 +385,26 @@ async def get_search_filters():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get filters: {str(e)}")
 
+# Admin Endpoints
+
+@app.post("/api/admin/update-categorizations")
+async def update_categorizations():
+    """Admin endpoint to update report categorizations"""
+    try:
+        updated_count = report_service.update_existing_categorizations()
+        
+        # Get updated stats
+        threat_stats = report_service.get_threat_type_stats()
+        
+        return {
+            "message": f"Successfully updated {updated_count} reports",
+            "updated_count": updated_count,
+            "new_distribution": threat_stats
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update categorizations: {str(e)}")
+
 # Analytics Endpoints
 
 @app.get("/api/analytics")
