@@ -25,6 +25,7 @@ import { Card, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Select } from '@/components/ui/Select';
 import { Badge } from '@/components/ui/Badge';
+import { AuthGuard } from '@/components/AuthGuard';
 
 interface FilterState {
   query: string;
@@ -121,8 +122,9 @@ export default function ReportsPage() {
   const hasActiveFilters = filters.query || filters.threat_type || filters.min_quality;
 
   return (
-    <div className="min-h-screen bg-gray-50 py-8">
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+    <AuthGuard>
+      <div className="min-h-screen bg-gray-50 py-8">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-8">
         <div>
@@ -374,5 +376,6 @@ export default function ReportsPage() {
       )}
       </div>
     </div>
+    </AuthGuard>
   );
 }

@@ -22,6 +22,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { ActivityFeed } from '@/components/ActivityFeed';
+import { AuthGuard } from '@/components/AuthGuard';
 
 export default function Dashboard() {
   // Fetch dashboard analytics
@@ -62,8 +63,9 @@ export default function Dashboard() {
   ];
 
   return (
-    <div className="min-h-screen bg-gray-50 py-8">
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+    <AuthGuard>
+      <div className="min-h-screen bg-gray-50 py-8">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
       {/* Header */}
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
@@ -259,5 +261,6 @@ export default function Dashboard() {
       )}
       </div>
     </div>
+    </AuthGuard>
   );
 }

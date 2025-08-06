@@ -15,6 +15,7 @@ import { formatRelativeTime } from '@/lib/utils';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Select } from '@/components/ui/Select';
 import { Badge } from '@/components/ui/Badge';
+import { AuthGuard } from '@/components/AuthGuard';
 
 const timeRangeOptions = [
   { value: '7d', label: 'Last 7 Days' },
@@ -77,8 +78,9 @@ export default function AnalyticsPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 py-12">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <AuthGuard>
+      <div className="min-h-screen bg-gray-50 py-12">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         {/* Header */}
         <div className="flex justify-between items-center mb-8">
           <div>
@@ -244,5 +246,6 @@ export default function AnalyticsPage() {
         </div>
       </div>
     </div>
+    </AuthGuard>
   );
 }
