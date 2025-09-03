@@ -151,9 +151,12 @@ async def list_reports(
         if min_quality:
             filters['min_quality_score'] = min_quality
         
-        # Add user filter if authenticated
+        # Add user filter if authenticated (unless user is admin)
         if user:
-            filters['user_id'] = user.id
+            # Check if user is admin
+            is_admin = user.metadata.get('role') == 'admin'
+            if not is_admin:
+                filters['user_id'] = user.id
             
         # Get reports
         reports = report_service.list_reports(
@@ -208,9 +211,11 @@ async def get_report(
         if not report:
             raise HTTPException(status_code=404, detail="Report not found")
         
-        # Check if user owns this report (if authenticated)
-        if user and report.get('user_id') != user.id:
-            raise HTTPException(status_code=404, detail="Report not found")
+        # Check if user owns this report (if authenticated and not admin)
+        if user:
+            is_admin = user.metadata.get('role') == 'admin'
+            if not is_admin and report.get('user_id') != user.id:
+                raise HTTPException(status_code=404, detail="Report not found")
             
         return ReportDetail(
             id=report['id'],
@@ -279,7 +284,9 @@ async def delete_report(
         if not report:
             raise HTTPException(status_code=404, detail="Report not found")
         
-        if report.get('user_id') != user.id:
+        # Check if user owns this report or is admin
+        is_admin = user.metadata.get('role') == 'admin'
+        if not is_admin and report.get('user_id') != user.id:
             raise HTTPException(status_code=404, detail="Report not found")
         
         success = report_service.delete_report(report_id)
