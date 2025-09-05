@@ -96,3 +96,6 @@ frontend/.env.local
 
 # Cloudflare
 .wrangler/
+
+# Scripts directory (private)
+scripts/
