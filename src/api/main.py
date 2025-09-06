@@ -43,6 +43,8 @@ app.add_middleware(
         "http://localhost:3003", 
         "https://sentry-search.vercel.app", 
         "https://sentry-search-2k3f26n3c-michael-ricos-projects.vercel.app",
+        "https://sentry-search-git-main-michael-ricos-projects.vercel.app",
+        "https://sentry-search-2ftm00kao-michael-ricos-projects.vercel.app",
         "https://*.vercel.app"
     ],
     allow_credentials=True,
