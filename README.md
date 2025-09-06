@@ -1,6 +1,10 @@
 
 # SentrySearch
 
+<div align="center">
+  <img src="docs/assets/logo.png" alt="SentrySearch Logo" width="400" />
+</div>
+
 AI-powered threat intelligence platform that generates detailed security profiles for malware, attack tools, and targeted technologies using advanced language models and hybrid search.
 
 ## Architecture
@@ -32,10 +36,15 @@ Create an account, add your Anthropic Claude API key, and generate threat intell
 ## Technology Stack
 
 **Frontend**: Next.js, TypeScript, Tailwind CSS
+
 **Backend**: FastAPI, SQLAlchemy, Pydantic
+
 **Database**: PostgreSQL, S3, Pinecone
+
 **AI**: Anthropic Claude, vector embeddings
+
 **Infrastructure**: Railway, Vercel, AWS RDS/S3, Cloudflare Workers
+
 **Auth**: Supabase JWT authentication
 
 ## Related Projects
