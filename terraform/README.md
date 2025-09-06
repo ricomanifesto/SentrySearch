@@ -1,111 +1,83 @@
 # SentrySearch Terraform Infrastructure
 
-This directory contains Terraform configuration files for deploying SentrySearch's AWS infrastructure.
+Terraform configuration for SentrySearch's AWS infrastructure.
 
-## Overview
+## Resources
 
-This Terraform configuration deploys:
-- **RDS PostgreSQL Database** - For metadata and fast queries
-- **S3 Bucket** - For report content storage
-- **IAM User & Policies** - For application access
-- **CloudWatch Log Group** - For application logging
-- **Security Groups** - For network access control
+- **RDS PostgreSQL Database** - Metadata and fast queries
+- **S3 Bucket** - Report content storage
+- **IAM User & Policies** - Application access
+- **CloudWatch Log Group** - Application logging
+- **Security Groups** - Network access control
 
 ## Prerequisites
 
-1. **AWS CLI** installed and configured
-2. **Terraform** installed (version >= 1.0)
-3. **AWS Account** with appropriate permissions
+1. AWS CLI installed and configured
+2. Terraform installed (version >= 1.0)
+3. AWS Account with appropriate permissions
 
-## Quick Start
-
-### 1. Initialize Terraform
+## Deploy
 
 ```bash
 cd terraform
 terraform init
-```
-
-### 2. Review Configuration
-
-```bash
-# Review the planned changes
 terraform plan
-```
-
-### 3. Deploy Infrastructure
-
-```bash
-# Deploy the infrastructure
 terraform apply
 ```
 
-### 4. Get Outputs
-
+Get outputs:
 ```bash
-# View all outputs
 terraform output
-
-# Get sensitive values
-terraform output aws_secret_access_key
+terraform output aws_secret_access_key  # sensitive values
 ```
 
-## Configuration Files
+## Files
 
-### Core Files
 - `main.tf` - Main infrastructure configuration
 - `variables.tf` - Variable definitions and validation
 - `outputs.tf` - Output definitions
-- `terraform.tfvars` - **Variable values (DO NOT COMMIT)**
-
-### Security Notes
-- `terraform.tfvars` is excluded from git via `.gitignore`
-- Database password is stored securely in `terraform.tfvars`
-- AWS credentials are managed via IAM user
+- `terraform.tfvars` - Variable values (excluded from git)
 
 ## Resource Details
 
 ### RDS PostgreSQL Database
-- **Instance Class**: db.t3.micro
-- **Engine**: PostgreSQL 15.4
-- **Storage**: 20GB initial, auto-scaling to 100GB
-- **Backups**: 7-day retention
-- **Monitoring**: Performance Insights enabled
+- Instance: db.t3.micro
+- Engine: PostgreSQL 15.4
+- Storage: 20GB initial, auto-scaling to 100GB
+- Backups: 7-day retention
+- Performance Insights enabled
 
 ### S3 Bucket
-- **Versioning**: Enabled
-- **Encryption**: AES-256
-- **Lifecycle**: 30 days → Standard-IA → 90 days → Glacier
-- **Public Access**: Blocked
+- Versioning enabled
+- AES-256 encryption
+- Lifecycle: 30 days → Standard-IA → 90 days → Glacier
+- Public access blocked
 
 ### IAM Configuration
-- **User**: sentrysearch-app
-- **Permissions**: S3 read/write access to reports bucket
-- **Access Key**: Generated automatically
+- User: sentrysearch-app
+- S3 read/write access to reports bucket
+- Auto-generated access key
 
 ## Customization
 
-### Database Sizing
+Database sizing in `terraform.tfvars`:
 ```hcl
-# In terraform.tfvars
-db_instance_class = "db.t3.small"  # Upgrade for better performance
-db_allocated_storage = 50          # Increase initial storage
+db_instance_class = "db.t3.small"
+db_allocated_storage = 50
 ```
 
-### S3 Lifecycle
+S3 lifecycle in `terraform.tfvars`:
 ```hcl
-# In terraform.tfvars
-s3_lifecycle_transition_ia_days = 60    # Longer before archiving
-s3_lifecycle_expiration_days = 1825     # 5 years instead of 7
+s3_lifecycle_transition_ia_days = 60
+s3_lifecycle_expiration_days = 1825
 ```
 
-### Security
+Security in `terraform.tfvars`:
 ```hcl
-# In terraform.tfvars
-enable_deletion_protection = true  # Protect against accidental deletion
+enable_deletion_protection = true
 ```
 
-## Estimated Costs
+## Costs
 
 | Resource | Monthly Cost (USD) |
 |----------|-------------------|
@@ -115,121 +87,79 @@ enable_deletion_protection = true  # Protect against accidental deletion
 | CloudWatch Logs | ~$0.50 |
 | **Total** | **~$18-30** |
 
-*Costs may vary based on usage patterns and data transfer*
-
 ## Outputs
 
-After deployment, the following outputs are available:
-
 ```bash
-# Database connection details
 terraform output database_endpoint
 terraform output database_name
-
-# S3 bucket details
 terraform output s3_bucket_name
-
-# AWS credentials
 terraform output aws_access_key_id
-terraform output aws_secret_access_key  # Sensitive
+terraform output aws_secret_access_key  # sensitive
 ```
 
-## Environment Configuration
-
-Use the Terraform outputs to configure your `.env` file:
-
+Use outputs to configure `.env`:
 ```bash
-# Get environment configuration
 terraform output environment_configuration
 ```
 
-## Management Commands
+## Management
 
-### View Current State
+View state:
 ```bash
 terraform show
 ```
 
-### Update Infrastructure
+Update infrastructure:
 ```bash
 terraform plan
 terraform apply
 ```
 
-### Destroy Infrastructure
+Destroy infrastructure:
 ```bash
-terraform destroy  # Use with caution!
-```
-
-### Import Existing Resources
-```bash
-# If you have existing resources
-terraform import aws_s3_bucket.example bucket-name
+terraform destroy
 ```
 
 ## Troubleshooting
 
-### Common Issues
-
-1. **AWS Credentials Not Found**
-   ```bash
-   aws configure
-   # or
-   export AWS_ACCESS_KEY_ID="your-key"
-   export AWS_SECRET_ACCESS_KEY="your-secret"
-   ```
-
-2. **Region Issues**
-   ```bash
-   # Ensure consistent region configuration
-   aws configure set region us-east-1
-   ```
-
-3. **RDS Subnet Group Issues**
-   ```bash
-   # Ensure you have subnets in multiple AZs
-   aws ec2 describe-subnets --filters "Name=vpc-id,Values=vpc-xxxxx"
-   ```
-
-4. **IAM Permissions**
-   ```bash
-   # Ensure your AWS user has permissions for:
-   # - RDS (create, modify, delete)
-   # - S3 (create, manage buckets)
-   # - IAM (create users, policies)
-   # - CloudWatch (create log groups)
-   ```
-
-### Debugging
+**AWS Credentials Not Found**
 ```bash
-# Enable detailed logging
-export TF_LOG=DEBUG
-terraform apply
-
-# Validate configuration
-terraform validate
-
-# Format code
-terraform fmt
+aws configure
+# or
+export AWS_ACCESS_KEY_ID="your-key"
+export AWS_SECRET_ACCESS_KEY="your-secret"
 ```
 
-## Security Best Practices
+**Region Issues**
+```bash
+aws configure set region us-east-1
+```
 
-1. **Never commit `terraform.tfvars`** - Contains sensitive data
-2. **Use least privilege IAM policies** - Only required permissions
-3. **Enable deletion protection** in production
-4. **Regular security audits** of IAM policies
-5. **Monitor CloudWatch logs** for suspicious activity
+**RDS Subnet Group Issues**
+```bash
+aws ec2 describe-subnets --filters "Name=vpc-id,Values=vpc-xxxxx"
+```
+
+**Debug Mode**
+```bash
+export TF_LOG=DEBUG
+terraform apply
+```
+
+## Security
+
+1. Never commit `terraform.tfvars` - contains sensitive data
+2. Use least privilege IAM policies
+3. Enable deletion protection in production
+4. Regular security audits of IAM policies
+5. Monitor CloudWatch logs
 
 ## State Management
 
-### Local State (Current)
-- State is stored locally in `terraform.tfstate`
-- **Do not commit state files** to version control
+Current: Local state in `terraform.tfstate` (excluded from git)
 
-### Remote State (Recommended for Production)
+Production: Remote state in S3
 ```hcl
-# Add to main.tf for remote state
 terraform {
   backend "s3" {
     bucket = "your-terraform-state-bucket"
@@ -241,31 +171,16 @@ terraform {
 
 ## Maintenance
 
-### Regular Tasks
-- Review and update Terraform version
-- Update AWS provider version
-- Review and rotate IAM access keys
+- Update Terraform and AWS provider versions
+- Rotate IAM access keys
 - Monitor costs and usage
-- Update security group rules as needed
+- Review security group rules
 
-### Upgrades
+Update providers:
 ```bash
-# Update Terraform
-terraform version
-# Download latest from https://terraform.io
-
-# Update providers
 terraform init -upgrade
 ```
 
-## Support
-
-For issues with this Terraform configuration:
-1. Check the troubleshooting section above
-2. Review Terraform and AWS documentation
-3. Check AWS CloudTrail for detailed error messages
-4. Verify IAM permissions and resource limits
-
 ---
 
-**Remember**: This infrastructure will incur AWS costs. Monitor your usage and costs regularly.
+This infrastructure incurs AWS costs. Monitor usage regularly.
