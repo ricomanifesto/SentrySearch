@@ -248,6 +248,9 @@ async def create_report(
         # Initialize threat intel tool with user's API key
         threat_intel_tool = ThreatIntelTool(api_key)
         
+        # Set ML guidance preference based on user request
+        threat_intel_tool.enable_ml_guidance = report_request.enable_ml_guidance
+        
         # Generate threat intelligence
         result = threat_intel_tool.get_threat_intelligence(
             tool_name=report_request.tool_name
