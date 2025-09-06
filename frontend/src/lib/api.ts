@@ -198,9 +198,9 @@ class SentrySearchAPI {
   }
 
   async createReport(request: ReportCreateRequest): Promise<{ report_id: string; status: string; message: string }> {
-    // Use longer timeout for report generation (10 minutes)
+    // Use longer timeout for report generation (30 minutes)
     const response = await this.client.post('/api/reports', request, {
-      timeout: 600000, // 10 minutes
+      timeout: 1800000, // 30 minutes
     });
     return response.data;
   }
