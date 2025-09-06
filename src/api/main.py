@@ -259,7 +259,9 @@ async def create_report(
                 detail=f"Failed to generate threat intelligence: {result.get('error', 'Unknown error')}"
             )
         
-        # Store the report with user ID
+        # Generate report ID and store the report with user ID
+        import uuid
+        result['id'] = str(uuid.uuid4())
         report_id = report_service.store_report(result, api_key="user-api-key", user_id=user.id)
         
         return {
