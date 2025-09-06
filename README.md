@@ -1,56 +1,44 @@
 
-# 🔍 SentrySearch
+# SentrySearch
 
-<div align="center">
-  <img src="docs/assets/logo.png" alt="SentrySearch Logo" width="400" />
-</div>
+AI-powered threat intelligence platform that generates detailed security profiles for malware, attack tools, and targeted technologies using advanced language models and hybrid search.
 
-**AI-Powered Threat Intelligence Platform**
+## Architecture
 
-SentrySearch leverages Anthropic's Claude with web search capabilities to generate comprehensive threat intelligence profiles for malware, attack tools, and targeted technologies.
+**Frontend**: Next.js application deployed on Vercel with user authentication via Supabase.
 
-## 🌟 Features
+**Backend**: FastAPI server on Railway providing RESTful API endpoints for report generation and management.
 
-- **Real-time Web Research**: Uses Anthropic's web search API for current threat intelligence
-- **Comprehensive Profiles**: Technical details, threat landscape, detection guidance
-- **Source Transparency**: Shows exactly what sources were used for research
-- **Dual Intelligence**: Understand both attack tools and why technologies are targeted
-- **Export Capabilities**: Download reports as structured markdown files
+**Data Layer**: PostgreSQL (AWS RDS) stores report metadata and search indexes. S3 stores markdown reports and artifacts. Pinecone provides vector similarity search.
 
-## 🚀 How to Use
+**AI & Search**: Anthropic Claude generates threat analysis. Cloudflare Workers orchestrate hybrid search combining vector and keyword matching across distributed edge locations.
 
-1. **Get API Key**: Sign up at [Anthropic Console](https://console.anthropic.com/) and get your API key
-2. **Enter Target**: Input any malware name, attack tool, or technology (e.g., "ShadowPad", "SAP NetWeaver", "AnyDesk")
-3. **Generate Profile**: Click "Generate Profile" to create comprehensive threat intelligence
-4. **Review Sources**: Check the "Web Search Sources" section to see research methodology
-5. **Download Report**: Export the markdown report for further analysis
+## Core Features
 
-## 🎯 Example Queries
+**Threat Analysis**: Claude analyzes web research and generates comprehensive profiles with technical details, threat landscape assessment, and detection guidance.
 
-### Attack Tools & Malware
-- `ShadowPad` - Advanced backdoor malware
-- `Cobalt Strike` - Penetration testing framework
-- `BumbleBee` - Malware loader
-- `StealC` - Information stealer
+**Hybrid Search**: Vector similarity search through Pinecone combined with traditional keyword search across threat intelligence databases.
 
-### Targeted Technologies
-- `SAP NetWeaver` - Enterprise application platform
-- `Microsoft Exchange` - Email server platform
-- `VMware vCenter` - Virtualization management
-- `AnyDesk` - Remote desktop software
+**Report Management**: Persistent storage with filtering, search, and analytics. Reports include quality scores and processing metadata.
 
-## 🔧 Technical Details
+**User System**: Multi-tenant architecture with user isolation, JWT authentication, and admin access controls.
 
-Built with:
-- **Anthropic Claude** with web search capabilities
-- **Gradio** for the interactive web interface
-- **Real-time research** for current threat intelligence
+## Usage
 
-## 📚 Related Projects
+Visit the web application: **https://sentry-search.vercel.app**
+
+Create an account, add your Anthropic Claude API key, and generate threat intelligence reports for any malware, attack tool, or technology.
+
+## Technology Stack
+
+**Frontend**: Next.js, TypeScript, Tailwind CSS
+**Backend**: FastAPI, SQLAlchemy, Pydantic
+**Database**: PostgreSQL, S3, Pinecone
+**AI**: Anthropic Claude, vector embeddings
+**Infrastructure**: Railway, Vercel, AWS RDS/S3, Cloudflare Workers
+**Auth**: Supabase JWT authentication
+
+## Related Projects
 
 - [SentryDigest](https://github.com/ricomanifesto/SentryDigest) - Cybersecurity news aggregator
 - [SentryInsight](https://github.com/ricomanifesto/SentryInsight) - AI-powered threat analysis
-
----
-
-**⚠️ Note**: This tool requires an Anthropic API key. The key is only used for your session and is not stored.
