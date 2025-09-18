@@ -7,6 +7,12 @@
 
 AI-powered threat intelligence platform that generates detailed security profiles for malware, attack tools, and targeted technologies using advanced language models and hybrid search.
 
+## Usage
+
+Visit the web application: **https://sentry-search.vercel.app**
+
+Create an account, add your Anthropic Claude API key, and generate threat intelligence reports for any malware, attack tool, or technology.
+
 ## Architecture
 
 **Frontend**: Next.js application deployed on Vercel with user authentication via Supabase.
