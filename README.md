@@ -13,16 +13,6 @@ Visit the web application: **https://sentry-search.vercel.app**
 
 Create an account, add your Anthropic Claude API key, and generate threat intelligence reports for any malware, attack tool, or technology.
 
-## Architecture
-
-**Frontend**: Next.js application deployed on Vercel with user authentication via Supabase.
-
-**Backend**: FastAPI server on Railway providing RESTful API endpoints for report generation and management.
-
-**Data Layer**: PostgreSQL (AWS RDS) stores report metadata and search indexes. S3 stores markdown reports and artifacts. Pinecone provides vector similarity search.
-
-**AI & Search**: Anthropic Claude generates threat analysis. Cloudflare Workers orchestrate hybrid search combining vector and keyword matching across distributed edge locations.
-
 ## Core Features
 
 **Threat Analysis**: Claude analyzes web research and generates comprehensive profiles with technical details, threat landscape assessment, and detection guidance.
@@ -33,11 +23,15 @@ Create an account, add your Anthropic Claude API key, and generate threat intell
 
 **User System**: Multi-tenant architecture with user isolation, JWT authentication, and admin access controls.
 
-## Usage
+## Architecture
 
-Visit the web application: **https://sentry-search.vercel.app**
+**Frontend**: Next.js application deployed on Vercel with user authentication via Supabase.
 
-Create an account, add your Anthropic Claude API key, and generate threat intelligence reports for any malware, attack tool, or technology.
+**Backend**: FastAPI server on Railway providing RESTful API endpoints for report generation and management.
+
+**Data Layer**: PostgreSQL (AWS RDS) stores report metadata and search indexes. S3 stores markdown reports and artifacts. Pinecone provides vector similarity search.
+
+**AI & Search**: Anthropic Claude generates threat analysis. Cloudflare Workers orchestrate hybrid search combining vector and keyword matching across distributed edge locations.
 
 ## Technology Stack
 
