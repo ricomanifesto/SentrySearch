@@ -1,27 +1,19 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { useRouter } from "next/navigation"
 import { useAuth } from "@/contexts/AuthContext"
 import { createClient } from "@/lib/supabase"
 import { EyeIcon, EyeSlashIcon, KeyIcon } from "@heroicons/react/24/outline"
+import { AuthGuard } from "@/components/AuthGuard"
 
 export default function Settings() {
-  const { user, loading: authLoading } = useAuth()
-  const router = useRouter()
+  const { user } = useAuth()
   const [apiKey, setApiKey] = useState("")
   const [showApiKey, setShowApiKey] = useState(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState("")
   const supabase = createClient()
-
-  // Redirect if not authenticated
-  useEffect(() => {
-    if (!authLoading && !user) {
-      router.push("/auth/signin")
-    }
-  }, [user, authLoading, router])
 
   // Load user profile
   useEffect(() => {
@@ -87,24 +79,23 @@ export default function Settings() {
     }
   }
 
-  if (authLoading || loading) {
+  if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading...</p>
+      <AuthGuard>
+        <div className="min-h-screen flex items-center justify-center">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+            <p className="mt-4 text-gray-600">Loading...</p>
+          </div>
         </div>
-      </div>
+      </AuthGuard>
     )
   }
 
-  if (!user) {
-    return null
-  }
-
-  const userMetadata = user.user_metadata || {}
+  const userMetadata = user?.user_metadata || {}
 
   return (
+    <AuthGuard>
     <div className="min-h-screen bg-gray-50 py-8">
       <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="bg-white shadow rounded-lg">
@@ -129,7 +120,7 @@ export default function Settings() {
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700">Email</label>
-                    <div className="mt-1 text-sm text-gray-900">{user.email}</div>
+                    <div className="mt-1 text-sm text-gray-900">{user?.email}</div>
                   </div>
                 </div>
               </div>
@@ -230,5 +221,6 @@ export default function Settings() {
         </div>
       </div>
     </div>
+    </AuthGuard>
   )
 }

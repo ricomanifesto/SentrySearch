@@ -27,6 +27,7 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { Badge } from '@/components/ui/Badge';
+import { AuthGuard } from '@/components/AuthGuard';
 
 interface ExportConfig extends Record<string, unknown> {
   format: 'json' | 'csv' | 'markdown' | 'pdf' | 'xml';
@@ -149,6 +150,7 @@ export default function ExportPage() {
   };
 
   return (
+    <AuthGuard>
     <div className="min-h-screen bg-gray-50 py-8">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
       {/* Header */}
@@ -467,5 +469,6 @@ export default function ExportPage() {
       </div>
       </div>
     </div>
+    </AuthGuard>
   );
 }
