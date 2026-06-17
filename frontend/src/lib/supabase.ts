@@ -19,18 +19,15 @@ export type Database = {
       user_profiles: {
         Row: {
           id: string
-          anthropic_api_key_encrypted: string | null
           preferences: Record<string, unknown>
           created_at: string
           updated_at: string
         }
         Insert: {
           id: string
-          anthropic_api_key_encrypted?: string | null
           preferences?: Record<string, unknown>
         }
         Update: {
-          anthropic_api_key_encrypted?: string | null
           preferences?: Record<string, unknown>
         }
       }

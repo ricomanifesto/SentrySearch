@@ -66,7 +66,7 @@ async function handleRequest(request, env) {
           console.log('PINECONE_API_KEY available:', !!env.PINECONE_API_KEY);
           console.log('PINECONE_INDEX_HOST available:', !!env.PINECONE_INDEX_HOST);
           console.log('PINECONE_INDEX_HOST value:', env.PINECONE_INDEX_HOST);
-          console.log('OPENAI_API_KEY available:', !!env.OPENAI_API_KEY);
+          console.log('EMBEDDING_API_KEY available:', !!env.EMBEDDING_API_KEY);
           
           const embedding = await generateQueryEmbedding(testQuery, env);
           console.log('Generated embedding:', !!embedding, embedding ? embedding.length : 'null');
@@ -102,7 +102,7 @@ async function handleRequest(request, env) {
                 PINECONE_API_KEY: !!env.PINECONE_API_KEY,
                 PINECONE_INDEX_HOST: !!env.PINECONE_INDEX_HOST,
                 PINECONE_INDEX_HOST_VALUE: env.PINECONE_INDEX_HOST,
-                OPENAI_API_KEY: !!env.OPENAI_API_KEY
+                EMBEDDING_API_KEY: !!env.EMBEDDING_API_KEY
               }
             }), {
               headers: { 'Content-Type': 'application/json', ...corsHeaders }
@@ -113,7 +113,7 @@ async function handleRequest(request, env) {
               secrets_available: {
                 PINECONE_API_KEY: !!env.PINECONE_API_KEY,
                 PINECONE_INDEX_HOST: !!env.PINECONE_INDEX_HOST,
-                OPENAI_API_KEY: !!env.OPENAI_API_KEY
+                EMBEDDING_API_KEY: !!env.EMBEDDING_API_KEY
               }
             }), {
               status: 500,
@@ -129,7 +129,7 @@ async function handleRequest(request, env) {
               PINECONE_API_KEY: !!env.PINECONE_API_KEY,
               PINECONE_INDEX_HOST: !!env.PINECONE_INDEX_HOST,
               PINECONE_INDEX_HOST_VALUE: env.PINECONE_INDEX_HOST,
-              OPENAI_API_KEY: !!env.OPENAI_API_KEY
+              EMBEDDING_API_KEY: !!env.EMBEDDING_API_KEY
             }
           }), {
             status: 500,
@@ -434,30 +434,34 @@ async function performKeywordSearch(query, maxResults, filters, env) {
 }
 
 /**
- * Generate query embedding (mock implementation)
- * In production, this would call an embedding service
+ * Generate query embedding through the configured embedding endpoint.
  */
 async function generateQueryEmbedding(query, env) {
-  // Use OpenAI embeddings (text-embedding-3-small with 384 dimensions)
-  // This matches the 384-dimensional embeddings used in ChromaDB migration
-  
+  const embeddingUrl = env.EMBEDDING_API_URL;
+  const embeddingModel = env.EMBEDDING_MODEL || 'text-embedding-3-small';
+
+  if (!embeddingUrl || !env.EMBEDDING_API_KEY) {
+    console.error('Embedding endpoint is not configured');
+    return null;
+  }
+
   try {
-    const response = await fetch('https://api.openai.com/v1/embeddings', {
+    const response = await fetch(embeddingUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${env.OPENAI_API_KEY}`
+        'Authorization': `Bearer ${env.EMBEDDING_API_KEY}`
       },
       body: JSON.stringify({
         input: query,
-        model: 'text-embedding-3-small',
+        model: embeddingModel,
         dimensions: 384
       })
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('OpenAI API error:', response.status, errorText);
+      console.error('Embedding API error:', response.status, errorText);
       return null;
     }
 
@@ -469,7 +473,7 @@ async function generateQueryEmbedding(query, env) {
       return embedding; // Should be 384-dimensional
     }
     
-    console.error('Unexpected embedding format from OpenAI:', data);
+    console.error('Unexpected embedding format:', data);
     return null;
     
   } catch (error) {

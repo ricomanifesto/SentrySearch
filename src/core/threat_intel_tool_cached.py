@@ -1,10 +1,15 @@
 """
-Cached version of Threat Intelligence Tool using Anthropic's prompt caching
-Optimized for the large JSON schema prompt to reduce latency and costs
+Cached threat intelligence tool using the configured OpenCode model path.
+Optimized for the large JSON schema prompt to reduce latency and costs.
 """
+
 import os
 import json
-import anthropic
+from src.core.opencode_client import (
+    create_model_client,
+    resolve_model_name,
+    ModelRateLimitError,
+)
 from typing import Dict, Any, Optional, Callable
 from datetime import datetime
 import re
@@ -19,17 +24,23 @@ from src.core.performance_metrics import PerformanceTracker
 
 
 class ThreatIntelToolCached:
-    def __init__(self, api_key, enable_tracing=True, trace_export_dir="./traces", enable_metrics=True, metrics_file="performance_metrics_cached.jsonl"):
-        """Initialize the Claude client with prompt caching enabled"""
-        self.client = anthropic.Anthropic(api_key=api_key)
+    def __init__(
+        self,
+        enable_tracing=True,
+        trace_export_dir="./traces",
+        enable_metrics=True,
+        metrics_file="performance_metrics_cached.jsonl",
+    ):
+        """Initialize the configured model client."""
+        self.client = create_model_client()
         self.validator = ParallelSectionValidator(
             self.client,
             max_concurrent_validations=3,  # Conservative for production rate limits
-            max_concurrent_enhancements=2   # More conservative for expensive operations
+            max_concurrent_enhancements=2,  # More conservative for expensive operations
         )
         self.improver = SectionImprover(self.client)
         self.enable_quality_control = True
-        
+
         # Initialize performance metrics tracking
         self.enable_metrics = enable_metrics
         if self.enable_metrics:
@@ -37,7 +48,7 @@ class ThreatIntelToolCached:
             print(f"DEBUG: Performance metrics enabled (CACHED), logging to {metrics_file}")
         else:
             self.performance_tracker = None
-        
+
         # Initialize trace exporter
         self.enable_tracing = enable_tracing
         if self.enable_tracing:
@@ -45,7 +56,7 @@ class ThreatIntelToolCached:
             print(f"DEBUG: Trace exporter initialized, export directory: {trace_export_dir}")
         else:
             self.trace_exporter = None
-        
+
         # Initialize ML guidance generator
         try:
             self.ml_guidance_generator = MLGuidanceGenerator(self.client)
@@ -55,7 +66,7 @@ class ThreatIntelToolCached:
             print(f"DEBUG: ML guidance generator initialization failed: {e}")
             self.ml_guidance_generator = None
             self.enable_ml_guidance = False
-    
+
     def _get_cached_json_schema_prompt(self) -> str:
         """Get the large JSON schema prompt that will be cached"""
         return f"""Based on your comprehensive research findings, create a detailed profile in the following JSON format:
@@ -66,7 +77,7 @@ class ThreatIntelToolCached:
     "version": "Latest known version from research",
     "category": "Tool category (RAT/Backdoor/Trojan/etc)",
     "profileId": "TI_{{tool_name.upper().replace(' ', '_')}}_{{datetime.now().strftime('%Y%m%d')}}",
-    "profileAuthor": "Claude AI with Web Search",
+    "profileAuthor": "OpenCode model pipeline",
     "createdDate": "{datetime.now().strftime('%Y-%m-%d')}",
     "lastUpdated": "{datetime.now().strftime('%Y-%m-%d')}",
     "profileVersion": "1.0",
@@ -77,18 +88,18 @@ class ThreatIntelToolCached:
     "searchQueriesUsed": ["REQUIRED: List the actual search queries you executed"],
     "primarySources": [
       {{
-        "url": "REQUIRED: Real, accessible URL from your web_search_20250305 tool results - NO hallucinated URLs",
-        "title": "REQUIRED: Actual title from the web_search_20250305 tool results",
-        "domain": "REQUIRED: Actual domain name from web_search_20250305 tool results",
+        "url": "REQUIRED: Real, accessible URL from your available research tools tool results - NO hallucinated URLs",
+        "title": "REQUIRED: Actual title from the available research tools tool results",
+        "domain": "REQUIRED: Actual domain name from available research tools tool results",
         "accessDate": "{datetime.now().strftime('%Y-%m-%d')}",
         "relevanceScore": "High/Medium/Low based on content relevance",
         "contentType": "Report/Article/Advisory/Blog/Database/Documentation",
         "keyFindings": "REQUIRED: Specific information extracted from this real source"
       }}
     ],
-    "searchStrategy": "REQUIRED: Describe your actual web_search_20250305 tool approach and methodology",
-    "dataFreshness": "REQUIRED: How recent the web_search_20250305 tool information is",
-    "sourceReliability": "REQUIRED: Assessment based on actual domain authority and content quality from web_search_20250305 tool"
+    "searchStrategy": "REQUIRED: Describe your actual available research tools tool approach and methodology",
+    "dataFreshness": "REQUIRED: How recent the available research tools tool information is",
+    "sourceReliability": "REQUIRED: Assessment based on actual domain authority and content quality from available research tools tool"
   }},
   "toolOverview": {{
     "description": "Comprehensive description based on findings",
@@ -179,7 +190,7 @@ class ThreatIntelToolCached:
     "sources": [
       {{
         "title": "Source title",
-        "url": "URL from web_search_20250305 tool results",
+        "url": "URL from available research tools tool results",
         "date": "Publication date",
         "relevanceScore": "High/Medium/Low"
       }}
@@ -216,7 +227,7 @@ class ThreatIntelToolCached:
       {{
         "resourceType": "Type of resource",
         "name": "Resource name",
-        "url": "URL from web_search_20250305 tool",
+        "url": "URL from available research tools tool",
         "focus": "Resource focus"
       }}
     ]
@@ -224,54 +235,54 @@ class ThreatIntelToolCached:
 }}
 
 CRITICAL INSTRUCTIONS FOR OUTPUT:
-1. Return ONLY the JSON object populated with verified information from your web_search_20250305 tool results
+1. Return ONLY the JSON object populated with verified information from your available research tools tool results
 2. NEVER invent, hallucinate, or fabricate URLs, sources, or technical details
-3. If you cannot find information for certain sections through the web_search_20250305 tool, explicitly state "No verified information found through web_search_20250305 tool" rather than making up content
-4. All URLs in webSearchSources and referencesAndIntelligenceSharing MUST be real URLs from your actual web_search_20250305 tool results
-5. Cross-reference claims across multiple sources when possible using the web_search_20250305 tool
-6. If web_search_20250305 tool results are limited, acknowledge this limitation in the relevant sections
+3. If you cannot find information for certain sections through the available research tools tool, explicitly state "No verified information found through available research tools tool" rather than making up content
+4. All URLs in webSearchSources and referencesAndIntelligenceSharing MUST be real URLs from your actual available research tools tool results
+5. Cross-reference claims across multiple sources when possible using the available research tools tool
+6. If available research tools tool results are limited, acknowledge this limitation in the relevant sections
 
-Remember: Accuracy and source verification through the web_search_20250305 tool are more important than completeness. Real, verified information from web_search_20250305 is infinitely more valuable than hallucinated content."""
-    
+Remember: Accuracy and source verification through the available research tools tool are more important than completeness. Real, verified information from available research tools is infinitely more valuable than hallucinated content."""
+
     def get_threat_intelligence(self, tool_name: str, progress_callback=None):
         """
-        Generate comprehensive threat intelligence profile using Claude with prompt caching
+        Generate comprehensive threat intelligence profile using model with prompt caching
         """
         # Start trace
         trace_id = None
         if self.enable_tracing and self.trace_exporter:
             trace_id = self.trace_exporter.start_trace(tool_name)
             self.trace_exporter.log_stage_start("initialization")
-        
+
         try:
             if progress_callback:
                 progress_callback(0.1, "🔍 Initializing research with caching...")
-            
+
             print(f"DEBUG: Starting CACHED threat intelligence generation for: {tool_name}")
-            
+
             if self.enable_tracing and self.trace_exporter:
                 self.trace_exporter.log_stage_end("initialization")
-            
+
             # Start performance tracking with caching enabled
             if self.enable_metrics and self.performance_tracker:
                 self.performance_tracker.start_request(
                     query=tool_name,
-                    model="claude-sonnet-4-20250514",
+                    model=resolve_model_name(),
                     prompt_type="threat_intel_cached",
-                    cache_enabled=True  # Key difference from baseline
+                    cache_enabled=True,  # Key difference from baseline
                 )
-            
+
             # Get the cached JSON schema template
             cached_schema = self._get_cached_json_schema_prompt()
-            
+
             # Create the dynamic threat-specific research prompt
             research_prompt = f"""Conduct comprehensive research and deep dive analysis to generate a detailed threat intelligence profile for: {tool_name}
 
 Today's date is {datetime.now().strftime('%B %d, %Y')}.
 
-CRITICAL: You MUST use the web_search_20250305 tool extensively to find the most current, verified information. Do NOT hallucinate or invent URLs, sources, or information. All sources must be real and accessible through your web_search_20250305 tool.
+CRITICAL: You MUST use the available research tools tool extensively to find the most current, verified information. Do NOT hallucinate or invent URLs, sources, or information. All sources must be real and accessible through your available research tools tool.
 
-Please perform a thorough deep dive research using the web_search_20250305 tool to find comprehensive information about {tool_name}, including:
+Please perform a thorough deep dive research using the available research tools tool to find comprehensive information about {tool_name}, including:
 - Recent vulnerabilities and exploits (search for CVEs, security advisories)
 - Technical details and architecture (search for technical analyses, documentation)
 - Indicators of compromise (IOCs) (search for threat intelligence reports, IOC feeds)
@@ -291,203 +302,207 @@ Focus on finding information from 2024-2025 when possible, but include relevant 
 
             # Combine prompts for total size calculation
             full_prompt = research_prompt + "\n\n" + cached_schema
-            
+
             # Record prompt details for metrics
             if self.enable_metrics and self.performance_tracker:
                 self.performance_tracker.record_prompt_details(full_prompt, cache_enabled=True)
 
             if progress_callback:
                 progress_callback(0.2, "🤖 Researching with cached schema...")
-            
-            print("DEBUG: Sending request to Claude API with PROMPT CACHING enabled...")
+
+            print("DEBUG: Sending request to model API with PROMPT CACHING enabled...")
             print(f"DEBUG: Total prompt size: {len(full_prompt)} characters")
             print(f"DEBUG: Cached schema size: {len(cached_schema)} characters")
             print(f"DEBUG: Dynamic research size: {len(research_prompt)} characters")
-            
+
             # Log web search stage
             if self.enable_tracing and self.trace_exporter:
                 self.trace_exporter.log_stage_start("web_search_cached")
-            
-            # Generate threat intelligence using Claude with prompt caching
+
+            # Generate threat intelligence using model with prompt caching
             api_start_time = time.time()
             response = self._api_call_with_retry_cached(
-                model="claude-sonnet-4-20250514",
+                model=resolve_model_name(),
                 max_tokens=8192,
                 temperature=0.3,
                 messages=[
                     {
-                        "role": "user", 
+                        "role": "user",
                         "content": [
+                            {"type": "text", "text": research_prompt},
                             {
                                 "type": "text",
-                                "text": research_prompt
-                            },
-                            {
-                                "type": "text", 
                                 "text": cached_schema,
-                                "cache_control": {"type": "ephemeral"}  # Mark for caching
-                            }
-                        ]
+                                "cache_control": {"type": "ephemeral"},  # Mark for caching
+                            },
+                        ],
                     }
                 ],
-                tools=[{
-                    "type": "web_search_20250305",
-                    "name": "web_search"
-                }]
+                tools=[{"type": "available research tools", "name": "web_search"}],
             )
-            
+
             # Record API response metrics with cache information
             if self.enable_metrics and self.performance_tracker:
                 api_end_time = time.time()
                 time_to_first_token = api_end_time - api_start_time
-                
+
                 # Determine if this was a cache hit based on response time
                 # Cache hits are typically much faster than cache misses
                 cache_hit = time_to_first_token < 30  # Heuristic: < 30 seconds suggests cache hit
-                
+
                 self.performance_tracker.record_api_response(
-                    response, 
-                    cache_hit=cache_hit,
-                    time_to_first_token=time_to_first_token
+                    response, cache_hit=cache_hit, time_to_first_token=time_to_first_token
                 )
-                
-                print(f"DEBUG: API response time: {time_to_first_token:.1f}s, estimated cache_hit: {cache_hit}")
-            
+
+                print(
+                    f"DEBUG: API response time: {time_to_first_token:.1f}s, estimated cache_hit: {cache_hit}"
+                )
+
             if self.enable_tracing and self.trace_exporter:
                 self.trace_exporter.log_stage_end("web_search_cached")
-            
+
             # Extract initial web search sources from the main response
             initial_sources = self.validator._extract_web_search_sources_from_response(
-                response, 'initial_research', tool_name
+                response, "initial_research", tool_name
             )
             self.validator.web_search_sources.extend(initial_sources)
             print(f"DEBUG: Captured {len(initial_sources)} initial web search sources")
-            
+
             # Extract response text (same logic as original)
             response_text = ""
-            if hasattr(response, 'content') and response.content:
+            if hasattr(response, "content") and response.content:
                 text_blocks = []
                 found_tool_result = False
-                
+
                 for content in response.content:
-                    if hasattr(content, 'type'):
-                        if content.type == 'web_search_tool_result':
+                    if hasattr(content, "type"):
+                        if content.type == "web_search_tool_result":
                             found_tool_result = True
-                        elif content.type == 'text' and found_tool_result:
-                            if hasattr(content, 'text'):
+                        elif content.type == "text" and found_tool_result:
+                            if hasattr(content, "text"):
                                 text_blocks.append(content.text)
-                
+
                 if text_blocks:
                     response_text = " ".join(text_blocks)
                 else:
                     for content in response.content:
-                        if hasattr(content, 'type') and content.type == 'text':
-                            if hasattr(content, 'text'):
+                        if hasattr(content, "type") and content.type == "text":
+                            if hasattr(content, "text"):
                                 response_text += content.text + "\n"
-            
+
             response_text = response_text.strip()
-            
-            print("DEBUG: Received response from Claude API (CACHED)")
-            
+
+            print("DEBUG: Received response from model API (CACHED)")
+
             if progress_callback:
                 progress_callback(0.7, "📊 Processing cached response...")
             print(f"DEBUG: Response length: {len(response_text)} characters")
             print(f"DEBUG: Response preview: {response_text[:200]}...")
-            
+
             # Find the JSON content in the response using bracket matching
             json_text = None
             json_start = -1
-            
+
             # Find the first opening brace
-            start_pos = response_text.find('{')
+            start_pos = response_text.find("{")
             if start_pos == -1:
                 print(f"DEBUG: No JSON found in response")
-                raise ValueError(f"No JSON found in response. Response preview: {response_text[:1000]}")
-            
+                raise ValueError(
+                    f"No JSON found in response. Response preview: {response_text[:1000]}"
+                )
+
             # Use bracket matching to find the complete JSON object
             brace_count = 0
             json_end = -1
             in_string = False
             escape_next = False
-            
+
             for i in range(start_pos, len(response_text)):
                 char = response_text[i]
-                
+
                 if escape_next:
                     escape_next = False
                     continue
-                    
-                if char == '\\' and in_string:
+
+                if char == "\\" and in_string:
                     escape_next = True
                     continue
-                    
+
                 if char == '"' and not escape_next:
                     in_string = not in_string
                     continue
-                    
+
                 if not in_string:
-                    if char == '{':
+                    if char == "{":
                         brace_count += 1
-                    elif char == '}':
+                    elif char == "}":
                         brace_count -= 1
                         if brace_count == 0:
                             json_end = i + 1
                             break
-            
+
             if json_end == -1:
                 print(f"DEBUG: No complete JSON object found in response")
-                raise ValueError(f"No complete JSON object found in response. Response preview: {response_text[:1000]}")
-            
+                raise ValueError(
+                    f"No complete JSON object found in response. Response preview: {response_text[:1000]}"
+                )
+
             json_text = response_text[start_pos:json_end]
             json_start = start_pos
-            
+
             print(f"DEBUG: JSON boundaries - start: {json_start}, end: {json_end}")
             print(f"DEBUG: Extracted JSON length: {len(json_text)} characters")
-            
+
             if progress_callback:
                 progress_callback(0.75, "🔍 Parsing JSON response...")
-            
+
             try:
                 json_data = json.loads(json_text)
                 print("DEBUG: JSON parsing successful (CACHED)")
-                
+
                 # Record successful parsing
                 if self.enable_metrics and self.performance_tracker:
                     self.performance_tracker.record_parsing_result(True)
-                    
+
             except json.JSONDecodeError as e:
                 print(f"DEBUG: JSON parsing failed: {e}")
                 print(f"DEBUG: JSON text preview: {json_text[:500]}")
-                
+
                 # Record failed parsing
                 if self.enable_metrics and self.performance_tracker:
                     self.performance_tracker.record_parsing_result(False, str(e))
-                    
-                raise ValueError(f"Invalid JSON in response: {str(e)}. JSON preview: {json_text[:500]}")
-            
+
+                raise ValueError(
+                    f"Invalid JSON in response: {str(e)}. JSON preview: {json_text[:500]}"
+                )
+
             if not json_data:
                 raise ValueError("Empty JSON data received")
-            
+
             # Validate that we have a dictionary with the expected structure
             if not isinstance(json_data, dict):
-                raise ValueError(f"Invalid response format: Expected JSON object but got {type(json_data).__name__}")
-            
-            print(f"DEBUG: Initial generation successful (CACHED). JSON contains {len(json_data)} top-level keys")
-            
+                raise ValueError(
+                    f"Invalid response format: Expected JSON object but got {type(json_data).__name__}"
+                )
+
+            print(
+                f"DEBUG: Initial generation successful (CACHED). JSON contains {len(json_data)} top-level keys"
+            )
+
             # Generate ML guidance BEFORE quality control to leverage all context
             if self.enable_ml_guidance and self.ml_guidance_generator:
                 if progress_callback:
                     progress_callback(0.75, "🤖 Generating ML detection guidance...")
-                
+
                 if self.enable_tracing and self.trace_exporter:
                     self.trace_exporter.log_stage_start("ml_guidance")
-                
+
                 try:
                     ml_guidance = self._generate_ml_guidance(json_data, tool_name)
                     if ml_guidance:
-                        json_data['mlGuidance'] = ml_guidance
+                        json_data["mlGuidance"] = ml_guidance
                         print("DEBUG: ML guidance generated successfully (CACHED)")
-                        
+
                         if self.enable_tracing and self.trace_exporter:
                             self.trace_exporter.log_stage_end("ml_guidance", success=True)
                     else:
@@ -498,81 +513,100 @@ Focus on finding information from 2024-2025 when possible, but include relevant 
                     print(f"DEBUG: ML guidance generation failed: {e}")
                     if self.enable_tracing and self.trace_exporter:
                         self.trace_exporter.log_error(str(e), "ml_guidance")
-                        self.trace_exporter.log_stage_end("ml_guidance", success=False, error=str(e))
-            
+                        self.trace_exporter.log_stage_end(
+                            "ml_guidance", success=False, error=str(e)
+                        )
+
             # Quality control phase - simplified for cached version
             if self.enable_quality_control:
                 if progress_callback:
                     progress_callback(0.8, "🔍 Running quality validation...")
-                
+
                 if self.enable_tracing and self.trace_exporter:
                     self.trace_exporter.log_stage_start("quality_validation")
-                
+
                 # Use parallel validation for significant performance improvement
                 validation_results = self.validator.validate_complete_profile_parallel(
                     json_data, progress_callback, tool_name
                 )
-                
+
                 if self.enable_tracing and self.trace_exporter:
                     self.trace_exporter.log_quality_metrics(validation_results)
                     self.trace_exporter.log_stage_end("quality_validation")
-                
-                json_data['_quality_assessment'] = validation_results
-                print(f"DEBUG: Quality control complete (CACHED). Overall score: {validation_results['overall_score']}")
-                
+
+                json_data["_quality_assessment"] = validation_results
+                print(
+                    f"DEBUG: Quality control complete (CACHED). Overall score: {validation_results['overall_score']}"
+                )
+
                 # Add comprehensive web search sources section
-                if hasattr(self.validator, 'web_search_sources') and self.validator.web_search_sources:
+                if (
+                    hasattr(self.validator, "web_search_sources")
+                    and self.validator.web_search_sources
+                ):
                     comprehensive_sources = self.validator.generate_comprehensive_sources_section()
-                    json_data['comprehensiveWebSearchSources'] = comprehensive_sources
-                    print(f"DEBUG: Added comprehensive sources section with {len(self.validator.web_search_sources)} sources")
-            
+                    json_data["comprehensiveWebSearchSources"] = comprehensive_sources
+                    print(
+                        f"DEBUG: Added comprehensive sources section with {len(self.validator.web_search_sources)} sources"
+                    )
+
             if progress_callback:
                 progress_callback(1.0, "✅ Analysis complete (CACHED)!")
-            
+
             # Complete performance tracking
             if self.enable_metrics and self.performance_tracker:
                 metrics = self.performance_tracker.finish_request()
                 if metrics:
-                    print(f"DEBUG: CACHED request completed - Latency: {metrics.latency_ms}ms, Cost: ${metrics.total_cost:.4f}")
-            
+                    print(
+                        f"DEBUG: CACHED request completed - Latency: {metrics.latency_ms}ms, Cost: ${metrics.total_cost:.4f}"
+                    )
+
             # Complete trace and export
             if self.enable_tracing and self.trace_exporter:
                 try:
                     # Log comprehensive trace data
-                    self.trace_exporter.log_threat_characteristics(json_data.get('coreMetadata', {}))
-                    self.trace_exporter.log_final_guidance(json_data.get('final_guidance', ''))
-                    
+                    self.trace_exporter.log_threat_characteristics(
+                        json_data.get("coreMetadata", {})
+                    )
+                    self.trace_exporter.log_final_guidance(json_data.get("final_guidance", ""))
+
                     # Log web search sources if available
-                    if hasattr(self.validator, 'web_search_sources') and self.validator.web_search_sources:
-                        self.trace_exporter.log_web_search_sources(self.validator.web_search_sources)
-                    
+                    if (
+                        hasattr(self.validator, "web_search_sources")
+                        and self.validator.web_search_sources
+                    ):
+                        self.trace_exporter.log_web_search_sources(
+                            self.validator.web_search_sources
+                        )
+
                     # Complete and export trace
                     trace_file = self.trace_exporter.complete_trace(json_data)
                     print(f"DEBUG: Trace exported to {trace_file}")
-                    
+
                     # Add trace metadata to response
-                    json_data['_trace_metadata'] = {
-                        'trace_id': trace_id,
-                        'trace_file': trace_file,
-                        'export_enabled': True,
-                        'caching_enabled': True
+                    json_data["_trace_metadata"] = {
+                        "trace_id": trace_id,
+                        "trace_file": trace_file,
+                        "export_enabled": True,
+                        "caching_enabled": True,
                     }
                 except Exception as trace_error:
                     print(f"DEBUG: Trace export failed: {trace_error}")
-            
+
             return json_data
-        
+
         except Exception as e:
             print(f"DEBUG: Exception occurred (CACHED): {e}")
             print(f"DEBUG: Exception type: {type(e)}")
             import traceback
+
             traceback.print_exc()
-            
+
             # Record error in performance metrics
             if self.enable_metrics and self.performance_tracker:
                 self.performance_tracker.record_error(e)
                 self.performance_tracker.finish_request()
-            
+
             # Log error to trace if available
             if self.enable_tracing and self.trace_exporter:
                 try:
@@ -581,110 +615,115 @@ Focus on finding information from 2024-2025 when possible, but include relevant 
                     print(f"DEBUG: Error trace exported to {error_trace_file}")
                 except Exception as trace_error:
                     print(f"DEBUG: Failed to export error trace: {trace_error}")
-            
+
             if progress_callback:
                 progress_callback(1.0, f"❌ Error: {str(e)}")
             raise e
-    
+
     def _generate_ml_guidance(self, threat_data: Dict, tool_name: str) -> Optional[Dict]:
         """Generate ML guidance (simplified for cached version)"""
         try:
             threat_characteristics = self._extract_threat_characteristics(threat_data, tool_name)
-            
+
             ml_guidance_markdown = self.ml_guidance_generator.generate_enhanced_ml_guidance_section(
-                threat_characteristics, threat_data, 
-                trace_exporter=self.trace_exporter if self.enable_tracing else None
+                threat_characteristics,
+                threat_data,
+                trace_exporter=self.trace_exporter if self.enable_tracing else None,
             )
-            
+
             if ml_guidance_markdown:
                 return {
-                    'enabled': True,
-                    'content': ml_guidance_markdown,
-                    'threatCharacteristics': {
-                        'name': threat_characteristics.threat_name,
-                        'type': threat_characteristics.threat_type,
-                        'attackVectors': threat_characteristics.attack_vectors,
-                        'behaviorPatterns': threat_characteristics.behavior_patterns,
-                        'timeCharacteristics': threat_characteristics.time_characteristics
+                    "enabled": True,
+                    "content": ml_guidance_markdown,
+                    "threatCharacteristics": {
+                        "name": threat_characteristics.threat_name,
+                        "type": threat_characteristics.threat_type,
+                        "attackVectors": threat_characteristics.attack_vectors,
+                        "behaviorPatterns": threat_characteristics.behavior_patterns,
+                        "timeCharacteristics": threat_characteristics.time_characteristics,
                     },
-                    'generatedAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    'generator': 'Agentic RAG with Prompt Caching',
-                    'qualityScore': 0.0
+                    "generatedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "generator": "Agentic RAG with Prompt Caching",
+                    "qualityScore": 0.0,
                 }
             else:
                 return None
-                
+
         except Exception as e:
             print(f"DEBUG: ML guidance generation error (CACHED): {e}")
             return {
-                'enabled': False,
-                'error': str(e),
-                'fallbackGuidance': 'Consider implementing statistical anomaly detection and behavioral analysis for this threat type.',
-                'qualityScore': 0.0
+                "enabled": False,
+                "error": str(e),
+                "fallbackGuidance": "Consider implementing statistical anomaly detection and behavioral analysis for this threat type.",
+                "qualityScore": 0.0,
             }
-    
-    def _extract_threat_characteristics(self, threat_data: Dict, tool_name: str) -> ThreatCharacteristics:
+
+    def _extract_threat_characteristics(
+        self, threat_data: Dict, tool_name: str
+    ) -> ThreatCharacteristics:
         """Extract threat characteristics (simplified version)"""
-        core_metadata = threat_data.get('coreMetadata', {})
-        category = core_metadata.get('category', 'malware').lower()
-        
+        core_metadata = threat_data.get("coreMetadata", {})
+        category = core_metadata.get("category", "malware").lower()
+
         threat_type_mapping = {
-            'rat': 'malware',
-            'backdoor': 'malware', 
-            'trojan': 'malware',
-            'ransomware': 'malware',
-            'botnet': 'malware',
-            'apt': 'apt',
-            'framework': 'post_exploitation_framework',
-            'tool': 'attack_tool'
+            "rat": "malware",
+            "backdoor": "malware",
+            "trojan": "malware",
+            "ransomware": "malware",
+            "botnet": "malware",
+            "apt": "apt",
+            "framework": "post_exploitation_framework",
+            "tool": "attack_tool",
         }
-        
-        threat_type = threat_type_mapping.get(category, 'malware')
-        
+
+        threat_type = threat_type_mapping.get(category, "malware")
+
         return ThreatCharacteristics(
             threat_name=tool_name,
             threat_type=threat_type,
-            attack_vectors=['network', 'email'],
-            target_assets=['corporate_networks', 'endpoints'],
-            behavior_patterns=['persistence', 'command_control'],
-            time_characteristics='persistent'
+            attack_vectors=["network", "email"],
+            target_assets=["corporate_networks", "endpoints"],
+            behavior_patterns=["persistence", "command_control"],
+            time_characteristics="persistent",
         )
-    
+
     def _api_call_with_retry_cached(self, **kwargs):
         """Make API call with caching support and intelligent retry logic"""
         max_retries = 3
         base_delay = 5
-        
+
         for attempt in range(max_retries):
             try:
                 print(f"DEBUG: Making CACHED API call attempt {attempt + 1}/{max_retries}")
                 return self.client.messages.create(**kwargs)
-                
-            except anthropic.RateLimitError as e:
+
+            except ModelRateLimitError as e:
                 if attempt == max_retries - 1:
                     print(f"DEBUG: Rate limit exceeded after {max_retries} attempts (CACHED)")
                     raise e
-                
+
                 # Handle retry logic same as original
                 retry_after = None
-                if hasattr(e, 'response') and e.response:
-                    retry_after_header = e.response.headers.get('retry-after')
+                if hasattr(e, "response") and e.response:
+                    retry_after_header = e.response.headers.get("retry-after")
                     if retry_after_header:
                         try:
                             retry_after = float(retry_after_header)
                             print(f"DEBUG: API provided retry-after: {retry_after} seconds")
                         except (ValueError, TypeError):
                             pass
-                
+
                 if retry_after:
                     delay = retry_after + random.uniform(1, 3)
                 else:
-                    delay = base_delay * (2 ** attempt) + random.uniform(1, 5)
+                    delay = base_delay * (2**attempt) + random.uniform(1, 5)
                     delay = min(delay, 120)
-                
-                print(f"DEBUG: Rate limit hit (CACHED). Waiting {delay:.1f} seconds before retry {attempt + 2}")
+
+                print(
+                    f"DEBUG: Rate limit hit (CACHED). Waiting {delay:.1f} seconds before retry {attempt + 2}"
+                )
                 time.sleep(delay)
-                
+
             except Exception as e:
                 print(f"DEBUG: Non-rate-limit error (CACHED): {e}")
                 raise e
@@ -694,8 +733,8 @@ Focus on finding information from 2024-2025 when possible, but include relevant 
         if filename is None:
             tool_name = data.get("coreMetadata", {}).get("name", "threat_intel")
             filename = f"{tool_name.lower().replace(' ', '_')}_threat_intel_cached.json"
-        
-        with open(filename, 'w') as f:
+
+        with open(filename, "w") as f:
             json.dump(data, f, indent=2)
-        
+
         return filename

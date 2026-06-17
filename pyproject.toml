@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "aiofiles>=22.0.0",
-    "anthropic>=0.57.0",
     "beautifulsoup4>=4.12.0",
     "boto3>=1.34.0",
     "chromadb>=0.4.0",
@@ -14,7 +13,6 @@ dependencies = [
     "gradio-client>=1.10.0",
     "gradio>=5.0.0",
     "numpy>=1.24.0",
-    "openai>=1.0.0",
     "orjson>=3.0.0",
     "pandas>=2.0.0",
     "pillow>=8.0.0",
