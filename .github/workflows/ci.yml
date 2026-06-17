@@ -10,6 +10,10 @@ jobs:
   frontend:
     name: Frontend build & lint
     runs-on: ubuntu-latest
+    env:
+      NEXT_PUBLIC_API_URL: http://localhost:8001
+      NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder-anon-key
     defaults:
       run:
         working-directory: frontend
@@ -25,14 +29,15 @@ jobs:
       - run: npm run build
 
   backend:
-    name: Backend syntax check
+    name: Backend validation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.6.13"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Check Python syntax
-        run: |
-          python -m py_compile run_api.py run_app.py
-          find src -name "*.py" -exec python -m py_compile {} +
+      - run: uv sync --locked
+      - run: uv run python dev/check_local_setup.py
