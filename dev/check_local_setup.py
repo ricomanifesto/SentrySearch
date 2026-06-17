@@ -4,13 +4,26 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import sys
 from pathlib import Path
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEV_ROOT = REPO_ROOT / "dev"
 LOCAL_API_URL = "http://localhost:8001"
+PYTHON_RUFF_PATHS = [
+    "run_api.py",
+    "run_app.py",
+    "src",
+    "dev",
+    "tests",
+]
+PYTHON_FORMAT_TYPE_PATHS = [
+    "run_api.py",
+    "run_app.py",
+    "dev",
+    "tests",
+]
 
 
 def read_text(relative_path: str) -> str:
@@ -54,9 +67,30 @@ def validate_auth_env_contract() -> None:
     require_contains(".env.example", "SUPABASE_SERVICE_ROLE_KEY=")
 
 
+def validate_python_tooling_contract() -> None:
+    require_contains("pyproject.toml", "[dependency-groups]")
+    require_contains("pyproject.toml", '"ruff>=')
+    require_contains("pyproject.toml", '"black>=')
+    require_contains("pyproject.toml", '"ty>=')
+    require_contains("uv.lock", 'name = "ruff"')
+    require_contains("uv.lock", 'name = "black"')
+    require_contains("uv.lock", 'name = "ty"')
+
+
+def run_command(command: list[str]) -> None:
+    print(f"Running: {' '.join(command)}")
+    subprocess.run(command, cwd=REPO_ROOT, check=True)
+
+
 async def main() -> int:
     validate_api_url_contract()
     validate_auth_env_contract()
+    validate_python_tooling_contract()
+
+    run_command(["ruff", "check", *PYTHON_RUFF_PATHS])
+    run_command(["black", "--check", *PYTHON_FORMAT_TYPE_PATHS])
+    run_command(["ty", "check", *PYTHON_FORMAT_TYPE_PATHS])
+    run_command([sys.executable, "-B", "-m", "pytest", "tests"])
 
     sys.path.insert(0, str(DEV_ROOT))
     from smoke_api import run_checks  # pylint: disable=import-outside-toplevel
