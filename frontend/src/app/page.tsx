@@ -252,7 +252,7 @@ export default function Dashboard() {
                   Unable to load dashboard data
                 </h3>
                 <p className="text-sm text-red-600 mt-1">
-                  Make sure the API server is running on {process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}
+                  Make sure the API server is running on {process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001'}
                 </p>
               </div>
             </div>

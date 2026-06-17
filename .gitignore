@@ -72,7 +72,7 @@ data/*.jsonl
 !frontend/package.json
 
 # Temporary test files
-test_*.py
+/test_*.py
 
 # Logs
 *.log
@@ -83,6 +83,28 @@ test_*.py
 
 # Development configuration
 .cursorrules
+
+# Private local files
+AGENTS.md
+agents.md
+AGENT.md
+agent.md
+CLAUDE.md
+claude.md
+GEMINI.md
+gemini.md
+.claude/
+.codex/
+.copilot/
+.cursor/
+.windsurf/
+.windsurfrules
+.github/copilot-instructions.md
+.github/instructions/
+agent-instructions.md
+agent_instructions.md
+assistant-instructions.md
+assistant_instructions.md
 
 # Gradio flagged directory
 flagged/

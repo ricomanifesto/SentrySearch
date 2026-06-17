@@ -13,6 +13,51 @@ Visit the web application: **https://sentry-search.vercel.app**
 
 Create an account, add your Anthropic Claude API key, and generate threat intelligence reports for any malware, attack tool, or technology.
 
+## Local Setup
+
+Backend dependencies are installed from the top-level `requirements.txt`.
+Frontend dependencies are installed from `frontend/package-lock.json`.
+
+```bash
+# Backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+python run_api.py
+
+# Frontend, in a second terminal
+cd frontend
+npm install
+cp .env.example .env.local
+npm run dev
+```
+
+The local FastAPI server defaults to `http://localhost:8001`. The frontend uses
+`NEXT_PUBLIC_API_URL=http://localhost:8001` in local development.
+
+## Local Validation
+
+Run the local setup gate before touching live services:
+
+```bash
+python3 dev/check_local_setup.py
+```
+
+This verifies the local env/docs/frontend URL contract, the FastAPI app import,
+API docs rendering, the health endpoint's degraded local shape, and that report
+creation remains protected without Supabase credentials. It does not call
+Anthropic, Supabase, AWS, Pinecone, Railway, Vercel, Cloudflare, or a local
+PostgreSQL service.
+
+Frontend validation requires `frontend/node_modules`:
+
+```bash
+cd frontend
+npm run lint
+npm run build
+```
+
 ## Core Features
 
 **Threat Analysis**: Claude analyzes web research and generates comprehensive profiles with technical details, threat landscape assessment, and detection guidance.
