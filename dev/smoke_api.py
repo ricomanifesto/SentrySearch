@@ -10,7 +10,6 @@ from pathlib import Path
 
 import httpx
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 
@@ -41,7 +40,7 @@ async def run_checks() -> int:
 
     from api import main as api_main  # pylint: disable=import-outside-toplevel
 
-    api_main.report_service.test_connection = lambda: False
+    setattr(api_main.report_service, "test_connection", lambda: False)
     app = api_main.app
 
     transport = httpx.ASGITransport(app=app)
