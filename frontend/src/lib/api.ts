@@ -102,7 +102,7 @@ export interface SearchFilterOptions {
 }
 
 // API Configuration
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001';
 
 class SentrySearchAPI {
   private client: AxiosInstance;

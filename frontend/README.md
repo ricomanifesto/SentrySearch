@@ -16,7 +16,7 @@ Professional Next.js frontend for SentrySearch threat intelligence platform.
 ### Prerequisites
 
 - Node.js 18+ and npm
-- SentrySearch API server running on `http://localhost:8000`
+- SentrySearch API server running on `http://localhost:8001`
 
 ### Installation
 
@@ -38,7 +38,9 @@ The application will be available at `http://localhost:3000`.
 Update `.env.local` with your API server URL:
 
 ```bash
-NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_API_URL=http://localhost:8001
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
 ```
 
 ## Technology Stack
