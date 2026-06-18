@@ -72,7 +72,9 @@ async def verify_jwt_token(authorization: Optional[str] = Header(None)) -> Authe
 
         user = response.user
         return AuthenticatedUser(
-            user_id=user.id, email=user.email, metadata=user.user_metadata or {}
+            user_id=user.id,
+            email=user.email,
+            metadata=getattr(user, "app_metadata", None) or {},
         )
 
     except HTTPException:
