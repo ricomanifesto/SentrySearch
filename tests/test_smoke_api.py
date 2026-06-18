@@ -99,3 +99,22 @@ def test_public_docs_do_not_reference_private_workflow_sources():
     ]
     for marker in private_markers:
         assert marker not in public_text
+
+
+def test_threat_profile_modules_use_domain_names():
+    assert (
+        read_text("src/core/threat_profile_generator.py").count("class ThreatProfileGenerator") == 1
+    )
+    assert (
+        read_text("src/core/cached_threat_profile_generator.py").count(
+            "class CachedThreatProfileGenerator"
+        )
+        == 1
+    )
+    assert (
+        read_text("src/search/threat_knowledge_retriever.py").count(
+            "class ThreatKnowledgeRetriever"
+        )
+        == 1
+    )
+    assert not (REPO_ROOT / "src/search/ml_agentic_retriever.py").exists()
