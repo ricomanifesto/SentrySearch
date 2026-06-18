@@ -425,8 +425,11 @@ async def get_search_filters():
 
 
 @app.post("/api/admin/update-categorizations")
-async def update_categorizations():
+async def update_categorizations(user: AuthenticatedUser = Depends(verify_jwt_token)):
     """Admin endpoint to update report categorizations"""
+    if user.metadata.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin privileges required")
+
     try:
         updated_count = report_service.update_existing_categorizations()
 

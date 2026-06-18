@@ -3,6 +3,7 @@ import logging
 import os
 from pathlib import Path
 
+from httpx import ASGITransport, AsyncClient
 import pytest
 from fastapi import HTTPException
 
@@ -70,6 +71,88 @@ def test_verify_jwt_token_redacts_internal_exception(monkeypatch, caplog):
     assert exc_info.value.status_code == 401
     assert exc_info.value.detail == "Invalid or expired token"
     assert "secret-token" not in caplog.text
+
+
+def test_verify_jwt_token_uses_server_controlled_app_metadata(monkeypatch):
+    class SupabaseUser:
+        id = "user-1"
+        email = "user@example.com"
+        user_metadata = {"role": "admin"}
+        app_metadata = {"role": "analyst"}
+
+    class SupabaseResponse:
+        user = SupabaseUser()
+
+    class Auth:
+        def get_user(self, token: str):
+            return SupabaseResponse()
+
+    class Supabase:
+        auth = Auth()
+
+    monkeypatch.setattr(supabase_auth, "supabase", Supabase())
+
+    user = asyncio.run(supabase_auth.verify_jwt_token("Bearer test-token"))
+
+    assert user.metadata == {"role": "analyst"}
+
+
+def test_admin_update_categorizations_requires_auth_before_mutation(monkeypatch):
+    mutation_called = False
+
+    def update_existing_categorizations():
+        nonlocal mutation_called
+        mutation_called = True
+        return 1
+
+    monkeypatch.setattr(
+        api_main.report_service,
+        "update_existing_categorizations",
+        update_existing_categorizations,
+    )
+    monkeypatch.setattr(
+        api_main.report_service,
+        "get_threat_type_stats",
+        lambda: {"malware": 1},
+    )
+
+    async def request_admin_update():
+        transport = ASGITransport(app=api_main.app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post("/api/admin/update-categorizations")
+
+    response = asyncio.run(request_admin_update())
+
+    assert response.status_code in {401, 403, 503}
+    assert mutation_called is False
+
+
+def test_admin_update_categorizations_rejects_non_admin_before_mutation(monkeypatch):
+    mutation_called = False
+
+    def update_existing_categorizations():
+        nonlocal mutation_called
+        mutation_called = True
+        return 1
+
+    monkeypatch.setattr(
+        api_main.report_service,
+        "update_existing_categorizations",
+        update_existing_categorizations,
+    )
+
+    user = supabase_auth.AuthenticatedUser(
+        user_id="analyst-user",
+        email="analyst@example.com",
+        metadata={"role": "analyst"},
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(api_main.update_categorizations(user))
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Admin privileges required"
+    assert mutation_called is False
 
 
 def test_python_tooling_is_uv_managed():
