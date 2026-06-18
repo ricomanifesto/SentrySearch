@@ -1,7 +1,12 @@
 import asyncio
+import logging
 import os
 from pathlib import Path
 
+import pytest
+from fastapi import HTTPException
+
+from src.auth import supabase_auth
 from src.api import main as api_main
 from dev.smoke_api import configure_local_environment, run_checks
 
@@ -46,6 +51,25 @@ def test_health_check_redacts_internal_exception(monkeypatch):
 
     assert response.status_code == 503
     assert response.body == b'{"status":"unhealthy","error":"Health check failed"}'
+
+
+def test_verify_jwt_token_redacts_internal_exception(monkeypatch, caplog):
+    class FailingAuth:
+        def get_user(self, token: str):
+            raise RuntimeError(f"token backend leaked {token}")
+
+    class FailingSupabase:
+        auth = FailingAuth()
+
+    monkeypatch.setattr(supabase_auth, "supabase", FailingSupabase())
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(supabase_auth.verify_jwt_token("Bearer secret-token"))
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Invalid or expired token"
+    assert "secret-token" not in caplog.text
 
 
 def test_python_tooling_is_uv_managed():
