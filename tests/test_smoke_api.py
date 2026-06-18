@@ -99,3 +99,36 @@ def test_public_docs_do_not_reference_private_workflow_sources():
     ]
     for marker in private_markers:
         assert marker not in public_text
+
+
+def test_threat_profile_modules_use_domain_names():
+    assert (
+        read_text("src/core/threat_profile_generator.py").count("class ThreatProfileGenerator") == 1
+    )
+    assert (
+        read_text("src/core/cached_threat_profile_generator.py").count(
+            "class CachedThreatProfileGenerator"
+        )
+        == 1
+    )
+    assert (
+        read_text("src/search/threat_knowledge_retriever.py").count(
+            "class ThreatKnowledgeRetriever"
+        )
+        == 1
+    )
+    assert not (REPO_ROOT / "src/search/ml_agentic_retriever.py").exists()
+
+
+def test_frontend_supabase_client_is_build_safe_without_preview_env():
+    supabase_client = read_text("frontend/src/lib/supabase.ts")
+    api_client = read_text("frontend/src/lib/api.ts")
+    auth_context = read_text("frontend/src/contexts/AuthContext.tsx")
+
+    assert "function hasSupabaseConfig()" in supabase_client
+    assert "Supabase configuration is missing" in supabase_client
+    assert "private supabase = createClient()" not in api_client
+    assert "private getSupabase()" in api_client
+    assert "return config;" in api_client
+    assert "hasSupabaseConfig() ? createClient() : null" in auth_context
+    assert "Authentication is not configured" in auth_context

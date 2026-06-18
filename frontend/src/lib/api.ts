@@ -6,7 +6,7 @@
  */
 
 import axios, { AxiosInstance } from 'axios';
-import { createClient } from './supabase';
+import { createClient, hasSupabaseConfig } from './supabase';
 
 // Types
 export interface Report {
@@ -106,7 +106,6 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001';
 
 class SentrySearchAPI {
   private client: AxiosInstance;
-  private supabase = createClient();
 
   constructor() {
     this.client = axios.create({
@@ -120,7 +119,12 @@ class SentrySearchAPI {
     // Add auth token interceptor
     this.client.interceptors.request.use(
       async (config) => {
-        const { data: { session } } = await this.supabase.auth.getSession();
+        const supabase = this.getSupabase();
+        if (!supabase) {
+          return config;
+        }
+
+        const { data: { session } } = await supabase.auth.getSession();
         if (session?.access_token) {
           config.headers.Authorization = `Bearer ${session.access_token}`;
         }
@@ -162,6 +166,14 @@ class SentrySearchAPI {
         return Promise.reject(error);
       }
     );
+  }
+
+  private getSupabase() {
+    if (!hasSupabaseConfig()) {
+      return null;
+    }
+
+    return createClient();
   }
 
   // Health Check

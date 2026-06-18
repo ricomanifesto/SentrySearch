@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useEffect, useState } from 'react'
 import { User } from '@supabase/supabase-js'
-import { createClient } from '@/lib/supabase'
+import { createClient, hasSupabaseConfig } from '@/lib/supabase'
 
 type AuthContextType = {
   user: User | null
@@ -17,9 +17,14 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined)
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
-  const supabase = createClient()
+  const [supabase] = useState(() => (hasSupabaseConfig() ? createClient() : null))
 
   useEffect(() => {
+    if (!supabase) {
+      setLoading(false)
+      return
+    }
+
     // Get initial session
     const getInitialSession = async () => {
       const { data: { session } } = await supabase.auth.getSession()
@@ -38,9 +43,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     )
 
     return () => subscription.unsubscribe()
-  }, [supabase.auth])
+  }, [supabase])
 
   const signUp = async (email: string, password: string, name: string) => {
+    if (!supabase) {
+      return { error: new Error('Authentication is not configured') }
+    }
+
     try {
       const { error } = await supabase.auth.signUp({
         email,
@@ -58,6 +67,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   const signIn = async (email: string, password: string) => {
+    if (!supabase) {
+      return { error: new Error('Authentication is not configured') }
+    }
+
     try {
       const { error } = await supabase.auth.signInWithPassword({
         email,
@@ -70,6 +83,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   const signOut = async () => {
+    if (!supabase) {
+      return { error: new Error('Authentication is not configured') }
+    }
+
     try {
       const { error } = await supabase.auth.signOut()
       return { error }

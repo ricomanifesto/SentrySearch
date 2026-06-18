@@ -7,7 +7,7 @@ import os
 import pandas as pd
 import uuid
 from datetime import datetime
-from src.core.threat_intel_tool_cached import ThreatIntelToolCached
+from src.core.cached_threat_profile_generator import CachedThreatProfileGenerator
 from src.core.markdown_generator import generate_markdown
 
 # Import cloud storage if enabled
@@ -35,12 +35,14 @@ def generate_threat_profile(tool_name, enable_quality_control, progress=gr.Progr
 
         trace_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "traces")
         os.makedirs(trace_dir, exist_ok=True)
-        tool = ThreatIntelToolCached(enable_tracing=True, trace_export_dir=trace_dir)
-        tool.enable_quality_control = enable_quality_control
+        threat_profile_generator = CachedThreatProfileGenerator(
+            enable_tracing=True, trace_export_dir=trace_dir
+        )
+        threat_profile_generator.enable_quality_control = enable_quality_control
 
         # Generate threat intelligence
         progress(0.1, "🔄 Initializing threat intelligence generation...")
-        threat_data = tool.get_threat_intelligence(
+        threat_data = threat_profile_generator.get_threat_intelligence(
             tool_name, progress_callback=lambda p, msg: progress(p, msg)
         )
 

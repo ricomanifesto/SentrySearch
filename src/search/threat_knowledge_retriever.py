@@ -1,7 +1,7 @@
 """
 Workers-based ML Retriever for SentrySearch
 
-Updated MLAgenticRetriever that calls Cloudflare Workers for hybrid search
+Threat knowledge retriever that calls Cloudflare Workers for hybrid search.
 instead of local ChromaDB, providing production-ready global performance.
 """
 
@@ -498,7 +498,7 @@ class WorkersClient:
         return results
 
 
-class MLWorkersRetriever:
+class ThreatKnowledgeRetriever:
     """Main ML retriever using Cloudflare Workers for hybrid search"""
 
     def __init__(self, model_client, workers_url: str):
@@ -723,7 +723,7 @@ def main():
 
     # Create components
     model_client = create_model_client()
-    retriever = MLWorkersRetriever(model_client, workers_url)
+    retriever = ThreatKnowledgeRetriever(model_client, workers_url)
 
     # Test Workers health
     if retriever.workers_client.health_check():

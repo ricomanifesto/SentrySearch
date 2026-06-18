@@ -22,8 +22,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, validator
 
-# Import Workers-based retriever (production system)
-from src.search.ml_workers_retriever import MLWorkersRetriever, ThreatCharacteristics
+from src.search.threat_knowledge_retriever import ThreatKnowledgeRetriever, ThreatCharacteristics
 from src.core.opencode_client import create_model_client, resolve_model_name, ModelRateLimitError
 
 logger = logging.getLogger(__name__)
@@ -99,7 +98,7 @@ class MLGuidanceGenerator:
         if not workers_url:
             raise ValueError("WORKERS_URL environment variable is required for ML retriever")
 
-        self.ml_retriever = MLWorkersRetriever(model_client, workers_url)
+        self.ml_retriever = ThreatKnowledgeRetriever(model_client, workers_url)
         self.retriever_type = "workers"
         logger.info(f"ML Guidance Generator initialized with Workers retriever: {workers_url}")
 

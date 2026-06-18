@@ -19,7 +19,7 @@ load_dotenv()
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from storage.report_service import report_service
-from core.threat_intel_tool import ThreatIntelTool
+from core.threat_profile_generator import ThreatProfileGenerator
 from auth.supabase_auth import AuthenticatedUser, verify_jwt_token, get_optional_user
 
 logger = logging.getLogger(__name__)
@@ -49,10 +49,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Initialize services
-# report_service is imported as singleton instance
-threat_intel_tool = None  # Will be initialized when needed
 
 
 # Pydantic models for API
@@ -262,13 +258,15 @@ async def create_report(
 ):
     """Generate new threat intelligence report"""
     try:
-        threat_intel_tool = ThreatIntelTool()
+        threat_profile_generator = ThreatProfileGenerator()
 
         # Set ML guidance preference based on user request
-        threat_intel_tool.enable_ml_guidance = report_request.enable_ml_guidance
+        threat_profile_generator.enable_ml_guidance = report_request.enable_ml_guidance
 
         # Generate threat intelligence
-        result = threat_intel_tool.get_threat_intelligence(tool_name=report_request.tool_name)
+        result = threat_profile_generator.get_threat_intelligence(
+            tool_name=report_request.tool_name
+        )
 
         if not result or "error" in result:
             raise HTTPException(
