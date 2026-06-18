@@ -5,6 +5,7 @@ Handles JWT verification and user API key retrieval.
 """
 
 import os
+import logging
 import jwt
 from fastapi import HTTPException, Header, Depends
 from typing import Optional, Dict, Any
@@ -12,6 +13,8 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 # Supabase client setup
 supabase_url = os.getenv("NEXT_PUBLIC_SUPABASE_URL")
@@ -72,8 +75,14 @@ async def verify_jwt_token(authorization: Optional[str] = Header(None)) -> Authe
             user_id=user.id, email=user.email, metadata=user.user_metadata or {}
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Token verification failed: {str(e)}")
+        logger.warning(
+            "Token verification failed during Supabase auth check: %s",
+            type(e).__name__,
+        )
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
 # Optional dependency for routes that don't require authentication
