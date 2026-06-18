@@ -130,8 +130,8 @@ class ModelClient:
         if response.is_success:
             return
         if response.status_code == 429:
-            raise ModelRateLimitError(response.text)
-        raise ModelClientError(f"Failed to {action}: HTTP {response.status_code} {response.text}")
+            raise ModelRateLimitError("OpenCode rate limit exceeded")
+        raise ModelClientError(f"Failed to {action}: HTTP {response.status_code}")
 
     def _extract_text(self, payload: dict[str, Any]) -> str:
         text_parts = []
