@@ -4,16 +4,32 @@ import httpx
 import pytest
 
 from src.core.opencode_client import (
+    DEFAULT_MODEL,
     ModelClient,
     ModelClientError,
     ModelRateLimitError,
     parse_model_selection,
+    resolve_model_name,
 )
+
+
+def test_default_model_uses_free_openrouter_agentic_model(monkeypatch):
+    monkeypatch.delenv("SENTRYSEARCH_MODEL", raising=False)
+
+    assert DEFAULT_MODEL == "openrouter/nex-agi/nex-n2-pro:free"
+    assert resolve_model_name() == "openrouter/nex-agi/nex-n2-pro:free"
 
 
 def test_model_selection_requires_provider_model():
     with pytest.raises(ValueError):
         parse_model_selection("claude-sonnet-4-5-20250929")
+
+
+def test_model_selection_allows_openrouter_nested_model_id():
+    model = parse_model_selection("openrouter/nex-agi/nex-n2-pro:free")
+
+    assert model.provider_id == "openrouter"
+    assert model.model_id == "nex-agi/nex-n2-pro:free"
 
 
 def test_model_client_posts_to_opencode():
@@ -26,8 +42,8 @@ def test_model_client_posts_to_opencode():
         if request.url.path == "/session/session-1/message":
             payload = json.loads(request.content.decode())
             assert payload["model"] == {
-                "providerID": "anthropic",
-                "modelID": "claude-sonnet-4-5-20250929",
+                "providerID": "openrouter",
+                "modelID": "nex-agi/nex-n2-pro:free",
             }
             return httpx.Response(
                 200,
@@ -41,7 +57,7 @@ def test_model_client_posts_to_opencode():
     )
 
     response = client.messages.create(
-        model="anthropic/claude-sonnet-4-5-20250929",
+        model="openrouter/nex-agi/nex-n2-pro:free",
         messages=[{"role": "user", "content": "Generate a report"}],
     )
 
@@ -65,7 +81,7 @@ def test_model_client_redacts_failed_response_body():
 
     with pytest.raises(ModelClientError) as raised:
         client.messages.create(
-            model="anthropic/claude-sonnet-4-5-20250929",
+            model="openrouter/nex-agi/nex-n2-pro:free",
             messages=[{"role": "user", "content": "Generate a report"}],
         )
 
@@ -86,7 +102,7 @@ def test_model_client_redacts_rate_limit_response_body():
 
     with pytest.raises(ModelRateLimitError) as raised:
         client.messages.create(
-            model="anthropic/claude-sonnet-4-5-20250929",
+            model="openrouter/nex-agi/nex-n2-pro:free",
             messages=[{"role": "user", "content": "Generate a report"}],
         )
 

@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-DEFAULT_MODEL = "anthropic/claude-sonnet-4-5-20250929"
+DEFAULT_MODEL = "openrouter/nex-agi/nex-n2-pro:free"
 MODEL_ENV_VAR = "SENTRYSEARCH_MODEL"
 OPENCODE_BASE_URL_ENV_VAR = "OPENCODE_BASE_URL"
 OPENCODE_SERVER_USERNAME_ENV_VAR = "OPENCODE_SERVER_USERNAME"

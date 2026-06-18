@@ -48,11 +48,11 @@ class PerformanceTracker:
 
     # Pricing per 1M tokens. Override as provider costs change.
     PRICING = {
-        "anthropic/claude-sonnet-4-5-20250929": {
-            "input": 3.00,
-            "output": 15.00,
-            "cache_write": 3.75,
-            "cache_read": 0.30,
+        "openrouter/nex-agi/nex-n2-pro:free": {
+            "input": 0.0,
+            "output": 0.0,
+            "cache_write": 0.0,
+            "cache_read": 0.0,
         }
     }
 
@@ -74,7 +74,7 @@ class PerformanceTracker:
     def start_request(
         self,
         query: str,
-        model: str = "anthropic/claude-sonnet-4-5-20250929",
+        model: str = "openrouter/nex-agi/nex-n2-pro:free",
         prompt_type: str = "threat_intel",
         cache_enabled: bool = False,
     ) -> str:
@@ -248,7 +248,7 @@ class PerformanceTracker:
         model = self.current_metrics.model
         pricing = self.PRICING.get(
             model,
-            self.PRICING["anthropic/claude-sonnet-4-5-20250929"],
+            self.PRICING["openrouter/nex-agi/nex-n2-pro:free"],
         )
 
         # Base costs
