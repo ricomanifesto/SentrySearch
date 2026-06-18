@@ -9,7 +9,6 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEV_ROOT = REPO_ROOT / "dev"
 LOCAL_API_URL = "http://localhost:8001"
 PYTHON_RUFF_PATHS = [
     "run_api.py",
@@ -92,8 +91,8 @@ async def main() -> int:
     run_command(["ty", "check", *PYTHON_FORMAT_TYPE_PATHS])
     run_command([sys.executable, "-B", "-m", "pytest", "tests"])
 
-    sys.path.insert(0, str(DEV_ROOT))
-    from smoke_api import run_checks  # pylint: disable=import-outside-toplevel
+    sys.path.insert(0, str(REPO_ROOT))
+    from dev.smoke_api import run_checks  # pylint: disable=import-outside-toplevel
 
     await run_checks()
     print("Local setup contract checks passed")

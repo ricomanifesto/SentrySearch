@@ -1,10 +1,6 @@
-"""
-SentrySearch FastAPI Application
+"""SentrySearch FastAPI application."""
 
-Main API application for frontend integration.
-Optimized for Vercel Hobby Plan deployment.
-"""
-
+import logging
 import os
 import sys
 from fastapi import FastAPI, HTTPException, Query, Depends, Header
@@ -25,6 +21,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from storage.report_service import report_service
 from core.threat_intel_tool import ThreatIntelTool
 from auth.supabase_auth import AuthenticatedUser, verify_jwt_token, get_optional_user
+
+logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -106,6 +104,12 @@ def get_pagination_params(
     return PaginationParams(page=page, limit=limit, sort_by=sort_by, sort_order=sort_order)
 
 
+def internal_server_error(message: str, exc: Exception) -> HTTPException:
+    """Log internal errors while returning a stable client-safe message."""
+    logger.exception("%s: %s", message, exc)
+    return HTTPException(status_code=500, detail=message)
+
+
 # API Routes
 
 
@@ -127,7 +131,11 @@ async def health_check():
             "timestamp": datetime.utcnow().isoformat(),
         }
     except Exception as e:
-        return JSONResponse(status_code=503, content={"status": "unhealthy", "error": str(e)})
+        logger.exception("Health check failed: %s", e)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unhealthy", "error": "Health check failed"},
+        )
 
 
 # Report Management Endpoints
@@ -206,7 +214,7 @@ async def list_reports(
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list reports: {str(e)}")
+        raise internal_server_error("Failed to list reports", e)
 
 
 @app.get("/api/reports/{report_id}", response_model=ReportDetail)
@@ -244,7 +252,7 @@ async def get_report(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get report: {str(e)}")
+        raise internal_server_error("Failed to get report", e)
 
 
 @app.post("/api/reports", response_model=Dict[str, str])
@@ -283,7 +291,7 @@ async def create_report(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create report: {str(e)}")
+        raise internal_server_error("Failed to create report", e)
 
 
 @app.delete("/api/reports/{report_id}")
@@ -311,7 +319,7 @@ async def delete_report(report_id: str, user: AuthenticatedUser = Depends(verify
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete report: {str(e)}")
+        raise internal_server_error("Failed to delete report", e)
 
 
 # Search Endpoints
@@ -386,7 +394,7 @@ async def search_reports(
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+        raise internal_server_error("Search failed", e)
 
 
 @app.get("/api/search/filters")
@@ -412,7 +420,7 @@ async def get_search_filters():
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get filters: {str(e)}")
+        raise internal_server_error("Failed to get filters", e)
 
 
 # Admin Endpoints
@@ -434,7 +442,7 @@ async def update_categorizations():
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to update categorizations: {str(e)}")
+        raise internal_server_error("Failed to update categorizations", e)
 
 
 # Analytics Endpoints
@@ -547,7 +555,7 @@ async def get_analytics(time_range: str = "30d"):
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get analytics: {str(e)}")
+        raise internal_server_error("Failed to get analytics", e)
 
 
 @app.get("/api/analytics/dashboard")
@@ -591,7 +599,7 @@ async def get_dashboard_analytics():
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get analytics: {str(e)}")
+        raise internal_server_error("Failed to get analytics", e)
 
 
 # Development server

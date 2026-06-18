@@ -2,6 +2,7 @@ import asyncio
 import os
 from pathlib import Path
 
+from src.api import main as api_main
 from dev.smoke_api import configure_local_environment, run_checks
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +34,18 @@ def test_configure_local_environment_sets_harmless_defaults(monkeypatch):
 
 def test_smoke_api_exercises_local_auth_boundary_without_live_services():
     assert asyncio.run(run_checks()) == 0
+
+
+def test_health_check_redacts_internal_exception(monkeypatch):
+    def fail_connection():
+        raise RuntimeError("database password leaked")
+
+    monkeypatch.setattr(api_main.report_service, "test_connection", fail_connection)
+
+    response = asyncio.run(api_main.health_check())
+
+    assert response.status_code == 503
+    assert response.body == b'{"status":"unhealthy","error":"Health check failed"}'
 
 
 def test_python_tooling_is_uv_managed():
