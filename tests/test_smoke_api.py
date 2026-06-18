@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import os
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from httpx import ASGITransport, AsyncClient
@@ -9,6 +11,7 @@ from fastapi import HTTPException
 
 from src.auth import supabase_auth
 from src.api import main as api_main
+from src.storage.models import Report
 from dev.smoke_api import configure_local_environment, run_checks
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -153,6 +156,252 @@ def test_admin_update_categorizations_rejects_non_admin_before_mutation(monkeypa
     assert exc_info.value.status_code == 403
     assert exc_info.value.detail == "Admin privileges required"
     assert mutation_called is False
+
+
+def test_list_reports_requires_auth_before_storage_read(monkeypatch):
+    storage_called = False
+
+    def list_reports(*args, **kwargs):
+        nonlocal storage_called
+        storage_called = True
+        return []
+
+    monkeypatch.setattr(api_main.report_service, "list_reports", list_reports)
+    monkeypatch.setattr(api_main.report_service, "count_reports", lambda **kwargs: 0)
+
+    async def request_reports():
+        transport = ASGITransport(app=api_main.app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.get("/api/reports")
+
+    response = asyncio.run(request_reports())
+
+    assert response.status_code in {401, 403, 503}
+    assert storage_called is False
+
+
+def test_get_report_requires_auth_before_storage_read(monkeypatch):
+    storage_called = False
+
+    def get_report(report_id: str, include_content: bool = True):
+        nonlocal storage_called
+        storage_called = True
+        return {"id": report_id}
+
+    monkeypatch.setattr(api_main.report_service, "get_report", get_report)
+
+    async def request_report():
+        transport = ASGITransport(app=api_main.app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.get("/api/reports/report-1")
+
+    response = asyncio.run(request_report())
+
+    assert response.status_code in {401, 403, 503}
+    assert storage_called is False
+
+
+def test_report_model_exposes_owner_for_api_authorization():
+    report = Report(
+        id=uuid.uuid4(),
+        tool_name="Example",
+        category="malware",
+        threat_type="trojan",
+        created_at=datetime.now(timezone.utc),
+        user_id="owner-user",
+    )
+
+    assert report.to_dict()["user_id"] == "owner-user"
+
+
+def test_search_reports_requires_auth_before_storage_read(monkeypatch):
+    storage_called = False
+
+    def search_reports(*args, **kwargs):
+        nonlocal storage_called
+        storage_called = True
+        return []
+
+    monkeypatch.setattr(api_main.report_service, "search_reports", search_reports)
+    monkeypatch.setattr(api_main.report_service, "count_search_results", lambda **kwargs: 0)
+
+    async def request_search():
+        transport = ASGITransport(app=api_main.app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post("/api/search", json={"query": "example"})
+
+    response = asyncio.run(request_search())
+
+    assert response.status_code in {401, 403, 503}
+    assert storage_called is False
+
+
+def test_search_reports_filters_by_authenticated_non_admin(monkeypatch):
+    captured_search_kwargs = {}
+    captured_count_kwargs = {}
+
+    def search_reports(**kwargs):
+        captured_search_kwargs.update(kwargs)
+        return []
+
+    def count_search_results(**kwargs):
+        captured_count_kwargs.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(api_main.report_service, "search_reports", search_reports)
+    monkeypatch.setattr(api_main.report_service, "count_search_results", count_search_results)
+
+    user = supabase_auth.AuthenticatedUser(
+        user_id="analyst-user",
+        email="analyst@example.com",
+        metadata={"role": "analyst"},
+    )
+
+    response = asyncio.run(
+        api_main.search_reports(
+            api_main.SearchFilters(query="example"),
+            api_main.PaginationParams(),
+            user,
+        )
+    )
+
+    assert response["reports"] == []
+    assert captured_search_kwargs["user_id"] == "analyst-user"
+    assert captured_count_kwargs["user_id"] == "analyst-user"
+
+
+def test_analytics_requires_auth_before_storage_read(monkeypatch):
+    storage_called = False
+
+    def count_reports(**kwargs):
+        nonlocal storage_called
+        storage_called = True
+        return 0
+
+    monkeypatch.setattr(api_main.report_service, "count_reports", count_reports)
+
+    async def request_analytics():
+        transport = ASGITransport(app=api_main.app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.get("/api/analytics")
+
+    response = asyncio.run(request_analytics())
+
+    assert response.status_code in {401, 403, 503}
+    assert storage_called is False
+
+
+def test_dashboard_analytics_requires_auth_before_storage_read(monkeypatch):
+    storage_called = False
+
+    def count_reports(**kwargs):
+        nonlocal storage_called
+        storage_called = True
+        return 0
+
+    monkeypatch.setattr(api_main.report_service, "count_reports", count_reports)
+
+    async def request_dashboard_analytics():
+        transport = ASGITransport(app=api_main.app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.get("/api/analytics/dashboard")
+
+    response = asyncio.run(request_dashboard_analytics())
+
+    assert response.status_code in {401, 403, 503}
+    assert storage_called is False
+
+
+def test_analytics_filters_report_reads_by_authenticated_non_admin(monkeypatch):
+    captured_count_kwargs = []
+    captured_quality_kwargs = {}
+    captured_threat_kwargs = {}
+    captured_list_kwargs = {}
+
+    def count_reports(**kwargs):
+        captured_count_kwargs.append(kwargs)
+        return 0
+
+    def get_quality_score_distribution(**kwargs):
+        captured_quality_kwargs.update(kwargs)
+        return {"average": 0.0, "distribution": {}, "total_scored": 0}
+
+    def get_threat_type_stats(**kwargs):
+        captured_threat_kwargs.update(kwargs)
+        return {}
+
+    def list_reports(**kwargs):
+        captured_list_kwargs.update(kwargs)
+        return []
+
+    monkeypatch.setattr(api_main.report_service, "count_reports", count_reports)
+    monkeypatch.setattr(
+        api_main.report_service,
+        "get_quality_score_distribution",
+        get_quality_score_distribution,
+    )
+    monkeypatch.setattr(api_main.report_service, "get_threat_type_stats", get_threat_type_stats)
+    monkeypatch.setattr(api_main.report_service, "list_reports", list_reports)
+
+    user = supabase_auth.AuthenticatedUser(
+        user_id="analyst-user",
+        email="analyst@example.com",
+        metadata={"role": "analyst"},
+    )
+
+    response = asyncio.run(api_main.get_analytics("30d", user))
+
+    assert response["overview"]["total_reports"] == 0
+    assert all(kwargs["user_id"] == "analyst-user" for kwargs in captured_count_kwargs)
+    assert captured_quality_kwargs["user_id"] == "analyst-user"
+    assert captured_threat_kwargs["user_id"] == "analyst-user"
+    assert captured_list_kwargs["user_id"] == "analyst-user"
+
+
+def test_dashboard_analytics_filters_report_reads_by_authenticated_non_admin(monkeypatch):
+    captured_count_kwargs = []
+    captured_quality_kwargs = {}
+    captured_threat_kwargs = {}
+    captured_list_kwargs = {}
+
+    def count_reports(**kwargs):
+        captured_count_kwargs.append(kwargs)
+        return 0
+
+    def get_quality_score_distribution(**kwargs):
+        captured_quality_kwargs.update(kwargs)
+        return {"average": 0.0, "distribution": [], "total_scored": 0}
+
+    def get_threat_type_stats(**kwargs):
+        captured_threat_kwargs.update(kwargs)
+        return {}
+
+    def list_reports(**kwargs):
+        captured_list_kwargs.update(kwargs)
+        return []
+
+    monkeypatch.setattr(api_main.report_service, "count_reports", count_reports)
+    monkeypatch.setattr(
+        api_main.report_service,
+        "get_quality_score_distribution",
+        get_quality_score_distribution,
+    )
+    monkeypatch.setattr(api_main.report_service, "get_threat_type_stats", get_threat_type_stats)
+    monkeypatch.setattr(api_main.report_service, "list_reports", list_reports)
+
+    user = supabase_auth.AuthenticatedUser(
+        user_id="analyst-user",
+        email="analyst@example.com",
+        metadata={"role": "analyst"},
+    )
+
+    response = asyncio.run(api_main.get_dashboard_analytics(user))
+
+    assert response["summary"]["total_reports"] == 0
+    assert all(kwargs["user_id"] == "analyst-user" for kwargs in captured_count_kwargs)
+    assert captured_quality_kwargs["user_id"] == "analyst-user"
+    assert captured_threat_kwargs["user_id"] == "analyst-user"
+    assert captured_list_kwargs["user_id"] == "analyst-user"
 
 
 def test_python_tooling_is_uv_managed():

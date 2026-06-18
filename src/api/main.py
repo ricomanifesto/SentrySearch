@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from storage.report_service import report_service
 from core.threat_profile_generator import ThreatProfileGenerator
-from auth.supabase_auth import AuthenticatedUser, verify_jwt_token, get_optional_user
+from auth.supabase_auth import AuthenticatedUser, verify_jwt_token
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +106,13 @@ def internal_server_error(message: str, exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail=message)
 
 
+def get_report_scope(user: AuthenticatedUser) -> Dict[str, str]:
+    """Return report filters needed to isolate non-admin users."""
+    if user.metadata.get("role") == "admin":
+        return {}
+    return {"user_id": user.id}
+
+
 # API Routes
 
 
@@ -140,7 +147,7 @@ async def health_check():
 @app.get("/api/reports", response_model=Dict[str, Any])
 async def list_reports(
     pagination: PaginationParams = Depends(get_pagination_params),
-    user: Optional[AuthenticatedUser] = Depends(get_optional_user),
+    user: AuthenticatedUser = Depends(verify_jwt_token),
     query: Optional[str] = Query(None, description="Search query"),
     threat_type: Optional[str] = Query(None, description="Filter by threat type"),
     min_quality: Optional[float] = Query(None, ge=0, le=5, description="Minimum quality score"),
@@ -159,12 +166,8 @@ async def list_reports(
         if min_quality:
             filters["min_quality_score"] = min_quality
 
-        # Add user filter if authenticated (unless user is admin)
-        if user:
-            # Check if user is admin
-            is_admin = user.metadata.get("role") == "admin"
-            if not is_admin:
-                filters["user_id"] = user.id
+        # Add user filter unless user is admin
+        filters.update(get_report_scope(user))
 
         # Get reports
         reports = report_service.list_reports(
@@ -217,7 +220,7 @@ async def list_reports(
 async def get_report(
     report_id: str,
     include_content: bool = Query(True),
-    user: Optional[AuthenticatedUser] = Depends(get_optional_user),
+    user: AuthenticatedUser = Depends(verify_jwt_token),
 ):
     """Get specific report by ID"""
     try:
@@ -226,11 +229,9 @@ async def get_report(
         if not report:
             raise HTTPException(status_code=404, detail="Report not found")
 
-        # Check if user owns this report (if authenticated and not admin)
-        if user:
-            is_admin = user.metadata.get("role") == "admin"
-            if not is_admin and report.get("user_id") != user.id:
-                raise HTTPException(status_code=404, detail="Report not found")
+        # Check if user owns this report unless user is admin
+        if get_report_scope(user) and report.get("user_id") != user.id:
+            raise HTTPException(status_code=404, detail="Report not found")
 
         return ReportDetail(
             id=report["id"],
@@ -303,8 +304,7 @@ async def delete_report(report_id: str, user: AuthenticatedUser = Depends(verify
             raise HTTPException(status_code=404, detail="Report not found")
 
         # Check if user owns this report or is admin
-        is_admin = user.metadata.get("role") == "admin"
-        if not is_admin and report.get("user_id") != user.id:
+        if get_report_scope(user) and report.get("user_id") != user.id:
             raise HTTPException(status_code=404, detail="Report not found")
 
         success = report_service.delete_report(report_id)
@@ -325,7 +325,9 @@ async def delete_report(report_id: str, user: AuthenticatedUser = Depends(verify
 
 @app.post("/api/search", response_model=Dict[str, Any])
 async def search_reports(
-    filters: SearchFilters, pagination: PaginationParams = Depends(get_pagination_params)
+    filters: SearchFilters,
+    pagination: PaginationParams = Depends(get_pagination_params),
+    user: AuthenticatedUser = Depends(verify_jwt_token),
 ):
     """Advanced search across reports"""
     try:
@@ -344,6 +346,8 @@ async def search_reports(
             search_params["created_after"] = datetime.utcnow() - timedelta(
                 days=filters.date_range_days
             )
+
+        search_params.update(get_report_scope(user))
 
         # Calculate offset
         offset = (pagination.page - 1) * pagination.limit
@@ -450,7 +454,10 @@ async def update_categorizations(user: AuthenticatedUser = Depends(verify_jwt_to
 
 
 @app.get("/api/analytics")
-async def get_analytics(time_range: str = "30d"):
+async def get_analytics(
+    time_range: str = "30d",
+    user: AuthenticatedUser = Depends(verify_jwt_token),
+):
     """Get comprehensive analytics data"""
     try:
         # Parse time range
@@ -462,22 +469,23 @@ async def get_analytics(time_range: str = "30d"):
         start_date = now - timedelta(days=days)
         yesterday = now - timedelta(days=1)
         week_ago = now - timedelta(days=7)
+        report_scope = get_report_scope(user)
 
         # Overview metrics
-        total_reports = report_service.count_reports()
-        reports_24h = report_service.count_reports(created_after=yesterday)
-        reports_7d = report_service.count_reports(created_after=week_ago)
-        reports_period = report_service.count_reports(created_after=start_date)
+        total_reports = report_service.count_reports(**report_scope)
+        reports_24h = report_service.count_reports(created_after=yesterday, **report_scope)
+        reports_7d = report_service.count_reports(created_after=week_ago, **report_scope)
+        reports_period = report_service.count_reports(created_after=start_date, **report_scope)
 
         # Get average quality score and processing time
-        quality_stats = report_service.get_quality_score_distribution()
+        quality_stats = report_service.get_quality_score_distribution(**report_scope)
         avg_quality = quality_stats.get("average", 0.0)
 
         # Get processing time stats (simulate for now)
         avg_processing_time = 45000  # 45 seconds average
 
         # Most common threat type
-        threat_stats = report_service.get_threat_type_stats()
+        threat_stats = report_service.get_threat_type_stats(**report_scope)
         most_common_threat = (
             max(threat_stats.items(), key=lambda x: x[1])[0] if threat_stats else "unknown"
         )
@@ -520,7 +528,7 @@ async def get_analytics(time_range: str = "30d"):
 
         # Recent activity
         recent_reports = report_service.list_reports(
-            limit=10, sort_by="created_at", sort_order="desc"
+            limit=10, sort_by="created_at", sort_order="desc", **report_scope
         )
         recent_activity = []
         for report in recent_reports:
@@ -560,24 +568,26 @@ async def get_analytics(time_range: str = "30d"):
 
 
 @app.get("/api/analytics/dashboard")
-async def get_dashboard_analytics():
+async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_token)):
     """Get dashboard analytics data"""
     try:
+        report_scope = get_report_scope(user)
+
         # Get basic metrics
-        total_reports = report_service.count_reports()
+        total_reports = report_service.count_reports(**report_scope)
         recent_reports = report_service.count_reports(
-            created_after=datetime.utcnow() - timedelta(days=7)
+            created_after=datetime.utcnow() - timedelta(days=7), **report_scope
         )
 
         # Get threat type distribution
-        threat_stats = report_service.get_threat_type_stats()
+        threat_stats = report_service.get_threat_type_stats(**report_scope)
 
         # Get quality score distribution
-        quality_stats = report_service.get_quality_score_distribution()
+        quality_stats = report_service.get_quality_score_distribution(**report_scope)
 
         # Get recent activity
         recent_activity = report_service.list_reports(
-            limit=5, sort_by="created_at", sort_order="desc"
+            limit=5, sort_by="created_at", sort_order="desc", **report_scope
         )
 
         return {
