@@ -629,45 +629,53 @@ class ReportStorageService:
         """Count search results - currently uses same logic as count_reports"""
         return self.count_reports(**filters)
 
-    def get_unique_threat_types(self) -> List[str]:
+    def get_unique_threat_types(self, user_id: Optional[str] = None) -> List[str]:
         """Get list of unique threat types"""
         try:
             with self.db_manager.get_session() as session:
-                results = (
+                query = (
                     session.query(Report.threat_type)
                     .distinct()
                     .filter(Report.threat_type.isnot(None), Report.threat_type != "")
-                    .all()
                 )
+                if user_id:
+                    query = query.filter(Report.user_id == user_id)
+
+                results = query.all()
                 return [r[0] for r in results if r[0]]
         except Exception as e:
             logger.error(f"Error getting threat types: {e}")
             return []
 
-    def get_unique_categories(self) -> List[str]:
+    def get_unique_categories(self, user_id: Optional[str] = None) -> List[str]:
         """Get list of unique categories"""
         try:
             with self.db_manager.get_session() as session:
-                results = (
+                query = (
                     session.query(Report.category)
                     .distinct()
                     .filter(Report.category.isnot(None), Report.category != "")
-                    .all()
                 )
+                if user_id:
+                    query = query.filter(Report.user_id == user_id)
+
+                results = query.all()
                 return [r[0] for r in results if r[0]]
         except Exception as e:
             logger.error(f"Error getting categories: {e}")
             return []
 
-    def get_popular_tags(self, limit: int = 50) -> List[str]:
+    def get_popular_tags(self, limit: int = 50, user_id: Optional[str] = None) -> List[str]:
         """Get most popular tags"""
         try:
             with self.db_manager.get_session() as session:
                 # For now, return unique values from search_tags arrays
                 # In a production system, you'd want proper tag frequency counting
-                results = (
-                    session.query(Report.search_tags).filter(Report.search_tags.isnot(None)).all()
-                )
+                query = session.query(Report.search_tags).filter(Report.search_tags.isnot(None))
+                if user_id:
+                    query = query.filter(Report.user_id == user_id)
+
+                results = query.all()
 
                 all_tags = []
                 for result in results:
