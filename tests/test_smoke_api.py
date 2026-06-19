@@ -270,6 +270,64 @@ def test_search_reports_filters_by_authenticated_non_admin(monkeypatch):
     assert captured_count_kwargs["user_id"] == "analyst-user"
 
 
+def test_search_filters_requires_auth_before_storage_read(monkeypatch):
+    storage_called = False
+
+    def get_unique_threat_types(*args, **kwargs):
+        nonlocal storage_called
+        storage_called = True
+        return []
+
+    monkeypatch.setattr(api_main.report_service, "get_unique_threat_types", get_unique_threat_types)
+    monkeypatch.setattr(api_main.report_service, "get_unique_categories", lambda **kwargs: [])
+    monkeypatch.setattr(api_main.report_service, "get_popular_tags", lambda **kwargs: [])
+
+    async def request_filters():
+        transport = ASGITransport(app=api_main.app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.get("/api/search/filters")
+
+    response = asyncio.run(request_filters())
+
+    assert response.status_code in {401, 403, 503}
+    assert storage_called is False
+
+
+def test_search_filters_scope_by_authenticated_non_admin(monkeypatch):
+    captured_threat_kwargs = {}
+    captured_category_kwargs = {}
+    captured_tag_kwargs = {}
+
+    def get_unique_threat_types(**kwargs):
+        captured_threat_kwargs.update(kwargs)
+        return []
+
+    def get_unique_categories(**kwargs):
+        captured_category_kwargs.update(kwargs)
+        return []
+
+    def get_popular_tags(**kwargs):
+        captured_tag_kwargs.update(kwargs)
+        return []
+
+    monkeypatch.setattr(api_main.report_service, "get_unique_threat_types", get_unique_threat_types)
+    monkeypatch.setattr(api_main.report_service, "get_unique_categories", get_unique_categories)
+    monkeypatch.setattr(api_main.report_service, "get_popular_tags", get_popular_tags)
+
+    user = supabase_auth.AuthenticatedUser(
+        user_id="analyst-user",
+        email="analyst@example.com",
+        metadata={"role": "analyst"},
+    )
+
+    response = asyncio.run(api_main.get_search_filters(user))
+
+    assert response["threat_types"] == []
+    assert captured_threat_kwargs["user_id"] == "analyst-user"
+    assert captured_category_kwargs["user_id"] == "analyst-user"
+    assert captured_tag_kwargs["user_id"] == "analyst-user"
+
+
 def test_analytics_requires_auth_before_storage_read(monkeypatch):
     storage_called = False
 

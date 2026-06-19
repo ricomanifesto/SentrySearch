@@ -400,13 +400,15 @@ async def search_reports(
 
 
 @app.get("/api/search/filters")
-async def get_search_filters():
+async def get_search_filters(user: AuthenticatedUser = Depends(verify_jwt_token)):
     """Get available filter options for search"""
     try:
+        report_scope = get_report_scope(user)
+
         # Get unique values for filtering
-        threat_types = report_service.get_unique_threat_types()
-        categories = report_service.get_unique_categories()
-        tags = report_service.get_popular_tags(limit=50)
+        threat_types = report_service.get_unique_threat_types(**report_scope)
+        categories = report_service.get_unique_categories(**report_scope)
+        tags = report_service.get_popular_tags(limit=50, **report_scope)
 
         return {
             "threat_types": threat_types,
