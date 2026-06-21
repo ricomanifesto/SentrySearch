@@ -328,6 +328,97 @@ def test_search_filters_scope_by_authenticated_non_admin(monkeypatch):
     assert captured_tag_kwargs["user_id"] == "analyst-user"
 
 
+def test_report_responses_default_null_quality_score(monkeypatch):
+    stored_report = {
+        "id": "report-1",
+        "tool_name": "Example",
+        "category": None,
+        "threat_type": None,
+        "created_at": datetime.now(timezone.utc),
+        "quality_score": None,
+        "processing_time_ms": None,
+        "user_id": "analyst-user",
+    }
+    user = supabase_auth.AuthenticatedUser(
+        user_id="analyst-user",
+        email="analyst@example.com",
+        metadata={"role": "analyst"},
+    )
+
+    monkeypatch.setattr(api_main.report_service, "list_reports", lambda **kwargs: [stored_report])
+    monkeypatch.setattr(api_main.report_service, "count_reports", lambda **kwargs: 1)
+
+    response = asyncio.run(api_main.list_reports(api_main.PaginationParams(), user))
+
+    assert response["reports"][0].quality_score == 0.0
+    assert response["reports"][0].processing_time_ms == 0
+    assert response["reports"][0].category == "unknown"
+    assert response["reports"][0].threat_type == "unknown"
+
+
+def test_report_detail_defaults_null_quality_score(monkeypatch):
+    stored_report = {
+        "id": "report-1",
+        "tool_name": "Example",
+        "category": None,
+        "threat_type": None,
+        "created_at": datetime.now(timezone.utc),
+        "quality_score": None,
+        "processing_time_ms": None,
+        "user_id": "analyst-user",
+    }
+    user = supabase_auth.AuthenticatedUser(
+        user_id="analyst-user",
+        email="analyst@example.com",
+        metadata={"role": "analyst"},
+    )
+
+    monkeypatch.setattr(
+        api_main.report_service, "get_report", lambda *args, **kwargs: stored_report
+    )
+
+    response = asyncio.run(api_main.get_report("report-1", True, user))
+
+    assert response.quality_score == 0.0
+    assert response.processing_time_ms == 0
+    assert response.category == "unknown"
+    assert response.threat_type == "unknown"
+
+
+def test_search_results_default_null_quality_score(monkeypatch):
+    stored_report = {
+        "id": "report-1",
+        "tool_name": "Example",
+        "category": None,
+        "threat_type": None,
+        "created_at": datetime.now(timezone.utc),
+        "quality_score": None,
+        "processing_time_ms": None,
+        "user_id": "analyst-user",
+    }
+    user = supabase_auth.AuthenticatedUser(
+        user_id="analyst-user",
+        email="analyst@example.com",
+        metadata={"role": "analyst"},
+    )
+
+    monkeypatch.setattr(api_main.report_service, "search_reports", lambda **kwargs: [stored_report])
+    monkeypatch.setattr(api_main.report_service, "count_search_results", lambda **kwargs: 1)
+
+    response = asyncio.run(
+        api_main.search_reports(
+            api_main.SearchFilters(query="example"),
+            api_main.PaginationParams(),
+            user,
+        )
+    )
+
+    assert response["reports"][0].quality_score == 0.0
+    assert response["reports"][0].processing_time_ms == 0
+    assert response["reports"][0].category == "unknown"
+    assert response["reports"][0].threat_type == "unknown"
+
+
 def test_analytics_requires_auth_before_storage_read(monkeypatch):
     storage_called = False
 

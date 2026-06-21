@@ -113,6 +113,14 @@ def get_report_scope(user: AuthenticatedUser) -> Dict[str, str]:
     return {"user_id": user.id}
 
 
+def get_quality_score(report: Dict[str, Any]) -> float:
+    return report.get("quality_score") or 0.0
+
+
+def get_report_label(report: Dict[str, Any], field: str) -> str:
+    return report.get(field) or "unknown"
+
+
 # API Routes
 
 
@@ -188,9 +196,9 @@ async def list_reports(
                 ReportResponse(
                     id=report["id"],
                     tool_name=report["tool_name"],
-                    category=report.get("category", "unknown"),
-                    threat_type=report.get("threat_type", "unknown"),
-                    quality_score=report.get("quality_score", 0.0),
+                    category=get_report_label(report, "category"),
+                    threat_type=get_report_label(report, "threat_type"),
+                    quality_score=get_quality_score(report),
                     created_at=report["created_at"],
                     processing_time_ms=report.get("processing_time_ms") or 0,
                     content_preview=(
@@ -236,11 +244,11 @@ async def get_report(
         return ReportDetail(
             id=report["id"],
             tool_name=report["tool_name"],
-            category=report.get("category", "unknown"),
-            threat_type=report.get("threat_type", "unknown"),
-            quality_score=report.get("quality_score", 0.0),
+            category=get_report_label(report, "category"),
+            threat_type=get_report_label(report, "threat_type"),
+            quality_score=get_quality_score(report),
             created_at=report["created_at"],
-            processing_time_ms=report.get("processing_time_ms", 0),
+            processing_time_ms=report.get("processing_time_ms") or 0,
             markdown_content=report.get("markdown_content") if include_content else None,
             threat_data=report.get("threat_data"),
             search_tags=report.get("search_tags", []),
@@ -371,9 +379,9 @@ async def search_reports(
                 ReportResponse(
                     id=report["id"],
                     tool_name=report["tool_name"],
-                    category=report.get("category", "unknown"),
-                    threat_type=report.get("threat_type", "unknown"),
-                    quality_score=report.get("quality_score", 0.0),
+                    category=get_report_label(report, "category"),
+                    threat_type=get_report_label(report, "threat_type"),
+                    quality_score=get_quality_score(report),
                     created_at=report["created_at"],
                     processing_time_ms=report.get("processing_time_ms") or 0,
                     content_preview=(
