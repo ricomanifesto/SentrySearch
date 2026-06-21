@@ -149,6 +149,25 @@ async def health_check():
         )
 
 
+@app.get("/api/ready")
+async def readiness_check():
+    """Readiness check for deployment promotion."""
+    try:
+        db_status = report_service.test_connection()
+        if not db_status:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "unready", "database": "disconnected"},
+            )
+        return {"status": "ready", "database": "connected"}
+    except Exception as e:
+        logger.exception("Readiness check failed: %s", e)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unready", "error": "Readiness check failed"},
+        )
+
+
 # Report Management Endpoints
 
 
