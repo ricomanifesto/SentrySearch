@@ -62,12 +62,19 @@ async def run_checks() -> int:
         assert health_payload["status"] == "degraded"
         assert health_payload["database"] == "disconnected"
 
+        readiness_response = await client.get("/api/ready")
+        assert_status(readiness_response, {503}, "readiness endpoint")
+        readiness_payload = readiness_response.json()
+        assert readiness_payload["status"] == "unready"
+        assert readiness_payload["database"] == "disconnected"
+
         create_response = await client.post("/api/reports", json={"tool_name": "SmokeTest"})
         assert_status(create_response, {401, 403, 503}, "create report auth boundary")
 
     print("SentrySearch API smoke checks passed")
     print(f"  root: {root_payload['message']} {root_payload['version']}")
     print(f"  health: {health_payload['status']} / {health_payload['database']}")
+    print(f"  readiness: HTTP {readiness_response.status_code}")
     print(f"  create report without auth: HTTP {create_response.status_code}")
     return 0
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -76,6 +77,24 @@ def validate_python_tooling_contract() -> None:
     require_contains("uv.lock", 'name = "ty"')
 
 
+def validate_railway_config_contract() -> None:
+    railway_config = json.loads(read_text("railway.json"))
+    build_config = railway_config.get("build")
+    deploy_config = railway_config.get("deploy")
+    if build_config != {"builder": "RAILPACK"}:
+        raise AssertionError("railway.json build config must use the current Railpack builder")
+    if not isinstance(deploy_config, dict):
+        raise AssertionError("railway.json must define deploy config")
+    if deploy_config.get("startCommand") != "python run_api.py":
+        raise AssertionError("railway.json must start the FastAPI launcher")
+    if deploy_config.get("healthcheckPath") != "/api/ready":
+        raise AssertionError("railway.json must healthcheck the FastAPI readiness endpoint")
+    if deploy_config.get("restartPolicyType") != "ON_FAILURE":
+        raise AssertionError("railway.json must restart failed containers")
+    if deploy_config.get("restartPolicyMaxRetries") != 10:
+        raise AssertionError("railway.json must keep the bounded restart retry policy")
+
+
 def run_command(command: list[str]) -> None:
     print(f"Running: {' '.join(command)}")
     subprocess.run(command, cwd=REPO_ROOT, check=True)
@@ -85,6 +104,7 @@ async def main() -> int:
     validate_api_url_contract()
     validate_auth_env_contract()
     validate_python_tooling_contract()
+    validate_railway_config_contract()
 
     run_command(["ruff", "check", *PYTHON_RUFF_PATHS])
     run_command(["black", "--check", *PYTHON_FORMAT_TYPE_PATHS])

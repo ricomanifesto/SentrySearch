@@ -57,6 +57,23 @@ def test_health_check_redacts_internal_exception(monkeypatch):
     assert response.body == b'{"status":"unhealthy","error":"Health check failed"}'
 
 
+def test_readiness_check_fails_when_database_is_disconnected(monkeypatch):
+    monkeypatch.setattr(api_main.report_service, "test_connection", lambda: False)
+
+    response = asyncio.run(api_main.readiness_check())
+
+    assert response.status_code == 503
+    assert response.body == b'{"status":"unready","database":"disconnected"}'
+
+
+def test_readiness_check_passes_when_database_is_connected(monkeypatch):
+    monkeypatch.setattr(api_main.report_service, "test_connection", lambda: True)
+
+    response = asyncio.run(api_main.readiness_check())
+
+    assert response == {"status": "ready", "database": "connected"}
+
+
 def test_verify_jwt_token_redacts_internal_exception(monkeypatch, caplog):
     class FailingAuth:
         def get_user(self, token: str):
