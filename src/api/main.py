@@ -299,7 +299,7 @@ async def create_report(
         if not result or "error" in result:
             raise HTTPException(
                 status_code=400,
-                detail=f"Failed to generate threat intelligence: {result.get('error', 'Unknown error')}",
+                detail="Failed to generate threat intelligence",
             )
 
         # Generate report ID and store the report with user ID

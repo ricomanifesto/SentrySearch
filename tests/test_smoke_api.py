@@ -243,6 +243,30 @@ def test_report_model_exposes_owner_for_api_authorization():
     assert report.to_dict()["user_id"] == "owner-user"
 
 
+def test_create_report_redacts_generation_failure_detail(monkeypatch):
+    class FailingGenerator:
+        enable_ml_guidance = True
+
+        def get_threat_intelligence(self, tool_name: str):
+            return {"error": f"provider key leaked for {tool_name}"}
+
+    monkeypatch.setattr(api_main, "ThreatProfileGenerator", FailingGenerator)
+
+    user = supabase_auth.AuthenticatedUser(
+        user_id="analyst-user",
+        email="analyst@example.com",
+        metadata={"role": "analyst"},
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(api_main.create_report(api_main.ReportCreate(tool_name="SecretTool"), user))
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Failed to generate threat intelligence"
+    assert "provider key" not in exc_info.value.detail
+    assert "SecretTool" not in exc_info.value.detail
+
+
 def test_search_reports_requires_auth_before_storage_read(monkeypatch):
     storage_called = False
 
