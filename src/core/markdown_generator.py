@@ -788,4 +788,7 @@ def generate_markdown(data):
         print(f"MARKDOWN DEBUG: Exception type: {type(e)}")
         import traceback
         traceback.print_exc()
-        return f"# ❌ Error in Markdown Generation\n\n**Error**: {str(e)}\n\n**Location**: During markdown generation"
+        return (
+            "# Error in Markdown Generation\n\n"
+            "The report could not be rendered. Please retry generation."
+        )
