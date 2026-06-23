@@ -11,6 +11,7 @@ from fastapi import HTTPException
 
 from src.auth import supabase_auth
 from src.api import main as api_main
+from src.core.markdown_generator import generate_markdown
 from src.storage.models import Report
 from dev.smoke_api import configure_local_environment, run_checks
 
@@ -265,6 +266,22 @@ def test_create_report_redacts_generation_failure_detail(monkeypatch):
     assert exc_info.value.detail == "Failed to generate threat intelligence"
     assert "provider key" not in exc_info.value.detail
     assert "SecretTool" not in exc_info.value.detail
+
+
+def test_markdown_generation_redacts_internal_exception_detail():
+    markdown = generate_markdown(
+        {
+            "coreMetadata": {"name": "SecretTool"},
+            "_quality_assessment": {"overall_score": "secret-score"},
+        }
+    )
+
+    assert markdown == (
+        "# Error in Markdown Generation\n\n"
+        "The report could not be rendered. Please retry generation."
+    )
+    assert "not supported" not in markdown
+    assert "SecretTool" not in markdown
 
 
 def test_search_reports_requires_auth_before_storage_read(monkeypatch):
