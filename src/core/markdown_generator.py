@@ -598,8 +598,7 @@ def generate_markdown(data):
             md.append("")
             md.append("❌ **ML guidance generation failed**")
             md.append("")
-            error = ml_guidance.get('error', 'Unknown error')
-            md.append(f"**Error**: {error}")
+            md.append("**Error**: ML guidance could not be generated.")
             md.append("")
             fallback = ml_guidance.get('fallbackGuidance', '')
             if fallback:
