@@ -284,6 +284,25 @@ def test_markdown_generation_redacts_internal_exception_detail():
     assert "SecretTool" not in markdown
 
 
+def test_markdown_generation_redacts_ml_guidance_error_detail():
+    markdown = generate_markdown(
+        {
+            "coreMetadata": {"name": "ExampleTool"},
+            "mlGuidance": {
+                "enabled": False,
+                "error": "provider token leaked for ExampleTool",
+                "fallbackGuidance": "Use behavioral anomaly detection.",
+            },
+        }
+    )
+
+    assert "ML guidance generation failed" in markdown
+    assert "**Error**: ML guidance could not be generated." in markdown
+    assert "Use behavioral anomaly detection." in markdown
+    assert "provider token" not in markdown
+    assert "**Error**: ML guidance could not be generated for ExampleTool" not in markdown
+
+
 def test_search_reports_requires_auth_before_storage_read(monkeypatch):
     storage_called = False
 
