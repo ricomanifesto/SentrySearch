@@ -10,6 +10,8 @@ from datetime import datetime
 from src.core.cached_threat_profile_generator import CachedThreatProfileGenerator
 from src.core.markdown_generator import generate_markdown
 
+GENERATION_ERROR_MESSAGE = "Error generating profile. Please try again."
+
 # Import cloud storage if enabled
 try:
     from src.storage import report_service, create_tables, test_connection
@@ -29,6 +31,12 @@ def generate_threat_profile(tool_name, enable_quality_control, progress=gr.Progr
     if not tool_name.strip():
         return "❌ Please enter a tool name", None
 
+    def safe_generation_progress(value, message):
+        if isinstance(message, str) and message.lstrip().startswith(("❌ Error", "Error")):
+            progress(value, GENERATION_ERROR_MESSAGE)
+            return
+        progress(value, message)
+
     try:
         # Initialize the threat intelligence tool with the API key and tracing enabled
         import os
@@ -43,7 +51,7 @@ def generate_threat_profile(tool_name, enable_quality_control, progress=gr.Progr
         # Generate threat intelligence
         progress(0.1, "🔄 Initializing threat intelligence generation...")
         threat_data = threat_profile_generator.get_threat_intelligence(
-            tool_name, progress_callback=lambda p, msg: progress(p, msg)
+            tool_name, progress_callback=safe_generation_progress
         )
 
         # Generate markdown
@@ -81,9 +89,9 @@ def generate_threat_profile(tool_name, enable_quality_control, progress=gr.Progr
 
         return markdown_content, quality_data
 
-    except Exception as e:
-        error_msg = f"Error generating profile: {str(e)}"
-        progress(1.0, f"❌ {error_msg}")
+    except Exception:
+        error_msg = GENERATION_ERROR_MESSAGE
+        progress(1.0, error_msg)
         return error_msg, None
 
 
