@@ -303,6 +303,41 @@ def test_markdown_generation_redacts_ml_guidance_error_detail():
     assert "**Error**: ML guidance could not be generated for ExampleTool" not in markdown
 
 
+def test_legacy_ui_generation_redacts_internal_exception_detail(monkeypatch):
+    from src.ui import app as ui_app
+
+    class FailingGenerator:
+        enable_quality_control = True
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def get_threat_intelligence(self, tool_name: str, progress_callback=None):
+            if progress_callback:
+                progress_callback(0.5, "Normal generation progress")
+                progress_callback(1.0, f"❌ Error: provider token leaked for {tool_name}")
+            raise RuntimeError(f"provider token leaked for {tool_name}")
+
+    progress_updates = []
+
+    def progress(value, message):
+        progress_updates.append((value, message))
+
+    monkeypatch.setattr(ui_app, "CachedThreatProfileGenerator", FailingGenerator)
+
+    message, quality = ui_app.generate_threat_profile("SecretTool", True, progress=progress)
+
+    assert message == "Error generating profile. Please try again."
+    assert quality is None
+    assert progress_updates[-1] == (1.0, "Error generating profile. Please try again.")
+    assert progress_updates[0] == (0.1, "🔄 Initializing threat intelligence generation...")
+    assert progress_updates[1] == (0.5, "Normal generation progress")
+    assert "provider token" not in message
+    assert "SecretTool" not in message
+    assert all("provider token" not in update[1] for update in progress_updates)
+    assert all("SecretTool" not in update[1] for update in progress_updates)
+
+
 def test_search_reports_requires_auth_before_storage_read(monkeypatch):
     storage_called = False
 
