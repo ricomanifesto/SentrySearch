@@ -338,6 +338,24 @@ def test_legacy_ui_generation_redacts_internal_exception_detail(monkeypatch):
     assert all("SecretTool" not in update[1] for update in progress_updates)
 
 
+def test_legacy_ui_report_load_redacts_internal_exception_detail(monkeypatch):
+    from src.ui import app as ui_app
+
+    monkeypatch.setattr(ui_app, "STORAGE_ENABLED", True)
+
+    def get_report(report_id: str, include_content: bool = True):
+        raise RuntimeError(f"storage credential leaked for {report_id}")
+
+    monkeypatch.setattr(ui_app.report_service, "get_report", get_report)
+
+    message, quality = ui_app.view_report("secret-report")
+
+    assert message == "Error loading report. Please try again."
+    assert quality is None
+    assert "storage credential" not in message
+    assert "secret-report" not in message
+
+
 def test_search_reports_requires_auth_before_storage_read(monkeypatch):
     storage_called = False
 

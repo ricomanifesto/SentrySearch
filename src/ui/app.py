@@ -11,6 +11,7 @@ from src.core.cached_threat_profile_generator import CachedThreatProfileGenerato
 from src.core.markdown_generator import generate_markdown
 
 GENERATION_ERROR_MESSAGE = "Error generating profile. Please try again."
+REPORT_LOAD_ERROR_MESSAGE = "Error loading report. Please try again."
 
 # Import cloud storage if enabled
 try:
@@ -150,8 +151,8 @@ def view_report(report_id):
 
         return markdown_content, quality_data
 
-    except Exception as e:
-        return f"Error loading report: {e}", None
+    except Exception:
+        return REPORT_LOAD_ERROR_MESSAGE, None
 
 
 def search_reports(query, category_filter):
