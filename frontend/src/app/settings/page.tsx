@@ -2,58 +2,140 @@
 
 import { useAuth } from "@/contexts/AuthContext"
 import { AuthGuard } from "@/components/AuthGuard"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
+import { Badge } from "@/components/ui/Badge"
+import {
+  IdentificationIcon,
+  ServerStackIcon,
+  ShieldCheckIcon,
+} from "@heroicons/react/24/outline"
 
 export default function Settings() {
   const { user } = useAuth()
   const userMetadata = user?.user_metadata || {}
+  const displayName =
+    typeof userMetadata.name === "string" && userMetadata.name.trim()
+      ? userMetadata.name
+      : "Unavailable in this session"
+  const email = user?.email || "Unavailable in this session"
 
   return (
     <AuthGuard>
-      <div className="min-h-screen bg-gray-50 py-8">
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="bg-white shadow rounded-lg">
-            <div className="px-6 py-4 border-b border-gray-200">
-              <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
-              <p className="mt-1 text-sm text-gray-600">
-                Manage account details and report-generation preferences.
-              </p>
-            </div>
+      <div className="min-h-screen overflow-x-hidden bg-slate-50 py-6 sm:py-10">
+        <div className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8">
+          <div className="mb-8 max-w-3xl">
+            <Badge variant="info" size="sm" className="mb-3 rounded-md">
+              Workspace boundary
+            </Badge>
+            <h1 className="text-2xl font-semibold leading-tight tracking-tight text-slate-950 sm:text-4xl">
+              Workspace access controls
+            </h1>
+            <p className="mt-3 max-w-2xl text-base leading-7 text-slate-600 sm:text-lg">
+              Review the account context and generation policy that govern
+              saved intelligence in this browser session.
+            </p>
+          </div>
 
-            <div className="px-6 py-6 space-y-8">
-              <div>
-                <h2 className="text-lg font-medium text-gray-900 mb-4">
-                  Account Information
-                </h2>
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700">
-                        Name
-                      </label>
-                      <div className="mt-1 text-sm text-gray-900">
-                        {userMetadata.name || "Not provided"}
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700">
-                        Email
-                      </label>
-                      <div className="mt-1 text-sm text-gray-900">{user?.email}</div>
-                    </div>
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+            <Card className="min-w-0 border-slate-200 shadow-sm lg:col-span-2">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-slate-950">
+                  <IdentificationIcon className="h-5 w-5 text-slate-700" />
+                  Workspace identity
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div className="min-w-0 border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Display name
+                    </p>
+                    <p className="mt-2 break-words text-sm font-medium text-slate-950">
+                      {displayName}
+                    </p>
+                  </div>
+                  <div className="min-w-0 border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Work email
+                    </p>
+                    <p className="mt-2 break-words text-sm font-medium text-slate-950">
+                      {email}
+                    </p>
                   </div>
                 </div>
-              </div>
-
-              <div>
-                <h2 className="text-lg font-medium text-gray-900 mb-4">
-                  Report Generation
-                </h2>
-                <div className="bg-gray-50 rounded-lg p-4 text-sm text-gray-700">
-                  Report generation uses the configured server-side model gateway.
-                  No user-level provider key is required here.
+                <div className="mt-5 border border-blue-200 bg-blue-50 p-4 text-sm leading-6 text-blue-900">
+                  This identity is read from the active authenticated session.
+                  SentrySearch uses it to keep saved reports and review history
+                  scoped to the current workspace.
                 </div>
-              </div>
-            </div>
+              </CardContent>
+            </Card>
+
+            <Card className="min-w-0 border-slate-200 shadow-sm">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-slate-950">
+                  <ShieldCheckIcon className="h-5 w-5 text-slate-700" />
+                  Access posture
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4 text-sm leading-6 text-slate-600">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Account boundary
+                    </p>
+                    <p className="mt-1 text-slate-950">
+                      Required for saved intelligence
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Report storage
+                    </p>
+                    <p className="mt-1 text-slate-950">
+                      Scoped to authenticated workspace access
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="min-w-0 border-slate-200 shadow-sm lg:col-span-3">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-slate-950">
+                  <ServerStackIcon className="h-5 w-5 text-slate-700" />
+                  Generation policy
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                  <div className="min-w-0 border border-slate-200 bg-white p-4">
+                    <p className="text-sm font-semibold text-slate-950">
+                      Server-side gateway
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-slate-600">
+                      Report generation uses the configured backend model path for this deployment.
+                    </p>
+                  </div>
+                  <div className="min-w-0 border border-slate-200 bg-white p-4">
+                    <p className="text-sm font-semibold text-slate-950">
+                      Provider keys remain server-side
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-slate-600">
+                      This page does not collect user-level provider credentials or expose deployment secrets.
+                    </p>
+                  </div>
+                  <div className="min-w-0 border border-slate-200 bg-white p-4">
+                    <p className="text-sm font-semibold text-slate-950">
+                      Policy changes
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-slate-600">
+                      Generation settings are controlled through backend configuration rather than browser-local form fields.
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
           </div>
         </div>
       </div>

@@ -13,6 +13,7 @@
     "check:report-detail-surface": "node dev/check-report-detail-surface.mjs",
     "check:reports-surface": "node dev/check-reports-surface.mjs",
     "check:search-surface": "node dev/check-search-surface.mjs",
+    "check:settings-surface": "node dev/check-settings-surface.mjs",
     "start": "next start",
     "lint": "next lint"
   },
