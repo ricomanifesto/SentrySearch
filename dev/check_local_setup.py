@@ -48,7 +48,6 @@ def validate_api_url_contract() -> None:
         (".env.example", f"NEXT_PUBLIC_API_URL={LOCAL_API_URL}"),
         ("frontend/.env.example", f"NEXT_PUBLIC_API_URL={LOCAL_API_URL}"),
         ("frontend/src/lib/api.ts", f"'{LOCAL_API_URL}'"),
-        ("frontend/src/app/page.tsx", f"'{LOCAL_API_URL}'"),
         ("README.md", f"`NEXT_PUBLIC_API_URL={LOCAL_API_URL}`"),
         ("frontend/README.md", f"NEXT_PUBLIC_API_URL={LOCAL_API_URL}"),
     ]
@@ -57,6 +56,8 @@ def validate_api_url_contract() -> None:
 
     require_not_contains("frontend/README.md", "localhost:8000")
     require_not_contains("frontend/src/lib/api.ts", "localhost:8000")
+    require_not_contains("frontend/src/app/page.tsx", "NEXT_PUBLIC_API_URL")
+    require_not_contains("frontend/src/app/page.tsx", LOCAL_API_URL)
     require_not_contains("frontend/src/app/page.tsx", "localhost:8000")
 
 
