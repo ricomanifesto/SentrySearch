@@ -25,6 +25,11 @@ const expectations = [
     pattern: /value={searchInput}[\s\S]*onChange={handleSearchInputChange}/,
   },
   {
+    name: 'cancels stale debounced search updates when clearing input',
+    source: searchPage,
+    pattern: /useEffect\(\(\) => \{[\s\S]*window\.setTimeout[\s\S]*searchInput[\s\S]*return \(\) => window\.clearTimeout\(timeoutId\);[\s\S]*\}, \[searchInput\]\)/,
+  },
+  {
     name: 'uses the saved intelligence search workspace language',
     source: searchPage,
     pattern: /Search workspace/,

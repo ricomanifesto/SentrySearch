@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import {
@@ -12,7 +12,7 @@ import {
 } from '@heroicons/react/24/outline';
 
 import { api } from '@/lib/api';
-import { debounce, formatDate, formatProcessingTime, formatRelativeTime } from '@/lib/utils';
+import { formatDate, formatProcessingTime, formatRelativeTime } from '@/lib/utils';
 import { AuthGuard } from '@/components/AuthGuard';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -81,18 +81,19 @@ function SearchWorkspace() {
   });
   const [searchInput, setSearchInput] = useState('');
 
-  const debouncedSearch = useMemo(
-    () => debounce((query: unknown) => {
-      setFilters(prev => ({ ...prev, query: query as string }));
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setFilters(prev => (
+        prev.query === searchInput ? prev : { ...prev, query: searchInput }
+      ));
       setCurrentPage(1);
-    }, 300),
-    []
-  );
+    }, 300);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [searchInput]);
 
   const handleSearchInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const nextQuery = event.target.value;
-    setSearchInput(nextQuery);
-    debouncedSearch(nextQuery);
+    setSearchInput(event.target.value);
   };
 
   const { data: filterOptions } = useQuery({
