@@ -6,7 +6,7 @@ import {
   DocumentTextIcon,
   ChartBarIcon,
   ClockIcon,
-  CheckCircleIcon,
+  ShieldCheckIcon,
   ArrowTrendingUpIcon,
 } from '@heroicons/react/24/outline';
 
@@ -26,13 +26,11 @@ const timeRangeOptions = [
 export default function AnalyticsPage() {
   const [timeRange, setTimeRange] = useState('30d');
 
-  // Fetch analytics data
   const { data: analytics, isLoading, error } = useQuery({
     queryKey: ['analytics', timeRange],
     queryFn: () => api.getAnalytics(timeRange),
   });
 
-  // Fetch dashboard data as fallback
   const { data: dashboard } = useQuery({
     queryKey: ['analytics', 'dashboard'],
     queryFn: () => api.getDashboardAnalytics(),
@@ -40,152 +38,177 @@ export default function AnalyticsPage() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-gray-50 py-12">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="text-center">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-            <p className="mt-4 text-gray-600">Loading analytics...</p>
+      <AuthGuard>
+        <div
+          className="min-h-screen overflow-x-hidden bg-slate-50 px-4 py-12 text-slate-950 sm:px-6 lg:px-8"
+          role="status"
+          aria-label="Preparing operations metrics"
+        >
+          <div className="mx-auto flex min-h-[calc(100vh-9rem)] max-w-3xl items-center justify-center">
+            <div className="w-full border border-slate-200 bg-white px-6 py-8 text-center shadow-sm sm:px-10">
+              <div className="mx-auto mb-5 h-10 w-10 animate-spin border-2 border-slate-200 border-t-slate-800" />
+              <h1 className="text-2xl font-semibold text-slate-950">Preparing operations metrics</h1>
+              <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-slate-600">
+                Loading report volume, quality signals, and threat distribution for this review window.
+              </p>
+            </div>
           </div>
         </div>
-      </div>
+      </AuthGuard>
     );
   }
 
   if (error) {
     return (
-      <div className="min-h-screen bg-gray-50 py-12">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="text-center">
-            <h1 className="text-3xl font-bold text-gray-900 mb-4">Analytics Dashboard</h1>
-            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-              <p className="text-red-600">Failed to load analytics data. Please try again later.</p>
+      <AuthGuard>
+        <div className="min-h-screen overflow-x-hidden bg-slate-50 px-4 py-12 text-slate-950 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-3xl">
+            <div className="mb-6">
+              <Badge variant="error" size="sm">Metrics unavailable</Badge>
+              <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">
+                Intelligence operations review
+              </h1>
+            </div>
+            <div role="alert" className="border border-red-200 bg-red-50 p-4 text-sm leading-6 text-red-700">
+              Operations metrics are not available right now. Refresh the workspace or return after the backend is reachable.
             </div>
           </div>
         </div>
-      </div>
+      </AuthGuard>
     );
   }
 
-  // Use analytics data or fallback to dashboard data with proper type safety
   const data: Record<string, unknown> = (analytics as unknown as Record<string, unknown>) || (dashboard as unknown as Record<string, unknown>) || {};
   const overview: Record<string, unknown> = (data.overview as Record<string, unknown>) || (data.summary as Record<string, unknown>) || {};
   
   const stats = {
     total_reports: Number(overview.total_reports || 0),
-    reports_24h: Number(overview.reports_last_24h || overview.reports_this_week || 0),
+    reports_period: Number(
+      analytics
+        ? overview.reports_last_30d || overview.reports_last_7d || overview.reports_last_24h || 0
+        : overview.reports_this_week || 0
+    ),
     avg_quality: Number(overview.avg_quality_score || overview.average_quality_score || 0),
     success_rate: Number(overview.success_rate || 0.95),
   };
+  const recentActivity = Array.isArray(data.recent_activity)
+    ? (data.recent_activity as Record<string, unknown>[])
+    : [];
+  const threatDistribution = typeof data.threat_distribution === 'object' && data.threat_distribution !== null
+    ? (data.threat_distribution as Record<string, unknown>)
+    : {};
+  const threatEntries = Object.entries(threatDistribution).slice(0, 5);
+  const maxThreatCount = Math.max(1, ...Object.values(threatDistribution).map(v => Number(v || 0)));
+  const shownRecentActivity = recentActivity.slice(0, 5);
 
   return (
     <AuthGuard>
-      <div className="min-h-screen bg-gray-50 py-12">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        {/* Header */}
-        <div className="flex justify-between items-center mb-8">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-900">Analytics Dashboard</h1>
-            <p className="mt-2 text-gray-600">
-              Comprehensive insights into threat intelligence operations
+      <div className="min-h-screen overflow-x-hidden bg-slate-50 py-6 sm:py-10">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <div className="mb-8 flex min-w-0 flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+          <div className="min-w-0 max-w-3xl">
+            <Badge variant="info" size="sm" className="mb-3 rounded-md">
+              Operations metrics
+            </Badge>
+            <h1 className="text-2xl font-semibold leading-tight tracking-tight text-slate-950 sm:text-4xl">
+              Intelligence operations review
+            </h1>
+            <p className="mt-3 max-w-2xl text-base leading-7 text-slate-600 sm:text-lg">
+              Review report volume, quality signals, and threat distribution before planning the next intelligence pass.
             </p>
           </div>
-          <div className="flex items-center space-x-4">
+          <div className="w-full min-w-0 sm:max-w-xs">
             <Select
-              label=""
+              label="Review window"
               options={timeRangeOptions}
               value={timeRange}
               onChange={(e) => setTimeRange(e.target.value)}
+              className="border-slate-300 focus:border-slate-800 focus:ring-slate-800"
             />
           </div>
         </div>
 
-        {/* Overview Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-          {/* Total Reports */}
-          <Card>
-            <CardContent className="py-6">
-              <div className="flex items-center">
+        <div className="mb-8 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <Card className="border-slate-200 shadow-sm">
+            <CardContent className="py-5">
+              <div className="flex min-w-0 items-center">
                 <div className="flex-shrink-0">
-                  <DocumentTextIcon className="h-8 w-8 text-blue-600" />
+                  <DocumentTextIcon className="h-7 w-7 text-slate-700" />
                 </div>
-                <div className="ml-4">
-                  <p className="text-sm font-medium text-gray-500">Total Reports</p>
-                  <p className="text-2xl font-bold text-gray-900">{stats.total_reports}</p>
-                  <p className="text-sm text-gray-600">
-                    {stats.reports_24h} in last 24h
+                <div className="ml-4 min-w-0">
+                  <p className="text-sm font-medium text-slate-500">Saved intelligence</p>
+                  <p className="text-2xl font-semibold text-slate-950">{stats.total_reports}</p>
+                  <p className="text-sm text-slate-600">
+                    {stats.reports_period} in the selected window
                   </p>
                 </div>
               </div>
             </CardContent>
           </Card>
 
-          {/* Average Quality */}
-          <Card>
-            <CardContent className="py-6">
-              <div className="flex items-center">
+          <Card className="border-slate-200 shadow-sm">
+            <CardContent className="py-5">
+              <div className="flex min-w-0 items-center">
                 <div className="flex-shrink-0">
-                  <ArrowTrendingUpIcon className="h-8 w-8 text-green-600" />
+                  <ArrowTrendingUpIcon className="h-7 w-7 text-emerald-700" />
                 </div>
-                <div className="ml-4">
-                  <p className="text-sm font-medium text-gray-500">Avg Quality Score</p>
-                  <p className="text-2xl font-bold text-gray-900">{stats.avg_quality.toFixed(1)}</p>
-                  <p className="text-sm text-green-600">
-                    {((stats.success_rate || 0) * 100).toFixed(1)}% success rate
+                <div className="ml-4 min-w-0">
+                  <p className="text-sm font-medium text-slate-500">Average confidence</p>
+                  <p className="text-2xl font-semibold text-slate-950">{stats.avg_quality.toFixed(1)}</p>
+                  <p className="text-sm text-slate-600">
+                    {((stats.success_rate || 0) * 100).toFixed(1)}% completed without retry
                   </p>
                 </div>
               </div>
             </CardContent>
           </Card>
 
-          {/* Processing Time */}
-          <Card>
-            <CardContent className="py-6">
-              <div className="flex items-center">
+          <Card className="border-slate-200 shadow-sm">
+            <CardContent className="py-5">
+              <div className="flex min-w-0 items-center">
                 <div className="flex-shrink-0">
-                  <ClockIcon className="h-8 w-8 text-yellow-600" />
+                  <ClockIcon className="h-7 w-7 text-amber-700" />
                 </div>
-                <div className="ml-4">
-                  <p className="text-sm font-medium text-gray-500">Avg Processing Time</p>
-                  <p className="text-2xl font-bold text-gray-900">45.2s</p>
-                  <p className="text-sm text-gray-600">
-                    Optimized performance
-                  </p>
+                <div className="ml-4 min-w-0">
+                  <p className="text-sm font-medium text-slate-500">Activity cadence</p>
+                  <p className="text-2xl font-semibold text-slate-950">{shownRecentActivity.length}</p>
+                  <p className="text-sm text-slate-600">recent report events shown</p>
                 </div>
               </div>
             </CardContent>
           </Card>
 
-          {/* System Status */}
-          <Card>
-            <CardContent className="py-6">
-              <div className="flex items-center">
+          <Card className="border-slate-200 shadow-sm">
+            <CardContent className="py-5">
+              <div className="flex min-w-0 items-center">
                 <div className="flex-shrink-0">
-                  <CheckCircleIcon className="h-8 w-8 text-green-600" />
+                  <ShieldCheckIcon className="h-7 w-7 text-indigo-700" />
                 </div>
-                <div className="ml-4">
-                  <p className="text-sm font-medium text-gray-500">System Status</p>
-                  <p className="text-2xl font-bold text-gray-900">Healthy</p>
-                  <p className="text-sm text-green-600">All systems operational</p>
+                <div className="ml-4 min-w-0">
+                  <p className="text-sm font-medium text-slate-500">Metric readiness</p>
+                  <p className="text-2xl font-semibold text-slate-950">
+                    {analytics ? 'Primary' : 'Fallback'}
+                  </p>
+                  <p className="text-sm text-slate-600">source for this review</p>
                 </div>
               </div>
             </CardContent>
           </Card>
         </div>
 
-        {/* Recent Activity */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          <Card>
+        <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
+          <Card className="border-slate-200 shadow-sm">
             <CardHeader>
-              <CardTitle>Recent Reports</CardTitle>
+              <CardTitle>Recent report activity</CardTitle>
             </CardHeader>
             <CardContent>
-              {(data as Record<string, unknown>)?.recent_activity && Array.isArray((data as Record<string, unknown>).recent_activity) && ((data as Record<string, unknown>).recent_activity as Record<string, unknown>[]).length > 0 ? (
+              {recentActivity.length > 0 ? (
                 <div className="space-y-4">
-                  {((data as Record<string, unknown>).recent_activity as Record<string, unknown>[]).slice(0, 5).map((activity: Record<string, unknown>, index: number) => (
-                    <div key={index} className="flex items-center justify-between py-2 border-b border-gray-100 last:border-b-0">
-                      <div>
-                        <p className="font-medium text-gray-900">{(activity?.tool_name as string) || `Report ${index + 1}`}</p>
-                        <p className="text-sm text-gray-500">
+                  {shownRecentActivity.map((activity: Record<string, unknown>, index: number) => (
+                    <div key={index} className="flex min-w-0 items-center justify-between gap-3 border-b border-slate-100 py-2 last:border-b-0">
+                      <div className="min-w-0">
+                        <p className="truncate font-medium text-slate-950">{(activity?.tool_name as string) || `Report ${index + 1}`}</p>
+                        <p className="text-sm text-slate-500">
                           {activity?.created_at ? formatRelativeTime(activity.created_at as string) : 'Recently'}
                         </p>
                       </div>
@@ -197,39 +220,37 @@ export default function AnalyticsPage() {
                 </div>
               ) : (
                 <div className="text-center py-8">
-                  <DocumentTextIcon className="h-12 w-12 mx-auto mb-4 text-gray-400" />
-                  <p className="text-gray-500">No recent reports available</p>
+                  <DocumentTextIcon className="mx-auto mb-4 h-12 w-12 text-slate-400" />
+                  <p className="text-slate-500">No recent report activity in this window</p>
                 </div>
               )}
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className="border-slate-200 shadow-sm">
             <CardHeader>
-              <CardTitle>Threat Distribution</CardTitle>
+              <CardTitle>Threat distribution</CardTitle>
             </CardHeader>
             <CardContent>
-              {(data as Record<string, unknown>)?.threat_distribution && typeof (data as Record<string, unknown>).threat_distribution === 'object' && Object.keys((data as Record<string, unknown>).threat_distribution as Record<string, unknown>).length > 0 ? (
+              {threatEntries.length > 0 ? (
                 <div className="space-y-4">
-                  {Object.entries((data as Record<string, unknown>).threat_distribution as Record<string, unknown>).slice(0, 5).map(([type, count]: [string, unknown]) => {
+                  {threatEntries.map(([type, count]: [string, unknown]) => {
                     const countNum = Number(count || 0);
-                    const threatDist = (data as Record<string, unknown>).threat_distribution as Record<string, unknown>;
-                    const maxValue = Math.max(...Object.values(threatDist).map(v => Number(v || 0)));
-                    const percentage = maxValue > 0 ? Math.min((countNum / maxValue * 100), 100) : 0;
+                    const percentage = Math.min((countNum / maxThreatCount * 100), 100);
                     
                     return (
-                      <div key={type} className="flex items-center justify-between">
-                        <span className="text-sm font-medium text-gray-700 capitalize">
-                          {type.replace('_', ' ')}
+                      <div key={type} className="flex min-w-0 items-center justify-between gap-3">
+                        <span className="min-w-0 truncate text-sm font-medium capitalize text-slate-700">
+                          {type.replace(/_/g, ' ')}
                         </span>
-                        <div className="flex items-center">
-                          <div className="w-24 bg-gray-200 rounded-full h-2 mr-3">
+                        <div className="flex flex-shrink-0 items-center">
+                          <div className="mr-3 h-2 w-24 rounded-full bg-slate-200">
                             <div 
-                              className="bg-blue-600 h-2 rounded-full" 
+                              className="h-2 rounded-full bg-slate-800"
                               style={{ width: `${percentage}%` }}
                             ></div>
                           </div>
-                          <span className="text-sm text-gray-500">{countNum}</span>
+                          <span className="w-8 text-right text-sm text-slate-500">{countNum}</span>
                         </div>
                       </div>
                     );
@@ -237,8 +258,8 @@ export default function AnalyticsPage() {
                 </div>
               ) : (
                 <div className="text-center py-8">
-                  <ChartBarIcon className="h-12 w-12 mx-auto mb-4 text-gray-400" />
-                  <p className="text-gray-500">No threat data available</p>
+                  <ChartBarIcon className="mx-auto mb-4 h-12 w-12 text-slate-400" />
+                  <p className="text-slate-500">No threat distribution available for this window</p>
                 </div>
               )}
             </CardContent>
