@@ -1,10 +1,3 @@
-/**
- * Report Generation Page
- * 
- * Professional interface for generating threat intelligence reports.
- * Replaces the Gradio interface with a modern React form.
- */
-
 'use client';
 
 import React, { useState } from 'react';
@@ -36,15 +29,43 @@ const analysisTypeOptions = [
   { value: 'custom', label: 'Custom Analysis' },
 ];
 
-const exampleQueries = [
-  'ShadowPad',
-  'Cobalt Strike',
-  'BumbleBee',
-  'StealC',
-  'SAP NetWeaver',
-  'Microsoft Exchange',
-  'VMware vCenter',
-  'AnyDesk',
+const targetGroups = [
+  {
+    label: 'Observed threats',
+    examples: ['ShadowPad', 'Cobalt Strike', 'BumbleBee', 'StealC'],
+  },
+  {
+    label: 'Exposed technologies',
+    examples: ['SAP NetWeaver', 'Microsoft Exchange', 'VMware vCenter', 'AnyDesk'],
+  },
+];
+
+const analysisSummaries = [
+  {
+    name: 'Comprehensive',
+    detail: 'Technical profile, detection guidance, mitigations, and source-backed context.',
+    time: '2-5 min',
+    variant: 'info' as const,
+  },
+  {
+    name: 'Quick',
+    detail: 'Fast triage summary with high-signal indicators and immediate next steps.',
+    time: '30-60s',
+    variant: 'success' as const,
+  },
+  {
+    name: 'Custom',
+    detail: 'Focused analysis for a specific campaign, asset class, or review workflow.',
+    time: 'Variable',
+    variant: 'warning' as const,
+  },
+];
+
+const qualityChecks = [
+  'Source-backed findings',
+  'Detection and mitigation guidance',
+  'Risk and confidence framing',
+  'Review-ready report record',
 ];
 
 export default function GeneratePage() {
@@ -66,7 +87,7 @@ export default function GeneratePage() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.tool_name.trim()) return;
-    
+
     generateMutation.mutate(formData);
   };
 
@@ -78,225 +99,206 @@ export default function GeneratePage() {
   const error = generateMutation.error;
 
   return (
-    <div className="min-h-screen bg-gray-50 py-8">
-      <div className="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8">
-      {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900">Generate Report</h1>
-        <p className="mt-2 text-gray-600">
-          Create comprehensive threat intelligence profiles for malware, attack tools, and targeted technologies
-        </p>
-      </div>
+    <div className="min-h-screen overflow-x-hidden bg-slate-50 py-6 sm:py-10">
+      <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
+        <div className="mb-8 max-w-3xl">
+          <Badge variant="info" size="sm" className="mb-3 rounded-md">
+            Report workspace
+          </Badge>
+          <h1 className="max-w-full text-2xl font-semibold leading-tight tracking-normal text-slate-950 sm:text-4xl">
+            Generate a threat intelligence report
+          </h1>
+          <p className="mt-3 max-w-2xl text-base leading-7 text-slate-600 sm:text-lg">
+            Start with a malware family, attack tool, vulnerability target, or exposed technology.
+            SentrySearch will assemble a review-ready profile with detection and mitigation context.
+          </p>
+        </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Main Form */}
-        <div className="lg:col-span-2">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center space-x-2">
-                <DocumentTextIcon className="h-5 w-5" />
-                <span>Threat Intelligence Request</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <form onSubmit={handleSubmit} className="space-y-6">
-                {/* Target Input */}
-                <Input
-                  label="Target for Analysis"
-                  placeholder="Enter malware name, attack tool, or technology (e.g., ShadowPad, SAP NetWeaver)"
-                  value={formData.tool_name}
-                  onChange={(e) => setFormData(prev => ({ ...prev, tool_name: e.target.value }))}
-                  helpText="Specify the threat, tool, or technology you want to analyze"
-                  disabled={isLoading}
-                  required
-                />
-
-                {/* Analysis Type */}
-                <Select
-                  label="Analysis Type"
-                  options={analysisTypeOptions}
-                  value={formData.analysis_type}
-                  onChange={(e) => setFormData(prev => ({ ...prev, analysis_type: e.target.value as 'comprehensive' | 'quick' | 'custom' }))}
-                  helpText="Choose the depth and scope of analysis"
-                  disabled={isLoading}
-                />
-
-                {/* ML Guidance Toggle */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Analysis Options
-                  </label>
-                  <div className="flex items-center space-x-3">
-                    <input
-                      type="checkbox"
-                      id="ml_guidance"
-                      checked={formData.enable_ml_guidance}
-                      onChange={(e) => setFormData(prev => ({ ...prev, enable_ml_guidance: e.target.checked }))}
-                      disabled={isLoading}
-                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                    />
-                    <label htmlFor="ml_guidance" className="text-sm text-gray-700 flex items-center space-x-1">
-                      <SparklesIcon className="h-4 w-4" />
-                      <span>Enable ML-powered guidance</span>
-                    </label>
-                  </div>
-                  <p className="mt-1 text-sm text-gray-500">
-                    Use machine learning to enhance threat analysis and detection guidance
+        <div className="grid min-w-0 grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]">
+          <Card className="min-w-0 border-slate-200 shadow-sm">
+            <CardHeader className="border-b border-slate-100 pb-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <CardTitle className="flex items-center gap-2 text-xl">
+                    <DocumentTextIcon className="h-5 w-5 text-blue-600" />
+                    Intelligence request
+                  </CardTitle>
+                  <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
+                    Define the target and depth before generation. The report is saved after the request completes.
                   </p>
                 </div>
+                <Badge variant={formData.enable_ml_guidance ? 'success' : 'default'} size="sm" className="w-fit rounded-md">
+                  {formData.enable_ml_guidance ? 'ML guidance on' : 'ML guidance off'}
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-1">
+              <form onSubmit={handleSubmit} className="space-y-6">
+                <Input
+                  label="Target"
+                  placeholder="ShadowPad, Cobalt Strike, SAP NetWeaver"
+                  value={formData.tool_name}
+                  onChange={(e) => setFormData(prev => ({ ...prev, tool_name: e.target.value }))}
+                  helpText="Use the exact name analysts or asset owners use in tickets and reports."
+                  disabled={isLoading}
+                  required
+                  className="h-12 text-base"
+                />
 
-                {/* Error Display */}
+                <div className="grid min-w-0 grid-cols-1 gap-5 md:grid-cols-[minmax(0,1fr)_minmax(16rem,0.8fr)]">
+                  <Select
+                    label="Analysis depth"
+                    options={analysisTypeOptions}
+                    value={formData.analysis_type}
+                    onChange={(e) => setFormData(prev => ({ ...prev, analysis_type: e.target.value as 'comprehensive' | 'quick' | 'custom' }))}
+                    helpText="Choose the review depth before generation."
+                    disabled={isLoading}
+                    className="h-12"
+                  />
+
+                  <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex items-start gap-3">
+                      <input
+                        type="checkbox"
+                        id="ml_guidance"
+                        checked={formData.enable_ml_guidance}
+                        onChange={(e) => setFormData(prev => ({ ...prev, enable_ml_guidance: e.target.checked }))}
+                        disabled={isLoading}
+                        className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <div>
+                        <label htmlFor="ml_guidance" className="flex items-center gap-1 text-sm font-medium text-slate-900">
+                          <SparklesIcon className="h-4 w-4 text-blue-600" />
+                          ML-powered guidance
+                        </label>
+                        <p className="mt-1 text-sm leading-5 text-slate-600">
+                          Add behavioral cues, detection ideas, and risk framing to the generated profile.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 {error && (
-                  <div className="bg-red-50 border border-red-200 rounded-md p-4">
-                    <div className="flex">
-                      <ExclamationTriangleIcon className="h-5 w-5 text-red-400 flex-shrink-0 mt-0.5" />
-                      <div className="ml-3">
-                        <h3 className="text-sm font-medium text-red-800">
-                          Generation Failed
+                  <div role="alert" className="rounded-md border border-red-200 bg-red-50 p-4">
+                    <div className="flex gap-3">
+                      <ExclamationTriangleIcon className="mt-0.5 h-5 w-5 flex-shrink-0 text-red-500" />
+                      <div>
+                        <h3 className="text-sm font-semibold text-red-900">
+                          Generation failed
                         </h3>
-                        <p className="text-sm text-red-700 mt-1">
-                          {error?.message || 'Failed to generate report. Please try again.'}
+                        <p className="mt-1 text-sm leading-6 text-red-700">
+                          The report could not be generated. Check the target and try again.
                         </p>
                       </div>
                     </div>
                   </div>
                 )}
 
-                {/* Submit Button */}
-                <Button
-                  type="submit"
-                  size="lg"
-                  loading={isLoading}
-                  disabled={!formData.tool_name.trim() || isLoading}
-                  className="w-full"
-                >
-                  {isLoading ? 'Generating Report...' : 'Generate Threat Intelligence Report'}
-                </Button>
-
-                {/* Loading State */}
                 {isLoading && (
-                  <div className="bg-blue-50 border border-blue-200 rounded-md p-4">
-                    <div className="flex items-center">
-                      <ClockIcon className="h-5 w-5 text-blue-400 flex-shrink-0 animate-spin" />
-                      <div className="ml-3">
-                        <h3 className="text-sm font-medium text-blue-800">
-                          Generating Report
+                  <div role="status" className="rounded-md border border-blue-200 bg-blue-50 p-4">
+                    <div className="flex gap-3">
+                      <ClockIcon className="mt-0.5 h-5 w-5 flex-shrink-0 animate-spin text-blue-600" />
+                      <div>
+                        <h3 className="text-sm font-semibold text-blue-900">
+                          Building the report
                         </h3>
-                        <p className="text-sm text-blue-700 mt-1">
-                          This may take 30-60 seconds depending on analysis type and ML guidance settings.
+                        <p className="mt-1 text-sm leading-6 text-blue-800">
+                          Keep this page open while the analysis collects source context and prepares the saved report.
                         </p>
                       </div>
                     </div>
                   </div>
                 )}
+
+                <div className="flex flex-col gap-3 border-t border-slate-100 pt-6 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-sm leading-6 text-slate-600">
+                    Reports are saved automatically when generation succeeds.
+                  </p>
+                  <Button
+                    type="submit"
+                    size="lg"
+                    loading={isLoading}
+                    disabled={!formData.tool_name.trim() || isLoading}
+                    className="min-h-12 w-full whitespace-normal px-5 text-sm sm:w-auto"
+                  >
+                    {isLoading ? 'Generating report...' : 'Generate report'}
+                  </Button>
+                </div>
               </form>
             </CardContent>
           </Card>
+
+          <aside className="min-w-0 space-y-4">
+            <Card className="min-w-0 border-slate-200 shadow-sm">
+              <CardHeader>
+                <CardTitle className="text-base">Seed a target</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {targetGroups.map((group) => (
+                    <div key={group.label}>
+                      <h4 className="text-sm font-medium text-slate-800">{group.label}</h4>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {group.examples.map((example) => (
+                          <button
+                            key={example}
+                            type="button"
+                            onClick={() => handleExampleClick(example)}
+                            disabled={isLoading}
+                            className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {example}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="min-w-0 border-slate-200 shadow-sm">
+              <CardHeader>
+                <CardTitle className="text-base">Analysis modes</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {analysisSummaries.map((summary) => (
+                    <div key={summary.name} className="border-b border-slate-100 pb-4 last:border-0 last:pb-0">
+                      <div className="flex items-start justify-between gap-3">
+                        <span className="text-sm font-medium text-slate-900">{summary.name}</span>
+                        <Badge variant={summary.variant} size="sm" className="shrink-0 rounded-md">
+                          {summary.time}
+                        </Badge>
+                      </div>
+                      <p className="mt-1 text-sm leading-6 text-slate-600">{summary.detail}</p>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="min-w-0 border-slate-200 shadow-sm">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <SparklesIcon className="h-4 w-4 text-blue-600" />
+                  Report quality checks
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ul className="space-y-2 text-sm leading-6 text-slate-600">
+                  {qualityChecks.map((check) => (
+                    <li key={check} className="flex gap-2">
+                      <span className="mt-2 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-blue-600" />
+                      <span>{check}</span>
+                    </li>
+                  ))}
+                </ul>
+              </CardContent>
+            </Card>
+          </aside>
         </div>
-
-        {/* Sidebar */}
-        <div className="space-y-6">
-          {/* Example Queries */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Example Queries</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3">
-                <div>
-                  <h4 className="text-sm font-medium text-gray-700 mb-2">Attack Tools & Malware</h4>
-                  <div className="flex flex-wrap gap-2">
-                    {exampleQueries.slice(0, 4).map((example) => (
-                      <button
-                        key={example}
-                        onClick={() => handleExampleClick(example)}
-                        disabled={isLoading}
-                        className="text-xs px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded text-gray-700 transition-colors"
-                      >
-                        {example}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <h4 className="text-sm font-medium text-gray-700 mb-2">Targeted Technologies</h4>
-                  <div className="flex flex-wrap gap-2">
-                    {exampleQueries.slice(4).map((example) => (
-                      <button
-                        key={example}
-                        onClick={() => handleExampleClick(example)}
-                        disabled={isLoading}
-                        className="text-xs px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded text-gray-700 transition-colors"
-                      >
-                        {example}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Analysis Types Info */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Analysis Types</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3 text-sm">
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-medium">Comprehensive</span>
-                    <Badge variant="info" size="sm">2-5 min</Badge>
-                  </div>
-                  <p className="text-gray-600">
-                    Full threat analysis with technical details, detection guidance, and mitigation strategies
-                  </p>
-                </div>
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-medium">Quick</span>
-                    <Badge variant="success" size="sm">30-60s</Badge>
-                  </div>
-                  <p className="text-gray-600">
-                    Essential information and key threat indicators for rapid assessment
-                  </p>
-                </div>
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-medium">Custom</span>
-                    <Badge variant="warning" size="sm">Variable</Badge>
-                  </div>
-                  <p className="text-gray-600">
-                    Tailored analysis based on specific requirements and focus areas
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* ML Guidance Info */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base flex items-center space-x-2">
-                <SparklesIcon className="h-4 w-4" />
-                <span>ML Guidance</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-gray-600">
-                Machine learning enhancement provides:
-              </p>
-              <ul className="mt-2 text-sm text-gray-600 space-y-1">
-                <li>• Advanced threat pattern recognition</li>
-                <li>• Behavioral analysis insights</li>
-                <li>• Enhanced detection recommendations</li>
-                <li>• Risk assessment scoring</li>
-              </ul>
-            </CardContent>
-          </Card>
-        </div>
-      </div>
       </div>
     </div>
   );
