@@ -21,11 +21,31 @@ const expectations = [
   },
   {
     name: 'uses product-specific target guidance',
-    pattern: /ShadowPad, Cobalt Strike, SAP NetWeaver/,
+    pattern: /ShadowPad[\s\S]*Cobalt Strike[\s\S]*SAP NetWeaver/,
   },
   {
-    name: 'anchors the surface as a report workspace',
-    pattern: /Report workspace/,
+    name: 'anchors the surface as an analyst intake console',
+    pattern: /Analyst intake console/,
+  },
+  {
+    name: 'frames the request as analyst intake instead of a generic form',
+    pattern: /Analyst intake console/,
+  },
+  {
+    name: 'uses native radio inputs for analysis mode cards',
+    pattern: /type="radio"[\s\S]*name="analysis_type"[\s\S]*setFormData\(prev => \(\{ \.\.\.prev, analysis_type: summary\.value/,
+  },
+  {
+    name: 'keeps the canonical analysis type state owner',
+    pattern: /analysis_type: 'comprehensive'[\s\S]*analysis_type: summary\.value as GenerateFormData\['analysis_type'\]/,
+  },
+  {
+    name: 'uses fieldset and legend semantics for analysis mode',
+    pattern: /<fieldset>\s*<legend className="text-sm font-semibold uppercase tracking-wide text-slate-500">\s*Analysis mode\s*<\/legend>/,
+  },
+  {
+    name: 'keeps radio checked state tied to request state',
+    pattern: /checked=\{formData\.analysis_type === summary\.value\}/,
   },
   {
     name: 'keeps accessible error alert semantics',
@@ -54,6 +74,18 @@ const expectations = [
   {
     name: 'keeps report quality guidance visible',
     pattern: /Report quality checks/,
+  },
+  {
+    name: 'keeps intake readiness visible near submit',
+    pattern: /Intake readiness/,
+  },
+  {
+    name: 'does not add generic gradient decoration',
+    absentPattern: /bg-gradient|from-|via-|to-/,
+  },
+  {
+    name: 'does not retain generic mode labels',
+    absentPattern: /Comprehensive Analysis|Quick Analysis|Custom Analysis/,
   },
 ];
 
