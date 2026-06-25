@@ -190,6 +190,8 @@ class SentrySearchAPI {
       query?: string;
       threat_type?: string;
       min_quality?: number;
+      sort_by?: string;
+      sort_order?: string;
     }
   ): Promise<PaginatedResponse<Report>> {
     const params = new URLSearchParams();
@@ -199,6 +201,8 @@ class SentrySearchAPI {
     if (filters?.query) params.append('query', filters.query);
     if (filters?.threat_type) params.append('threat_type', filters.threat_type);
     if (filters?.min_quality) params.append('min_quality', filters.min_quality.toString());
+    if (filters?.sort_by) params.append('sort_by', filters.sort_by);
+    if (filters?.sort_order) params.append('sort_order', filters.sort_order);
 
     const response = await this.client.get(`/api/reports?${params.toString()}`);
     return response.data;

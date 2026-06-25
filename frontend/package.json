@@ -6,6 +6,7 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "check:generate-surface": "node dev/check-generate-surface.mjs",
+    "check:reports-surface": "node dev/check-reports-surface.mjs",
     "start": "next start",
     "lint": "next lint"
   },

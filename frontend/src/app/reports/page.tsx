@@ -1,31 +1,24 @@
-/**
- * Reports Listing Page
- * 
- * Comprehensive report browser with search, filtering, and pagination.
- * Replaces Gradio's limited report viewing with professional interface.
- */
-
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import {
-  MagnifyingGlassIcon,
-  FunnelIcon,
-  DocumentTextIcon,
-  PlusIcon,
-  EyeIcon,
   CalendarDaysIcon,
+  DocumentTextIcon,
+  EyeIcon,
+  FunnelIcon,
+  MagnifyingGlassIcon,
+  PlusIcon,
 } from '@heroicons/react/24/outline';
 
 import { api } from '@/lib/api';
-import { formatDate, formatRelativeTime, formatProcessingTime, debounce } from '@/lib/utils';
-import { Card, CardContent } from '@/components/ui/Card';
-import { Button } from '@/components/ui/Button';
-import { Select } from '@/components/ui/Select';
-import { Badge } from '@/components/ui/Badge';
+import { debounce, formatDate, formatProcessingTime, formatRelativeTime } from '@/lib/utils';
 import { AuthGuard } from '@/components/AuthGuard';
+import { Badge } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
+import { Card, CardContent } from '@/components/ui/Card';
+import { Select } from '@/components/ui/Select';
 
 interface FilterState {
   query: string;
@@ -36,10 +29,10 @@ interface FilterState {
 }
 
 const sortOptions = [
-  { value: 'created_at', label: 'Date Created' },
-  { value: 'quality_score', label: 'Quality Score' },
-  { value: 'tool_name', label: 'Tool Name' },
-  { value: 'processing_time_ms', label: 'Processing Time' },
+  { value: 'created_at', label: 'Date created' },
+  { value: 'quality_score', label: 'Quality score' },
+  { value: 'tool_name', label: 'Target name' },
+  { value: 'processing_time_ms', label: 'Processing time' },
 ];
 
 const sortOrderOptions = [
@@ -48,12 +41,18 @@ const sortOrderOptions = [
 ];
 
 const qualityOptions = [
-  { value: '', label: 'Any Quality' },
-  { value: '4.0', label: '4.0+ (Excellent)' },
-  { value: '3.0', label: '3.0+ (Good)' },
-  { value: '2.0', label: '2.0+ (Fair)' },
-  { value: '1.0', label: '1.0+ (Poor)' },
+  { value: '', label: 'Any quality' },
+  { value: '4.0', label: '4.0+ excellent' },
+  { value: '3.0', label: '3.0+ good' },
+  { value: '2.0', label: '2.0+ needs review' },
+  { value: '1.0', label: '1.0+ low confidence' },
 ];
+
+const getQualityVariant = (score: number) =>
+  score >= 4.0 ? 'success' : score >= 3.0 ? 'info' : score >= 2.0 ? 'warning' : 'error';
+
+const getQualityLabel = (score: number) =>
+  score >= 4.0 ? 'High confidence' : score >= 3.0 ? 'Reviewable' : score >= 2.0 ? 'Needs review' : 'Low confidence';
 
 export default function ReportsPage() {
   const [currentPage, setCurrentPage] = useState(1);
@@ -66,7 +65,6 @@ export default function ReportsPage() {
   });
   const [showFilters, setShowFilters] = useState(false);
 
-  // Debounced search
   const debouncedSearch = useMemo(
     () => debounce((query: unknown) => {
       setFilters(prev => ({ ...prev, query: query as string }));
@@ -75,24 +73,24 @@ export default function ReportsPage() {
     []
   );
 
-  // Fetch reports
   const { data: reportsData, isLoading, error } = useQuery({
     queryKey: ['reports', 'list', currentPage, filters],
     queryFn: () => api.listReports(currentPage, 20, {
       query: filters.query || undefined,
       threat_type: filters.threat_type || undefined,
       min_quality: filters.min_quality ? parseFloat(filters.min_quality) : undefined,
+      sort_by: filters.sort_by,
+      sort_order: filters.sort_order,
     }),
   });
 
-  // Fetch filter options
   const { data: filterOptions } = useQuery({
     queryKey: ['search', 'filters'],
     queryFn: () => api.getSearchFilters(),
   });
 
   const threatTypeOptions = useMemo(() => [
-    { value: '', label: 'All Threat Types' },
+    { value: '', label: 'All threat types' },
     ...(filterOptions?.threat_types.map(type => ({
       value: type,
       label: type.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
@@ -119,263 +117,247 @@ export default function ReportsPage() {
     setCurrentPage(1);
   };
 
-  const hasActiveFilters = filters.query || filters.threat_type || filters.min_quality;
+  const hasActiveFilters = Boolean(filters.query || filters.threat_type || filters.min_quality);
+  const activeFilterCount = [filters.query, filters.threat_type, filters.min_quality].filter(Boolean).length;
+  const totalReports = reportsData?.pagination.total ?? 0;
+  const pageStart = reportsData ? ((reportsData.pagination.page - 1) * reportsData.pagination.limit) + 1 : 0;
+  const pageEnd = reportsData ? Math.min(reportsData.pagination.page * reportsData.pagination.limit, reportsData.pagination.total) : 0;
 
   return (
     <AuthGuard>
-      <div className="min-h-screen bg-gray-50 py-8">
+      <div className="min-h-screen overflow-x-hidden bg-slate-50 py-6 sm:py-10">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-8">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Reports</h1>
-          <p className="mt-2 text-gray-600">
-            Browse and search your threat intelligence reports
-          </p>
-        </div>
-        <div className="mt-4 sm:mt-0">
-          <Link href="/generate">
-            <Button className="flex items-center space-x-2">
-              <PlusIcon className="h-4 w-4" />
-              <span>Generate Report</span>
-            </Button>
-          </Link>
-        </div>
-      </div>
-
-      {/* Search and Filters */}
-      <Card className="mb-8">
-        <CardContent className="py-4">
-          <div className="flex flex-col lg:flex-row lg:items-center space-y-4 lg:space-y-0 lg:space-x-4">
-            {/* Search */}
-            <div className="flex-1">
-              <div className="relative">
-                <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                <input
-                  type="text"
-                  placeholder="Search reports..."
-                  defaultValue={filters.query}
-                  onChange={handleSearchChange}
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
+          <div className="mb-8 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+            <div className="max-w-3xl">
+              <Badge variant="info" size="sm" className="mb-3 rounded-md">
+                Saved intelligence
+              </Badge>
+              <h1 className="text-2xl font-semibold leading-tight text-slate-950 sm:text-4xl">
+                Reports ready for review
+              </h1>
+              <p className="mt-3 max-w-2xl text-base leading-7 text-slate-600 sm:text-lg">
+                Search saved threat profiles, compare confidence, and reopen the report record with its source-backed context.
+              </p>
             </div>
-
-            {/* Filter Toggle */}
-            <Button
-              variant="outline"
-              onClick={() => setShowFilters(!showFilters)}
-              className="lg:w-auto"
-            >
-              <FunnelIcon className="h-4 w-4 mr-2" />
-              Filters
-              {hasActiveFilters && (
-                <Badge variant="info" size="sm" className="ml-2">
-                  {[filters.query && 'search', filters.threat_type && 'type', filters.min_quality && 'quality'].filter(Boolean).length}
-                </Badge>
-              )}
-            </Button>
+            <Link href="/generate" className="w-full sm:w-auto">
+              <Button className="min-h-11 w-full gap-2 sm:w-auto">
+                <PlusIcon className="h-4 w-4" />
+                Generate report
+              </Button>
+            </Link>
           </div>
 
-          {/* Expanded Filters */}
-          {showFilters && (
-            <div className="mt-4 pt-4 border-t border-gray-200">
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                <Select
-                  label="Threat Type"
-                  options={threatTypeOptions}
-                  value={filters.threat_type}
-                  onChange={(e) => handleFilterChange('threat_type', e.target.value)}
-                />
-                <Select
-                  label="Min Quality"
-                  options={qualityOptions}
-                  value={filters.min_quality}
-                  onChange={(e) => handleFilterChange('min_quality', e.target.value)}
-                />
-                <Select
-                  label="Sort By"
-                  options={sortOptions}
-                  value={filters.sort_by}
-                  onChange={(e) => handleFilterChange('sort_by', e.target.value)}
-                />
-                <Select
-                  label="Order"
-                  options={sortOrderOptions}
-                  value={filters.sort_order}
-                  onChange={(e) => handleFilterChange('sort_order', e.target.value)}
-                />
-              </div>
-              {hasActiveFilters && (
-                <div className="mt-4">
-                  <Button variant="ghost" size="sm" onClick={clearFilters}>
-                    Clear All Filters
-                  </Button>
-                </div>
-              )}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+          <Card className="mb-6 border-slate-200 shadow-sm">
+            <CardContent className="py-4">
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+                <label className="relative block">
+                  <span className="sr-only">Search reports</span>
+                  <MagnifyingGlassIcon className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="search"
+                    placeholder="Search by target, report text, tag, or threat type"
+                    defaultValue={filters.query}
+                    onChange={handleSearchChange}
+                    className="h-11 w-full rounded-md border border-slate-300 bg-white pl-10 pr-4 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                  />
+                </label>
 
-      {/* Results Summary */}
-      {reportsData && (
-        <div className="mb-6 text-sm text-gray-600">
-          Showing {((reportsData.pagination.page - 1) * reportsData.pagination.limit) + 1}-{Math.min(reportsData.pagination.page * reportsData.pagination.limit, reportsData.pagination.total)} of {reportsData.pagination.total} reports
-        </div>
-      )}
-
-      {/* Reports Grid */}
-      {isLoading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {[...Array(6)].map((_, i) => (
-            <Card key={i}>
-              <CardContent className="p-6">
-                <div className="animate-pulse">
-                  <div className="h-4 bg-gray-200 rounded w-3/4 mb-2"></div>
-                  <div className="h-3 bg-gray-200 rounded w-1/2 mb-4"></div>
-                  <div className="h-3 bg-gray-200 rounded w-full mb-2"></div>
-                  <div className="h-3 bg-gray-200 rounded w-2/3"></div>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      ) : error ? (
-        <Card className="border-red-200 bg-red-50">
-          <CardContent className="text-center py-8">
-            <DocumentTextIcon className="h-12 w-12 text-red-400 mx-auto mb-4" />
-            <h3 className="text-lg font-semibold text-red-800 mb-2">Failed to Load Reports</h3>
-            <p className="text-red-600">
-              There was an error loading your reports. Please try again.
-            </p>
-          </CardContent>
-        </Card>
-      ) : reportsData?.reports.length === 0 ? (
-        <Card>
-          <CardContent className="text-center py-12">
-            <DocumentTextIcon className="h-16 w-16 text-gray-400 mx-auto mb-4" />
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">
-              {hasActiveFilters ? 'No Reports Found' : 'No Reports Yet'}
-            </h3>
-            <p className="text-gray-600 mb-6 max-w-md mx-auto">
-              {hasActiveFilters 
-                ? 'Try adjusting your search criteria or filters to find what you\'re looking for.'
-                : 'Get started by generating your first threat intelligence report.'
-              }
-            </p>
-            <div className="space-x-4">
-              {hasActiveFilters && (
-                <Button variant="outline" onClick={clearFilters}>
-                  Clear Filters
-                </Button>
-              )}
-              <Link href="/generate">
-                <Button>Generate First Report</Button>
-              </Link>
-            </div>
-          </CardContent>
-        </Card>
-      ) : (
-        <>
-          {/* Reports Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
-            {reportsData?.reports.map((report) => {
-              const qualityVariant = 
-                report.quality_score >= 4.0 ? 'success' :
-                report.quality_score >= 3.0 ? 'info' :
-                report.quality_score >= 2.0 ? 'warning' : 'error';
-
-              return (
-                <Card key={report.id} className="hover:shadow-md transition-shadow">
-                  <CardContent className="p-6">
-                    <div className="flex items-start justify-between mb-3">
-                      <h3 className="font-semibold text-gray-900 truncate flex-1 mr-2">
-                        {report.tool_name}
-                      </h3>
-                      <Badge variant={qualityVariant} size="sm">
-                        {report.quality_score.toFixed(1)}
-                      </Badge>
-                    </div>
-                    
-                    <div className="space-y-2 mb-4">
-                      <div className="flex items-center text-sm text-gray-500">
-                        <CalendarDaysIcon className="h-4 w-4 mr-1" />
-                        <span>{formatRelativeTime(report.created_at)}</span>
-                      </div>
-                      
-                      {report.processing_time_ms && (
-                        <div className="text-sm text-gray-500">
-                          Processing: {formatProcessingTime(report.processing_time_ms)}
-                        </div>
-                      )}
-                      
-                      <div className="flex items-center space-x-2">
-                        {report.category && (
-                          <Badge variant="default" size="sm">
-                            {report.category}
-                          </Badge>
-                        )}
-                        {report.threat_type && (
-                          <Badge variant="default" size="sm">
-                            {report.threat_type}
-                          </Badge>
-                        )}
-                      </div>
-                    </div>
-
-                    {report.content_preview && (
-                      <p className="text-sm text-gray-600 mb-4 line-clamp-2">
-                        {report.content_preview}
-                      </p>
-                    )}
-
-                    <div className="flex justify-between items-center">
-                      <span className="text-xs text-gray-400">
-                        {formatDate(report.created_at)}
-                      </span>
-                      <Link href={`/reports/${report.id}`}>
-                        <Button size="sm" variant="outline">
-                          <EyeIcon className="h-4 w-4 mr-1" />
-                          View
-                        </Button>
-                      </Link>
-                    </div>
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
-
-          {/* Pagination */}
-          {reportsData && reportsData.pagination.pages > 1 && (
-            <div className="flex items-center justify-between">
-              <div className="flex space-x-2">
                 <Button
                   variant="outline"
-                  disabled={currentPage <= 1}
-                  onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                  onClick={() => setShowFilters(!showFilters)}
+                  className="min-h-11 w-full gap-2 lg:w-auto"
+                  aria-expanded={showFilters}
                 >
-                  Previous
-                </Button>
-                <Button
-                  variant="outline"
-                  disabled={currentPage >= reportsData.pagination.pages}
-                  onClick={() => setCurrentPage(prev => Math.min(reportsData.pagination.pages, prev + 1))}
-                >
-                  Next
+                  <FunnelIcon className="h-4 w-4" />
+                  Filters
+                  {hasActiveFilters && (
+                    <Badge variant="info" size="sm" className="rounded-md">
+                      {activeFilterCount}
+                    </Badge>
+                  )}
                 </Button>
               </div>
-              
-              <span className="text-sm text-gray-600">
-                Page {currentPage} of {reportsData.pagination.pages}
+
+              {showFilters && (
+                <div className="mt-4 border-t border-slate-100 pt-4">
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+                    <Select
+                      label="Threat type"
+                      options={threatTypeOptions}
+                      value={filters.threat_type}
+                      onChange={(e) => handleFilterChange('threat_type', e.target.value)}
+                    />
+                    <Select
+                      label="Minimum quality"
+                      options={qualityOptions}
+                      value={filters.min_quality}
+                      onChange={(e) => handleFilterChange('min_quality', e.target.value)}
+                    />
+                    <Select
+                      label="Sort by"
+                      options={sortOptions}
+                      value={filters.sort_by}
+                      onChange={(e) => handleFilterChange('sort_by', e.target.value)}
+                    />
+                    <Select
+                      label="Order"
+                      options={sortOrderOptions}
+                      value={filters.sort_order}
+                      onChange={(e) => handleFilterChange('sort_order', e.target.value)}
+                    />
+                  </div>
+                  {hasActiveFilters && (
+                    <div className="mt-4">
+                      <Button variant="ghost" size="sm" onClick={clearFilters}>
+                        Clear filters
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {reportsData && (
+            <div className="mb-4 flex flex-col gap-1 text-sm text-slate-600 sm:flex-row sm:items-center sm:justify-between">
+              <span>
+                {totalReports === 0 ? 'No saved reports' : `Showing ${pageStart}-${pageEnd} of ${totalReports} saved reports`}
+              </span>
+              <span>
+                Sorted by {sortOptions.find(option => option.value === filters.sort_by)?.label.toLowerCase()} · {filters.sort_order}
               </span>
             </div>
           )}
-        </>
-      )}
+
+          {isLoading ? (
+            <div className="space-y-4" role="status" aria-label="Loading reports">
+              {[...Array(4)].map((_, i) => (
+                <Card key={i} className="border-slate-200">
+                  <CardContent className="p-5">
+                    <div className="animate-pulse space-y-4">
+                      <div className="h-5 w-1/3 rounded bg-slate-200" />
+                      <div className="h-4 w-2/3 rounded bg-slate-200" />
+                      <div className="h-4 w-full rounded bg-slate-200" />
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          ) : error ? (
+            <Card className="border-red-200 bg-red-50">
+              <CardContent className="py-10 text-center" role="alert">
+                <DocumentTextIcon className="mx-auto mb-4 h-12 w-12 text-red-400" />
+                <h3 className="mb-2 text-lg font-semibold text-red-900">Reports could not be loaded</h3>
+                <p className="mx-auto max-w-md text-sm leading-6 text-red-700">
+                  The saved report list is unavailable. Retry from this page or generate a new report if the issue persists.
+                </p>
+              </CardContent>
+            </Card>
+          ) : reportsData?.reports.length === 0 ? (
+            <Card className="border-slate-200">
+              <CardContent className="py-12 text-center">
+                <DocumentTextIcon className="mx-auto mb-4 h-16 w-16 text-slate-400" />
+                <h3 className="mb-2 text-lg font-semibold text-slate-950">
+                  {hasActiveFilters ? 'No matching reports' : 'No saved reports yet'}
+                </h3>
+                <p className="mx-auto mb-6 max-w-md text-sm leading-6 text-slate-600">
+                  {hasActiveFilters
+                    ? 'Adjust the search or filters to broaden the review queue.'
+                    : 'Generate the first threat intelligence report to start building the saved review queue.'}
+                </p>
+                <div className="flex flex-col justify-center gap-3 sm:flex-row">
+                  {hasActiveFilters && (
+                    <Button variant="outline" onClick={clearFilters}>
+                      Clear filters
+                    </Button>
+                  )}
+                  <Link href="/generate">
+                    <Button>Generate report</Button>
+                  </Link>
+                </div>
+              </CardContent>
+            </Card>
+          ) : (
+            <>
+              <div className="space-y-4">
+                {reportsData?.reports.map((report) => {
+                  const qualityVariant = getQualityVariant(report.quality_score);
+                  const qualityLabel = getQualityLabel(report.quality_score);
+
+                  return (
+                    <Card key={report.id} className="border-slate-200 shadow-sm transition hover:border-blue-200 hover:shadow-md">
+                      <CardContent className="p-5">
+                        <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_12rem] lg:items-start">
+                          <div className="min-w-0">
+                            <div className="mb-3 flex flex-wrap items-center gap-2">
+                              <Badge variant={qualityVariant} size="sm" className="rounded-md">
+                                {qualityLabel} · {report.quality_score.toFixed(1)}
+                              </Badge>
+                              {report.category && <Badge variant="default" size="sm" className="rounded-md">{report.category}</Badge>}
+                              {report.threat_type && <Badge variant="default" size="sm" className="rounded-md">{report.threat_type}</Badge>}
+                            </div>
+                            <h2 className="truncate text-xl font-semibold text-slate-950">
+                              {report.tool_name}
+                            </h2>
+                            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2 text-sm text-slate-500">
+                              <span className="inline-flex items-center gap-1">
+                                <CalendarDaysIcon className="h-4 w-4" />
+                                {formatRelativeTime(report.created_at)}
+                              </span>
+                              <span>{formatDate(report.created_at)}</span>
+                              {report.processing_time_ms ? <span>{formatProcessingTime(report.processing_time_ms)} generation</span> : null}
+                            </div>
+                            <p className="mt-4 line-clamp-2 max-w-3xl text-sm leading-6 text-slate-600">
+                              {report.content_preview || 'No preview was saved for this report. Open it to review the full intelligence record.'}
+                            </p>
+                          </div>
+
+                          <div className="flex flex-col gap-3 lg:items-end">
+                            <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600 lg:text-right">
+                              <div className="font-medium text-slate-900">Review record</div>
+                              <div>Sources, tags, and report body</div>
+                            </div>
+                            <Link href={`/reports/${report.id}`} className="w-full lg:w-auto">
+                              <Button size="sm" variant="outline" className="min-h-10 w-full gap-2 lg:w-auto">
+                                <EyeIcon className="h-4 w-4" />
+                                Open report
+                              </Button>
+                            </Link>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </div>
+
+              {reportsData && reportsData.pagination.pages > 1 && (
+                <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <span className="text-sm text-slate-600">
+                    Page {currentPage} of {reportsData.pagination.pages}
+                  </span>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      disabled={currentPage <= 1}
+                      onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                    >
+                      Previous
+                    </Button>
+                    <Button
+                      variant="outline"
+                      disabled={currentPage >= reportsData.pagination.pages}
+                      onClick={() => setCurrentPage(prev => Math.min(reportsData.pagination.pages, prev + 1))}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
       </div>
-    </div>
     </AuthGuard>
   );
 }
