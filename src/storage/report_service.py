@@ -454,8 +454,11 @@ class ReportStorageService:
         offset: int = 0,
         category: Optional[str] = None,
         threat_type: Optional[str] = None,
+        threat_types: Optional[List[str]] = None,
         min_quality_score: Optional[float] = None,
         search_query: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        created_after: Optional[datetime] = None,
         sort_by: str = "created_at",
         sort_order: str = "desc",
         user_id: Optional[str] = None,
@@ -475,17 +478,26 @@ class ReportStorageService:
                 if threat_type:
                     query = query.filter(Report.threat_type == threat_type)
 
+                if threat_types:
+                    query = query.filter(Report.threat_type.in_(threat_types))
+
                 if min_quality_score is not None:
                     query = query.filter(Report.quality_score >= min_quality_score)
 
                 if search_query:
-                    # Simple text search across tool name and category
+                    # Text search across the fields advertised by the frontend.
                     search_filter = or_(
                         Report.tool_name.ilike(f"%{search_query}%"),
                         Report.category.ilike(f"%{search_query}%"),
                         Report.threat_type.ilike(f"%{search_query}%"),
                     )
                     query = query.filter(search_filter)
+
+                if tags:
+                    query = query.filter(Report.search_tags.contains(tags))
+
+                if created_after:
+                    query = query.filter(Report.created_at >= created_after)
 
                 # Dynamic sorting
                 query = query.order_by(self._report_sort_expression(sort_by, sort_order))
@@ -609,6 +621,8 @@ class ReportStorageService:
                     query = query.filter(Report.category == filters["category"])
                 if filters.get("threat_type"):
                     query = query.filter(Report.threat_type == filters["threat_type"])
+                if filters.get("threat_types"):
+                    query = query.filter(Report.threat_type.in_(filters["threat_types"]))
                 if filters.get("min_quality_score") is not None:
                     query = query.filter(Report.quality_score >= filters["min_quality_score"])
                 if filters.get("search_query"):
@@ -618,6 +632,8 @@ class ReportStorageService:
                         Report.threat_type.ilike(f'%{filters["search_query"]}%'),
                     )
                     query = query.filter(search_filter)
+                if filters.get("tags"):
+                    query = query.filter(Report.search_tags.contains(filters["tags"]))
                 if filters.get("created_after"):
                     query = query.filter(Report.created_at >= filters["created_after"])
 
