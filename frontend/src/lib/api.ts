@@ -230,11 +230,17 @@ class SentrySearchAPI {
   async searchReports(
     filters: SearchFilters,
     page: number = 1,
-    limit: number = 20
+    limit: number = 20,
+    sort?: {
+      sort_by?: string;
+      sort_order?: string;
+    }
   ): Promise<PaginatedResponse<Report>> {
     const params = new URLSearchParams();
     params.append('page', page.toString());
     params.append('limit', limit.toString());
+    if (sort?.sort_by) params.append('sort_by', sort.sort_by);
+    if (sort?.sort_order) params.append('sort_order', sort.sort_order);
 
     const response = await this.client.post(`/api/search?${params.toString()}`, filters);
     return response.data;

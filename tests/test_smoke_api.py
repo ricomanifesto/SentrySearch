@@ -418,15 +418,33 @@ def test_search_reports_filters_by_authenticated_non_admin(monkeypatch):
 
     response = asyncio.run(
         api_main.search_reports(
-            api_main.SearchFilters(query="example"),
-            api_main.PaginationParams(),
+            api_main.SearchFilters(
+                query="example",
+                threat_types=["malware"],
+                tags=["apt"],
+                min_quality_score=3.0,
+                date_range_days=30,
+            ),
+            api_main.PaginationParams(sort_by="quality_score", sort_order="desc"),
             user,
         )
     )
 
     assert response["reports"] == []
     assert captured_search_kwargs["user_id"] == "analyst-user"
+    assert captured_search_kwargs["search_query"] == "example"
+    assert captured_search_kwargs["threat_types"] == ["malware"]
+    assert captured_search_kwargs["tags"] == ["apt"]
+    assert captured_search_kwargs["min_quality_score"] == 3.0
+    assert captured_search_kwargs["sort_by"] == "quality_score"
+    assert captured_search_kwargs["sort_order"] == "desc"
+    assert "created_after" in captured_search_kwargs
     assert captured_count_kwargs["user_id"] == "analyst-user"
+    assert captured_count_kwargs["search_query"] == "example"
+    assert captured_count_kwargs["threat_types"] == ["malware"]
+    assert captured_count_kwargs["tags"] == ["apt"]
+    assert captured_count_kwargs["min_quality_score"] == 3.0
+    assert "created_after" in captured_count_kwargs
 
 
 def test_search_filters_requires_auth_before_storage_read(monkeypatch):
