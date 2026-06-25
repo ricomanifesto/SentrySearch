@@ -45,6 +45,16 @@ const expectations = [
     pattern: /overflow-x-hidden/,
   },
   {
+    name: 'keeps report search copy aligned with listReports fields',
+    source: reportsPage,
+    pattern: /Search by target, category, or threat type/,
+  },
+  {
+    name: 'does not advertise unsupported body or tag search',
+    source: reportsPage,
+    absentPattern: /report text, tag|tag, or threat type/,
+  },
+  {
     name: 'passes sort_by from the reports page',
     source: reportsPage,
     pattern: /sort_by: filters\.sort_by/,
