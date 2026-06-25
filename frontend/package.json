@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build",
+    "check:generate-surface": "node dev/check-generate-surface.mjs",
     "start": "next start",
     "lint": "next lint"
   },
