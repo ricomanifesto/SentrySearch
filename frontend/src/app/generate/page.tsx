@@ -14,7 +14,6 @@ import { api } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
-import { Select } from '@/components/ui/Select';
 import { Badge } from '@/components/ui/Badge';
 
 interface GenerateFormData {
@@ -22,12 +21,6 @@ interface GenerateFormData {
   enable_ml_guidance: boolean;
   analysis_type: 'comprehensive' | 'quick' | 'custom';
 }
-
-const analysisTypeOptions = [
-  { value: 'comprehensive', label: 'Comprehensive Analysis' },
-  { value: 'quick', label: 'Quick Analysis' },
-  { value: 'custom', label: 'Custom Analysis' },
-];
 
 const targetGroups = [
   {
@@ -42,19 +35,22 @@ const targetGroups = [
 
 const analysisSummaries = [
   {
-    name: 'Comprehensive',
+    value: 'comprehensive',
+    name: 'Full intelligence brief',
     detail: 'Technical profile, detection guidance, mitigations, and source-backed context.',
     time: '2-5 min',
     variant: 'info' as const,
   },
   {
-    name: 'Quick',
+    value: 'quick',
+    name: 'Triage brief',
     detail: 'Fast triage summary with high-signal indicators and immediate next steps.',
     time: '30-60s',
     variant: 'success' as const,
   },
   {
-    name: 'Custom',
+    value: 'custom',
+    name: 'Focused analyst note',
     detail: 'Focused analysis for a specific campaign, asset class, or review workflow.',
     time: 'Variable',
     variant: 'warning' as const,
@@ -97,16 +93,22 @@ export default function GeneratePage() {
 
   const isLoading = generateMutation.isPending;
   const error = generateMutation.error;
+  const selectedMode = analysisSummaries.find((summary) => summary.value === formData.analysis_type);
+  const readinessItems = [
+    formData.tool_name.trim() ? 'Target named' : 'Target needed',
+    selectedMode ? `${selectedMode.name} selected` : 'Mode needed',
+    formData.enable_ml_guidance ? 'Guidance enabled' : 'Guidance disabled',
+  ];
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-slate-50 py-6 sm:py-10">
       <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
         <div className="mb-8 max-w-3xl">
           <Badge variant="info" size="sm" className="mb-3 rounded-md">
-            Report workspace
+            Analyst intake console
           </Badge>
           <h1 className="max-w-full text-2xl font-semibold leading-tight tracking-normal text-slate-950 sm:text-4xl">
-            Generate a threat intelligence report
+            Scope the next threat intelligence request
           </h1>
           <p className="mt-3 max-w-2xl text-base leading-7 text-slate-600 sm:text-lg">
             Start with a malware family, attack tool, vulnerability target, or exposed technology.
@@ -121,10 +123,10 @@ export default function GeneratePage() {
                 <div className="min-w-0">
                   <CardTitle className="flex items-center gap-2 text-xl">
                     <DocumentTextIcon className="h-5 w-5 text-blue-600" />
-                    Intelligence request
+                    Request dossier
                   </CardTitle>
                   <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-                    Define the target and depth before generation. The report is saved after the request completes.
+                    Name the target, choose the review depth, and confirm the handoff before generation.
                   </p>
                 </div>
                 <Badge variant={formData.enable_ml_guidance ? 'success' : 'default'} size="sm" className="w-fit rounded-md">
@@ -136,7 +138,7 @@ export default function GeneratePage() {
               <form onSubmit={handleSubmit} className="space-y-6">
                 <Input
                   label="Target"
-                  placeholder="ShadowPad, Cobalt Strike, SAP NetWeaver"
+                  placeholder="ShadowPad or SAP NetWeaver"
                   value={formData.tool_name}
                   onChange={(e) => setFormData(prev => ({ ...prev, tool_name: e.target.value }))}
                   helpText="Use the exact name analysts or asset owners use in tickets and reports."
@@ -145,17 +147,60 @@ export default function GeneratePage() {
                   className="h-12 text-base"
                 />
 
-                <div className="grid min-w-0 grid-cols-1 gap-5 md:grid-cols-[minmax(0,1fr)_minmax(16rem,0.8fr)]">
-                  <Select
-                    label="Analysis depth"
-                    options={analysisTypeOptions}
-                    value={formData.analysis_type}
-                    onChange={(e) => setFormData(prev => ({ ...prev, analysis_type: e.target.value as 'comprehensive' | 'quick' | 'custom' }))}
-                    helpText="Choose the review depth before generation."
-                    disabled={isLoading}
-                    className="h-12"
-                  />
+                <fieldset>
+                  <legend className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+                    Analysis mode
+                  </legend>
+                  <p id="analysis-mode-help" className="mt-1 text-sm leading-6 text-slate-600">
+                    Pick the analyst handoff SentrySearch should prepare.
+                  </p>
 
+                  <div className="mt-3 grid min-w-0 grid-cols-1 gap-3 md:grid-cols-3" aria-describedby="analysis-mode-help">
+                    {analysisSummaries.map((summary) => {
+                      const isSelected = formData.analysis_type === summary.value;
+                      return (
+                        <label
+                          key={summary.value}
+                          className={`min-h-36 cursor-pointer rounded-md border p-4 text-left transition focus-within:ring-2 focus-within:ring-blue-500 ${
+                            isSelected
+                              ? 'border-blue-500 bg-blue-50 text-slate-950 shadow-sm'
+                              : 'border-slate-200 bg-white text-slate-800 hover:border-blue-200 hover:bg-slate-50'
+                          } ${isLoading ? 'cursor-not-allowed opacity-60' : ''}`}
+                        >
+                          <input
+                            type="radio"
+                            name="analysis_type"
+                            value={summary.value}
+                            checked={formData.analysis_type === summary.value}
+                            onChange={() => setFormData(prev => ({ ...prev, analysis_type: summary.value as GenerateFormData['analysis_type'] }))}
+                            disabled={isLoading}
+                            className="sr-only"
+                          />
+                          <div className="flex items-start justify-between gap-3">
+                            <span className="text-sm font-semibold leading-5">{summary.name}</span>
+                            <Badge variant={summary.variant} size="sm" className="shrink-0 rounded-md">
+                              {summary.time}
+                            </Badge>
+                          </div>
+                          <p className="mt-3 text-sm leading-6 text-slate-600">{summary.detail}</p>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </fieldset>
+
+                <div className="grid min-w-0 grid-cols-1 gap-5 md:grid-cols-[minmax(0,1fr)_minmax(16rem,0.8fr)]">
+                  <div className="rounded-md border border-slate-200 bg-white p-4">
+                    <h3 className="text-sm font-semibold text-slate-900">Intake readiness</h3>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-3 md:grid-cols-1">
+                      {readinessItems.map((item) => (
+                        <div key={item} className="flex items-center gap-2 text-sm text-slate-600">
+                          <span className={`h-2 w-2 shrink-0 rounded-full ${item.includes('needed') ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+                          <span>{item}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                   <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
                     <div className="flex items-start gap-3">
                       <input
@@ -213,7 +258,7 @@ export default function GeneratePage() {
 
                 <div className="flex flex-col gap-3 border-t border-slate-100 pt-6 sm:flex-row sm:items-center sm:justify-between">
                   <p className="text-sm leading-6 text-slate-600">
-                    Reports are saved automatically when generation succeeds.
+                    Submit only when the request target and review posture match the analyst queue.
                   </p>
                   <Button
                     type="submit"
@@ -260,7 +305,7 @@ export default function GeneratePage() {
 
             <Card className="min-w-0 border-slate-200 shadow-sm">
               <CardHeader>
-                <CardTitle className="text-base">Analysis modes</CardTitle>
+                <CardTitle className="text-base">Mode guidance</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
