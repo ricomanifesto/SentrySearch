@@ -12,6 +12,7 @@ from src.core.markdown_generator import generate_markdown
 
 GENERATION_ERROR_MESSAGE = "Error generating profile. Please try again."
 REPORT_LOAD_ERROR_MESSAGE = "Error loading report. Please try again."
+DOWNLOAD_LINK_ERROR_MESSAGE = "Error generating download link. Please try again."
 
 # Import cloud storage if enabled
 try:
@@ -200,6 +201,20 @@ def search_reports(query, category_filter):
         return pd.DataFrame(columns=["Tool Name", "Category", "Quality Score", "Created", "ID"])
 
 
+def get_download_link(report_id):
+    """Generate a markdown download link for a stored report."""
+    if not STORAGE_ENABLED or not report_id:
+        return "Storage not enabled or no report selected"
+
+    try:
+        url = report_service.get_download_url(report_id, "markdown")
+        if url:
+            return f"[Download Report]({url})"
+        return "Download not available"
+    except Exception:
+        return DOWNLOAD_LINK_ERROR_MESSAGE
+
+
 def create_ui():
     """Main function to launch the application"""
     print("🚀 Starting SentrySearch - Threat Intelligence Profile Generator...")
@@ -349,20 +364,6 @@ def create_ui():
         view_btn.click(
             fn=view_report, inputs=[selected_report_id], outputs=[viewed_report, viewed_quality]
         )
-
-        # Download functionality
-        def get_download_link(report_id):
-            if not STORAGE_ENABLED or not report_id:
-                return "Storage not enabled or no report selected"
-
-            try:
-                url = report_service.get_download_url(report_id, "markdown")
-                if url:
-                    return f"[Download Report]({url})"
-                else:
-                    return "Download not available"
-            except Exception as e:
-                return f"Error generating download link: {e}"
 
         download_btn.click(
             fn=get_download_link,
