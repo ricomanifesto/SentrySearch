@@ -8,7 +8,7 @@ from datetime import datetime
 import hashlib
 import json
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, and_, or_
+from sqlalchemy import asc, desc, and_, or_
 
 from .database import db_manager
 from .models import Report, ReportSearch, ReportTag
@@ -21,6 +21,15 @@ class ReportStorageService:
     def __init__(self):
         self.db_manager = db_manager
         self.s3_manager = s3_manager
+
+    @staticmethod
+    def _report_sort_expression(sort_by: str, sort_order: str):
+        sort_column = getattr(Report, sort_by, Report.created_at)
+
+        if sort_order.lower() == "asc":
+            return asc(sort_column).nulls_last()
+
+        return desc(sort_column).nulls_last()
 
     def categorize_tool(
         self, tool_name: str, threat_data: Dict[str, Any] = None
@@ -479,11 +488,7 @@ class ReportStorageService:
                     query = query.filter(search_filter)
 
                 # Dynamic sorting
-                sort_column = getattr(Report, sort_by, Report.created_at)
-                if sort_order.lower() == "asc":
-                    query = query.order_by(sort_column)
-                else:
-                    query = query.order_by(desc(sort_column))
+                query = query.order_by(self._report_sort_expression(sort_by, sort_order))
 
                 # Apply pagination
                 query = query.offset(offset).limit(limit)
