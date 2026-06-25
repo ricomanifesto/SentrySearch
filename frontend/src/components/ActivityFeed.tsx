@@ -1,10 +1,3 @@
-/**
- * Activity Feed Component
- * 
- * Real-time activity tracking for user actions, system events,
- * and report generation activities.
- */
-
 'use client';
 
 import React from 'react';
@@ -110,8 +103,8 @@ export function ActivityFeed({ userId, limit = 10, showHeader = true, compact = 
       type: 'user_login',
       user_id: '1',
       username: 'admin',
-      description: 'User logged in from 192.168.1.100',
-      metadata: { ip_address: '192.168.1.100' },
+      description: 'Workspace session started',
+      metadata: { session: 'active' },
       created_at: new Date(Date.now() - 1800000).toISOString(), // 30 minutes ago
       severity: 'info'
     },
@@ -128,8 +121,8 @@ export function ActivityFeed({ userId, limit = 10, showHeader = true, compact = 
     {
       id: '5',
       type: 'system_error',
-      description: 'API rate limit exceeded for IP 203.0.113.42',
-      metadata: { ip_address: '203.0.113.42', endpoint: '/api/reports' },
+      description: 'Source refresh is waiting on the retry window',
+      metadata: { source: 'reports' },
       created_at: new Date(Date.now() - 3600000).toISOString(), // 1 hour ago
       severity: 'warning'
     },
@@ -164,7 +157,7 @@ export function ActivityFeed({ userId, limit = 10, showHeader = true, compact = 
         <CardHeader>
           <CardTitle className="flex items-center space-x-2">
             <ClockIcon className="h-5 w-5" />
-            <span>Recent Activity</span>
+            <span>Activity trail</span>
           </CardTitle>
         </CardHeader>
       )}
