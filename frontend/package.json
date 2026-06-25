@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build",
+    "check:analytics-surface": "node dev/check-analytics-surface.mjs",
     "check:auth-surface": "node dev/check-auth-surface.mjs",
     "check:dashboard-surface": "node dev/check-dashboard-surface.mjs",
     "check:export-surface": "node dev/check-export-surface.mjs",
