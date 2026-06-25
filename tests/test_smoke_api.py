@@ -356,6 +356,23 @@ def test_legacy_ui_report_load_redacts_internal_exception_detail(monkeypatch):
     assert "secret-report" not in message
 
 
+def test_legacy_ui_download_link_redacts_internal_exception_detail(monkeypatch):
+    from src.ui import app as ui_app
+
+    monkeypatch.setattr(ui_app, "STORAGE_ENABLED", True)
+
+    def get_download_url(report_id: str, content_type: str = "markdown"):
+        raise RuntimeError(f"download credential leaked for {report_id}")
+
+    monkeypatch.setattr(ui_app.report_service, "get_download_url", get_download_url)
+
+    message = ui_app.get_download_link("secret-report")
+
+    assert message == "Error generating download link. Please try again."
+    assert "download credential" not in message
+    assert "secret-report" not in message
+
+
 def test_search_reports_requires_auth_before_storage_read(monkeypatch):
     storage_called = False
 
