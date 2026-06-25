@@ -83,7 +83,11 @@ export default function AnalyticsPage() {
   
   const stats = {
     total_reports: Number(overview.total_reports || 0),
-    reports_24h: Number(overview.reports_last_24h || overview.reports_this_week || 0),
+    reports_period: Number(
+      analytics
+        ? overview.reports_last_30d || overview.reports_last_7d || overview.reports_last_24h || 0
+        : overview.reports_this_week || 0
+    ),
     avg_quality: Number(overview.avg_quality_score || overview.average_quality_score || 0),
     success_rate: Number(overview.success_rate || 0.95),
   };
@@ -95,6 +99,7 @@ export default function AnalyticsPage() {
     : {};
   const threatEntries = Object.entries(threatDistribution).slice(0, 5);
   const maxThreatCount = Math.max(1, ...Object.values(threatDistribution).map(v => Number(v || 0)));
+  const shownRecentActivity = recentActivity.slice(0, 5);
 
   return (
     <AuthGuard>
@@ -134,7 +139,7 @@ export default function AnalyticsPage() {
                   <p className="text-sm font-medium text-slate-500">Saved intelligence</p>
                   <p className="text-2xl font-semibold text-slate-950">{stats.total_reports}</p>
                   <p className="text-sm text-slate-600">
-                    {stats.reports_24h} in the active window
+                    {stats.reports_period} in the selected window
                   </p>
                 </div>
               </div>
@@ -166,7 +171,7 @@ export default function AnalyticsPage() {
                 </div>
                 <div className="ml-4 min-w-0">
                   <p className="text-sm font-medium text-slate-500">Activity cadence</p>
-                  <p className="text-2xl font-semibold text-slate-950">{recentActivity.length}</p>
+                  <p className="text-2xl font-semibold text-slate-950">{shownRecentActivity.length}</p>
                   <p className="text-sm text-slate-600">recent report events shown</p>
                 </div>
               </div>
@@ -199,7 +204,7 @@ export default function AnalyticsPage() {
             <CardContent>
               {recentActivity.length > 0 ? (
                 <div className="space-y-4">
-                  {recentActivity.slice(0, 5).map((activity: Record<string, unknown>, index: number) => (
+                  {shownRecentActivity.map((activity: Record<string, unknown>, index: number) => (
                     <div key={index} className="flex min-w-0 items-center justify-between gap-3 border-b border-slate-100 py-2 last:border-b-0">
                       <div className="min-w-0">
                         <p className="truncate font-medium text-slate-950">{(activity?.tool_name as string) || `Report ${index + 1}`}</p>

@@ -51,6 +51,14 @@ const expectations = [
     pattern: /Metric readiness/,
   },
   {
+    name: 'uses the selected analytics period for the report-window count',
+    pattern: /reports_period:[\s\S]*overview\.reports_last_30d[\s\S]*overview\.reports_last_7d[\s\S]*selected window/,
+  },
+  {
+    name: 'counts only the recent activity rows rendered on the page',
+    pattern: /const shownRecentActivity = recentActivity\.slice\(0, 5\);[\s\S]*\{shownRecentActivity\.length\}[\s\S]*\{shownRecentActivity\.map/,
+  },
+  {
     name: 'avoids unverifiable healthy system claims',
     absentPattern: /System Status|Healthy|All systems operational|Optimized performance/,
   },
