@@ -62,6 +62,14 @@ const getQualityLabel = (score: number) =>
   score >= 4.0 ? 'High confidence' : score >= 3.0 ? 'Reviewable' : score >= 2.0 ? 'Needs review' : 'Low confidence';
 
 export default function SearchPage() {
+  return (
+    <AuthGuard>
+      <SearchWorkspace />
+    </AuthGuard>
+  );
+}
+
+function SearchWorkspace() {
   const [currentPage, setCurrentPage] = useState(1);
   const [filters, setFilters] = useState<SearchState>({
     query: '',
@@ -71,6 +79,7 @@ export default function SearchPage() {
     sortBy: 'created_at',
     sortOrder: 'desc',
   });
+  const [searchInput, setSearchInput] = useState('');
 
   const debouncedSearch = useMemo(
     () => debounce((query: unknown) => {
@@ -79,6 +88,12 @@ export default function SearchPage() {
     }, 300),
     []
   );
+
+  const handleSearchInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const nextQuery = event.target.value;
+    setSearchInput(nextQuery);
+    debouncedSearch(nextQuery);
+  };
 
   const { data: filterOptions } = useQuery({
     queryKey: ['search', 'filters'],
@@ -117,6 +132,7 @@ export default function SearchPage() {
   };
 
   const clearFilters = () => {
+    setSearchInput('');
     setFilters({
       query: '',
       threatType: '',
@@ -140,9 +156,8 @@ export default function SearchPage() {
   const pageEnd = searchData ? Math.min(searchData.pagination.page * searchData.pagination.limit, totalReports) : 0;
 
   return (
-    <AuthGuard>
-      <div className="min-h-screen overflow-x-hidden bg-slate-50 py-6 sm:py-10">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+    <div className="min-h-screen overflow-x-hidden bg-slate-50 py-6 sm:py-10">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="mb-8 max-w-3xl">
             <Badge variant="info" size="sm" className="mb-3 rounded-md">
               Search workspace
@@ -163,8 +178,8 @@ export default function SearchPage() {
                 <input
                   type="search"
                   placeholder="Search by target, category, or threat type"
-                  defaultValue={filters.query}
-                  onChange={(event) => debouncedSearch(event.target.value)}
+                  value={searchInput}
+                  onChange={handleSearchInputChange}
                   className="h-11 w-full rounded-md border border-slate-300 bg-white pl-10 pr-4 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
                 />
               </label>
@@ -348,8 +363,7 @@ export default function SearchPage() {
               )}
             </>
           )}
-        </div>
       </div>
-    </AuthGuard>
+    </div>
   );
 }

@@ -12,7 +12,17 @@ const expectations = [
   {
     name: 'keeps search behind the auth boundary',
     source: searchPage,
-    pattern: /<AuthGuard>/,
+    pattern: /<AuthGuard>\s*<SearchWorkspace \/>\s*<\/AuthGuard>/,
+  },
+  {
+    name: 'keeps search data queries inside the guarded workspace',
+    source: searchPage,
+    pattern: /function SearchWorkspace\(\)[\s\S]*useQuery\(/,
+  },
+  {
+    name: 'keeps the search input controlled for clear search',
+    source: searchPage,
+    pattern: /value={searchInput}[\s\S]*onChange={handleSearchInputChange}/,
   },
   {
     name: 'uses the saved intelligence search workspace language',
