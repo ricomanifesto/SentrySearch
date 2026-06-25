@@ -6,11 +6,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 const signInPath = resolve(here, '../src/app/auth/signin/page.tsx');
 const signUpPath = resolve(here, '../src/app/auth/signup/page.tsx');
 const authFramePath = resolve(here, '../src/components/auth/AuthFrame.tsx');
+const authGuardPath = resolve(here, '../src/components/AuthGuard.tsx');
 
 const signIn = await readFile(signInPath, 'utf8');
 const signUp = await readFile(signUpPath, 'utf8');
 const authFrame = await readFile(authFramePath, 'utf8');
-const combined = `${signIn}\n${signUp}\n${authFrame}`;
+const authGuard = await readFile(authGuardPath, 'utf8');
+const combined = `${signIn}\n${signUp}\n${authFrame}\n${authGuard}`;
 
 const expectations = [
   {
@@ -59,6 +61,16 @@ const expectations = [
     pattern: /role="alert"/,
   },
   {
+    name: 'uses product-specific protected-route boundary copy',
+    source: authGuard,
+    pattern: /Sign in to review saved intelligence/,
+  },
+  {
+    name: 'uses accessible workspace access loading semantics',
+    source: authGuard,
+    pattern: /role="status"[\s\S]*aria-label="Checking workspace access"/,
+  },
+  {
     name: 'keeps required form controls',
     source: combined,
     pattern: /required/,
@@ -71,7 +83,7 @@ const expectations = [
   {
     name: 'removes old generic auth headings',
     source: combined,
-    absentPattern: /Sign in to SentrySearch|Create your account/,
+    absentPattern: /Sign in to SentrySearch|Create your account|Authentication Required/,
   },
   {
     name: 'does not link to an unimplemented password reset route',
@@ -111,4 +123,3 @@ if (failures.length > 0) {
 }
 
 console.log(`Auth surface contract check passed (${expectations.length} expectations).`);
-
