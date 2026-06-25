@@ -1,10 +1,3 @@
-/**
- * Advanced Export Interface
- * 
- * Bulk export functionality for threat intelligence reports with 
- * multiple formats and filtering options.
- */
-
 'use client';
 
 import React, { useState } from 'react';
@@ -41,11 +34,11 @@ interface ExportConfig extends Record<string, unknown> {
 }
 
 const formatOptions = [
-  { value: 'json', label: 'JSON', icon: CodeBracketIcon, description: 'Machine-readable format for APIs' },
-  { value: 'csv', label: 'CSV', icon: TableCellsIcon, description: 'Spreadsheet format for analysis' },
-  { value: 'markdown', label: 'Markdown', icon: DocumentTextIcon, description: 'Human-readable documentation' },
-  { value: 'pdf', label: 'PDF', icon: DocumentTextIcon, description: 'Print-ready reports' },
-  { value: 'xml', label: 'XML', icon: CodeBracketIcon, description: 'Structured data exchange' },
+  { value: 'json', label: 'JSON', icon: CodeBracketIcon, description: 'Structured package for downstream tooling' },
+  { value: 'csv', label: 'CSV', icon: TableCellsIcon, description: 'Tabular packet for analyst review' },
+  { value: 'markdown', label: 'Markdown', icon: DocumentTextIcon, description: 'Readable briefing for handoff notes' },
+  { value: 'pdf', label: 'PDF', icon: DocumentTextIcon, description: 'Presentation-ready evidence packet' },
+  { value: 'xml', label: 'XML', icon: CodeBracketIcon, description: 'Structured exchange for legacy systems' },
 ];
 
 const dateRangeOptions = [
@@ -149,116 +142,132 @@ export default function ExportPage() {
     return selectedFormat ? selectedFormat.description : '';
   };
 
+  const selectedFormat = formatOptions.find(f => f.value === config.format);
+  const packageScope = selectedReports.length > 0
+    ? `${selectedReports.length} selected report${selectedReports.length === 1 ? '' : 's'}`
+    : 'All matching reports';
+
   return (
     <AuthGuard>
-    <div className="min-h-screen bg-gray-50 py-8">
+    <div className="min-h-screen overflow-x-hidden bg-slate-50 py-8">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-      {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900">Export Reports</h1>
-        <p className="mt-2 text-gray-600">
-          Bulk export threat intelligence reports in multiple formats
+      <div className="mb-8 max-w-3xl">
+        <Badge variant="info" size="sm">Analyst handoff</Badge>
+        <h1 className="mt-3 text-3xl font-bold tracking-tight text-slate-950">
+          Intelligence handoff package
+        </h1>
+        <p className="mt-3 text-base leading-7 text-slate-600">
+          Prepare scoped report evidence for downstream review, briefings, or machine processing.
         </p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Export Configuration */}
-        <div className="lg:col-span-2 space-y-6">
-          {/* Format Selection */}
+        <div className="min-w-0 lg:col-span-2 space-y-6">
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center space-x-2">
                 <ArrowDownTrayIcon className="h-5 w-5" />
-                <span>Export Format</span>
+                <span>Package format</span>
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <fieldset>
+                <legend className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+                  Package format
+                </legend>
+                <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
                 {formatOptions.map((format) => {
                   const Icon = format.icon;
                   const isSelected = config.format === format.value;
                   
                   return (
-                    <button
+                    <label
                       key={format.value}
-                      onClick={() => handleConfigChange('format', format.value)}
-                      className={`p-4 border-2 rounded-lg transition-all text-left ${
+                      className={`block min-w-0 cursor-pointer rounded-lg border-2 p-4 text-left transition-all ${
                         isSelected
-                          ? 'border-blue-500 bg-blue-50'
-                          : 'border-gray-200 hover:border-gray-300'
+                          ? 'border-blue-600 bg-blue-50'
+                          : 'border-slate-200 bg-white hover:border-slate-300'
                       }`}
                     >
-                      <div className="flex items-center space-x-3 mb-2">
-                        <Icon className={`h-6 w-6 ${isSelected ? 'text-blue-600' : 'text-gray-400'}`} />
-                        <span className={`font-medium ${isSelected ? 'text-blue-900' : 'text-gray-900'}`}>
+                      <input
+                        type="radio"
+                        name="export_format"
+                        value={format.value}
+                        checked={config.format === format.value}
+                        onChange={() => handleConfigChange('format', format.value)}
+                        disabled={exportMutation.isPending}
+                        className="sr-only"
+                      />
+                      <div className="mb-2 flex items-center space-x-3">
+                        <Icon className={`h-6 w-6 flex-shrink-0 ${isSelected ? 'text-blue-700' : 'text-slate-400'}`} />
+                        <span className={`font-medium ${isSelected ? 'text-blue-950' : 'text-slate-950'}`}>
                           {format.label}
                         </span>
                       </div>
-                      <p className={`text-sm ${isSelected ? 'text-blue-700' : 'text-gray-600'}`}>
+                      <p className={`text-sm leading-6 ${isSelected ? 'text-blue-800' : 'text-slate-600'}`}>
                         {format.description}
                       </p>
-                    </button>
+                    </label>
                   );
                 })}
-              </div>
+                </div>
+              </fieldset>
             </CardContent>
           </Card>
 
-          {/* Content Options */}
           <Card>
             <CardHeader>
-              <CardTitle>Content Options</CardTitle>
+              <CardTitle>Package contents</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="text-sm font-medium text-gray-900">Include Full Content</h4>
-                    <p className="text-sm text-gray-500">Export complete report markdown content</p>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <h4 className="text-sm font-medium text-slate-950">Full narrative</h4>
+                    <p className="text-sm leading-6 text-slate-500">Include report markdown for reviewer context.</p>
                   </div>
                   <input
                     type="checkbox"
                     checked={config.include_content}
                     onChange={(e) => handleConfigChange('include_content', e.target.checked)}
-                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                    className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                   />
                 </div>
                 
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="text-sm font-medium text-gray-900">Include Metadata</h4>
-                    <p className="text-sm text-gray-500">Export timestamps, quality scores, and processing info</p>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <h4 className="text-sm font-medium text-slate-950">Processing metadata</h4>
+                    <p className="text-sm leading-6 text-slate-500">Include timestamps, quality scores, and pipeline details.</p>
                   </div>
                   <input
                     type="checkbox"
                     checked={config.include_metadata}
                     onChange={(e) => handleConfigChange('include_metadata', e.target.checked)}
-                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                    className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                   />
                 </div>
                 
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="text-sm font-medium text-gray-900">Include Tags</h4>
-                    <p className="text-sm text-gray-500">Export search tags and categorization data</p>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <h4 className="text-sm font-medium text-slate-950">Source tags</h4>
+                    <p className="text-sm leading-6 text-slate-500">Include search tags and categorization markers.</p>
                   </div>
                   <input
                     type="checkbox"
                     checked={config.include_tags}
                     onChange={(e) => handleConfigChange('include_tags', e.target.checked)}
-                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                    className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                   />
                 </div>
               </div>
             </CardContent>
           </Card>
 
-          {/* Filters */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center space-x-2">
                 <FunnelIcon className="h-5 w-5" />
-                <span>Export Filters</span>
+                <span>Package scope</span>
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -298,17 +307,16 @@ export default function ExportPage() {
             </CardContent>
           </Card>
 
-          {/* Report Selection */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center justify-between">
-                <span>Select Reports</span>
+                <span>Report selection</span>
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={handleSelectAll}
                 >
-                  {selectedReports.length === reportsData?.reports.length ? 'Deselect All' : 'Select All'}
+                  {selectedReports.length === reportsData?.reports.length ? 'Clear selection' : 'Select visible'}
                 </Button>
               </CardTitle>
             </CardHeader>
@@ -331,7 +339,7 @@ export default function ExportPage() {
                     return (
                       <div
                         key={report.id}
-                        className={`flex items-center space-x-3 p-3 border rounded-lg cursor-pointer transition-colors ${
+                        className={`flex min-w-0 cursor-pointer items-center space-x-3 rounded-lg border p-3 transition-colors ${
                           isSelected ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
                         }`}
                         onClick={() => handleReportSelection(report.id, !isSelected)}
@@ -344,7 +352,7 @@ export default function ExportPage() {
                         />
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between">
-                            <h4 className="text-sm font-medium text-gray-900 truncate">
+                            <h4 className="truncate text-sm font-medium text-gray-900">
                               {report.tool_name}
                             </h4>
                             <Badge variant={qualityVariant} size="sm">
@@ -371,28 +379,27 @@ export default function ExportPage() {
           </Card>
         </div>
 
-        {/* Export Summary */}
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>Export Summary</CardTitle>
+              <CardTitle>Handoff summary</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
                 <div>
-                  <h4 className="text-sm font-medium text-gray-900 mb-2">Format</h4>
-                  <div className="flex items-center space-x-2">
+                  <h4 className="mb-2 text-sm font-medium text-slate-950">Selected format</h4>
+                  <div className="flex min-w-0 items-start gap-2">
                     <Badge variant="info">
                       {config.format.toUpperCase()}
                     </Badge>
-                    <span className="text-sm text-gray-600">
+                    <span className="min-w-0 text-sm leading-6 text-slate-600">
                       {getFormatPreview()}
                     </span>
                   </div>
                 </div>
 
                 <div>
-                  <h4 className="text-sm font-medium text-gray-900 mb-2">Content</h4>
+                  <h4 className="mb-2 text-sm font-medium text-slate-950">Included evidence</h4>
                   <div className="space-y-1">
                     <div className="flex items-center space-x-2">
                       {config.include_content ? (
@@ -400,7 +407,7 @@ export default function ExportPage() {
                       ) : (
                         <ExclamationTriangleIcon className="h-4 w-4 text-gray-400" />
                       )}
-                      <span className="text-sm text-gray-600">Full Content</span>
+                      <span className="text-sm text-slate-600">Full narrative</span>
                     </div>
                     <div className="flex items-center space-x-2">
                       {config.include_metadata ? (
@@ -408,7 +415,7 @@ export default function ExportPage() {
                       ) : (
                         <ExclamationTriangleIcon className="h-4 w-4 text-gray-400" />
                       )}
-                      <span className="text-sm text-gray-600">Metadata</span>
+                      <span className="text-sm text-slate-600">Processing metadata</span>
                     </div>
                     <div className="flex items-center space-x-2">
                       {config.include_tags ? (
@@ -416,18 +423,15 @@ export default function ExportPage() {
                       ) : (
                         <ExclamationTriangleIcon className="h-4 w-4 text-gray-400" />
                       )}
-                      <span className="text-sm text-gray-600">Tags</span>
+                      <span className="text-sm text-slate-600">Source tags</span>
                     </div>
                   </div>
                 </div>
 
                 <div>
-                  <h4 className="text-sm font-medium text-gray-900 mb-2">Selection</h4>
-                  <p className="text-sm text-gray-600">
-                    {selectedReports.length > 0 
-                      ? `${selectedReports.length} reports selected`
-                      : 'All matching reports'
-                    }
+                  <h4 className="mb-2 text-sm font-medium text-slate-950">Scope</h4>
+                  <p className="text-sm text-slate-600">
+                    {packageScope}
                   </p>
                   {config.max_reports && (
                     <p className="text-xs text-gray-500">
@@ -443,14 +447,27 @@ export default function ExportPage() {
             <CardHeader>
               <CardTitle className="flex items-center space-x-2">
                 <CalendarDaysIcon className="h-5 w-5" />
-                <span>Recent Exports</span>
+                <span>Package readiness</span>
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="space-y-3">
-                <div className="text-center py-4 text-gray-500">
-                  <p className="text-sm">No recent exports</p>
-                </div>
+              <div className="space-y-3 text-sm text-slate-600">
+                <p>
+                  {selectedFormat?.label ?? config.format.toUpperCase()} package with {packageScope.toLowerCase()}.
+                </p>
+                <p>
+                  Filters apply before packaging, with a maximum of {config.max_reports || 'all'} reports.
+                </p>
+                {exportMutation.error && (
+                  <div role="alert" className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                    The export package could not be prepared. Adjust the package settings and try again.
+                  </div>
+                )}
+                {exportMutation.isPending && (
+                  <div role="status" className="rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
+                    Preparing export package for download.
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -463,7 +480,7 @@ export default function ExportPage() {
             size="lg"
           >
             <ArrowDownTrayIcon className="h-5 w-5 mr-2" />
-            {exportMutation.isPending ? 'Exporting...' : 'Export Reports'}
+            {exportMutation.isPending ? 'Preparing package...' : 'Prepare package'}
           </Button>
         </div>
       </div>
