@@ -51,6 +51,26 @@ const expectations = [
     pattern: /Metric readiness/,
   },
   {
+    name: 'frames the metric cards as an operations signal strip',
+    pattern: /Operations signal strip/,
+  },
+  {
+    name: 'frames recent activity as a review timeline',
+    pattern: /Review timeline/,
+  },
+  {
+    name: 'uses confidence language for activity scores',
+    pattern: /Confidence:/,
+  },
+  {
+    name: 'frames threat distribution as a coverage map',
+    pattern: /Threat coverage map/,
+  },
+  {
+    name: 'uses triage language for empty threat coverage',
+    pattern: /Coverage appears after reports classify threat patterns/,
+  },
+  {
     name: 'uses the selected analytics period for the report-window count',
     pattern: /reports_period:[\s\S]*overview\.reports_last_30d[\s\S]*overview\.reports_last_7d[\s\S]*selected window/,
   },
