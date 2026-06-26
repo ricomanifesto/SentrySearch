@@ -59,6 +59,24 @@ const qualityOptions = [
   { value: '1.0', label: '1.0+ (Poor)' },
 ];
 
+const packageContentOptions = [
+  {
+    key: 'include_content' as const,
+    label: 'Full narrative',
+    description: 'Report markdown and analyst-readable context.',
+  },
+  {
+    key: 'include_metadata' as const,
+    label: 'Processing metadata',
+    description: 'Timestamps, confidence scores, and pipeline details.',
+  },
+  {
+    key: 'include_tags' as const,
+    label: 'Source tags',
+    description: 'Search tags and categorization markers.',
+  },
+];
+
 export default function ExportPage() {
   const [config, setConfig] = useState<ExportConfig>({
     format: 'json',
@@ -219,44 +237,27 @@ export default function ExportPage() {
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    <h4 className="text-sm font-medium text-slate-950">Full narrative</h4>
-                    <p className="text-sm leading-6 text-slate-500">Include report markdown for reviewer context.</p>
-                  </div>
-                  <input
-                    type="checkbox"
-                    checked={config.include_content}
-                    onChange={(e) => handleConfigChange('include_content', e.target.checked)}
-                    className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                  />
-                </div>
-                
-                <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    <h4 className="text-sm font-medium text-slate-950">Processing metadata</h4>
-                    <p className="text-sm leading-6 text-slate-500">Include timestamps, quality scores, and pipeline details.</p>
-                  </div>
-                  <input
-                    type="checkbox"
-                    checked={config.include_metadata}
-                    onChange={(e) => handleConfigChange('include_metadata', e.target.checked)}
-                    className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                  />
-                </div>
-                
-                <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    <h4 className="text-sm font-medium text-slate-950">Source tags</h4>
-                    <p className="text-sm leading-6 text-slate-500">Include search tags and categorization markers.</p>
-                  </div>
-                  <input
-                    type="checkbox"
-                    checked={config.include_tags}
-                    onChange={(e) => handleConfigChange('include_tags', e.target.checked)}
-                    className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                  />
-                </div>
+                {packageContentOptions.map((option) => (
+                  <label
+                    key={option.key}
+                    className={`flex min-w-0 cursor-pointer items-start justify-between gap-4 rounded-md border p-4 transition ${
+                      config[option.key]
+                        ? 'border-cyan-200 bg-cyan-50'
+                        : 'border-slate-200 bg-white hover:border-slate-300'
+                    }`}
+                  >
+                    <span className="min-w-0">
+                      <span className="block text-sm font-medium text-slate-950">{option.label}</span>
+                      <span className="mt-1 block text-sm leading-6 text-slate-500">{option.description}</span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(config[option.key])}
+                      onChange={(e) => handleConfigChange(option.key, e.target.checked)}
+                      className="mt-1 h-4 w-4 shrink-0 rounded border-slate-300 text-cyan-700 focus:ring-cyan-600"
+                    />
+                  </label>
+                ))}
               </div>
             </CardContent>
           </Card>
@@ -409,30 +410,16 @@ export default function ExportPage() {
                 <div>
                   <h4 className="mb-2 text-sm font-medium text-slate-950">Included evidence</h4>
                   <div className="space-y-1">
-                    <div className="flex items-center space-x-2">
-                      {config.include_content ? (
-                        <CheckCircleIcon className="h-4 w-4 text-green-600" />
-                      ) : (
-                        <ExclamationTriangleIcon className="h-4 w-4 text-gray-400" />
-                      )}
-                      <span className="text-sm text-slate-600">Full narrative</span>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      {config.include_metadata ? (
-                        <CheckCircleIcon className="h-4 w-4 text-green-600" />
-                      ) : (
-                        <ExclamationTriangleIcon className="h-4 w-4 text-gray-400" />
-                      )}
-                      <span className="text-sm text-slate-600">Processing metadata</span>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      {config.include_tags ? (
-                        <CheckCircleIcon className="h-4 w-4 text-green-600" />
-                      ) : (
-                        <ExclamationTriangleIcon className="h-4 w-4 text-gray-400" />
-                      )}
-                      <span className="text-sm text-slate-600">Source tags</span>
-                    </div>
+                    {packageContentOptions.map((option) => (
+                      <div key={option.key} className="flex items-center space-x-2">
+                        {Boolean(config[option.key]) ? (
+                          <CheckCircleIcon className="h-4 w-4 text-green-600" />
+                        ) : (
+                          <ExclamationTriangleIcon className="h-4 w-4 text-gray-400" />
+                        )}
+                        <span className="text-sm text-slate-600">{option.label}</span>
+                      </div>
+                    ))}
                   </div>
                 </div>
 
