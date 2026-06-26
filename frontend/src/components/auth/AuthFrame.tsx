@@ -34,32 +34,35 @@ export function AuthFrame({
   footer,
 }: AuthFrameProps) {
   return (
-    <div className="min-h-[calc(100vh-4rem)] bg-[#f7f7f3] px-4 py-8 text-[#171915] sm:px-6 lg:px-8">
-      <div className="mx-auto grid min-h-[calc(100vh-8rem)] w-full max-w-6xl items-center gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(360px,440px)]">
-        <section className="space-y-8">
+    <div
+      data-surface="auth-entry"
+      className="min-h-[calc(100vh-4rem)] bg-[#f7f7f3] px-4 py-6 text-[#171915] sm:px-6 sm:py-8 lg:px-8"
+    >
+      <div className="mx-auto grid w-full max-w-6xl gap-6 lg:min-h-[calc(100vh-8rem)] lg:grid-cols-[minmax(0,1fr)_minmax(360px,440px)] lg:items-center lg:gap-10">
+        <section className="space-y-5 sm:space-y-8">
           <div className="max-w-2xl">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#596053]">
               SentrySearch workspace
             </p>
-            <h1 className="mt-4 text-4xl font-semibold leading-tight text-[#171915] sm:text-5xl">
+            <h1 className="mt-3 text-3xl font-semibold leading-tight text-[#171915] sm:mt-4 sm:text-5xl">
               Enter the intelligence review room.
             </h1>
-            <p className="mt-5 max-w-xl text-base leading-7 text-[#4f564d]">
+            <p className="mt-4 max-w-xl text-base leading-7 text-[#3f463d] sm:mt-5">
               Generate threat reports, inspect source context, and keep saved
               findings organized behind your account boundary.
             </p>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div data-testid="auth-trust-signals" className="grid gap-3 sm:grid-cols-3">
             {trustSignals.map((signal) => (
               <div
                 key={signal.label}
-                className="border-l border-[#c8c9bd] bg-white/60 px-4 py-3"
+                className="border-l border-[#c8c9bd] bg-white/75 px-4 py-3"
               >
                 <h2 className="text-sm font-semibold text-[#20231f]">
                   {signal.label}
                 </h2>
-                <p className="mt-2 text-sm leading-6 text-[#596053]">
+                <p className="mt-2 text-sm leading-6 text-[#485044]">
                   {signal.description}
                 </p>
               </div>
@@ -128,4 +131,3 @@ export function AuthNotice({
     </AuthFrame>
   );
 }
-

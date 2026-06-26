@@ -7,11 +7,13 @@ const signInPath = resolve(here, '../src/app/auth/signin/page.tsx');
 const signUpPath = resolve(here, '../src/app/auth/signup/page.tsx');
 const authFramePath = resolve(here, '../src/components/auth/AuthFrame.tsx');
 const authGuardPath = resolve(here, '../src/components/AuthGuard.tsx');
+const globalsPath = resolve(here, '../src/app/globals.css');
 
 const signIn = await readFile(signInPath, 'utf8');
 const signUp = await readFile(signUpPath, 'utf8');
 const authFrame = await readFile(authFramePath, 'utf8');
 const authGuard = await readFile(authGuardPath, 'utf8');
+const globals = await readFile(globalsPath, 'utf8');
 const combined = `${signIn}\n${signUp}\n${authFrame}\n${authGuard}`;
 
 const expectations = [
@@ -99,6 +101,36 @@ const expectations = [
     name: 'uses stable non-rounded panel framing',
     source: authFrame,
     pattern: /border border-\[#d8d9ce\] bg-white p-6/,
+  },
+  {
+    name: 'declares the auth entry surface contract',
+    source: authFrame,
+    pattern: /data-surface="auth-entry"/,
+  },
+  {
+    name: 'uses a stable trust-signal hook for responsive visual QA',
+    source: authFrame,
+    pattern: /data-testid="auth-trust-signals"/,
+  },
+  {
+    name: 'keeps mobile auth hero type below desktop scale',
+    source: authFrame,
+    pattern: /text-3xl[\s\S]*sm:text-5xl/,
+  },
+  {
+    name: 'uses a compact mobile auth layout before expanding on desktop',
+    source: authFrame,
+    pattern: /gap-6[\s\S]*lg:gap-10/,
+  },
+  {
+    name: 'surfaces the auth form earlier on mobile',
+    source: authFrame,
+    pattern: /lg:min-h-\[calc\(100vh-8rem\)\]/,
+  },
+  {
+    name: 'keeps light auth surfaces out of global dark-mode inversion',
+    source: globals,
+    absentPattern: /prefers-color-scheme:\s*dark/,
   },
 ];
 
