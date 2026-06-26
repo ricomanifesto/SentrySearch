@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { basename, join, relative, resolve } from 'node:path';
 
 const packageJson = JSON.parse(
   readFileSync(resolve(process.cwd(), 'package.json'), 'utf8'),
@@ -114,7 +114,7 @@ function readPageExtensions() {
   }
 
   const extensions = Array.from(
-    pageExtensionsMatch[1].matchAll(/['"]([A-Za-z0-9]+)['"]/g),
+    pageExtensionsMatch[1].matchAll(/['"]([A-Za-z0-9.]+)['"]/g),
     ([, extension]) => extension,
   );
 
@@ -131,10 +131,12 @@ function routePath(filePath) {
 }
 
 const pageExtensions = new Set(readPageExtensions());
+const pageFileNames = new Set(
+  Array.from(pageExtensions, (extension) => `page.${extension}`),
+);
 
 function isRoutePage(entry) {
-  const match = entry.match(/^page\.([A-Za-z0-9]+)$/);
-  return Boolean(match && pageExtensions.has(match[1]));
+  return pageFileNames.has(entry);
 }
 
 function listRoutePages(directory) {
@@ -151,8 +153,7 @@ function listRoutePages(directory) {
 }
 
 for (const { route, page } of routeSurfaces) {
-  const extension = page.match(/\.([A-Za-z0-9]+)$/)?.[1];
-  if (!extension || !pageExtensions.has(extension)) {
+  if (!pageFileNames.has(basename(page))) {
     failures.push(`- ${route}: registered page ${page} does not use a supported Next page extension`);
   }
 }
