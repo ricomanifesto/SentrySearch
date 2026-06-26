@@ -92,8 +92,24 @@ const expectations = [
     pattern: /Report quality checks/,
   },
   {
-    name: 'keeps intake readiness visible near submit',
-    pattern: /Intake readiness/,
+    name: 'uses a canonical submission handoff contract',
+    pattern: /const submissionHandoffChecks = \[[\s\S]*label: 'Target'[\s\S]*label: 'Review depth'[\s\S]*label: 'Guidance layer'/,
+  },
+  {
+    name: 'renders submission handoff checks from the canonical contract',
+    pattern: /submissionHandoffChecks\.map\(\(check\)[\s\S]*check\.label[\s\S]*check\.description/,
+  },
+  {
+    name: 'frames the final action as a submission handoff',
+    pattern: /Submission handoff/,
+  },
+  {
+    name: 'does not keep the split readiness block',
+    absentPattern: /Intake readiness/,
+  },
+  {
+    name: 'does not keep the generic submit footer copy',
+    absentPattern: /Submit only when the request target and review posture match the analyst queue\./,
   },
   {
     name: 'does not add generic gradient decoration',
