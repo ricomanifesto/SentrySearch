@@ -8,33 +8,72 @@ const packageJson = JSON.parse(
 );
 
 const routeSurfaces = [
-  { route: '/', page: 'src/app/page.tsx', script: 'check:dashboard-surface' },
-  { route: '/admin', page: 'src/app/admin/page.tsx', script: 'check:admin-surface' },
+  {
+    route: '/',
+    page: 'src/app/page.tsx',
+    script: 'check:dashboard-surface',
+    guard: 'dev/check-dashboard-surface.mjs',
+  },
+  {
+    route: '/admin',
+    page: 'src/app/admin/page.tsx',
+    script: 'check:admin-surface',
+    guard: 'dev/check-admin-surface.mjs',
+  },
   {
     route: '/analytics',
     page: 'src/app/analytics/page.tsx',
     script: 'check:analytics-surface',
+    guard: 'dev/check-analytics-surface.mjs',
   },
   {
     route: '/auth/signin',
     page: 'src/app/auth/signin/page.tsx',
     script: 'check:auth-surface',
+    guard: 'dev/check-auth-surface.mjs',
   },
   {
     route: '/auth/signup',
     page: 'src/app/auth/signup/page.tsx',
     script: 'check:auth-surface',
+    guard: 'dev/check-auth-surface.mjs',
   },
-  { route: '/export', page: 'src/app/export/page.tsx', script: 'check:export-surface' },
-  { route: '/generate', page: 'src/app/generate/page.tsx', script: 'check:generate-surface' },
-  { route: '/reports', page: 'src/app/reports/page.tsx', script: 'check:reports-surface' },
+  {
+    route: '/export',
+    page: 'src/app/export/page.tsx',
+    script: 'check:export-surface',
+    guard: 'dev/check-export-surface.mjs',
+  },
+  {
+    route: '/generate',
+    page: 'src/app/generate/page.tsx',
+    script: 'check:generate-surface',
+    guard: 'dev/check-generate-surface.mjs',
+  },
+  {
+    route: '/reports',
+    page: 'src/app/reports/page.tsx',
+    script: 'check:reports-surface',
+    guard: 'dev/check-reports-surface.mjs',
+  },
   {
     route: '/reports/[id]',
     page: 'src/app/reports/[id]/page.tsx',
     script: 'check:report-detail-surface',
+    guard: 'dev/check-report-detail-surface.mjs',
   },
-  { route: '/search', page: 'src/app/search/page.tsx', script: 'check:search-surface' },
-  { route: '/settings', page: 'src/app/settings/page.tsx', script: 'check:settings-surface' },
+  {
+    route: '/search',
+    page: 'src/app/search/page.tsx',
+    script: 'check:search-surface',
+    guard: 'dev/check-search-surface.mjs',
+  },
+  {
+    route: '/settings',
+    page: 'src/app/settings/page.tsx',
+    script: 'check:settings-surface',
+    guard: 'dev/check-settings-surface.mjs',
+  },
 ];
 
 const failures = [];
@@ -62,7 +101,7 @@ for (const page of listRoutePages(routePageRoot)) {
   }
 }
 
-for (const { route, page, script } of routeSurfaces) {
+for (const { route, page, script, guard } of routeSurfaces) {
   const pagePath = resolve(process.cwd(), page);
   if (!existsSync(pagePath)) {
     failures.push(`- ${route}: missing route page ${page}`);
@@ -75,14 +114,14 @@ for (const { route, page, script } of routeSurfaces) {
     continue;
   }
 
-  const guardFile = command.match(/^node (dev\/check-[a-z-]+-surface\.mjs)$/)?.[1];
-  if (!guardFile) {
-    failures.push(`- ${route}: ${script} must run a surface guard in frontend/dev`);
+  const expectedCommand = `node ${guard}`;
+  if (command !== expectedCommand) {
+    failures.push(`- ${route}: ${script} must run ${expectedCommand}`);
     continue;
   }
 
-  if (!existsSync(resolve(process.cwd(), guardFile))) {
-    failures.push(`- ${route}: missing guard file ${guardFile}`);
+  if (!existsSync(resolve(process.cwd(), guard))) {
+    failures.push(`- ${route}: missing guard file ${guard}`);
   }
 }
 
