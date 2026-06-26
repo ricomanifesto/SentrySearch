@@ -1,159 +1,53 @@
 #!/usr/bin/env node
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { basename, join, relative, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+
+import {
+  isRoutableAppDirectory,
+  isRoutePage,
+  pageFileNames,
+  readPageExtensions,
+  routePath,
+  routeSurfaces,
+  routeSurfaceUsesSupportedPageFile,
+} from './surface-route-contract.mjs';
+
+const projectRoot = process.cwd();
 
 const packageJson = JSON.parse(
-  readFileSync(resolve(process.cwd(), 'package.json'), 'utf8'),
+  readFileSync(resolve(projectRoot, 'package.json'), 'utf8'),
 );
-
-const defaultPageExtensions = ['tsx', 'ts', 'jsx', 'js'];
-const nextConfigFiles = [
-  'next.config.ts',
-  'next.config.mjs',
-  'next.config.js',
-  'next.config.cjs',
-];
-
-const routeSurfaces = [
-  {
-    route: '/',
-    page: 'src/app/page.tsx',
-    script: 'check:dashboard-surface',
-    guard: 'dev/check-dashboard-surface.mjs',
-  },
-  {
-    route: '/admin',
-    page: 'src/app/admin/page.tsx',
-    script: 'check:admin-surface',
-    guard: 'dev/check-admin-surface.mjs',
-  },
-  {
-    route: '/analytics',
-    page: 'src/app/analytics/page.tsx',
-    script: 'check:analytics-surface',
-    guard: 'dev/check-analytics-surface.mjs',
-  },
-  {
-    route: '/auth/signin',
-    page: 'src/app/auth/signin/page.tsx',
-    script: 'check:auth-surface',
-    guard: 'dev/check-auth-surface.mjs',
-  },
-  {
-    route: '/auth/signup',
-    page: 'src/app/auth/signup/page.tsx',
-    script: 'check:auth-surface',
-    guard: 'dev/check-auth-surface.mjs',
-  },
-  {
-    route: '/export',
-    page: 'src/app/export/page.tsx',
-    script: 'check:export-surface',
-    guard: 'dev/check-export-surface.mjs',
-  },
-  {
-    route: '/generate',
-    page: 'src/app/generate/page.tsx',
-    script: 'check:generate-surface',
-    guard: 'dev/check-generate-surface.mjs',
-  },
-  {
-    route: '/reports',
-    page: 'src/app/reports/page.tsx',
-    script: 'check:reports-surface',
-    guard: 'dev/check-reports-surface.mjs',
-  },
-  {
-    route: '/reports/[id]',
-    page: 'src/app/reports/[id]/page.tsx',
-    script: 'check:report-detail-surface',
-    guard: 'dev/check-report-detail-surface.mjs',
-  },
-  {
-    route: '/search',
-    page: 'src/app/search/page.tsx',
-    script: 'check:search-surface',
-    guard: 'dev/check-search-surface.mjs',
-  },
-  {
-    route: '/settings',
-    page: 'src/app/settings/page.tsx',
-    script: 'check:settings-surface',
-    guard: 'dev/check-settings-surface.mjs',
-  },
-];
 
 const failures = [];
-const routePageRoot = resolve(process.cwd(), 'src/app');
+const routePageRoot = resolve(projectRoot, 'src/app');
 const registeredPages = new Set(routeSurfaces.map(({ page }) => page));
-
-function readNextConfig() {
-  for (const configFile of nextConfigFiles) {
-    const configPath = resolve(process.cwd(), configFile);
-    if (existsSync(configPath)) {
-      return {
-        file: configFile,
-        source: readFileSync(configPath, 'utf8'),
-      };
-    }
-  }
-
-  return null;
-}
-
-function readPageExtensions() {
-  const nextConfig = readNextConfig();
-  if (!nextConfig) {
-    return defaultPageExtensions;
-  }
-
-  const pageExtensionsMatch = nextConfig.source.match(/pageExtensions\s*:\s*\[([\s\S]*?)\]/m);
-  if (!pageExtensionsMatch) {
-    return defaultPageExtensions;
-  }
-
-  const extensions = Array.from(
-    pageExtensionsMatch[1].matchAll(/['"]([A-Za-z0-9.]+)['"]/g),
-    ([, extension]) => extension,
-  );
-
-  if (extensions.length === 0) {
-    failures.push(`- ${nextConfig.file} pageExtensions must list at least one extension`);
-    return [];
-  }
-
-  return extensions;
-}
-
-function routePath(filePath) {
-  return relative(process.cwd(), filePath).replaceAll('\\', '/');
-}
-
-const pageExtensions = new Set(readPageExtensions());
-const pageFileNames = new Set(
-  Array.from(pageExtensions, (extension) => `page.${extension}`),
-);
-
-function isRoutePage(entry) {
-  return pageFileNames.has(entry);
-}
+const pageExtensionResult = readPageExtensions(projectRoot);
+const supportedPageFileNames = pageFileNames(pageExtensionResult.extensions);
 
 function listRoutePages(directory) {
   return readdirSync(directory)
     .flatMap((entry) => {
       const entryPath = join(directory, entry);
       if (statSync(entryPath).isDirectory()) {
+        if (!isRoutableAppDirectory(entry)) {
+          return [];
+        }
+
         return listRoutePages(entryPath);
       }
 
-      return isRoutePage(entry) ? [routePath(entryPath)] : [];
+      return isRoutePage(entry, supportedPageFileNames) ? [routePath(projectRoot, entryPath)] : [];
     })
     .sort();
 }
 
+if (pageExtensionResult.error) {
+  failures.push(pageExtensionResult.error);
+}
+
 for (const { route, page } of routeSurfaces) {
-  if (!pageFileNames.has(basename(page))) {
+  if (!routeSurfaceUsesSupportedPageFile(page, supportedPageFileNames)) {
     failures.push(`- ${route}: registered page ${page} does not use a supported Next page extension`);
   }
 }
@@ -165,7 +59,7 @@ for (const page of listRoutePages(routePageRoot)) {
 }
 
 for (const { route, page, script, guard } of routeSurfaces) {
-  const pagePath = resolve(process.cwd(), page);
+  const pagePath = resolve(projectRoot, page);
   if (!existsSync(pagePath)) {
     failures.push(`- ${route}: missing route page ${page}`);
     continue;
@@ -183,7 +77,7 @@ for (const { route, page, script, guard } of routeSurfaces) {
     continue;
   }
 
-  if (!existsSync(resolve(process.cwd(), guard))) {
+  if (!existsSync(resolve(projectRoot, guard))) {
     failures.push(`- ${route}: missing guard file ${guard}`);
   }
 }
