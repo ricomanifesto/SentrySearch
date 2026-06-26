@@ -24,6 +24,8 @@ const routePageRoot = resolve(projectRoot, 'src/app');
 const registeredPages = new Set(routeSurfaces.map(({ page }) => page));
 const pageExtensionResult = readPageExtensions(projectRoot);
 const supportedPageFileNames = pageFileNames(pageExtensionResult.extensions);
+const surfaceCoverageScript = 'check:surface-coverage';
+const surfaceCoverageCommand = 'node dev/run-surface-checks.mjs';
 
 function listRoutePages(directory) {
   return readdirSync(directory)
@@ -82,8 +84,14 @@ for (const { route, page, script, guard } of routeSurfaces) {
   }
 }
 
-if (!packageJson.scripts?.['check:surface-coverage']) {
-  failures.push('- missing package script check:surface-coverage');
+if (!packageJson.scripts?.[surfaceCoverageScript]) {
+  failures.push(`- missing package script ${surfaceCoverageScript}`);
+} else if (packageJson.scripts[surfaceCoverageScript] !== surfaceCoverageCommand) {
+  failures.push(`- ${surfaceCoverageScript} must run ${surfaceCoverageCommand}`);
+}
+
+if (!existsSync(resolve(projectRoot, 'dev/run-surface-checks.mjs'))) {
+  failures.push('- missing surface coverage runner dev/run-surface-checks.mjs');
 }
 
 if (failures.length > 0) {

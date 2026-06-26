@@ -27,7 +27,7 @@ function createFixture() {
     routeSurfaces.map(({ script, guard }) => [script, `node ${guard}`]),
   );
 
-  scripts['check:surface-coverage'] = 'node dev/check-surface-coverage.mjs';
+  scripts['check:surface-coverage'] = 'node dev/run-surface-checks.mjs';
 
   writeFixtureFile(
     root,
@@ -39,6 +39,7 @@ function createFixture() {
     writeFixtureFile(root, page, 'export default function Page() { return null; }\n');
     writeFixtureFile(root, guard, '#!/usr/bin/env node\n');
   }
+  writeFixtureFile(root, 'dev/run-surface-checks.mjs', '#!/usr/bin/env node\n');
 
   return root;
 }
@@ -121,6 +122,19 @@ withFixture('fails when a route script points at the wrong guard', (root) => {
     'wrong guard fixture',
     runChecker(root),
     '/generate: check:generate-surface must run node dev/check-generate-surface.mjs',
+  );
+});
+
+withFixture('fails when the coverage entrypoint is bypassed', (root) => {
+  const packageJsonPath = resolve(root, 'package.json');
+  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
+  packageJson.scripts['check:surface-coverage'] = 'node dev/check-surface-coverage.mjs';
+  writeFixtureFile(root, 'package.json', `${JSON.stringify(packageJson, null, 2)}\n`);
+
+  assertFailIncludes(
+    'coverage entrypoint bypass fixture',
+    runChecker(root),
+    'check:surface-coverage must run node dev/run-surface-checks.mjs',
   );
 });
 
