@@ -10,6 +10,7 @@ import {
   FunnelIcon,
   MagnifyingGlassIcon,
   PlusIcon,
+  ShieldCheckIcon,
 } from '@heroicons/react/24/outline';
 
 import { api } from '@/lib/api';
@@ -125,7 +126,7 @@ export default function ReportsPage() {
 
   return (
     <AuthGuard>
-      <div className="min-h-screen overflow-x-hidden bg-slate-50 py-6 sm:py-10">
+      <div data-surface="report-review-queue" className="min-h-screen overflow-x-hidden bg-slate-50 py-6 sm:py-10">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="mb-8 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
             <div className="max-w-3xl">
@@ -133,10 +134,10 @@ export default function ReportsPage() {
                 Saved intelligence
               </Badge>
               <h1 className="text-2xl font-semibold leading-tight text-slate-950 sm:text-4xl">
-                Reports ready for review
+                Review queue for saved intelligence
               </h1>
               <p className="mt-3 max-w-2xl text-base leading-7 text-slate-600 sm:text-lg">
-                Search saved threat profiles, compare confidence, and reopen the report record with its source-backed context.
+                Search saved threat profiles, compare analyst confidence, and reopen each intelligence record with its source-backed context.
               </p>
             </div>
             <Link href="/generate" className="w-full sm:w-auto">
@@ -219,12 +220,19 @@ export default function ReportsPage() {
           </Card>
 
           {reportsData && (
-            <div className="mb-4 flex flex-col gap-1 text-sm text-slate-600 sm:flex-row sm:items-center sm:justify-between">
-              <span>
-                {totalReports === 0 ? 'No saved reports' : `Showing ${pageStart}-${pageEnd} of ${totalReports} saved reports`}
+            <div className="mb-4 grid gap-3 rounded-md border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+              <span className="space-y-1">
+                <span className="block">
+                  <span className="font-semibold text-slate-950">Review queue:</span>{' '}
+                  {totalReports === 0 ? 'no saved reports' : `showing ${pageStart}-${pageEnd} of ${totalReports} saved reports`}
+                </span>
+                <span className="block text-xs text-slate-500">
+                  Sorted by {sortOptions.find(option => option.value === filters.sort_by)?.label.toLowerCase()} · {filters.sort_order}
+                </span>
               </span>
-              <span>
-                Sorted by {sortOptions.find(option => option.value === filters.sort_by)?.label.toLowerCase()} · {filters.sort_order}
+              <span className="inline-flex items-start gap-2 rounded-md bg-slate-50 px-3 py-2 leading-5 text-slate-700">
+                <ShieldCheckIcon className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" />
+                Provenance posture: open records to inspect source context, tags, and narrative when available
               </span>
             </div>
           )}
@@ -285,7 +293,11 @@ export default function ReportsPage() {
                   const qualityLabel = getQualityLabel(report.quality_score);
 
                   return (
-                    <Card key={report.id} className="border-slate-200 shadow-sm transition hover:border-blue-200 hover:shadow-md">
+                    <Card
+                      key={report.id}
+                      data-contract="Card.ReportReviewRecord.v1"
+                      className="border-slate-200 shadow-sm transition hover:border-blue-200 hover:shadow-md"
+                    >
                       <CardContent className="p-5">
                         <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_12rem] lg:items-start">
                           <div className="min-w-0">
@@ -299,6 +311,24 @@ export default function ReportsPage() {
                             <h2 className="truncate text-xl font-semibold text-slate-950">
                               {report.tool_name}
                             </h2>
+                            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                  Analyst confidence
+                                </div>
+                                <div className="mt-1 text-sm font-medium text-slate-950">
+                                  {qualityLabel} · {report.quality_score.toFixed(1)}
+                                </div>
+                              </div>
+                              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                  Provenance posture
+                                </div>
+                                <div className="mt-1 text-sm font-medium text-slate-950">
+                                  Detail review available
+                                </div>
+                              </div>
+                            </div>
                             <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2 text-sm text-slate-500">
                               <span className="inline-flex items-center gap-1">
                                 <CalendarDaysIcon className="h-4 w-4" />
@@ -315,12 +345,12 @@ export default function ReportsPage() {
                           <div className="flex flex-col gap-3 lg:items-end">
                             <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600 lg:text-right">
                               <div className="font-medium text-slate-900">Review record</div>
-                              <div>Sources, tags, and report body</div>
+                              <div>Report body and available context</div>
                             </div>
                             <Link href={`/reports/${report.id}`} className="w-full lg:w-auto">
                               <Button size="sm" variant="outline" className="min-h-10 w-full gap-2 lg:w-auto">
                                 <EyeIcon className="h-4 w-4" />
-                                Open report
+                                Open intelligence record
                               </Button>
                             </Link>
                           </div>
