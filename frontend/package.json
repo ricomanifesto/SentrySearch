@@ -15,6 +15,7 @@
     "check:reports-surface": "node dev/check-reports-surface.mjs",
     "check:search-surface": "node dev/check-search-surface.mjs",
     "check:settings-surface": "node dev/check-settings-surface.mjs",
+    "check:surface-coverage": "node dev/run-surface-checks.mjs",
     "start": "next start",
     "lint": "next lint"
   },
