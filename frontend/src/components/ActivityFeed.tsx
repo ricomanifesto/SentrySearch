@@ -29,6 +29,17 @@ interface ActivityEvent {
   severity: 'info' | 'warning' | 'error' | 'success';
 }
 
+type ActivityTrailRow = {
+  id: string;
+  label: string;
+  detail: string;
+  timestamp: string;
+  severity: ActivityEvent['severity'];
+  Icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
+  tone: string;
+  metadataSummary?: string;
+};
+
 const getActivityIcon = (type: string) => {
   switch (type) {
     case 'report_created': return PlusIcon;
@@ -51,17 +62,50 @@ const getSeverityVariant = (severity: string) => {
   }
 };
 
-const getActivityColor = (type: string) => {
+const getActivityTone = (type: string) => {
   switch (type) {
-    case 'report_created': return 'text-green-600';
-    case 'report_viewed': return 'text-blue-600';
-    case 'report_deleted': return 'text-red-600';
-    case 'export_generated': return 'text-purple-600';
-    case 'user_login': return 'text-indigo-600';
-    case 'system_error': return 'text-red-600';
-    default: return 'text-gray-600';
+    case 'report_created': return 'bg-emerald-50 text-emerald-700';
+    case 'report_viewed': return 'bg-cyan-50 text-cyan-700';
+    case 'report_deleted': return 'bg-red-50 text-red-700';
+    case 'export_generated': return 'bg-violet-50 text-violet-700';
+    case 'user_login': return 'bg-indigo-50 text-indigo-700';
+    case 'system_error': return 'bg-red-50 text-red-700';
+    default: return 'bg-zinc-100 text-zinc-700';
   }
 };
+
+function summarizeActivityMetadata(metadata?: Record<string, unknown>) {
+  if (!metadata) {
+    return undefined;
+  }
+
+  if (typeof metadata.tool_name === 'string') {
+    return metadata.tool_name;
+  }
+
+  if (typeof metadata.format === 'string' && typeof metadata.count === 'number') {
+    return `${metadata.count} ${metadata.format.toUpperCase()} records`;
+  }
+
+  if (typeof metadata.source === 'string') {
+    return `${metadata.source} source`;
+  }
+
+  return undefined;
+}
+
+function buildActivityTrailRows(activities: ActivityEvent[]): ActivityTrailRow[] {
+  return activities.map((activity) => ({
+    id: activity.id,
+    label: activity.description,
+    detail: activity.username ? `Recorded by ${activity.username}` : 'Workspace event',
+    timestamp: formatRelativeTime(activity.created_at),
+    severity: activity.severity,
+    Icon: getActivityIcon(activity.type),
+    tone: getActivityTone(activity.type),
+    metadataSummary: summarizeActivityMetadata(activity.metadata),
+  }));
+}
 
 interface ActivityFeedProps {
   userId?: string;
@@ -139,26 +183,34 @@ export function ActivityFeed({ userId, limit = 10, showHeader = true, compact = 
   ];
 
   const displayActivities = activities || mockActivities;
+  const activityTrailRows = buildActivityTrailRows(displayActivities as ActivityEvent[]);
 
   if (error) {
     return (
       <Card className="border-red-200 bg-red-50">
-        <CardContent className="text-center py-4">
-          <ExclamationTriangleIcon className="h-8 w-8 text-red-400 mx-auto mb-2" />
-          <p className="text-red-600 text-sm">Failed to load activity feed</p>
+        <CardContent className="py-5 text-center">
+          <ExclamationTriangleIcon className="mx-auto mb-2 h-8 w-8 text-red-500" />
+          <p className="text-sm font-medium text-red-700">Activity trail is unavailable right now</p>
+          <p className="mt-1 text-xs leading-5 text-red-600">
+            Continue with saved reports while the workspace events reconnect.
+          </p>
         </CardContent>
       </Card>
     );
   }
 
   return (
-    <Card>
+    <Card data-contract="Dashboard.ActivityTrail.v1" className="border-zinc-200 shadow-sm">
       {showHeader && (
-        <CardHeader>
-          <CardTitle className="flex items-center space-x-2">
-            <ClockIcon className="h-5 w-5" />
+        <CardHeader className="border-b border-zinc-100 pb-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-violet-700">Workspace event log</p>
+          <CardTitle className="mt-1 flex items-center gap-2 text-base text-zinc-950">
+            <ClockIcon className="h-5 w-5 text-zinc-500" />
             <span>Activity trail</span>
           </CardTitle>
+          <p className="mt-2 text-xs leading-5 text-zinc-500">
+            Recent report, export, and session events for the briefing review.
+          </p>
         </CardHeader>
       )}
       <CardContent className={showHeader ? '' : 'pt-6'}>
@@ -166,64 +218,54 @@ export function ActivityFeed({ userId, limit = 10, showHeader = true, compact = 
           <div className="space-y-4">
             {[...Array(5)].map((_, i) => (
               <div key={i} className="animate-pulse">
-                <div className="flex items-start space-x-3">
-                  <div className="h-8 w-8 bg-gray-200 rounded-full"></div>
+                <div className="flex items-start gap-3">
+                  <div className="h-8 w-8 rounded-md bg-zinc-200"></div>
                   <div className="flex-1 space-y-2">
-                    <div className="h-4 bg-gray-200 rounded w-3/4"></div>
-                    <div className="h-3 bg-gray-200 rounded w-1/2"></div>
+                    <div className="h-4 w-3/4 rounded bg-zinc-200"></div>
+                    <div className="h-3 w-1/2 rounded bg-zinc-200"></div>
                   </div>
                 </div>
               </div>
             ))}
           </div>
-        ) : displayActivities.length === 0 ? (
-          <div className="text-center py-8 text-gray-500">
-            <ClockIcon className="h-12 w-12 mx-auto mb-4 text-gray-400" />
-            <p>No recent activity</p>
+        ) : activityTrailRows.length === 0 ? (
+          <div className="py-8 text-center text-zinc-500">
+            <ClockIcon className="mx-auto mb-4 h-12 w-12 text-zinc-400" />
+            <p>Activity appears after reports are generated, opened, exported, or retired</p>
           </div>
         ) : (
-          <div className="space-y-4">
-            {displayActivities.slice(0, limit).map((activity) => {
-              const Icon = getActivityIcon(activity.type as string);
-              const iconColor = getActivityColor(activity.type as string);
-              
+          <div className="space-y-3">
+            {activityTrailRows.slice(0, limit).map((activity) => {
+              const Icon = activity.Icon;
+
               return (
-                <div key={activity.id as string} className="flex items-start space-x-3">
-                  <div className={`flex-shrink-0 p-2 rounded-full bg-gray-100 ${iconColor}`}>
-                    <Icon className="h-4 w-4" />
+                <div key={activity.id} className="flex min-w-0 items-start gap-3 rounded-md border border-zinc-100 bg-white px-3 py-3">
+                  <div className={`flex-shrink-0 rounded-md p-2 ${activity.tone}`}>
+                    <Icon aria-hidden="true" className="h-4 w-4" />
                   </div>
-                  
+
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1">
-                        <p className={`text-sm font-medium text-gray-900 ${compact ? 'truncate' : ''}`}>
-                          {activity.description as string}
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <p className={`text-sm font-medium text-zinc-950 ${compact ? 'truncate' : ''}`}>
+                          {activity.label}
                         </p>
-                        
-                        <div className="flex items-center space-x-2 mt-1">
-                          {(activity.username as string) && (
-                            <span className="text-xs text-gray-600">
-                              by {activity.username as string}
-                            </span>
-                          )}
-                          <span className="text-xs text-gray-500">
-                            {formatRelativeTime(activity.created_at as string)}
-                          </span>
+
+                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                          <span className="text-xs text-zinc-500">{activity.detail}</span>
+                          <span className="text-xs text-zinc-400" aria-hidden="true">&middot;</span>
+                          <span className="text-xs text-zinc-500">{activity.timestamp}</span>
+                          {!compact && activity.metadataSummary ? (
+                            <>
+                              <span className="text-xs text-zinc-400" aria-hidden="true">&middot;</span>
+                              <span className="text-xs font-medium text-zinc-600">{activity.metadataSummary}</span>
+                            </>
+                          ) : null}
                         </div>
-                        
-                        {!compact && (activity.metadata as Record<string, unknown>) && (
-                          <div className="flex flex-wrap gap-1 mt-2">
-                            {Object.entries(activity.metadata as Record<string, unknown>).map(([key, value]) => (
-                              <Badge key={key} variant="default" size="sm">
-                                {key}: {String(value)}
-                              </Badge>
-                            ))}
-                          </div>
-                        )}
                       </div>
-                      
-                      <Badge variant={getSeverityVariant(activity.severity as string)} size="sm">
-                        {activity.severity as string}
+
+                      <Badge variant={getSeverityVariant(activity.severity)} size="sm">
+                        {activity.severity}
                       </Badge>
                     </div>
                   </div>
@@ -233,10 +275,10 @@ export function ActivityFeed({ userId, limit = 10, showHeader = true, compact = 
           </div>
         )}
         
-        {displayActivities.length > limit && (
-          <div className="text-center mt-4">
-            <button className="text-sm text-blue-600 hover:text-blue-800">
-              View all activity
+        {activityTrailRows.length > limit && (
+          <div className="mt-4 text-center">
+            <button className="text-sm font-medium text-zinc-700 hover:text-zinc-950">
+              Review full activity trail
             </button>
           </div>
         )}

@@ -57,6 +57,36 @@ const expectations = [
     pattern: /Activity trail/,
   },
   {
+    name: 'declares the dashboard activity trail contract',
+    source: activityFeed,
+    pattern: /data-contract="Dashboard\.ActivityTrail\.v1"/,
+  },
+  {
+    name: 'uses a canonical activity trail row builder',
+    source: activityFeed,
+    pattern: /function buildActivityTrailRows/,
+  },
+  {
+    name: 'renders activity trail rows from canonical display rows',
+    source: activityFeed,
+    pattern: /activityTrailRows\.slice\(0, limit\)\.map\(\(activity\)[\s\S]*activity\.label[\s\S]*activity\.detail[\s\S]*activity\.timestamp/,
+  },
+  {
+    name: 'uses product-specific activity error copy',
+    source: activityFeed,
+    pattern: /Activity trail is unavailable right now/,
+  },
+  {
+    name: 'uses product-specific empty activity copy',
+    source: activityFeed,
+    pattern: /Activity appears after reports are generated, opened, exported, or retired/,
+  },
+  {
+    name: 'does not dump raw activity metadata as key-value badges',
+    source: activityFeed,
+    absentPattern: /Object\.entries\(activity\.metadata[\s\S]*<Badge key=\{key\}[\s\S]*\{key\}: \{String\(value\)\}/,
+  },
+  {
     name: 'does not show IP-address demo activity on the briefing surface',
     source: activityFeed,
     absentPattern: /IP 203\.0\.113\.42|192\.168\.1\.100|ip_address/,
