@@ -7,6 +7,14 @@ const packageJson = JSON.parse(
   readFileSync(resolve(process.cwd(), 'package.json'), 'utf8'),
 );
 
+const defaultPageExtensions = ['tsx', 'ts', 'jsx', 'js'];
+const nextConfigFiles = [
+  'next.config.ts',
+  'next.config.mjs',
+  'next.config.js',
+  'next.config.cjs',
+];
+
 const routeSurfaces = [
   {
     route: '/',
@@ -80,8 +88,53 @@ const failures = [];
 const routePageRoot = resolve(process.cwd(), 'src/app');
 const registeredPages = new Set(routeSurfaces.map(({ page }) => page));
 
+function readNextConfig() {
+  for (const configFile of nextConfigFiles) {
+    const configPath = resolve(process.cwd(), configFile);
+    if (existsSync(configPath)) {
+      return {
+        file: configFile,
+        source: readFileSync(configPath, 'utf8'),
+      };
+    }
+  }
+
+  return null;
+}
+
+function readPageExtensions() {
+  const nextConfig = readNextConfig();
+  if (!nextConfig) {
+    return defaultPageExtensions;
+  }
+
+  const pageExtensionsMatch = nextConfig.source.match(/pageExtensions\s*:\s*\[([\s\S]*?)\]/m);
+  if (!pageExtensionsMatch) {
+    return defaultPageExtensions;
+  }
+
+  const extensions = Array.from(
+    pageExtensionsMatch[1].matchAll(/['"]([A-Za-z0-9]+)['"]/g),
+    ([, extension]) => extension,
+  );
+
+  if (extensions.length === 0) {
+    failures.push(`- ${nextConfig.file} pageExtensions must list at least one extension`);
+    return [];
+  }
+
+  return extensions;
+}
+
 function routePath(filePath) {
   return relative(process.cwd(), filePath).replaceAll('\\', '/');
+}
+
+const pageExtensions = new Set(readPageExtensions());
+
+function isRoutePage(entry) {
+  const match = entry.match(/^page\.([A-Za-z0-9]+)$/);
+  return Boolean(match && pageExtensions.has(match[1]));
 }
 
 function listRoutePages(directory) {
@@ -92,9 +145,16 @@ function listRoutePages(directory) {
         return listRoutePages(entryPath);
       }
 
-      return entry === 'page.tsx' ? [routePath(entryPath)] : [];
+      return isRoutePage(entry) ? [routePath(entryPath)] : [];
     })
     .sort();
+}
+
+for (const { route, page } of routeSurfaces) {
+  const extension = page.match(/\.([A-Za-z0-9]+)$/)?.[1];
+  if (!extension || !pageExtensions.has(extension)) {
+    failures.push(`- ${route}: registered page ${page} does not use a supported Next page extension`);
+  }
 }
 
 for (const page of listRoutePages(routePageRoot)) {
