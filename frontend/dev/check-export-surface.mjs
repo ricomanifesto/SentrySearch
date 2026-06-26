@@ -44,6 +44,18 @@ const expectations = [
     pattern: /checked=\{config\.format === format\.value\}/,
   },
   {
+    name: 'uses a canonical package contents contract',
+    pattern: /const packageContentOptions = \[[\s\S]*key: 'include_content'[\s\S]*label: 'Full narrative'[\s\S]*key: 'include_metadata'[\s\S]*label: 'Processing metadata'[\s\S]*key: 'include_tags'[\s\S]*label: 'Source tags'/,
+  },
+  {
+    name: 'renders package content controls from the canonical contract',
+    pattern: /packageContentOptions\.map\(\(option\)[\s\S]*checked=\{Boolean\(config\[option\.key\]\)\}[\s\S]*handleConfigChange\(option\.key, e\.target\.checked\)/,
+  },
+  {
+    name: 'renders manifest included evidence from the canonical contract',
+    pattern: /packageContentOptions\.map\(\(option\)[\s\S]*\{Boolean\(config\[option\.key\]\) \? \([\s\S]*<span className="text-sm text-slate-600">\{option\.label\}<\/span>/,
+  },
+  {
     name: 'keeps accessible error alert semantics',
     pattern: /role="alert"/,
   },
