@@ -37,11 +37,23 @@ const expectations = [
   },
   {
     name: 'uses native radio inputs for analysis mode cards',
-    pattern: /type="radio"[\s\S]*name="analysis_type"[\s\S]*setFormData\(prev => \(\{ \.\.\.prev, analysis_type: summary\.value/,
+    pattern: /type="radio"[\s\S]*name="analysis_type"[\s\S]*setFormData\(prev => \(\{ \.\.\.prev, analysis_type: option\.value/,
   },
   {
     name: 'keeps the canonical analysis type state owner',
-    pattern: /analysis_type: 'comprehensive'[\s\S]*analysis_type: summary\.value as GenerateFormData\['analysis_type'\]/,
+    pattern: /analysis_type: 'comprehensive'[\s\S]*analysis_type: option\.value as GenerateFormData\['analysis_type'\]/,
+  },
+  {
+    name: 'uses a canonical review depth contract for mode metadata',
+    pattern: /const reviewDepthOptions = \[[\s\S]*value: 'comprehensive'[\s\S]*sla: '2-5 min'[\s\S]*evidence: \[[\s\S]*source-backed narrative[\s\S]*\][\s\S]*value: 'quick'[\s\S]*sla: '30-60s'[\s\S]*value: 'custom'[\s\S]*sla: 'Variable'/,
+  },
+  {
+    name: 'renders review depth cards from the canonical contract',
+    pattern: /reviewDepthOptions\.map\(\(option\)[\s\S]*formData\.analysis_type === option\.value[\s\S]*option\.evidence\.map/,
+  },
+  {
+    name: 'does not keep duplicate mode guidance sidebar',
+    absentPattern: /Mode guidance/,
   },
   {
     name: 'uses fieldset and legend semantics for analysis mode',
@@ -49,7 +61,7 @@ const expectations = [
   },
   {
     name: 'keeps radio checked state tied to request state',
-    pattern: /checked=\{formData\.analysis_type === summary\.value\}/,
+    pattern: /checked=\{formData\.analysis_type === option\.value\}/,
   },
   {
     name: 'keeps accessible error alert semantics',
