@@ -34,27 +34,30 @@ const targetGroups = [
   },
 ];
 
-const analysisSummaries = [
+const reviewDepthOptions = [
   {
     value: 'comprehensive',
     name: 'Full intelligence brief',
     detail: 'Technical profile, detection guidance, mitigations, and source-backed context.',
-    time: '2-5 min',
+    sla: '2-5 min',
     variant: 'info' as const,
+    evidence: ['source-backed narrative', 'detection guidance', 'mitigation context'],
   },
   {
     value: 'quick',
     name: 'Triage brief',
     detail: 'Fast triage summary with high-signal indicators and immediate next steps.',
-    time: '30-60s',
+    sla: '30-60s',
     variant: 'success' as const,
+    evidence: ['priority signals', 'immediate actions', 'review queue handoff'],
   },
   {
     value: 'custom',
     name: 'Focused analyst note',
     detail: 'Focused analysis for a specific campaign, asset class, or review workflow.',
-    time: 'Variable',
+    sla: 'Variable',
     variant: 'warning' as const,
+    evidence: ['campaign framing', 'asset context', 'analyst-specific scope'],
   },
 ];
 
@@ -94,7 +97,7 @@ export default function GeneratePage() {
 
   const isLoading = generateMutation.isPending;
   const error = generateMutation.error;
-  const selectedMode = analysisSummaries.find((summary) => summary.value === formData.analysis_type);
+  const selectedMode = reviewDepthOptions.find((option) => option.value === formData.analysis_type);
   const readinessItems = [
     formData.tool_name.trim() ? 'Target named' : 'Target needed',
     selectedMode ? `${selectedMode.name} selected` : 'Mode needed',
@@ -150,11 +153,11 @@ export default function GeneratePage() {
                   </p>
 
                   <div className="mt-3 grid min-w-0 grid-cols-1 gap-3 md:grid-cols-3" aria-describedby="analysis-mode-help">
-                    {analysisSummaries.map((summary) => {
-                      const isSelected = formData.analysis_type === summary.value;
+                    {reviewDepthOptions.map((option) => {
+                      const isSelected = formData.analysis_type === option.value;
                       return (
                         <label
-                          key={summary.value}
+                          key={option.value}
                           className={`min-h-36 cursor-pointer rounded-md border p-4 text-left transition focus-within:ring-2 focus-within:ring-blue-500 ${
                             isSelected
                               ? 'border-blue-500 bg-blue-50 text-slate-950 shadow-sm'
@@ -164,19 +167,33 @@ export default function GeneratePage() {
                           <input
                             type="radio"
                             name="analysis_type"
-                            value={summary.value}
-                            checked={formData.analysis_type === summary.value}
-                            onChange={() => setFormData(prev => ({ ...prev, analysis_type: summary.value as GenerateFormData['analysis_type'] }))}
+                            value={option.value}
+                            checked={formData.analysis_type === option.value}
+                            onChange={() => setFormData(prev => ({ ...prev, analysis_type: option.value as GenerateFormData['analysis_type'] }))}
                             disabled={isLoading}
                             className="sr-only"
                           />
                           <div className="flex items-start justify-between gap-3">
-                            <span className="text-sm font-semibold leading-5">{summary.name}</span>
-                            <Badge variant={summary.variant} size="sm" className="shrink-0 rounded-md">
-                              {summary.time}
+                            <span className="text-sm font-semibold leading-5">{option.name}</span>
+                            <Badge variant={option.variant} size="sm" className="shrink-0 rounded-md">
+                              {option.sla}
                             </Badge>
                           </div>
-                          <p className="mt-3 text-sm leading-6 text-slate-600">{summary.detail}</p>
+                          <p className="mt-3 text-sm leading-6 text-slate-600">{option.detail}</p>
+                          <div className="mt-4 flex flex-wrap gap-2">
+                            {option.evidence.map((item) => (
+                              <span
+                                key={item}
+                                className={`rounded-md border px-2 py-1 text-xs font-medium ${
+                                  isSelected
+                                    ? 'border-blue-200 bg-white text-blue-800'
+                                    : 'border-slate-200 bg-slate-50 text-slate-600'
+                                }`}
+                              >
+                                {item}
+                              </span>
+                            ))}
+                          </div>
                         </label>
                       );
                     })}
@@ -291,27 +308,6 @@ export default function GeneratePage() {
                           </button>
                         ))}
                       </div>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="min-w-0 border-slate-200 shadow-sm">
-              <CardHeader>
-                <CardTitle className="text-base">Mode guidance</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  {analysisSummaries.map((summary) => (
-                    <div key={summary.name} className="border-b border-slate-100 pb-4 last:border-0 last:pb-0">
-                      <div className="flex items-start justify-between gap-3">
-                        <span className="text-sm font-medium text-slate-900">{summary.name}</span>
-                        <Badge variant={summary.variant} size="sm" className="shrink-0 rounded-md">
-                          {summary.time}
-                        </Badge>
-                      </div>
-                      <p className="mt-1 text-sm leading-6 text-slate-600">{summary.detail}</p>
                     </div>
                   ))}
                 </div>
