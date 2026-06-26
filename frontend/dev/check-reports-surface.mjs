@@ -35,6 +35,11 @@ const expectations = [
     pattern: /Provenance posture/,
   },
   {
+    name: 'does not overstate provenance availability for every report',
+    source: reportsPage,
+    absentPattern: /available on each record|Source context preserved|Sources, tags, and report body/,
+  },
+  {
     name: 'keeps the active sort visible in the report queue',
     source: reportsPage,
     pattern: /Sorted by/,
@@ -57,7 +62,7 @@ const expectations = [
   {
     name: 'keeps source and review affordance visible',
     source: reportsPage,
-    pattern: /Sources, tags, and report body/,
+    pattern: /Report body and available context/,
   },
   {
     name: 'uses a non-leaky reports error state',

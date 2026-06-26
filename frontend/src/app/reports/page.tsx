@@ -232,7 +232,7 @@ export default function ReportsPage() {
               </span>
               <span className="inline-flex items-start gap-2 rounded-md bg-slate-50 px-3 py-2 leading-5 text-slate-700">
                 <ShieldCheckIcon className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" />
-                Provenance posture: sources, tags, and narrative available on each record
+                Provenance posture: open records to inspect source context, tags, and narrative when available
               </span>
             </div>
           )}
@@ -325,7 +325,7 @@ export default function ReportsPage() {
                                   Provenance posture
                                 </div>
                                 <div className="mt-1 text-sm font-medium text-slate-950">
-                                  Source context preserved
+                                  Detail review available
                                 </div>
                               </div>
                             </div>
@@ -345,7 +345,7 @@ export default function ReportsPage() {
                           <div className="flex flex-col gap-3 lg:items-end">
                             <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600 lg:text-right">
                               <div className="font-medium text-slate-900">Review record</div>
-                              <div>Sources, tags, and report body</div>
+                              <div>Report body and available context</div>
                             </div>
                             <Link href={`/reports/${report.id}`} className="w-full lg:w-auto">
                               <Button size="sm" variant="outline" className="min-h-10 w-full gap-2 lg:w-auto">
