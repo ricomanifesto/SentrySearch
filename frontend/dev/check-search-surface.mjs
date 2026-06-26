@@ -204,7 +204,7 @@ const expectations = [
   {
     name: 'does not overstate provenance availability for every result',
     source: searchPage,
-    absentPattern: /verify sources|sources, tags, and narrative available|Source context preserved/,
+    absentPattern: /verify sources|sources, tags, and narrative available|Source context preserved|stored source data/,
   },
   {
     name: 'passes sort controls to searchReports',

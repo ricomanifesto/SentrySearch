@@ -432,7 +432,7 @@ function SearchResultRecord({ report }: { report: Report }) {
             <p className="text-xs font-semibold uppercase tracking-wide text-cyan-200">Inspection brief</p>
             <h3 className="mt-2 text-base font-semibold">Review record</h3>
             <p className="mt-2 text-sm leading-6 text-slate-300">
-              Open the saved record to inspect available context, narrative, and stored source data.
+              Open the saved record to inspect available detail context before reuse.
             </p>
             <Link href={`/reports/${report.id}`} className="mt-4 block">
               <Button size="sm" variant="secondary" className="min-h-10 w-full gap-2 bg-white text-slate-950 hover:bg-slate-100">
