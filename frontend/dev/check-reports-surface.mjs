@@ -67,6 +67,41 @@ const expectations = [
     pattern: /Analyst confidence/,
   },
   {
+    name: 'declares the report review queue controls contract',
+    source: reportsPage,
+    pattern: /data-contract="Reports\.ReviewQueueControls\.v1"/,
+  },
+  {
+    name: 'uses a canonical review queue controls collection',
+    source: reportsPage,
+    pattern: /const reviewQueueControls/,
+  },
+  {
+    name: 'renders queue controls from the canonical collection',
+    source: reportsPage,
+    pattern: /reviewQueueControls\.map/,
+  },
+  {
+    name: 'frames report filters as review controls',
+    source: reportsPage,
+    pattern: /Review controls/,
+  },
+  {
+    name: 'uses queue constraint language for active filters',
+    source: reportsPage,
+    pattern: /queue constraints/,
+  },
+  {
+    name: 'does not use generic filter button copy',
+    source: reportsPage,
+    absentPattern: /<FunnelIcon className="h-4 w-4" \/>\s*Filters/,
+  },
+  {
+    name: 'does not use generic clear filters copy',
+    source: reportsPage,
+    absentPattern: />\s*Clear filters\s*</,
+  },
+  {
     name: 'frames saved reports as a review queue',
     source: reportsPage,
     pattern: /Review queue/,
