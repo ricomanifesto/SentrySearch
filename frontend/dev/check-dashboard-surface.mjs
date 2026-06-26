@@ -117,6 +117,31 @@ const expectations = [
     pattern: /Coverage map/,
   },
   {
+    name: 'declares the dashboard threat coverage map contract',
+    source: dashboard,
+    pattern: /data-contract="Dashboard\.ThreatCoverageMap\.v1"/,
+  },
+  {
+    name: 'uses a canonical threat coverage row builder',
+    source: dashboard,
+    pattern: /function buildThreatCoverageRows/,
+  },
+  {
+    name: 'limits threat coverage rows through a named policy',
+    source: dashboard,
+    pattern: /THREAT_COVERAGE_ROW_LIMIT/,
+  },
+  {
+    name: 'renders threat coverage rows from the canonical helper',
+    source: dashboard,
+    pattern: /threatCoverageRows\.map/,
+  },
+  {
+    name: 'does not render threat distribution with inline object sorting',
+    source: dashboard,
+    absentPattern: /Object\.entries\(analytics\.threat_distribution\)[\s\S]*?\.sort\(/,
+  },
+  {
     name: 'uses analyst triage language for threat mix empty state',
     source: dashboard,
     pattern: /Coverage appears after reports classify threat patterns/,

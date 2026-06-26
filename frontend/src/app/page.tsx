@@ -21,6 +21,39 @@ import { Badge } from '@/components/ui/Badge';
 import { ActivityFeed } from '@/components/ActivityFeed';
 import { AuthGuard } from '@/components/AuthGuard';
 
+const THREAT_COVERAGE_ROW_LIMIT = 5;
+
+type ThreatCoverageRow = {
+  threatType: string;
+  label: string;
+  count: number;
+  coveragePercent: number;
+};
+
+function formatThreatCoverageLabel(threatType: string) {
+  return threatType.replace(/_/g, ' ');
+}
+
+function buildThreatCoverageRows(distribution?: Record<string, number>): ThreatCoverageRow[] {
+  if (!distribution) {
+    return [];
+  }
+
+  const entries = Object.entries(distribution)
+    .filter(([, count]) => Number.isFinite(count) && count > 0)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, THREAT_COVERAGE_ROW_LIMIT);
+
+  const maxCount = Math.max(...entries.map(([, count]) => count), 0);
+
+  return entries.map(([threatType, count]) => ({
+    threatType,
+    label: formatThreatCoverageLabel(threatType),
+    count,
+    coveragePercent: maxCount > 0 ? Math.max(8, Math.round((count / maxCount) * 100)) : 0,
+  }));
+}
+
 export default function Dashboard() {
   const { data: analytics, isLoading: analyticsLoading, error: analyticsError } = useQuery({
     queryKey: ['analytics', 'dashboard'],
@@ -31,6 +64,8 @@ export default function Dashboard() {
     queryKey: ['reports', 'recent'],
     queryFn: () => api.listReports(1, 5),
   });
+
+  const threatCoverageRows = buildThreatCoverageRows(analytics?.threat_distribution);
 
   const quickStats = [
     {
@@ -223,7 +258,7 @@ export default function Dashboard() {
               </CardContent>
             </Card>
 
-            <Card className="border-zinc-200 shadow-sm">
+            <Card data-contract="Dashboard.ThreatCoverageMap.v1" className="border-zinc-200 shadow-sm">
               <CardHeader className="border-b border-zinc-100 pb-4">
                 <div className="flex items-start justify-between gap-4">
                   <div>
@@ -243,31 +278,26 @@ export default function Dashboard() {
                       </div>
                     ))}
                   </div>
-                ) : analytics?.threat_distribution && Object.keys(analytics.threat_distribution).length > 0 ? (
+                ) : threatCoverageRows.length > 0 ? (
                   <div className="space-y-3">
-                    {Object.entries(analytics.threat_distribution)
-                      .sort(([,a], [,b]) => b - a)
-                      .slice(0, 5)
-                      .map(([threatType, count]) => (
-                        <div key={threatType} className="flex items-center justify-between gap-3">
-                          <span className="min-w-0 flex-1 truncate text-sm capitalize text-zinc-700">
-                            {threatType.replace(/_/g, ' ')}
-                          </span>
-                          <div className="flex items-center gap-2">
-                            <div className="h-2 w-16 rounded-full bg-zinc-200">
-                              <div
-                                className="h-2 rounded-full bg-emerald-700"
-                                style={{
-                                  width: `${Math.min(100, (count / Math.max(...Object.values(analytics.threat_distribution))) * 100)}%`
-                                }}
-                              ></div>
-                            </div>
-                            <span className="w-8 text-right text-sm font-semibold text-zinc-950">
-                              {count}
-                            </span>
+                    {threatCoverageRows.map((row) => (
+                      <div key={row.threatType} className="flex items-center justify-between gap-3">
+                        <span className="min-w-0 flex-1 truncate text-sm capitalize text-zinc-700">
+                          {row.label}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <div className="h-2 w-16 rounded-full bg-zinc-200">
+                            <div
+                              className="h-2 rounded-full bg-emerald-700"
+                              style={{ width: `${row.coveragePercent}%` }}
+                            ></div>
                           </div>
+                          <span className="w-8 text-right text-sm font-semibold text-zinc-950">
+                            {row.count}
+                          </span>
                         </div>
-                      ))}
+                      </div>
+                    ))}
                   </div>
                 ) : (
                   <div className="py-8 text-center">
