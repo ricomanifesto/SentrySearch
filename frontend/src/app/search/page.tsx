@@ -157,7 +157,7 @@ function SearchWorkspace() {
   const pageEnd = searchData ? Math.min(searchData.pagination.page * searchData.pagination.limit, totalReports) : 0;
 
   return (
-    <div className="min-h-screen overflow-x-hidden bg-slate-50 py-6 sm:py-10">
+    <div data-surface="search-review-workspace" className="min-h-screen overflow-x-hidden bg-slate-50 py-6 sm:py-10">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="mb-8 max-w-3xl">
             <Badge variant="info" size="sm" className="mb-3 rounded-md">
@@ -232,12 +232,18 @@ function SearchWorkspace() {
           </Card>
 
           {searchData && (
-            <div className="mb-4 flex flex-col gap-1 text-sm text-slate-600 sm:flex-row sm:items-center sm:justify-between">
-              <span>
-                {totalReports === 0 ? 'No matching saved intelligence' : `Showing ${pageStart}-${pageEnd} of ${totalReports} matches`}
+            <div className="mb-4 grid gap-3 rounded-md border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+              <span className="space-y-1">
+                <span className="block">
+                  <span className="font-semibold text-slate-950">Search review set:</span>{' '}
+                  {totalReports === 0 ? 'no matching saved intelligence' : `showing ${pageStart}-${pageEnd} of ${totalReports} matches`}
+                </span>
+                <span className="block text-xs text-slate-500">
+                  Sorted by {sortOptions.find(option => option.value === filters.sortBy)?.label.toLowerCase()} · {filters.sortOrder}
+                </span>
               </span>
-              <span>
-                Sorted by {sortOptions.find(option => option.value === filters.sortBy)?.label.toLowerCase()} · {filters.sortOrder}
+              <span className="rounded-md bg-slate-50 px-3 py-2 leading-5 text-slate-700">
+                Provenance review: open matched records to inspect available detail context
               </span>
             </div>
           )}
@@ -293,7 +299,11 @@ function SearchWorkspace() {
                   const qualityLabel = getQualityLabel(report.quality_score);
 
                   return (
-                    <Card key={report.id} className="border-slate-200 shadow-sm transition hover:border-blue-200 hover:shadow-md">
+                    <Card
+                      key={report.id}
+                      data-contract="Card.SearchResultRecord.v1"
+                      className="border-slate-200 shadow-sm transition hover:border-blue-200 hover:shadow-md"
+                    >
                       <CardContent className="p-5">
                         <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_12rem] lg:items-start">
                           <div className="min-w-0">
@@ -307,6 +317,24 @@ function SearchWorkspace() {
                             <h2 className="truncate text-xl font-semibold text-slate-950">
                               {report.tool_name}
                             </h2>
+                            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                  Analyst confidence
+                                </div>
+                                <div className="mt-1 text-sm font-medium text-slate-950">
+                                  {qualityLabel} · {report.quality_score.toFixed(1)}
+                                </div>
+                              </div>
+                              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                  Provenance review
+                                </div>
+                                <div className="mt-1 text-sm font-medium text-slate-950">
+                                  Detail context available on open
+                                </div>
+                              </div>
+                            </div>
                             <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2 text-sm text-slate-500">
                               <span className="inline-flex items-center gap-1">
                                 <CalendarDaysIcon className="h-4 w-4" />
@@ -322,13 +350,13 @@ function SearchWorkspace() {
 
                           <div className="flex flex-col gap-3 lg:items-end">
                             <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600 lg:text-right">
-                              <div className="font-medium text-slate-900">Matched report</div>
-                              <div>Open the saved record to verify sources</div>
+                              <div className="font-medium text-slate-900">Matched review record</div>
+                              <div>Open the saved record to inspect available context</div>
                             </div>
                             <Link href={`/reports/${report.id}`} className="w-full lg:w-auto">
                               <Button size="sm" variant="outline" className="min-h-10 w-full gap-2 lg:w-auto">
                                 <EyeIcon className="h-4 w-4" />
-                                Open report
+                                Open intelligence record
                               </Button>
                             </Link>
                           </div>

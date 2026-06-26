@@ -35,6 +35,31 @@ const expectations = [
     pattern: /Search workspace/,
   },
   {
+    name: 'declares the search review workspace surface contract',
+    source: searchPage,
+    pattern: /data-surface="search-review-workspace"/,
+  },
+  {
+    name: 'declares each search result record contract',
+    source: searchPage,
+    pattern: /data-contract="Card\.SearchResultRecord\.v1"/,
+  },
+  {
+    name: 'frames results as analyst confidence',
+    source: searchPage,
+    pattern: /Analyst confidence/,
+  },
+  {
+    name: 'keeps provenance review posture bounded to available detail context',
+    source: searchPage,
+    pattern: /Provenance review/,
+  },
+  {
+    name: 'uses product-specific open-record action copy',
+    source: searchPage,
+    pattern: /Open intelligence record/,
+  },
+  {
     name: 'routes search through the canonical API client',
     source: searchPage,
     pattern: /api\.searchReports\(/,
@@ -73,6 +98,11 @@ const expectations = [
     name: 'keeps mobile overflow guarded',
     source: searchPage,
     pattern: /overflow-x-hidden/,
+  },
+  {
+    name: 'does not overstate provenance availability for every result',
+    source: searchPage,
+    absentPattern: /verify sources|sources, tags, and narrative available|Source context preserved/,
   },
   {
     name: 'passes sort controls to searchReports',
