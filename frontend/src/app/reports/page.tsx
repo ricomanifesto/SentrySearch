@@ -221,9 +221,14 @@ export default function ReportsPage() {
 
           {reportsData && (
             <div className="mb-4 grid gap-3 rounded-md border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-              <span>
-                <span className="font-semibold text-slate-950">Review queue:</span>{' '}
-                {totalReports === 0 ? 'no saved reports' : `showing ${pageStart}-${pageEnd} of ${totalReports} saved reports`}
+              <span className="space-y-1">
+                <span className="block">
+                  <span className="font-semibold text-slate-950">Review queue:</span>{' '}
+                  {totalReports === 0 ? 'no saved reports' : `showing ${pageStart}-${pageEnd} of ${totalReports} saved reports`}
+                </span>
+                <span className="block text-xs text-slate-500">
+                  Sorted by {sortOptions.find(option => option.value === filters.sort_by)?.label.toLowerCase()} · {filters.sort_order}
+                </span>
               </span>
               <span className="inline-flex items-start gap-2 rounded-md bg-slate-50 px-3 py-2 leading-5 text-slate-700">
                 <ShieldCheckIcon className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" />

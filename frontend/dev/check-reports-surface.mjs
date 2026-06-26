@@ -35,6 +35,11 @@ const expectations = [
     pattern: /Provenance posture/,
   },
   {
+    name: 'keeps the active sort visible in the report queue',
+    source: reportsPage,
+    pattern: /Sorted by/,
+  },
+  {
     name: 'shows confidence as analyst confidence',
     source: reportsPage,
     pattern: /Analyst confidence/,
