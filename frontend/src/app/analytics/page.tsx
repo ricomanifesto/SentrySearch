@@ -101,6 +101,36 @@ export default function AnalyticsPage() {
   const threatEntries = Object.entries(threatDistribution).slice(0, 5);
   const maxThreatCount = Math.max(1, ...Object.values(threatDistribution).map(v => Number(v || 0)));
   const shownRecentActivity = recentActivity.slice(0, 5);
+  const metricSignals = [
+    {
+      label: 'Saved intelligence',
+      value: stats.total_reports,
+      detail: `${stats.reports_period} in the selected window`,
+      icon: DocumentTextIcon,
+      tone: 'text-slate-700',
+    },
+    {
+      label: 'Average confidence',
+      value: stats.avg_quality.toFixed(1),
+      detail: `${((stats.success_rate || 0) * 100).toFixed(1)}% completed without retry`,
+      icon: ArrowTrendingUpIcon,
+      tone: 'text-emerald-700',
+    },
+    {
+      label: 'Activity cadence',
+      value: shownRecentActivity.length,
+      detail: 'recent report events shown',
+      icon: ClockIcon,
+      tone: 'text-amber-700',
+    },
+    {
+      label: 'Metric readiness',
+      value: analytics ? 'Primary' : 'Fallback',
+      detail: 'source for this review',
+      icon: ShieldCheckIcon,
+      tone: 'text-indigo-700',
+    },
+  ];
 
   return (
     <AuthGuard>
@@ -130,73 +160,25 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
-        <div className="mb-8 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <Card className="border-slate-200 shadow-sm">
-            <CardContent className="py-5">
-              <div className="flex min-w-0 items-center">
-                <div className="flex-shrink-0">
-                  <DocumentTextIcon className="h-7 w-7 text-slate-700" />
-                </div>
-                <div className="ml-4 min-w-0">
-                  <p className="text-sm font-medium text-slate-500">Saved intelligence</p>
-                  <p className="text-2xl font-semibold text-slate-950">{stats.total_reports}</p>
-                  <p className="text-sm text-slate-600">
-                    {stats.reports_period} in the selected window
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+        <dl
+          data-contract="Analytics.MetricSignalStrip.v1"
+          className="mb-8 grid gap-px overflow-hidden rounded-md border border-slate-200 bg-slate-200 md:grid-cols-2 xl:grid-cols-4"
+        >
+          {metricSignals.map((metric) => {
+            const Icon = metric.icon;
 
-          <Card className="border-slate-200 shadow-sm">
-            <CardContent className="py-5">
-              <div className="flex min-w-0 items-center">
-                <div className="flex-shrink-0">
-                  <ArrowTrendingUpIcon className="h-7 w-7 text-emerald-700" />
-                </div>
-                <div className="ml-4 min-w-0">
-                  <p className="text-sm font-medium text-slate-500">Average confidence</p>
-                  <p className="text-2xl font-semibold text-slate-950">{stats.avg_quality.toFixed(1)}</p>
-                  <p className="text-sm text-slate-600">
-                    {((stats.success_rate || 0) * 100).toFixed(1)}% completed without retry
-                  </p>
-                </div>
+            return (
+              <div key={metric.label} className="bg-white px-4 py-5 shadow-sm">
+                <dt className="mb-4 flex items-center justify-between gap-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  <span>{metric.label}</span>
+                  <Icon aria-hidden="true" className={`h-6 w-6 ${metric.tone}`} />
+                </dt>
+                <dd className="text-2xl font-semibold text-slate-950">{metric.value}</dd>
+                <dd className="mt-1 text-sm leading-6 text-slate-600">{metric.detail}</dd>
               </div>
-            </CardContent>
-          </Card>
-
-          <Card className="border-slate-200 shadow-sm">
-            <CardContent className="py-5">
-              <div className="flex min-w-0 items-center">
-                <div className="flex-shrink-0">
-                  <ClockIcon className="h-7 w-7 text-amber-700" />
-                </div>
-                <div className="ml-4 min-w-0">
-                  <p className="text-sm font-medium text-slate-500">Activity cadence</p>
-                  <p className="text-2xl font-semibold text-slate-950">{shownRecentActivity.length}</p>
-                  <p className="text-sm text-slate-600">recent report events shown</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="border-slate-200 shadow-sm">
-            <CardContent className="py-5">
-              <div className="flex min-w-0 items-center">
-                <div className="flex-shrink-0">
-                  <ShieldCheckIcon className="h-7 w-7 text-indigo-700" />
-                </div>
-                <div className="ml-4 min-w-0">
-                  <p className="text-sm font-medium text-slate-500">Metric readiness</p>
-                  <p className="text-2xl font-semibold text-slate-950">
-                    {analytics ? 'Primary' : 'Fallback'}
-                  </p>
-                  <p className="text-sm text-slate-600">source for this review</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+            );
+          })}
+        </dl>
 
         <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
           <Card className="border-slate-200 shadow-sm">
