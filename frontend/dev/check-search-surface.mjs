@@ -4,8 +4,10 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const searchPagePath = resolve(here, '../src/app/search/page.tsx');
+const surfaceHeaderPath = resolve(here, '../src/components/ui/SurfaceHeader.tsx');
 const apiPath = resolve(here, '../src/lib/api.ts');
 const searchPage = await readFile(searchPagePath, 'utf8');
+const surfaceHeader = await readFile(surfaceHeaderPath, 'utf8').catch(() => '');
 const apiClient = await readFile(apiPath, 'utf8');
 
 const expectations = [
@@ -38,6 +40,21 @@ const expectations = [
     name: 'declares the search review workspace surface contract',
     source: searchPage,
     pattern: /data-surface="search-review-workspace"/,
+  },
+  {
+    name: 'uses the shared surface header component',
+    source: searchPage,
+    pattern: /<SurfaceHeader[\s\S]*eyebrow="Search workspace"[\s\S]*title="Find saved intelligence by target and threat context"/,
+  },
+  {
+    name: 'imports the shared surface header component',
+    source: searchPage,
+    pattern: /import \{ SurfaceHeader \} from '@\/components\/ui\/SurfaceHeader';/,
+  },
+  {
+    name: 'defines the shared surface header contract',
+    source: surfaceHeader,
+    pattern: /data-contract="Component\.SurfaceHeader\.v1"/,
   },
   {
     name: 'frames search controls as a query bench',

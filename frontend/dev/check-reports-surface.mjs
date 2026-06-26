@@ -4,8 +4,10 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const reportsPagePath = resolve(here, '../src/app/reports/page.tsx');
+const surfaceHeaderPath = resolve(here, '../src/components/ui/SurfaceHeader.tsx');
 const apiPath = resolve(here, '../src/lib/api.ts');
 const reportsPage = await readFile(reportsPagePath, 'utf8');
+const surfaceHeader = await readFile(surfaceHeaderPath, 'utf8').catch(() => '');
 const apiClient = await readFile(apiPath, 'utf8');
 
 const expectations = [
@@ -23,6 +25,21 @@ const expectations = [
     name: 'declares the report review queue surface contract',
     source: reportsPage,
     pattern: /data-surface="report-review-queue"/,
+  },
+  {
+    name: 'uses the shared surface header component',
+    source: reportsPage,
+    pattern: /<SurfaceHeader[\s\S]*eyebrow="Saved intelligence"[\s\S]*title="Review queue for saved intelligence"/,
+  },
+  {
+    name: 'imports the shared surface header component',
+    source: reportsPage,
+    pattern: /import \{ SurfaceHeader \} from '@\/components\/ui\/SurfaceHeader';/,
+  },
+  {
+    name: 'defines the shared surface header contract',
+    source: surfaceHeader,
+    pattern: /data-contract="Component\.SurfaceHeader\.v1"/,
   },
   {
     name: 'declares each report review record contract',
