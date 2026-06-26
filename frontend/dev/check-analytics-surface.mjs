@@ -59,6 +59,30 @@ const expectations = [
     pattern: /Operations signal strip/,
   },
   {
+    name: 'declares the analytics metric signal strip contract',
+    pattern: /data-contract="Analytics\.MetricSignalStrip\.v1"/,
+  },
+  {
+    name: 'uses a canonical analytics metric signals collection',
+    pattern: /const metricSignals = \[[\s\S]*label: 'Saved intelligence'[\s\S]*label: 'Average confidence'[\s\S]*label: 'Activity cadence'[\s\S]*label: 'Metric readiness'/,
+  },
+  {
+    name: 'renders analytics metric signals from the canonical collection',
+    pattern: /metricSignals\.map\(\(metric\)[\s\S]*metric\.label[\s\S]*metric\.value[\s\S]*metric\.detail/,
+  },
+  {
+    name: 'keeps metric definition terms adjacent to their values',
+    pattern: /<dt className="mb-4 flex items-center justify-between gap-3 text-xs font-semibold uppercase tracking-wide text-slate-500">[\s\S]*<span>\{metric\.label\}<\/span>[\s\S]*<Icon[\s\S]*aria-hidden="true"[\s\S]*className=\{`h-6 w-6 \$\{metric\.tone\}`\}[\s\S]*\/>[\s\S]*<\/dt>[\s\S]*<dd className="text-2xl font-semibold text-slate-950">\{metric\.value\}<\/dd>[\s\S]*<dd className="mt-1 text-sm leading-6 text-slate-600">\{metric\.detail\}<\/dd>/,
+  },
+  {
+    name: 'does not separate metric definition terms from their values',
+    absentPattern: /<div className="mb-4 flex items-center justify-between gap-3">\s*<dt/,
+  },
+  {
+    name: 'does not keep repeated hand-built metric cards',
+    absentPattern: /<Card className="border-slate-200 shadow-sm">[\s\S]*<DocumentTextIcon[\s\S]*<Card className="border-slate-200 shadow-sm">[\s\S]*<ArrowTrendingUpIcon[\s\S]*<Card className="border-slate-200 shadow-sm">[\s\S]*<ClockIcon[\s\S]*<Card className="border-slate-200 shadow-sm">[\s\S]*<ShieldCheckIcon/,
+  },
+  {
     name: 'frames recent activity as a review timeline',
     pattern: /Review timeline/,
   },
@@ -80,7 +104,7 @@ const expectations = [
   },
   {
     name: 'counts only the recent activity rows rendered on the page',
-    pattern: /const shownRecentActivity = recentActivity\.slice\(0, 5\);[\s\S]*\{shownRecentActivity\.length\}[\s\S]*\{shownRecentActivity\.map/,
+    pattern: /const shownRecentActivity = recentActivity\.slice\(0, 5\);[\s\S]*value: shownRecentActivity\.length[\s\S]*\{shownRecentActivity\.map/,
   },
   {
     name: 'avoids unverifiable healthy system claims',
