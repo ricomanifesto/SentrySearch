@@ -28,12 +28,24 @@ const expectations = [
     pattern: /Source context/,
   },
   {
-    name: 'keeps review posture guidance visible',
-    pattern: /Review posture/,
-  },
-  {
     name: 'frames raw technical data as structured extraction data',
     pattern: /Structured extraction data/,
+  },
+  {
+    name: 'uses a canonical source review checklist contract',
+    pattern: /const sourceReviewChecklist = \[[\s\S]*label: 'Narrative review'[\s\S]*label: 'Source transparency'[\s\S]*label: 'Extraction audit'/,
+  },
+  {
+    name: 'renders source review guidance from the canonical checklist',
+    pattern: /sourceReviewChecklist\.map\(\(item\)[\s\S]*item\.label[\s\S]*item\.status[\s\S]*item\.description/,
+  },
+  {
+    name: 'frames the side rail as review readiness',
+    pattern: /Review readiness/,
+  },
+  {
+    name: 'does not keep disconnected review posture sidebar',
+    absentPattern: /<h2 className="text-base font-semibold text-\[#20231f\]">Review posture<\/h2>/,
   },
   {
     name: 'contains long structured data output',
@@ -98,4 +110,3 @@ if (failures.length > 0) {
 }
 
 console.log(`Report detail surface contract check passed (${expectations.length} expectations).`);
-

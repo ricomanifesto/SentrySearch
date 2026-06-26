@@ -20,6 +20,8 @@ import {
   ArrowLeftIcon,
   CircleStackIcon,
   ShieldCheckIcon,
+  CheckCircleIcon,
+  ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline';
 
 import { api } from '@/lib/api';
@@ -144,6 +146,35 @@ function ReportDetailContent() {
       badgeVariant: 'success' as const,
     },
   ];
+  const sourceReviewChecklist = [
+    {
+      label: 'Narrative review',
+      description: report.markdown_content
+        ? 'Review the saved narrative against the metadata signals before reuse.'
+        : 'Narrative content is absent; use structured extraction data for review context.',
+      status: report.markdown_content ? 'Ready' : 'Missing narrative',
+      icon: report.markdown_content ? CheckCircleIcon : ExclamationTriangleIcon,
+      tone: report.markdown_content ? 'ready' : 'warning',
+    },
+    {
+      label: 'Source transparency',
+      description: report.search_tags && report.search_tags.length > 0
+        ? 'Search tags are attached for provenance and retrieval context.'
+        : 'No search tags are attached to this saved report record.',
+      status: report.search_tags && report.search_tags.length > 0 ? `${report.search_tags.length} tags` : 'No tags',
+      icon: report.search_tags && report.search_tags.length > 0 ? CheckCircleIcon : ExclamationTriangleIcon,
+      tone: report.search_tags && report.search_tags.length > 0 ? 'ready' : 'warning',
+    },
+    {
+      label: 'Extraction audit',
+      description: report.threat_data
+        ? 'Structured extraction data is available for field-level inspection.'
+        : 'Structured extraction data is not saved on this report record.',
+      status: report.threat_data ? 'Available' : 'Unavailable',
+      icon: report.threat_data ? CheckCircleIcon : ExclamationTriangleIcon,
+      tone: report.threat_data ? 'ready' : 'warning',
+    },
+  ];
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-[#f7f7f3] py-6 text-[#171915] sm:py-10">
@@ -266,15 +297,41 @@ function ReportDetailContent() {
           </Card>
 
           <aside className="space-y-4">
-            <div className="border border-[#d8d9ce] bg-white p-5">
-              <div className="mb-3 flex items-center gap-2">
-                <ShieldCheckIcon className="h-5 w-5 text-[#6f755f]" />
-                <h2 className="text-base font-semibold text-[#20231f]">Review posture</h2>
+            <section className="border border-[#d8d9ce] bg-white p-5">
+              <div className="mb-4 flex items-start gap-3">
+                <ShieldCheckIcon className="mt-0.5 h-5 w-5 text-[#6f755f]" />
+                <div>
+                  <h2 className="text-base font-semibold text-[#20231f]">Review readiness</h2>
+                  <p className="mt-1 text-sm leading-6 text-[#5d6458]">
+                    Source context is checked against the narrative, search tags, and extraction data before follow-up use.
+                  </p>
+                </div>
               </div>
-              <p className="text-sm leading-6 text-[#5d6458]">
-                Compare the narrative against its category, threat type, and saved extraction data before using the report in follow-up analysis.
-              </p>
-            </div>
+
+              <div className="space-y-3">
+                {sourceReviewChecklist.map((item) => {
+                  const Icon = item.icon;
+                  const isReady = item.tone === 'ready';
+
+                  return (
+                    <div key={item.label} className="border border-[#e4e5da] bg-[#fbfbf7] p-3">
+                      <div className="flex items-start gap-3">
+                        <Icon className={`mt-0.5 h-5 w-5 shrink-0 ${isReady ? 'text-[#2f7d55]' : 'text-[#b87928]'}`} />
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="text-sm font-semibold text-[#20231f]">{item.label}</h3>
+                            <span className="border border-[#d8d9ce] bg-white px-2 py-0.5 text-xs font-medium text-[#5d6458]">
+                              {item.status}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-sm leading-5 text-[#5d6458]">{item.description}</p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
 
             <div className="border border-[#d8d9ce] bg-white p-5">
               <div className="mb-3 flex items-center gap-2">
