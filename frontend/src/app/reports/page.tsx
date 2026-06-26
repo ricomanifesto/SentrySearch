@@ -20,6 +20,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import { Select } from '@/components/ui/Select';
+import { SurfaceHeader } from '@/components/ui/SurfaceHeader';
 
 interface FilterState {
   query: string;
@@ -128,25 +129,19 @@ export default function ReportsPage() {
     <AuthGuard>
       <div data-surface="report-review-queue" className="min-h-screen overflow-x-hidden bg-slate-50 py-6 sm:py-10">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="mb-8 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-            <div className="max-w-3xl">
-              <Badge variant="info" size="sm" className="mb-3 rounded-md">
-                Saved intelligence
-              </Badge>
-              <h1 className="text-2xl font-semibold leading-tight text-slate-950 sm:text-4xl">
-                Review queue for saved intelligence
-              </h1>
-              <p className="mt-3 max-w-2xl text-base leading-7 text-slate-600 sm:text-lg">
-                Search saved threat profiles, compare analyst confidence, and reopen each intelligence record with its source-backed context.
-              </p>
-            </div>
-            <Link href="/generate" className="w-full sm:w-auto">
-              <Button className="min-h-11 w-full gap-2 sm:w-auto">
-                <PlusIcon className="h-4 w-4" />
-                Generate report
-              </Button>
-            </Link>
-          </div>
+          <SurfaceHeader
+            eyebrow="Saved intelligence"
+            title="Review queue for saved intelligence"
+            description="Search saved threat profiles, compare analyst confidence, and reopen each intelligence record with its source-backed context."
+            action={(
+              <Link href="/generate" className="block w-full sm:w-auto">
+                <Button className="min-h-11 w-full gap-2 sm:w-auto">
+                  <PlusIcon className="h-4 w-4" />
+                  Generate report
+                </Button>
+              </Link>
+            )}
+          />
 
           <Card className="mb-6 border-slate-200 shadow-sm">
             <CardContent className="py-4">

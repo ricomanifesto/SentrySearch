@@ -18,6 +18,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import { Select } from '@/components/ui/Select';
+import { SurfaceHeader } from '@/components/ui/SurfaceHeader';
 
 interface SearchState {
   query: string;
@@ -159,17 +160,11 @@ function SearchWorkspace() {
   return (
     <div data-surface="search-review-workspace" className="min-h-screen overflow-x-hidden bg-slate-50 py-6 sm:py-10">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="mb-8 max-w-3xl">
-            <Badge variant="info" size="sm" className="mb-3 rounded-md">
-              Search workspace
-            </Badge>
-            <h1 className="text-2xl font-semibold leading-tight text-slate-950 sm:text-4xl">
-              Find saved intelligence by target and threat context
-            </h1>
-            <p className="mt-3 max-w-2xl text-base leading-7 text-slate-600 sm:text-lg">
-              Search the fields supported by the backend contract, then reopen the source-backed report record for review.
-            </p>
-          </div>
+          <SurfaceHeader
+            eyebrow="Search workspace"
+            title="Find saved intelligence by target and threat context"
+            description="Search the fields supported by the backend contract, then reopen the source-backed report record for review."
+          />
 
           <Card className="mb-6 border-slate-200 shadow-sm">
             <CardContent className="p-4 sm:p-5">
