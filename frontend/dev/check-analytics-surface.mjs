@@ -27,6 +27,10 @@ const expectations = [
     pattern: /Intelligence operations review/,
   },
   {
+    name: 'uses the shared surface header contract',
+    pattern: /import \{ SurfaceHeader \} from '@\/components\/ui\/SurfaceHeader'[\s\S]*<SurfaceHeader[\s\S]*eyebrow="Operations metrics"/,
+  },
+  {
     name: 'does not lead with generic analytics dashboard copy',
     absentPattern: /Analytics Dashboard|Comprehensive insights into threat intelligence operations/,
   },

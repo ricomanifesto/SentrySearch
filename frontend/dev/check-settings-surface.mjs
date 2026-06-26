@@ -23,6 +23,10 @@ const expectations = [
     pattern: /Workspace access controls/,
   },
   {
+    name: 'uses the shared surface header contract',
+    pattern: /import \{ SurfaceHeader \} from ["']@\/components\/ui\/SurfaceHeader["'][\s\S]*<SurfaceHeader[\s\S]*eyebrow="Workspace boundary"/,
+  },
+  {
     name: 'does not lead with generic settings copy',
     absentPattern: /<h1[^>]*>Settings<\/h1>|Manage account details and report-generation preferences/,
   },

@@ -23,6 +23,10 @@ const expectations = [
     pattern: /Control plane review/,
   },
   {
+    name: 'uses the shared surface header contract',
+    pattern: /import \{ SurfaceHeader \} from '@\/components\/ui\/SurfaceHeader'[\s\S]*<SurfaceHeader[\s\S]*eyebrow="Control plane review"/,
+  },
+  {
     name: 'does not keep generic coming-soon placeholder copy',
     absentPattern: /Admin Dashboard|Administrative features coming soon|available in a future update/,
   },

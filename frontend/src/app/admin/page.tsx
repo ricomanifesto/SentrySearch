@@ -11,6 +11,7 @@ import {
 import { AuthGuard } from '@/components/AuthGuard';
 import { Badge } from '@/components/ui/Badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
+import { SurfaceHeader } from '@/components/ui/SurfaceHeader';
 
 const readinessAreas = [
   {
@@ -47,18 +48,11 @@ export default function AdminPage() {
     <AuthGuard>
       <div className="min-h-screen overflow-x-hidden bg-slate-50 py-6 sm:py-10">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
-          <div className="mb-8 max-w-3xl">
-            <Badge variant="warning" size="sm" className="mb-3 rounded-md">
-              Control plane review
-            </Badge>
-            <h1 className="text-2xl font-semibold leading-tight tracking-tight text-slate-950 sm:text-4xl">
-              Admin readiness center
-            </h1>
-            <p className="mt-3 max-w-2xl text-base leading-7 text-slate-600 sm:text-lg">
-              Review the operational boundaries that need explicit backend
-              contracts before SentrySearch exposes administrator controls.
-            </p>
-          </div>
+          <SurfaceHeader
+            eyebrow="Control plane review"
+            title="Admin readiness center"
+            description="Review the operational boundaries that need explicit backend contracts before SentrySearch exposes administrator controls."
+          />
 
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
             <Card className="min-w-0 border-slate-200 shadow-sm lg:col-span-2">
