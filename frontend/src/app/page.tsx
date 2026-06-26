@@ -67,30 +67,27 @@ export default function Dashboard() {
 
   const threatCoverageRows = buildThreatCoverageRows(analytics?.threat_distribution);
 
-  const quickStats = [
+  const briefingSignals = [
     {
-      title: 'Intelligence library',
+      label: 'Intelligence library',
       value: analytics?.summary.total_reports ?? 0,
       detail: 'Saved reports ready for review',
       icon: DocumentTextIcon,
-      accent: 'border-l-cyan-500',
-      iconTone: 'bg-cyan-50 text-cyan-700',
+      tone: 'text-cyan-700',
     },
     {
-      title: 'Briefed this week',
+      label: 'Briefed this week',
       value: analytics?.summary.reports_this_week ?? 0,
       detail: 'New intelligence generated',
       icon: ChartBarIcon,
-      accent: 'border-l-emerald-500',
-      iconTone: 'bg-emerald-50 text-emerald-700',
+      tone: 'text-emerald-700',
     },
     {
-      title: 'Analyst confidence',
+      label: 'Analyst confidence',
       value: analytics?.summary.avg_quality_score?.toFixed(1) ?? '0.0',
       detail: 'Average report quality score',
       icon: MagnifyingGlassIcon,
-      accent: 'border-l-amber-500',
-      iconTone: 'bg-amber-50 text-amber-700',
+      tone: 'text-amber-700',
     },
   ];
 
@@ -164,25 +161,31 @@ export default function Dashboard() {
             </aside>
           </section>
 
-          <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-3">
-            {quickStats.map((stat) => {
-              const Icon = stat.icon;
-              return (
-                <Card key={stat.title} className={`border-l-4 border-zinc-200 shadow-sm ${stat.accent}`}>
-                  <CardContent className="flex items-start gap-4 p-5">
-                    <div className={`rounded-md p-3 ${stat.iconTone}`}>
-                      <Icon className="h-6 w-6" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-zinc-500">{stat.title}</p>
-                      <p className="text-2xl font-semibold text-zinc-950">{stat.value}</p>
-                      <p className="mt-1 text-xs leading-5 text-zinc-500">{stat.detail}</p>
-                    </div>
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
+          <section className="mb-8">
+            <div className="mb-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Briefing signal strip</p>
+              <p className="mt-1 text-sm text-zinc-500">Core workspace signals for saved intelligence, recent output, and confidence.</p>
+            </div>
+            <dl
+              data-contract="Dashboard.BriefingSignalStrip.v1"
+              className="grid gap-px overflow-hidden rounded-md border border-zinc-200 bg-zinc-200 sm:grid-cols-3"
+            >
+              {briefingSignals.map((signal) => {
+                const Icon = signal.icon;
+
+                return (
+                  <div key={signal.label} className="bg-white px-4 py-5 shadow-sm">
+                    <dt className="mb-4 flex items-center justify-between gap-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                      <span>{signal.label}</span>
+                      <Icon aria-hidden="true" className={`h-6 w-6 ${signal.tone}`} />
+                    </dt>
+                    <dd className="text-2xl font-semibold text-zinc-950">{signal.value}</dd>
+                    <dd className="mt-1 text-sm leading-6 text-zinc-600">{signal.detail}</dd>
+                  </div>
+                );
+              })}
+            </dl>
+          </section>
 
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(17rem,0.85fr)_minmax(17rem,0.85fr)]">
             <Card className="border-zinc-200 shadow-sm">
