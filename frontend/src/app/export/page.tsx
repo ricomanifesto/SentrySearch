@@ -22,6 +22,7 @@ import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { Badge } from '@/components/ui/Badge';
 import { AuthGuard } from '@/components/AuthGuard';
+import { SurfaceHeader } from '@/components/ui/SurfaceHeader';
 
 interface ExportConfig extends Record<string, unknown> {
   format: 'json' | 'csv' | 'markdown' | 'pdf' | 'xml';
@@ -152,15 +153,11 @@ export default function ExportPage() {
     <AuthGuard>
     <div className="min-h-screen overflow-x-hidden bg-slate-50 py-8">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-      <div className="mb-8 max-w-3xl">
-        <Badge variant="info" size="sm">Analyst handoff</Badge>
-        <h1 className="mt-3 text-3xl font-bold tracking-tight text-slate-950">
-          Intelligence handoff package
-        </h1>
-        <p className="mt-3 text-base leading-7 text-slate-600">
-          Prepare scoped report evidence for downstream review, briefings, or machine processing.
-        </p>
-      </div>
+      <SurfaceHeader
+        eyebrow="Analyst handoff"
+        title="Intelligence handoff package"
+        description="Prepare scoped report evidence for downstream review, briefings, or machine processing."
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="min-w-0 lg:col-span-2 space-y-6">

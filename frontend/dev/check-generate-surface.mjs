@@ -28,6 +28,10 @@ const expectations = [
     pattern: /Analyst intake console/,
   },
   {
+    name: 'uses the shared surface header contract',
+    pattern: /import \{ SurfaceHeader \} from '@\/components\/ui\/SurfaceHeader';[\s\S]*<SurfaceHeader[\s\S]*eyebrow="Analyst intake console"/,
+  },
+  {
     name: 'frames the request as analyst intake instead of a generic form',
     pattern: /Analyst intake console/,
   },

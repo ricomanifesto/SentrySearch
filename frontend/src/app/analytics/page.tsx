@@ -16,6 +16,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Select } from '@/components/ui/Select';
 import { Badge } from '@/components/ui/Badge';
 import { AuthGuard } from '@/components/AuthGuard';
+import { SurfaceHeader } from '@/components/ui/SurfaceHeader';
 
 const timeRangeOptions = [
   { value: '7d', label: 'Last 7 Days' },
@@ -105,19 +106,12 @@ export default function AnalyticsPage() {
     <AuthGuard>
       <div className="min-h-screen overflow-x-hidden bg-slate-50 py-6 sm:py-10">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-        <div className="mb-8 flex min-w-0 flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-          <div className="min-w-0 max-w-3xl">
-            <Badge variant="info" size="sm" className="mb-3 rounded-md">
-              Operations metrics
-            </Badge>
-            <h1 className="text-2xl font-semibold leading-tight tracking-tight text-slate-950 sm:text-4xl">
-              Intelligence operations review
-            </h1>
-            <p className="mt-3 max-w-2xl text-base leading-7 text-slate-600 sm:text-lg">
-              Review report volume, quality signals, and threat distribution before planning the next intelligence pass.
-            </p>
-          </div>
-          <div className="w-full min-w-0 sm:max-w-xs">
+        <SurfaceHeader
+          eyebrow="Operations metrics"
+          title="Intelligence operations review"
+          description="Review report volume, quality signals, and threat distribution before planning the next intelligence pass."
+          action={
+            <div className="w-full min-w-0 sm:max-w-xs">
             <Select
               label="Review window"
               options={timeRangeOptions}
@@ -125,8 +119,9 @@ export default function AnalyticsPage() {
               onChange={(e) => setTimeRange(e.target.value)}
               className="border-slate-300 focus:border-slate-800 focus:ring-slate-800"
             />
-          </div>
-        </div>
+            </div>
+          }
+        />
 
         <div className="mb-4 flex items-center justify-between gap-4">
           <div>

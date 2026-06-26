@@ -24,6 +24,10 @@ const expectations = [
     pattern: /Intelligence handoff package/,
   },
   {
+    name: 'uses the shared surface header contract',
+    pattern: /import \{ SurfaceHeader \} from '@\/components\/ui\/SurfaceHeader';[\s\S]*<SurfaceHeader[\s\S]*eyebrow="Analyst handoff"/,
+  },
+  {
     name: 'does not lead with generic export reports copy',
     absentPattern: /Export Reports|Bulk export threat intelligence reports/,
   },
