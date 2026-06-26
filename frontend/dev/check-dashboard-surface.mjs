@@ -102,6 +102,31 @@ const expectations = [
     pattern: /Analyst confidence/,
   },
   {
+    name: 'declares the dashboard briefing signal strip contract',
+    source: dashboard,
+    pattern: /data-contract="Dashboard\.BriefingSignalStrip\.v1"/,
+  },
+  {
+    name: 'uses a canonical briefing signals collection',
+    source: dashboard,
+    pattern: /const briefingSignals = \[[\s\S]*label: 'Intelligence library'[\s\S]*label: 'Briefed this week'[\s\S]*label: 'Analyst confidence'/,
+  },
+  {
+    name: 'renders briefing signals from the canonical collection',
+    source: dashboard,
+    pattern: /briefingSignals\.map\(\(signal\)[\s\S]*signal\.label[\s\S]*signal\.value[\s\S]*signal\.detail/,
+  },
+  {
+    name: 'keeps briefing definition terms adjacent to their values',
+    source: dashboard,
+    pattern: /<dt className="mb-4 flex items-center justify-between gap-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">[\s\S]*<span>\{signal\.label\}<\/span>[\s\S]*<Icon[\s\S]*aria-hidden="true"[\s\S]*className=\{`h-6 w-6 \$\{signal\.tone\}`\}[\s\S]*\/>[\s\S]*<\/dt>[\s\S]*<dd className="text-2xl font-semibold text-zinc-950">\{signal\.value\}<\/dd>[\s\S]*<dd className="mt-1 text-sm leading-6 text-zinc-600">\{signal\.detail\}<\/dd>/,
+  },
+  {
+    name: 'does not keep repeated briefing metric cards',
+    source: dashboard,
+    absentPattern: /quickStats\.map\(\(stat\)[\s\S]*<Card key=\{stat\.title\}/,
+  },
+  {
     name: 'frames recent reports as an intelligence review queue',
     source: dashboard,
     pattern: /Review queue/,
