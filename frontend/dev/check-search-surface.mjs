@@ -62,6 +62,36 @@ const expectations = [
     pattern: /Query bench/,
   },
   {
+    name: 'declares the search query workbench controls contract',
+    source: searchPage,
+    pattern: /data-contract="Search\.QueryWorkbenchControls\.v1"/,
+  },
+  {
+    name: 'uses a canonical query workbench controls collection',
+    source: searchPage,
+    pattern: /const queryWorkbenchControls/,
+  },
+  {
+    name: 'renders query workbench controls from the canonical collection',
+    source: searchPage,
+    pattern: /queryWorkbenchControls\.map/,
+  },
+  {
+    name: 'uses workbench constraint language for active search controls',
+    source: searchPage,
+    pattern: /active workbench/,
+  },
+  {
+    name: 'uses workbench-specific clear action copy',
+    source: searchPage,
+    pattern: /Clear workbench constraints/,
+  },
+  {
+    name: 'does not use generic clear search copy',
+    source: searchPage,
+    absentPattern: />\s*Clear search\s*</,
+  },
+  {
     name: 'frames matching results as a review docket',
     source: searchPage,
     pattern: /Review docket/,

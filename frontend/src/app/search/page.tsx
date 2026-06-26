@@ -29,6 +29,14 @@ interface SearchState {
   sortOrder: string;
 }
 
+type QueryWorkbenchControlKey = 'threatType' | 'minQuality' | 'dateRangeDays' | 'sortBy' | 'sortOrder';
+
+type QueryWorkbenchControl = {
+  key: QueryWorkbenchControlKey;
+  label: string;
+  options: Array<{ value: string; label: string }>;
+};
+
 const qualityOptions = [
   { value: '', label: 'Any quality' },
   { value: '4.0', label: '4.0+ high confidence' },
@@ -128,6 +136,14 @@ function SearchWorkspace() {
     })) || []),
   ], [filterOptions]);
 
+  const queryWorkbenchControls: QueryWorkbenchControl[] = useMemo(() => [
+    { key: 'threatType', label: 'Threat type', options: threatTypeOptions },
+    { key: 'minQuality', label: 'Minimum quality', options: qualityOptions },
+    { key: 'dateRangeDays', label: 'Date range', options: dateRangeOptions },
+    { key: 'sortBy', label: 'Sort by', options: sortOptions },
+    { key: 'sortOrder', label: 'Order', options: sortOrderOptions },
+  ], [threatTypeOptions]);
+
   const updateFilter = (key: keyof SearchState, value: string) => {
     setFilters(prev => ({ ...prev, [key]: value }));
     setCurrentPage(1);
@@ -166,7 +182,7 @@ function SearchWorkspace() {
             description="Search the fields supported by the backend contract, then reopen the source-backed report record for review."
           />
 
-          <Card className="mb-6 border-slate-200 shadow-sm">
+          <Card data-contract="Search.QueryWorkbenchControls.v1" className="mb-6 border-slate-200 shadow-sm">
             <CardContent className="p-4 sm:p-5">
               <div className="mb-4 flex flex-col gap-1 border-b border-slate-100 pb-4 sm:flex-row sm:items-end sm:justify-between">
                 <div>
@@ -176,7 +192,7 @@ function SearchWorkspace() {
                   </p>
                 </div>
                 <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                  {hasActiveFilters ? `${activeFilterCount} workbench constraints` : 'No workbench constraints'}
+                  {hasActiveFilters ? `${activeFilterCount} active workbench constraints` : 'No workbench constraints'}
                 </span>
               </div>
               <label className="relative block">
@@ -192,36 +208,15 @@ function SearchWorkspace() {
               </label>
 
               <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
-                <Select
-                  label="Threat type"
-                  options={threatTypeOptions}
-                  value={filters.threatType}
-                  onChange={(event) => updateFilter('threatType', event.target.value)}
-                />
-                <Select
-                  label="Minimum quality"
-                  options={qualityOptions}
-                  value={filters.minQuality}
-                  onChange={(event) => updateFilter('minQuality', event.target.value)}
-                />
-                <Select
-                  label="Date range"
-                  options={dateRangeOptions}
-                  value={filters.dateRangeDays}
-                  onChange={(event) => updateFilter('dateRangeDays', event.target.value)}
-                />
-                <Select
-                  label="Sort by"
-                  options={sortOptions}
-                  value={filters.sortBy}
-                  onChange={(event) => updateFilter('sortBy', event.target.value)}
-                />
-                <Select
-                  label="Order"
-                  options={sortOrderOptions}
-                  value={filters.sortOrder}
-                  onChange={(event) => updateFilter('sortOrder', event.target.value)}
-                />
+                {queryWorkbenchControls.map((control) => (
+                  <Select
+                    key={control.key}
+                    label={control.label}
+                    options={control.options}
+                    value={filters[control.key]}
+                    onChange={(event) => updateFilter(control.key, event.target.value)}
+                  />
+                ))}
               </div>
 
               {hasActiveFilters && (
@@ -230,7 +225,7 @@ function SearchWorkspace() {
                     {activeFilterCount} active search {activeFilterCount === 1 ? 'constraint' : 'constraints'}
                   </span>
                   <Button variant="ghost" size="sm" onClick={clearFilters}>
-                    Clear search
+                    Clear workbench constraints
                   </Button>
                 </div>
               )}
@@ -292,7 +287,7 @@ function SearchWorkspace() {
                 </p>
                 {hasActiveFilters && (
                   <Button variant="outline" onClick={clearFilters}>
-                    Clear search
+                    Clear workbench constraints
                   </Button>
                 )}
               </CardContent>
