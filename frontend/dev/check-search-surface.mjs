@@ -107,6 +107,26 @@ const expectations = [
     pattern: /data-contract="Card\.SearchResultRecord\.v1"/,
   },
   {
+    name: 'declares the search result review signals contract',
+    source: searchPage,
+    pattern: /data-contract="Search\.ResultReviewSignals\.v1"/,
+  },
+  {
+    name: 'uses a canonical result review signals collection',
+    source: searchPage,
+    pattern: /const resultReviewSignals/,
+  },
+  {
+    name: 'renders result review signals from the canonical collection',
+    source: searchPage,
+    pattern: /resultReviewSignals\.map/,
+  },
+  {
+    name: 'extracts result record rendering into a named component',
+    source: searchPage,
+    pattern: /function SearchResultRecord\(/,
+  },
+  {
     name: 'frames results as analyst confidence',
     source: searchPage,
     pattern: /Analyst confidence/,
@@ -130,6 +150,16 @@ const expectations = [
     name: 'uses product-specific open-record action copy',
     source: searchPage,
     pattern: /Open intelligence record/,
+  },
+  {
+    name: 'uses review-ready result record action framing',
+    source: searchPage,
+    pattern: /Review record/,
+  },
+  {
+    name: 'does not keep the old loose result signal grid',
+    source: searchPage,
+    absentPattern: /mt-3 grid gap-3 sm:grid-cols-2/,
   },
   {
     name: 'routes search through the canonical API client',
@@ -174,7 +204,7 @@ const expectations = [
   {
     name: 'does not overstate provenance availability for every result',
     source: searchPage,
-    absentPattern: /verify sources|sources, tags, and narrative available|Source context preserved/,
+    absentPattern: /verify sources|sources, tags, and narrative available|Source context preserved|stored source data/,
   },
   {
     name: 'passes sort controls to searchReports',

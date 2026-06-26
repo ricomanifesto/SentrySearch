@@ -11,7 +11,7 @@ import {
   MagnifyingGlassIcon,
 } from '@heroicons/react/24/outline';
 
-import { api } from '@/lib/api';
+import { api, type Report } from '@/lib/api';
 import { formatDate, formatProcessingTime, formatRelativeTime } from '@/lib/utils';
 import { AuthGuard } from '@/components/AuthGuard';
 import { Badge } from '@/components/ui/Badge';
@@ -35,6 +35,12 @@ type QueryWorkbenchControl = {
   key: QueryWorkbenchControlKey;
   label: string;
   options: Array<{ value: string; label: string }>;
+};
+
+type ResultReviewSignal = {
+  label: string;
+  value: string;
+  description: string;
 };
 
 const qualityOptions = [
@@ -69,6 +75,9 @@ const getQualityVariant = (score: number) =>
 
 const getQualityLabel = (score: number) =>
   score >= 4.0 ? 'High confidence' : score >= 3.0 ? 'Reviewable' : score >= 2.0 ? 'Needs review' : 'Low confidence';
+
+const formatTaxonomyLabel = (value: string) =>
+  value.replace(/_/g, ' ').replace(/\b\w/g, letter => letter.toUpperCase());
 
 export default function SearchPage() {
   return (
@@ -295,80 +304,9 @@ function SearchWorkspace() {
           ) : (
             <>
               <div className="space-y-4">
-                {searchData?.reports.map((report) => {
-                  const qualityVariant = getQualityVariant(report.quality_score);
-                  const qualityLabel = getQualityLabel(report.quality_score);
-
-                  return (
-                    <Card
-                      key={report.id}
-                      data-contract="Card.SearchResultRecord.v1"
-                      className="border-slate-200 shadow-sm transition hover:border-blue-200 hover:shadow-md"
-                    >
-                      <CardContent className="p-5">
-                        <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_12rem] lg:items-start">
-                          <div className="min-w-0">
-                            <div className="mb-3 flex flex-wrap items-center gap-2">
-                              <Badge variant={qualityVariant} size="sm" className="rounded-md">
-                                {qualityLabel} · {report.quality_score.toFixed(1)}
-                              </Badge>
-                              {report.category && <Badge variant="default" size="sm" className="rounded-md">{report.category}</Badge>}
-                              {report.threat_type && <Badge variant="default" size="sm" className="rounded-md">{report.threat_type}</Badge>}
-                            </div>
-                            <h2 className="truncate text-xl font-semibold text-slate-950">
-                              {report.tool_name}
-                            </h2>
-                            <p className="mt-1 text-xs font-semibold uppercase tracking-wide text-cyan-700">
-                              Decision signals
-                            </p>
-                            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-                                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                                  Analyst confidence
-                                </div>
-                                <div className="mt-1 text-sm font-medium text-slate-950">
-                                  {qualityLabel} · {report.quality_score.toFixed(1)}
-                                </div>
-                              </div>
-                              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-                                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                                  Provenance review
-                                </div>
-                                <div className="mt-1 text-sm font-medium text-slate-950">
-                                  Detail context available on open
-                                </div>
-                              </div>
-                            </div>
-                            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2 text-sm text-slate-500">
-                              <span className="inline-flex items-center gap-1">
-                                <CalendarDaysIcon className="h-4 w-4" />
-                                {formatRelativeTime(report.created_at)}
-                              </span>
-                              <span>{formatDate(report.created_at)}</span>
-                              {report.processing_time_ms ? <span>{formatProcessingTime(report.processing_time_ms)} generation</span> : null}
-                            </div>
-                            <p className="mt-4 line-clamp-2 max-w-3xl text-sm leading-6 text-slate-600">
-                              {report.content_preview || 'No preview was saved for this report. Open it to inspect the full intelligence record.'}
-                            </p>
-                          </div>
-
-                          <div className="flex flex-col gap-3 lg:items-end">
-                            <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600 lg:text-right">
-                              <div className="font-medium text-slate-900">Inspection brief</div>
-                              <div>Open the saved record to inspect available context</div>
-                            </div>
-                            <Link href={`/reports/${report.id}`} className="w-full lg:w-auto">
-                              <Button size="sm" variant="outline" className="min-h-10 w-full gap-2 lg:w-auto">
-                                <EyeIcon className="h-4 w-4" />
-                                Open intelligence record
-                              </Button>
-                            </Link>
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  );
-                })}
+                {searchData?.reports.map((report) => (
+                  <SearchResultRecord key={report.id} report={report} />
+                ))}
               </div>
 
               {searchData && searchData.pagination.pages > 1 && (
@@ -398,5 +336,113 @@ function SearchWorkspace() {
           )}
       </div>
     </div>
+  );
+}
+
+function SearchResultRecord({ report }: { report: Report }) {
+  const qualityVariant = getQualityVariant(report.quality_score);
+  const qualityLabel = getQualityLabel(report.quality_score);
+  const resultReviewSignals: ResultReviewSignal[] = [
+    {
+      label: 'Analyst confidence',
+      value: `${qualityLabel} · ${report.quality_score.toFixed(1)}`,
+      description: 'Quality score carried from the saved report',
+    },
+    {
+      label: 'Provenance review',
+      value: 'Open record',
+      description: 'Inspect available detail context before reuse',
+    },
+    {
+      label: 'Generated',
+      value: formatRelativeTime(report.created_at),
+      description: formatDate(report.created_at),
+    },
+    {
+      label: 'Runtime',
+      value: report.processing_time_ms ? formatProcessingTime(report.processing_time_ms) : 'Not recorded',
+      description: 'Generation duration',
+    },
+  ];
+
+  return (
+    <Card
+      data-contract="Card.SearchResultRecord.v1"
+      className="overflow-hidden border-slate-200 shadow-sm transition hover:border-slate-300 hover:shadow-md"
+    >
+      <CardContent className="p-0">
+        <article className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_15rem]">
+          <div className="min-w-0 p-5 sm:p-6">
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <Badge variant={qualityVariant} size="sm" className="rounded-md">
+                {qualityLabel} · {report.quality_score.toFixed(1)}
+              </Badge>
+              {report.category && (
+                <Badge variant="default" size="sm" className="rounded-md">
+                  {formatTaxonomyLabel(report.category)}
+                </Badge>
+              )}
+              {report.threat_type && (
+                <Badge variant="default" size="sm" className="rounded-md">
+                  {formatTaxonomyLabel(report.threat_type)}
+                </Badge>
+              )}
+            </div>
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0">
+                <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">
+                  Decision signals
+                </p>
+                <h2 className="mt-1 truncate text-xl font-semibold text-slate-950">
+                  {report.tool_name}
+                </h2>
+              </div>
+              <span className="inline-flex items-center gap-1 text-sm text-slate-500">
+                <CalendarDaysIcon className="h-4 w-4" />
+                {formatDate(report.created_at)}
+              </span>
+            </div>
+
+            <dl
+              data-contract="Search.ResultReviewSignals.v1"
+              className="mt-4 grid gap-px overflow-hidden rounded-md border border-slate-200 bg-slate-200 sm:grid-cols-2 xl:grid-cols-4"
+            >
+              {resultReviewSignals.map((signal) => (
+                <div key={signal.label} className="bg-slate-50 px-3 py-3">
+                  <dt className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    {signal.label}
+                  </dt>
+                  <dd className="mt-1 text-sm font-semibold text-slate-950">
+                    {signal.value}
+                  </dd>
+                  <dd className="mt-1 text-xs leading-5 text-slate-500">
+                    {signal.description}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+
+            <p className="mt-4 line-clamp-2 max-w-4xl text-sm leading-6 text-slate-600">
+              {report.content_preview || 'No preview was saved for this report. Open it to inspect the full intelligence record.'}
+            </p>
+          </div>
+
+          <aside className="border-t border-slate-200 bg-slate-950 p-5 text-white lg:border-l lg:border-t-0">
+            <p className="text-xs font-semibold uppercase tracking-wide text-cyan-200">Inspection brief</p>
+            <h3 className="mt-2 text-base font-semibold">Review record</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-300">
+              Open the saved record to inspect available detail context before reuse.
+            </p>
+            <Link href={`/reports/${report.id}`} className="mt-4 block">
+              <Button size="sm" variant="secondary" className="min-h-10 w-full gap-2 bg-white text-slate-950 hover:bg-slate-100">
+                <EyeIcon className="h-4 w-4" />
+                Open intelligence record
+              </Button>
+            </Link>
+          </aside>
+        </article>
+      </CardContent>
+    </Card>
   );
 }
