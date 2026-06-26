@@ -64,6 +64,26 @@ const expectations = [
     pattern: /Package readiness/,
   },
   {
+    name: 'frames report selection as an evidence queue',
+    pattern: /Evidence queue/,
+  },
+  {
+    name: 'shows queue scope near report selection',
+    pattern: /Visible reports ready for handoff review/,
+  },
+  {
+    name: 'frames the sidebar summary as a package manifest',
+    pattern: /Package manifest/,
+  },
+  {
+    name: 'uses confidence language for selected report scores',
+    pattern: /Confidence/,
+  },
+  {
+    name: 'does not keep demo-oriented implementation comments',
+    absentPattern: /simplified for demo/i,
+  },
+  {
     name: 'does not add generic gradient decoration',
     absentPattern: /bg-gradient|from-|via-|to-/,
   },
