@@ -8,6 +8,7 @@ import {
   SparklesIcon,
   ClockIcon,
   ExclamationTriangleIcon,
+  CheckCircleIcon,
 } from '@heroicons/react/24/outline';
 
 import { api } from '@/lib/api';
@@ -98,10 +99,32 @@ export default function GeneratePage() {
   const isLoading = generateMutation.isPending;
   const error = generateMutation.error;
   const selectedMode = reviewDepthOptions.find((option) => option.value === formData.analysis_type);
-  const readinessItems = [
-    formData.tool_name.trim() ? 'Target named' : 'Target needed',
-    selectedMode ? `${selectedMode.name} selected` : 'Mode needed',
-    formData.enable_ml_guidance ? 'Guidance enabled' : 'Guidance disabled',
+  const targetName = formData.tool_name.trim();
+  const submissionHandoffChecks = [
+    {
+      label: 'Target',
+      status: targetName ? 'Ready' : 'Needed',
+      description: targetName
+        ? `${targetName} is queued as the report target.`
+        : 'Name the threat, tool, vulnerability, or exposed technology to investigate.',
+      tone: targetName ? 'ready' : 'needed',
+    },
+    {
+      label: 'Review depth',
+      status: selectedMode?.name ?? 'Needed',
+      description: selectedMode
+        ? `${selectedMode.sla} handoff with ${selectedMode.evidence[0]}.`
+        : 'Choose the analyst handoff SentrySearch should prepare.',
+      tone: selectedMode ? 'ready' : 'needed',
+    },
+    {
+      label: 'Guidance layer',
+      status: formData.enable_ml_guidance ? 'Enabled' : 'Disabled',
+      description: formData.enable_ml_guidance
+        ? 'Behavioral cues, detection ideas, and risk framing will be included.'
+        : 'The report will stay closer to source extraction without extra guidance.',
+      tone: formData.enable_ml_guidance ? 'ready' : 'muted',
+    },
   ];
 
   return (
@@ -200,41 +223,6 @@ export default function GeneratePage() {
                   </div>
                 </fieldset>
 
-                <div className="grid min-w-0 grid-cols-1 gap-5 md:grid-cols-[minmax(0,1fr)_minmax(16rem,0.8fr)]">
-                  <div className="rounded-md border border-slate-200 bg-white p-4">
-                    <h3 className="text-sm font-semibold text-slate-900">Intake readiness</h3>
-                    <div className="mt-3 grid gap-2 sm:grid-cols-3 md:grid-cols-1">
-                      {readinessItems.map((item) => (
-                        <div key={item} className="flex items-center gap-2 text-sm text-slate-600">
-                          <span className={`h-2 w-2 shrink-0 rounded-full ${item.includes('needed') ? 'bg-amber-500' : 'bg-emerald-500'}`} />
-                          <span>{item}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
-                    <div className="flex items-start gap-3">
-                      <input
-                        type="checkbox"
-                        id="ml_guidance"
-                        checked={formData.enable_ml_guidance}
-                        onChange={(e) => setFormData(prev => ({ ...prev, enable_ml_guidance: e.target.checked }))}
-                        disabled={isLoading}
-                        className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                      />
-                      <div>
-                        <label htmlFor="ml_guidance" className="flex items-center gap-1 text-sm font-medium text-slate-900">
-                          <SparklesIcon className="h-4 w-4 text-blue-600" />
-                          ML-powered guidance
-                        </label>
-                        <p className="mt-1 text-sm leading-5 text-slate-600">
-                          Add behavioral cues, detection ideas, and risk framing to the generated profile.
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
                 {error && (
                   <div role="alert" className="rounded-md border border-red-200 bg-red-50 p-4">
                     <div className="flex gap-3">
@@ -267,20 +255,88 @@ export default function GeneratePage() {
                   </div>
                 )}
 
-                <div className="flex flex-col gap-3 border-t border-slate-100 pt-6 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-sm leading-6 text-slate-600">
-                    Submit only when the request target and review posture match the analyst queue.
-                  </p>
-                  <Button
-                    type="submit"
-                    size="lg"
-                    loading={isLoading}
-                    disabled={!formData.tool_name.trim() || isLoading}
-                    className="min-h-12 w-full whitespace-normal px-5 text-sm sm:w-auto"
-                  >
-                    {isLoading ? 'Generating report...' : 'Generate report'}
-                  </Button>
-                </div>
+                <section className="rounded-md border border-slate-200 bg-white">
+                  <div className="border-b border-slate-100 p-4 sm:p-5">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <h3 className="text-base font-semibold text-slate-950">Submission handoff</h3>
+                        <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600">
+                          Confirm the request is ready for the analyst queue before starting report generation.
+                        </p>
+                      </div>
+                      <Badge variant={targetName ? 'success' : 'warning'} size="sm" className="w-fit rounded-md">
+                        {targetName ? 'Ready to queue' : 'Target required'}
+                      </Badge>
+                    </div>
+                  </div>
+
+                  <div className="grid min-w-0 gap-0 divide-y divide-slate-100 lg:grid-cols-[minmax(0,1fr)_18rem] lg:divide-x lg:divide-y-0">
+                    <div className="p-4 sm:p-5">
+                      <div className="grid gap-3 md:grid-cols-3 lg:grid-cols-1">
+                        {submissionHandoffChecks.map((check) => {
+                          const isReady = check.tone === 'ready';
+                          const isNeeded = check.tone === 'needed';
+
+                          return (
+                            <div key={check.label} className="flex min-w-0 gap-3 rounded-md border border-slate-200 bg-slate-50 p-3">
+                              {isReady ? (
+                                <CheckCircleIcon className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" />
+                              ) : (
+                                <ExclamationTriangleIcon className={`mt-0.5 h-5 w-5 shrink-0 ${isNeeded ? 'text-amber-500' : 'text-slate-400'}`} />
+                              )}
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-sm font-semibold text-slate-900">{check.label}</span>
+                                  <span className="rounded-md border border-slate-200 bg-white px-2 py-0.5 text-xs font-medium text-slate-600">
+                                    {check.status}
+                                  </span>
+                                </div>
+                                <p className="mt-1 text-sm leading-5 text-slate-600">{check.description}</p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col justify-between gap-5 bg-slate-50 p-4 sm:p-5">
+                      <label className="flex cursor-pointer items-start gap-3 rounded-md border border-slate-200 bg-white p-3 transition hover:border-blue-200 hover:bg-blue-50">
+                        <input
+                          type="checkbox"
+                          id="ml_guidance"
+                          checked={formData.enable_ml_guidance}
+                          onChange={(e) => setFormData(prev => ({ ...prev, enable_ml_guidance: e.target.checked }))}
+                          disabled={isLoading}
+                          className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span>
+                          <span className="flex items-center gap-1 text-sm font-semibold text-slate-900">
+                            <SparklesIcon className="h-4 w-4 text-blue-600" />
+                            Include guidance
+                          </span>
+                          <span className="mt-1 block text-sm leading-5 text-slate-600">
+                            Include detection ideas, behavioral cues, and risk framing in the generated profile.
+                          </span>
+                        </span>
+                      </label>
+
+                      <div className="space-y-3">
+                        <p className="text-sm leading-6 text-slate-600">
+                          Start generation when the target, review depth, and guidance layer match the intended handoff.
+                        </p>
+                        <Button
+                          type="submit"
+                          size="lg"
+                          loading={isLoading}
+                          disabled={!targetName || isLoading}
+                          className="min-h-12 w-full whitespace-normal px-5 text-sm"
+                        >
+                          {isLoading ? 'Generating report...' : 'Start report handoff'}
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </section>
               </form>
             </CardContent>
           </Card>
