@@ -20,6 +20,36 @@ const expectations = [
     pattern: /Saved intelligence/,
   },
   {
+    name: 'declares the report review queue surface contract',
+    source: reportsPage,
+    pattern: /data-surface="report-review-queue"/,
+  },
+  {
+    name: 'declares each report review record contract',
+    source: reportsPage,
+    pattern: /data-contract="Card\.ReportReviewRecord\.v1"/,
+  },
+  {
+    name: 'surfaces provenance posture in the report queue',
+    source: reportsPage,
+    pattern: /Provenance posture/,
+  },
+  {
+    name: 'shows confidence as analyst confidence',
+    source: reportsPage,
+    pattern: /Analyst confidence/,
+  },
+  {
+    name: 'frames saved reports as a review queue',
+    source: reportsPage,
+    pattern: /Review queue/,
+  },
+  {
+    name: 'uses product-specific open-record action copy',
+    source: reportsPage,
+    pattern: /Open intelligence record/,
+  },
+  {
     name: 'keeps source and review affordance visible',
     source: reportsPage,
     pattern: /Sources, tags, and report body/,
