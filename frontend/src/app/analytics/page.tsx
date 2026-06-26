@@ -128,6 +128,13 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
+        <div className="mb-4 flex items-center justify-between gap-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Operations signal strip</p>
+            <p className="mt-1 text-sm text-slate-500">Core signals for report output, confidence, cadence, and metric source.</p>
+          </div>
+        </div>
+
         <div className="mb-8 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           <Card className="border-slate-200 shadow-sm">
             <CardContent className="py-5">
@@ -199,7 +206,8 @@ export default function AnalyticsPage() {
         <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
           <Card className="border-slate-200 shadow-sm">
             <CardHeader>
-              <CardTitle>Recent report activity</CardTitle>
+              <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Review timeline</p>
+              <CardTitle className="mt-1 text-base text-slate-950">Recent report activity</CardTitle>
             </CardHeader>
             <CardContent>
               {recentActivity.length > 0 ? (
@@ -213,7 +221,7 @@ export default function AnalyticsPage() {
                         </p>
                       </div>
                       <Badge variant="success">
-                        Score: {Number(activity?.quality_score || 4.0).toFixed(1)}
+                        Confidence: {Number(activity?.quality_score || 4.0).toFixed(1)}
                       </Badge>
                     </div>
                   ))}
@@ -229,7 +237,8 @@ export default function AnalyticsPage() {
 
           <Card className="border-slate-200 shadow-sm">
             <CardHeader>
-              <CardTitle>Threat distribution</CardTitle>
+              <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Threat coverage map</p>
+              <CardTitle className="mt-1 text-base text-slate-950">Threat distribution</CardTitle>
             </CardHeader>
             <CardContent>
               {threatEntries.length > 0 ? (
@@ -259,7 +268,7 @@ export default function AnalyticsPage() {
               ) : (
                 <div className="text-center py-8">
                   <ChartBarIcon className="mx-auto mb-4 h-12 w-12 text-slate-400" />
-                  <p className="text-slate-500">No threat distribution available for this window</p>
+                  <p className="text-slate-500">Coverage appears after reports classify threat patterns</p>
                 </div>
               )}
             </CardContent>
