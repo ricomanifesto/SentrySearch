@@ -80,6 +80,10 @@ const failures = [];
 const routePageRoot = resolve(process.cwd(), 'src/app');
 const registeredPages = new Set(routeSurfaces.map(({ page }) => page));
 
+function routePath(filePath) {
+  return relative(process.cwd(), filePath).replaceAll('\\', '/');
+}
+
 function listRoutePages(directory) {
   return readdirSync(directory)
     .flatMap((entry) => {
@@ -88,9 +92,7 @@ function listRoutePages(directory) {
         return listRoutePages(entryPath);
       }
 
-      return entry === 'page.tsx'
-        ? [relative(process.cwd(), entryPath)]
-        : [];
+      return entry === 'page.tsx' ? [routePath(entryPath)] : [];
     })
     .sort();
 }
