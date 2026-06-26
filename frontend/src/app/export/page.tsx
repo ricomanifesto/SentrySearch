@@ -11,6 +11,7 @@ import {
   ExclamationTriangleIcon,
   CalendarDaysIcon,
   FunnelIcon,
+  ClipboardDocumentCheckIcon,
 } from '@heroicons/react/24/outline';
 
 import { api } from '@/lib/api';
@@ -284,7 +285,6 @@ export default function ExportPage() {
                   options={threatTypeOptions}
                   value=""
                   onChange={(e) => {
-                    // Handle multiple threat types (simplified for demo)
                     handleConfigChange('threat_types', e.target.value ? [e.target.value] : undefined);
                   }}
                 />
@@ -308,17 +308,27 @@ export default function ExportPage() {
           </Card>
 
           <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center justify-between">
-                <span>Report selection</span>
+            <CardHeader className="border-b border-slate-100 pb-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Evidence queue</p>
+                  <CardTitle className="mt-1 flex items-center gap-2 text-base text-slate-950">
+                    <ClipboardDocumentCheckIcon className="h-5 w-5 text-slate-500" />
+                    <span>Report selection</span>
+                  </CardTitle>
+                  <p className="mt-2 text-sm leading-6 text-slate-500">
+                    Visible reports ready for handoff review, with confidence and threat markers.
+                  </p>
+                </div>
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={handleSelectAll}
+                  className="min-h-9 self-start rounded-md border-slate-300 text-slate-800"
                 >
                   {selectedReports.length === reportsData?.reports.length ? 'Clear selection' : 'Select visible'}
                 </Button>
-              </CardTitle>
+              </div>
             </CardHeader>
             <CardContent>
               {isLoading ? (
@@ -339,8 +349,8 @@ export default function ExportPage() {
                     return (
                       <div
                         key={report.id}
-                        className={`flex min-w-0 cursor-pointer items-center space-x-3 rounded-lg border p-3 transition-colors ${
-                          isSelected ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
+                        className={`flex min-w-0 cursor-pointer items-start gap-3 rounded-md border p-3 transition-colors ${
+                          isSelected ? 'border-cyan-600 bg-cyan-50' : 'border-slate-200 bg-white hover:border-slate-300'
                         }`}
                         onClick={() => handleReportSelection(report.id, !isSelected)}
                       >
@@ -348,19 +358,19 @@ export default function ExportPage() {
                           type="checkbox"
                           checked={isSelected}
                           onChange={() => {}}
-                          className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                          className="mt-1 h-4 w-4 rounded border-slate-300 text-cyan-700 focus:ring-cyan-600"
                         />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between">
-                            <h4 className="truncate text-sm font-medium text-gray-900">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-start justify-between gap-3">
+                            <h4 className="truncate text-sm font-semibold text-slate-950">
                               {report.tool_name}
                             </h4>
                             <Badge variant={qualityVariant} size="sm">
-                              {report.quality_score.toFixed(1)}
+                              Confidence {report.quality_score.toFixed(1)}
                             </Badge>
                           </div>
-                          <div className="flex items-center space-x-4 mt-1">
-                            <span className="text-xs text-gray-500">
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <span className="text-xs text-slate-500">
                               {formatDate(report.created_at)}
                             </span>
                             {report.threat_type && (
@@ -381,8 +391,9 @@ export default function ExportPage() {
 
         <div className="min-w-0 space-y-6">
           <Card>
-            <CardHeader>
-              <CardTitle>Handoff summary</CardTitle>
+            <CardHeader className="border-b border-slate-100 pb-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Package manifest</p>
+              <CardTitle className="mt-1 text-base text-slate-950">Handoff summary</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
