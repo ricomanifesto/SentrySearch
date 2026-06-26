@@ -40,6 +40,22 @@ const expectations = [
     pattern: /sourceReviewChecklist\.map\(\(item\)[\s\S]*item\.label[\s\S]*item\.status[\s\S]*item\.description/,
   },
   {
+    name: 'uses a canonical record summary signals collection',
+    pattern: /const recordSummarySignals = \[[\s\S]*label: 'Confidence'[\s\S]*label: 'Category'[\s\S]*label: 'Threat type'[\s\S]*label: 'Generated'/,
+  },
+  {
+    name: 'declares the report record summary signals contract',
+    pattern: /data-contract="Report\.RecordSummarySignals\.v1"/,
+  },
+  {
+    name: 'renders report summary signals from the canonical collection',
+    pattern: /recordSummarySignals\.map\(\(item\)[\s\S]*item\.label[\s\S]*item\.value[\s\S]*item\.detail/,
+  },
+  {
+    name: 'frames the summary strip as record summary signals',
+    pattern: /Record summary signals/,
+  },
+  {
     name: 'frames the side rail as review readiness',
     pattern: /Review readiness/,
   },
@@ -78,6 +94,10 @@ const expectations = [
   {
     name: 'does not render raw loading errors',
     absentPattern: /error\?\.message|error\.message/,
+  },
+  {
+    name: 'does not overstate saved source data availability',
+    absentPattern: /Source transparency is preserved through|saved report narrative, search tags, and structured technical extraction below/,
   },
   {
     name: 'uses product-specific destructive action copy',

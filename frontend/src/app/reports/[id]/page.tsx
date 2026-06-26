@@ -123,7 +123,7 @@ function ReportDetailContent() {
     qualityScore >= 4.0 ? 'High confidence' :
     qualityScore >= 3.0 ? 'Reviewable' :
     qualityScore >= 2.0 ? 'Needs review' : 'Low confidence';
-  const metadataCards = [
+  const recordSummarySignals = [
     {
       label: 'Confidence',
       value: `${qualityScore.toFixed(1)} / 5.0`,
@@ -144,6 +144,13 @@ function ReportDetailContent() {
       detail: 'Observed behavior family',
       icon: ShieldCheckIcon,
       badgeVariant: 'success' as const,
+    },
+    {
+      label: 'Generated',
+      value: formatRelativeTime(report.created_at),
+      detail: report.processing_time_ms ? `${formatProcessingTime(report.processing_time_ms)} generation` : 'Runtime not recorded',
+      icon: ClockIcon,
+      badgeVariant: 'default' as const,
     },
   ];
   const sourceReviewChecklist = [
@@ -235,26 +242,37 @@ function ReportDetailContent() {
           </div>
         </div>
 
-        <div className="mb-8 grid gap-4 md:grid-cols-3">
-          {metadataCards.map((item) => {
-            const Icon = item.icon;
+        <section className="mb-8">
+          <div className="mb-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#6f755f]">Record summary signals</p>
+            <p className="mt-1 text-sm leading-6 text-[#5d6458]">
+              Core fields for confidence, classification, threat family, and generation timing.
+            </p>
+          </div>
+          <dl
+            data-contract="Report.RecordSummarySignals.v1"
+            className="grid gap-px overflow-hidden border border-[#d8d9ce] bg-[#d8d9ce] md:grid-cols-2 xl:grid-cols-4"
+          >
+            {recordSummarySignals.map((item) => {
+              const Icon = item.icon;
 
-            return (
-              <div key={item.label} className="border border-[#d8d9ce] bg-white px-5 py-4">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <span className="text-xs font-semibold uppercase tracking-[0.14em] text-[#6f755f]">
-                    {item.label}
-                  </span>
-                  <Icon className="h-5 w-5 text-[#6f755f]" />
+              return (
+                <div key={item.label} className="bg-white px-5 py-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <dt className="text-xs font-semibold uppercase tracking-[0.14em] text-[#6f755f]">
+                      {item.label}
+                    </dt>
+                    <Icon className="h-5 w-5 text-[#6f755f]" />
+                  </div>
+                  <dd className="text-2xl font-semibold text-[#171915]">{item.value}</dd>
+                  <Badge variant={item.badgeVariant} size="sm" className="mt-3 rounded-md">
+                    {item.detail}
+                  </Badge>
                 </div>
-                <div className="text-2xl font-semibold text-[#171915]">{item.value}</div>
-                <Badge variant={item.badgeVariant} size="sm" className="mt-3 rounded-md">
-                  {item.detail}
-                </Badge>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </dl>
+        </section>
 
         {report.search_tags && report.search_tags.length > 0 && (
           <section className="mb-8 border border-[#d8d9ce] bg-white p-5">
@@ -339,7 +357,7 @@ function ReportDetailContent() {
                 <h2 className="text-base font-semibold text-[#20231f]">Source context</h2>
               </div>
               <p className="text-sm leading-6 text-[#5d6458]">
-                Source transparency is preserved through the saved report narrative, search tags, and structured technical extraction below.
+                Source context is limited to whichever narrative, tags, and structured extraction fields are saved on this record.
               </p>
             </div>
           </aside>
