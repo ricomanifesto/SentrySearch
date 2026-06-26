@@ -40,6 +40,21 @@ const expectations = [
     pattern: /data-surface="search-review-workspace"/,
   },
   {
+    name: 'frames search controls as a query bench',
+    source: searchPage,
+    pattern: /Query bench/,
+  },
+  {
+    name: 'frames matching results as a review docket',
+    source: searchPage,
+    pattern: /Review docket/,
+  },
+  {
+    name: 'shows active constraints as workbench constraints',
+    source: searchPage,
+    pattern: /workbench constraints/,
+  },
+  {
     name: 'declares each search result record contract',
     source: searchPage,
     pattern: /data-contract="Card\.SearchResultRecord\.v1"/,
@@ -50,9 +65,19 @@ const expectations = [
     pattern: /Analyst confidence/,
   },
   {
+    name: 'frames result metadata as decision signals',
+    source: searchPage,
+    pattern: /Decision signals/,
+  },
+  {
     name: 'keeps provenance review posture bounded to available detail context',
     source: searchPage,
     pattern: /Provenance review/,
+  },
+  {
+    name: 'uses inspection brief language for record actions',
+    source: searchPage,
+    pattern: /Inspection brief/,
   },
   {
     name: 'uses product-specific open-record action copy',

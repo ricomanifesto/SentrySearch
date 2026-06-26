@@ -173,6 +173,17 @@ function SearchWorkspace() {
 
           <Card className="mb-6 border-slate-200 shadow-sm">
             <CardContent className="p-4 sm:p-5">
+              <div className="mb-4 flex flex-col gap-1 border-b border-slate-100 pb-4 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Query bench</p>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">
+                    Tune target, threat, quality, and date constraints before opening a saved intelligence record.
+                  </p>
+                </div>
+                <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                  {hasActiveFilters ? `${activeFilterCount} workbench constraints` : 'No workbench constraints'}
+                </span>
+              </div>
               <label className="relative block">
                 <span className="sr-only">Search saved intelligence</span>
                 <MagnifyingGlassIcon className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -235,7 +246,7 @@ function SearchWorkspace() {
             <div className="mb-4 grid gap-3 rounded-md border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
               <span className="space-y-1">
                 <span className="block">
-                  <span className="font-semibold text-slate-950">Search review set:</span>{' '}
+                  <span className="font-semibold text-slate-950">Review docket:</span>{' '}
                   {totalReports === 0 ? 'no matching saved intelligence' : `showing ${pageStart}-${pageEnd} of ${totalReports} matches`}
                 </span>
                 <span className="block text-xs text-slate-500">
@@ -317,6 +328,9 @@ function SearchWorkspace() {
                             <h2 className="truncate text-xl font-semibold text-slate-950">
                               {report.tool_name}
                             </h2>
+                            <p className="mt-1 text-xs font-semibold uppercase tracking-wide text-cyan-700">
+                              Decision signals
+                            </p>
                             <div className="mt-3 grid gap-3 sm:grid-cols-2">
                               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
                                 <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -350,7 +364,7 @@ function SearchWorkspace() {
 
                           <div className="flex flex-col gap-3 lg:items-end">
                             <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600 lg:text-right">
-                              <div className="font-medium text-slate-900">Matched review record</div>
+                              <div className="font-medium text-slate-900">Inspection brief</div>
                               <div>Open the saved record to inspect available context</div>
                             </div>
                             <Link href={`/reports/${report.id}`} className="w-full lg:w-auto">
