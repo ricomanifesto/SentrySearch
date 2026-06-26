@@ -101,6 +101,26 @@ const expectations = [
     source: dashboard,
     pattern: /Analyst confidence/,
   },
+  {
+    name: 'frames recent reports as an intelligence review queue',
+    source: dashboard,
+    pattern: /Review queue/,
+  },
+  {
+    name: 'routes source context through saved report review',
+    source: dashboard,
+    pattern: /Reopen reports for source context and confidence review/,
+  },
+  {
+    name: 'frames threat distribution as a coverage map',
+    source: dashboard,
+    pattern: /Coverage map/,
+  },
+  {
+    name: 'uses analyst triage language for threat mix empty state',
+    source: dashboard,
+    pattern: /Coverage appears after reports classify threat patterns/,
+  },
 ];
 
 const failures = expectations.filter(({ source, pattern, absentPattern }) => {

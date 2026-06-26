@@ -9,6 +9,8 @@ import {
   PlusIcon,
   MagnifyingGlassIcon,
   ShieldCheckIcon,
+  ArrowTrendingUpIcon,
+  ClipboardDocumentCheckIcon,
 } from '@heroicons/react/24/outline';
 
 import { api } from '@/lib/api';
@@ -147,12 +149,19 @@ export default function Dashboard() {
             })}
           </div>
 
-          <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
-            <Card className="border-slate-200 shadow-sm">
-              <CardHeader>
-                <CardTitle>Recent intelligence</CardTitle>
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(17rem,0.85fr)_minmax(17rem,0.85fr)]">
+            <Card className="border-zinc-200 shadow-sm">
+              <CardHeader className="border-b border-zinc-100 pb-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Review queue</p>
+                    <CardTitle className="mt-1 text-base text-zinc-950">Recent intelligence</CardTitle>
+                  </div>
+                  <ClipboardDocumentCheckIcon className="h-5 w-5 text-zinc-500" />
+                </div>
+                <p className="mt-2 text-xs leading-5 text-zinc-500">Reopen reports for source context and confidence review.</p>
               </CardHeader>
-              <CardContent>
+              <CardContent className="pt-1">
                 {reportsLoading ? (
                   <div className="space-y-4">
                     {[...Array(3)].map((_, i) => (
@@ -163,19 +172,19 @@ export default function Dashboard() {
                     ))}
                   </div>
                 ) : recentReports?.reports.length ? (
-                  <div className="space-y-4">
+                  <div className="divide-y divide-zinc-100">
                     {recentReports.reports.map((report) => {
                       const qualityScore = formatQualityScore(report.quality_score);
                       return (
-                        <div key={report.id} className="flex items-center justify-between gap-3">
+                        <div key={report.id} className="flex items-center justify-between gap-3 py-3 first:pt-0">
                           <div className="min-w-0 flex-1">
                             <Link
                               href={`/reports/${report.id}`}
-                              className="block truncate text-sm font-medium text-slate-950 hover:text-blue-600"
+                              className="block truncate text-sm font-semibold text-zinc-950 hover:text-cyan-700"
                             >
                               {report.tool_name}
                             </Link>
-                            <p className="text-xs text-slate-500">
+                            <p className="text-xs text-zinc-500">
                               {formatRelativeTime(report.created_at)}
                             </p>
                           </div>
@@ -194,9 +203,9 @@ export default function Dashboard() {
                         </div>
                       );
                     })}
-                    <div className="border-t border-slate-100 pt-4">
+                    <div className="pt-4">
                       <Link href="/reports">
-                        <Button variant="ghost" size="sm" className="w-full">
+                        <Button variant="ghost" size="sm" className="w-full rounded-md text-zinc-800 hover:bg-zinc-100">
                           Review saved reports
                         </Button>
                       </Link>
@@ -204,21 +213,28 @@ export default function Dashboard() {
                   </div>
                 ) : (
                   <div className="py-8 text-center">
-                    <DocumentTextIcon className="mx-auto mb-4 h-12 w-12 text-slate-400" />
-                    <p className="mb-4 text-slate-500">No saved intelligence yet</p>
+                    <DocumentTextIcon className="mx-auto mb-4 h-12 w-12 text-zinc-400" />
+                    <p className="mb-4 text-zinc-500">No saved intelligence is queued for review yet</p>
                     <Link href="/generate">
-                      <Button size="sm">Generate intelligence</Button>
+                      <Button size="sm" className="rounded-md">Generate intelligence</Button>
                     </Link>
                   </div>
                 )}
               </CardContent>
             </Card>
 
-            <Card className="border-slate-200 shadow-sm">
-              <CardHeader>
-                <CardTitle>Threat mix</CardTitle>
+            <Card className="border-zinc-200 shadow-sm">
+              <CardHeader className="border-b border-zinc-100 pb-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Coverage map</p>
+                    <CardTitle className="mt-1 text-base text-zinc-950">Threat patterns</CardTitle>
+                  </div>
+                  <ArrowTrendingUpIcon className="h-5 w-5 text-zinc-500" />
+                </div>
+                <p className="mt-2 text-xs leading-5 text-zinc-500">Analyst triage view of the patterns represented in saved reports.</p>
               </CardHeader>
-              <CardContent>
+              <CardContent className="pt-1">
                 {analyticsLoading ? (
                   <div className="space-y-3">
                     {[...Array(4)].map((_, i) => (
@@ -233,20 +249,20 @@ export default function Dashboard() {
                       .sort(([,a], [,b]) => b - a)
                       .slice(0, 5)
                       .map(([threatType, count]) => (
-                        <div key={threatType} className="flex items-center justify-between">
-                          <span className="text-sm capitalize text-slate-600">
+                        <div key={threatType} className="flex items-center justify-between gap-3">
+                          <span className="min-w-0 flex-1 truncate text-sm capitalize text-zinc-700">
                             {threatType.replace(/_/g, ' ')}
                           </span>
                           <div className="flex items-center gap-2">
-                            <div className="h-2 w-16 rounded-full bg-slate-200">
+                            <div className="h-2 w-16 rounded-full bg-zinc-200">
                               <div
-                                className="h-2 rounded-full bg-slate-700"
+                                className="h-2 rounded-full bg-emerald-700"
                                 style={{
                                   width: `${Math.min(100, (count / Math.max(...Object.values(analytics.threat_distribution))) * 100)}%`
                                 }}
                               ></div>
                             </div>
-                            <span className="w-8 text-right text-sm font-medium text-slate-950">
+                            <span className="w-8 text-right text-sm font-semibold text-zinc-950">
                               {count}
                             </span>
                           </div>
@@ -255,8 +271,8 @@ export default function Dashboard() {
                   </div>
                 ) : (
                   <div className="py-8 text-center">
-                    <ChartBarIcon className="mx-auto mb-4 h-12 w-12 text-slate-400" />
-                    <p className="text-slate-500">No threat mix available yet</p>
+                    <ChartBarIcon className="mx-auto mb-4 h-12 w-12 text-zinc-400" />
+                    <p className="text-zinc-500">Coverage appears after reports classify threat patterns</p>
                   </div>
                 )}
               </CardContent>
