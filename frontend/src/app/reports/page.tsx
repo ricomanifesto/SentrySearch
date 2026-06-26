@@ -30,6 +30,14 @@ interface FilterState {
   sort_order: string;
 }
 
+type ReviewQueueControlKey = 'threat_type' | 'min_quality' | 'sort_by' | 'sort_order';
+
+type ReviewQueueControl = {
+  key: ReviewQueueControlKey;
+  label: string;
+  options: Array<{ value: string; label: string }>;
+};
+
 const sortOptions = [
   { value: 'created_at', label: 'Date created' },
   { value: 'quality_score', label: 'Quality score' },
@@ -99,6 +107,13 @@ export default function ReportsPage() {
     })) || [])
   ], [filterOptions]);
 
+  const reviewQueueControls: ReviewQueueControl[] = useMemo(() => [
+    { key: 'threat_type', label: 'Threat type', options: threatTypeOptions },
+    { key: 'min_quality', label: 'Minimum quality', options: qualityOptions },
+    { key: 'sort_by', label: 'Sort by', options: sortOptions },
+    { key: 'sort_order', label: 'Order', options: sortOrderOptions },
+  ], [threatTypeOptions]);
+
   const handleFilterChange = (key: keyof FilterState, value: string) => {
     setFilters(prev => ({ ...prev, [key]: value }));
     setCurrentPage(1);
@@ -143,8 +158,20 @@ export default function ReportsPage() {
             )}
           />
 
-          <Card className="mb-6 border-slate-200 shadow-sm">
+          <Card data-contract="Reports.ReviewQueueControls.v1" className="mb-6 border-slate-200 shadow-sm">
             <CardContent className="py-4">
+              <div className="mb-4 flex flex-col gap-1 border-b border-slate-100 pb-4 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Review controls</p>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">
+                    Narrow the saved intelligence queue before reopening a source-backed record.
+                  </p>
+                </div>
+                <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                  {hasActiveFilters ? `${activeFilterCount} queue constraints` : 'No queue constraints'}
+                </span>
+              </div>
+
               <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
                 <label className="relative block">
                   <span className="sr-only">Search reports</span>
@@ -165,7 +192,7 @@ export default function ReportsPage() {
                   aria-expanded={showFilters}
                 >
                   <FunnelIcon className="h-4 w-4" />
-                  Filters
+                  Tune queue
                   {hasActiveFilters && (
                     <Badge variant="info" size="sm" className="rounded-md">
                       {activeFilterCount}
@@ -177,35 +204,20 @@ export default function ReportsPage() {
               {showFilters && (
                 <div className="mt-4 border-t border-slate-100 pt-4">
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-                    <Select
-                      label="Threat type"
-                      options={threatTypeOptions}
-                      value={filters.threat_type}
-                      onChange={(e) => handleFilterChange('threat_type', e.target.value)}
-                    />
-                    <Select
-                      label="Minimum quality"
-                      options={qualityOptions}
-                      value={filters.min_quality}
-                      onChange={(e) => handleFilterChange('min_quality', e.target.value)}
-                    />
-                    <Select
-                      label="Sort by"
-                      options={sortOptions}
-                      value={filters.sort_by}
-                      onChange={(e) => handleFilterChange('sort_by', e.target.value)}
-                    />
-                    <Select
-                      label="Order"
-                      options={sortOrderOptions}
-                      value={filters.sort_order}
-                      onChange={(e) => handleFilterChange('sort_order', e.target.value)}
-                    />
+                    {reviewQueueControls.map((control) => (
+                      <Select
+                        key={control.key}
+                        label={control.label}
+                        options={control.options}
+                        value={filters[control.key]}
+                        onChange={(e) => handleFilterChange(control.key, e.target.value)}
+                      />
+                    ))}
                   </div>
                   {hasActiveFilters && (
                     <div className="mt-4">
                       <Button variant="ghost" size="sm" onClick={clearFilters}>
-                        Clear filters
+                        Clear queue constraints
                       </Button>
                     </div>
                   )}
@@ -271,7 +283,7 @@ export default function ReportsPage() {
                 <div className="flex flex-col justify-center gap-3 sm:flex-row">
                   {hasActiveFilters && (
                     <Button variant="outline" onClick={clearFilters}>
-                      Clear filters
+                      Clear queue constraints
                     </Button>
                   )}
                   <Link href="/generate">
