@@ -71,6 +71,36 @@ const expectations = [
     source: dashboard,
     pattern: /overflow-x-hidden/,
   },
+  {
+    name: 'declares the dashboard workspace surface contract',
+    source: dashboard,
+    pattern: /data-surface="dashboard-workspace"/,
+  },
+  {
+    name: 'declares the primary investigation action contract',
+    source: dashboard,
+    pattern: /data-contract="Action\.PrimaryInvestigation\.v1"/,
+  },
+  {
+    name: 'adds an operations rail for the next analyst action',
+    source: dashboard,
+    pattern: /Operations rail/,
+  },
+  {
+    name: 'shows source posture near the primary workspace controls',
+    source: dashboard,
+    pattern: /Source posture/,
+  },
+  {
+    name: 'labels saved reports as the intelligence library',
+    source: dashboard,
+    pattern: /Intelligence library/,
+  },
+  {
+    name: 'labels quality as analyst confidence',
+    source: dashboard,
+    pattern: /Analyst confidence/,
+  },
 ];
 
 const failures = expectations.filter(({ source, pattern, absentPattern }) => {
