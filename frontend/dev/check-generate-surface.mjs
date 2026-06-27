@@ -89,7 +89,43 @@ const expectations = [
   },
   {
     name: 'keeps report quality guidance visible',
-    pattern: /Report quality checks/,
+    pattern: /Review quality gates/,
+  },
+  {
+    name: 'declares the target seed library contract',
+    pattern: /data-contract="Generate\.TargetSeedLibrary\.v1"/,
+  },
+  {
+    name: 'uses a typed target seed group contract',
+    pattern: /type TargetSeedGroup[\s\S]*const targetGroups: TargetSeedGroup\[\] = \[[\s\S]*label: 'Observed threats'[\s\S]*description: 'Seed requests with malware families and attack tools already seen in analyst queues\.'[\s\S]*label: 'Exposed technologies'/,
+  },
+  {
+    name: 'renders target seed groups from the canonical contract',
+    pattern: /targetGroups\.map\(\(group\)[\s\S]*key=\{group\.label\}[\s\S]*\{group\.description\}[\s\S]*group\.examples\.map/,
+  },
+  {
+    name: 'frames target examples as a target seed library',
+    pattern: /Target seed library/,
+  },
+  {
+    name: 'declares the quality gate checklist contract',
+    pattern: /data-contract="Generate\.QualityGateChecklist\.v1"/,
+  },
+  {
+    name: 'uses a typed quality gate contract',
+    pattern: /type QualityGateRow[\s\S]*const qualityGates: QualityGateRow\[\] = \[[\s\S]*label: 'Source-backed findings'[\s\S]*status: 'Required'[\s\S]*label: 'Detection and mitigation guidance'[\s\S]*label: 'Risk and confidence framing'/,
+  },
+  {
+    name: 'renders quality gates from the canonical contract',
+    pattern: /qualityGates\.map\(\(gate\)[\s\S]*key=\{gate\.label\}[\s\S]*\{gate\.status\}[\s\S]*\{gate\.description\}/,
+  },
+  {
+    name: 'frames quality expectations as review gates',
+    pattern: /Review quality gates/,
+  },
+  {
+    name: 'does not keep generic sidebar helper headings',
+    absentPattern: /Seed a target|Report quality checks/,
   },
   {
     name: 'uses a canonical submission handoff contract',
