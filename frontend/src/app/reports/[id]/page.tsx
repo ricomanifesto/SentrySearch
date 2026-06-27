@@ -30,6 +30,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Badge, type BadgeProps } from '@/components/ui/Badge';
 import { AuthGuard } from '@/components/AuthGuard';
+import { SurfaceHeader } from '@/components/ui/SurfaceHeader';
 
 export default function ReportDetailPage() {
   return (
@@ -76,21 +77,21 @@ function ReportDetailContent() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen overflow-x-hidden bg-[#f7f7f3] py-6 sm:py-10">
+      <div className="min-h-screen overflow-x-hidden bg-slate-50 py-6 sm:py-10">
         <div
           className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8"
           role="status"
           aria-label="Loading report record"
         >
           <div className="animate-pulse space-y-5">
-            <div className="h-4 w-40 bg-[#d9dbcf]" />
-            <div className="h-10 w-2/3 bg-[#d9dbcf]" />
+            <div className="h-4 w-40 rounded bg-slate-200" />
+            <div className="h-10 w-2/3 rounded bg-slate-200" />
             <div className="grid gap-4 md:grid-cols-3">
-              <div className="h-28 bg-white" />
-              <div className="h-28 bg-white" />
-              <div className="h-28 bg-white" />
+              <div className="h-28 rounded bg-white" />
+              <div className="h-28 rounded bg-white" />
+              <div className="h-28 rounded bg-white" />
             </div>
-            <div className="h-80 bg-white" />
+            <div className="h-80 rounded bg-white" />
           </div>
         </div>
       </div>
@@ -99,11 +100,11 @@ function ReportDetailContent() {
 
   if (error || !report) {
     return (
-      <div className="min-h-screen overflow-x-hidden bg-[#f7f7f3] px-4 py-10 sm:px-6 lg:px-8">
-        <div className="mx-auto max-w-3xl border border-[#efc7c3] bg-[#fff7f6] px-6 py-10 text-center sm:px-10" role="alert">
-          <DocumentTextIcon className="mx-auto mb-4 h-12 w-12 text-[#a43c34]" />
-          <h1 className="text-2xl font-semibold text-[#4c201d]">Report record unavailable</h1>
-          <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-[#7b332d]">
+      <div className="min-h-screen overflow-x-hidden bg-slate-50 px-4 py-10 sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-3xl rounded-md border border-red-200 bg-red-50 px-6 py-10 text-center sm:px-10" role="alert">
+          <DocumentTextIcon className="mx-auto mb-4 h-12 w-12 text-red-500" />
+          <h1 className="text-2xl font-semibold text-red-950">Report record unavailable</h1>
+          <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-red-700">
             This saved intelligence record could not be opened. Return to the review queue and try another report.
           </p>
           <Button variant="outline" onClick={() => router.push('/reports')} className="mt-6">
@@ -184,28 +185,25 @@ function ReportDetailContent() {
   ];
 
   return (
-    <div className="min-h-screen overflow-x-hidden bg-[#f7f7f3] py-6 text-[#171915] sm:py-10">
+    <div data-surface="report-detail-record" className="min-h-screen overflow-x-hidden bg-slate-50 py-6 text-slate-950 sm:py-10">
       <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
         <div className="mb-6">
           <Button
             variant="ghost"
             size="sm"
             onClick={() => router.back()}
-            className="mb-5 gap-2 text-[#4f564d]"
+            className="mb-5 gap-2 text-slate-600"
           >
             <ArrowLeftIcon className="h-4 w-4" />
             Back to review queue
           </Button>
 
-          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
-            <div className="min-w-0">
-              <Badge variant={qualityVariant} size="sm" className="mb-3 rounded-md">
-                {qualityLabel} intelligence record
-              </Badge>
-              <h1 className="text-3xl font-semibold leading-tight text-[#171915] sm:text-5xl">
-                {report.tool_name}
-              </h1>
-              <div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-sm text-[#5d6458]">
+          <SurfaceHeader
+            eyebrow="Intelligence record"
+            title={report.tool_name}
+            description="Inspect the saved narrative, confidence signals, source context, and extraction fields before reuse."
+            meta={(
+              <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm text-slate-600">
                 <span className="inline-flex items-center gap-1">
                   <ClockIcon className="h-4 w-4" />
                   {formatRelativeTime(report.created_at)}
@@ -215,31 +213,35 @@ function ReportDetailContent() {
                   <span>{formatProcessingTime(report.processing_time_ms)} generation</span>
                 ) : null}
               </div>
-            </div>
-
-            <div className="flex flex-col gap-3 sm:flex-row lg:justify-end">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleDownload}
-                disabled={!report.markdown_content}
-                className="min-h-10 gap-2"
-              >
-                <ArrowDownTrayIcon className="h-4 w-4" />
-                Download markdown
-              </Button>
-              <Button
-                variant="danger"
-                size="sm"
-                onClick={handleDelete}
-                loading={deleteMutation.isPending}
-                className="min-h-10 gap-2"
-              >
-                <TrashIcon className="h-4 w-4" />
-                Delete record
-              </Button>
-            </div>
-          </div>
+            )}
+            action={(
+              <div className="flex flex-col gap-3 sm:flex-row lg:justify-end">
+                <Badge variant={qualityVariant} size="sm" className="min-h-10 justify-center rounded-md px-3">
+                  {qualityLabel} intelligence record
+                </Badge>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleDownload}
+                  disabled={!report.markdown_content}
+                  className="min-h-10 gap-2"
+                >
+                  <ArrowDownTrayIcon className="h-4 w-4" />
+                  Download markdown
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  onClick={handleDelete}
+                  loading={deleteMutation.isPending}
+                  className="min-h-10 gap-2"
+                >
+                  <TrashIcon className="h-4 w-4" />
+                  Delete record
+                </Button>
+              </div>
+            )}
+          />
         </div>
 
         <section className="mb-8">
@@ -264,7 +266,7 @@ function ReportDetailContent() {
                     </dt>
                     <Icon className="h-5 w-5 text-[#6f755f]" />
                   </div>
-                  <dd className="text-2xl font-semibold text-[#171915]">{item.value}</dd>
+                  <dd className="text-2xl font-semibold text-slate-950">{item.value}</dd>
                   <Badge variant={item.badgeVariant} size="sm" className="mt-3 rounded-md">
                     {item.detail}
                   </Badge>
@@ -315,7 +317,7 @@ function ReportDetailContent() {
           </Card>
 
           <aside className="space-y-4">
-            <section className="border border-[#d8d9ce] bg-white p-5">
+            <section data-contract="Report.SourceReviewChecklist.v1" className="border border-[#d8d9ce] bg-white p-5">
               <div className="mb-4 flex items-start gap-3">
                 <ShieldCheckIcon className="mt-0.5 h-5 w-5 text-[#6f755f]" />
                 <div>
