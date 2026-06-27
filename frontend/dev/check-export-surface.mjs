@@ -88,6 +88,30 @@ const expectations = [
     pattern: /Visible reports ready for handoff review/,
   },
   {
+    name: 'extracts export evidence records into a named component',
+    pattern: /function ExportEvidenceQueueRecord\(/,
+  },
+  {
+    name: 'uses a canonical export evidence record builder',
+    pattern: /function buildExportEvidenceRecord\(/,
+  },
+  {
+    name: 'declares each export evidence queue record contract',
+    pattern: /data-contract="Export\.EvidenceQueueRecord\.v1"/,
+  },
+  {
+    name: 'renders export evidence rows from canonical display metadata',
+    pattern: /reportsData\?\.reports\.map\(\(report\) => \([\s\S]*<ExportEvidenceQueueRecord[\s\S]*record=\{buildExportEvidenceRecord\(report\)\}/,
+  },
+  {
+    name: 'uses checkbox changes for report selection',
+    pattern: /onChange=\{\(event\) => onSelectionChange\(record\.id, event\.target\.checked\)\}/,
+  },
+  {
+    name: 'does not keep the old inline evidence queue row body',
+    absentPattern: /reportsData\?\.reports\.map\(\(report\) => \{[\s\S]*const isSelected = selectedReports\.includes\(report\.id\);[\s\S]*onChange=\{\(\) => \{\}\}/,
+  },
+  {
     name: 'frames the sidebar summary as a package manifest',
     pattern: /Package manifest/,
   },
