@@ -14,7 +14,7 @@ import {
   ClipboardDocumentCheckIcon,
 } from '@heroicons/react/24/outline';
 
-import { api } from '@/lib/api';
+import { api, type Report } from '@/lib/api';
 import { formatDate, downloadAsFile } from '@/lib/utils';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -34,6 +34,15 @@ interface ExportConfig extends Record<string, unknown> {
   min_quality_score?: number;
   max_reports?: number;
 }
+
+type ExportEvidenceRecord = {
+  id: string;
+  title: string;
+  confidence: string;
+  date: string;
+  threatType?: string;
+  qualityVariant: 'default' | 'success' | 'warning' | 'error' | 'info';
+};
 
 const formatOptions = [
   { value: 'json', label: 'JSON', icon: CodeBracketIcon, description: 'Structured package for downstream tooling' },
@@ -76,6 +85,23 @@ const packageContentOptions = [
     description: 'Search tags and categorization markers.',
   },
 ];
+
+const getQualityVariant = (score: number): ExportEvidenceRecord['qualityVariant'] =>
+  score >= 4.0 ? 'success' : score >= 3.0 ? 'info' : score >= 2.0 ? 'warning' : 'error';
+
+const formatTaxonomyLabel = (value: string) =>
+  value.replace(/_/g, ' ').replace(/\b\w/g, letter => letter.toUpperCase());
+
+function buildExportEvidenceRecord(report: Report): ExportEvidenceRecord {
+  return {
+    id: report.id,
+    title: report.tool_name,
+    confidence: `Confidence ${report.quality_score.toFixed(1)}`,
+    date: formatDate(report.created_at),
+    threatType: report.threat_type ? formatTaxonomyLabel(report.threat_type) : undefined,
+    qualityVariant: getQualityVariant(report.quality_score),
+  };
+}
 
 export default function ExportPage() {
   const [config, setConfig] = useState<ExportConfig>({
@@ -337,50 +363,14 @@ export default function ExportPage() {
                 </div>
               ) : (
                 <div className="space-y-3 max-h-96 overflow-y-auto">
-                  {reportsData?.reports.map((report) => {
-                    const isSelected = selectedReports.includes(report.id);
-                    const qualityVariant = 
-                      report.quality_score >= 4.0 ? 'success' :
-                      report.quality_score >= 3.0 ? 'info' :
-                      report.quality_score >= 2.0 ? 'warning' : 'error';
-
-                    return (
-                      <div
-                        key={report.id}
-                        className={`flex min-w-0 cursor-pointer items-start gap-3 rounded-md border p-3 transition-colors ${
-                          isSelected ? 'border-cyan-600 bg-cyan-50' : 'border-slate-200 bg-white hover:border-slate-300'
-                        }`}
-                        onClick={() => handleReportSelection(report.id, !isSelected)}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => {}}
-                          className="mt-1 h-4 w-4 rounded border-slate-300 text-cyan-700 focus:ring-cyan-600"
-                        />
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-start justify-between gap-3">
-                            <h4 className="truncate text-sm font-semibold text-slate-950">
-                              {report.tool_name}
-                            </h4>
-                            <Badge variant={qualityVariant} size="sm">
-                              Confidence {report.quality_score.toFixed(1)}
-                            </Badge>
-                          </div>
-                          <div className="mt-2 flex flex-wrap items-center gap-2">
-                            <span className="text-xs text-slate-500">
-                              {formatDate(report.created_at)}
-                            </span>
-                            {report.threat_type && (
-                              <Badge variant="default" size="sm">
-                                {report.threat_type}
-                              </Badge>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
+                  {reportsData?.reports.map((report) => (
+                    <ExportEvidenceQueueRecord
+                      key={report.id}
+                      record={buildExportEvidenceRecord(report)}
+                      isSelected={selectedReports.includes(report.id)}
+                      onSelectionChange={handleReportSelection}
+                    />
+                  ))}
                 </div>
               )}
             </CardContent>
@@ -482,5 +472,51 @@ export default function ExportPage() {
       </div>
     </div>
     </AuthGuard>
+  );
+}
+
+function ExportEvidenceQueueRecord({
+  record,
+  isSelected,
+  onSelectionChange,
+}: {
+  record: ExportEvidenceRecord;
+  isSelected: boolean;
+  onSelectionChange: (reportId: string, selected: boolean) => void;
+}) {
+  return (
+    <label
+      data-contract="Export.EvidenceQueueRecord.v1"
+      className={`flex min-w-0 cursor-pointer items-start gap-3 rounded-md border p-3 transition-colors ${
+        isSelected ? 'border-cyan-600 bg-cyan-50' : 'border-slate-200 bg-white hover:border-slate-300'
+      }`}
+    >
+      <input
+        type="checkbox"
+        checked={isSelected}
+        onChange={(event) => onSelectionChange(record.id, event.target.checked)}
+        className="mt-1 h-4 w-4 shrink-0 rounded border-slate-300 text-cyan-700 focus:ring-cyan-600"
+      />
+      <span className="min-w-0 flex-1">
+        <span className="flex items-start justify-between gap-3">
+          <span className="truncate text-sm font-semibold text-slate-950">
+            {record.title}
+          </span>
+          <Badge variant={record.qualityVariant} size="sm" className="shrink-0 rounded-md">
+            {record.confidence}
+          </Badge>
+        </span>
+        <span className="mt-2 flex flex-wrap items-center gap-2">
+          <span className="text-xs text-slate-500">
+            {record.date}
+          </span>
+          {record.threatType ? (
+            <Badge variant="default" size="sm" className="rounded-md">
+              {record.threatType}
+            </Badge>
+          ) : null}
+        </span>
+      </span>
+    </label>
   );
 }
