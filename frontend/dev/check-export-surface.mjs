@@ -56,6 +56,30 @@ const expectations = [
     pattern: /packageContentOptions\.map\(\(option\)[\s\S]*\{Boolean\(config\[option\.key\]\) \? \([\s\S]*<span className="text-sm text-slate-600">\{option\.label\}<\/span>/,
   },
   {
+    name: 'declares the package scope controls contract',
+    pattern: /data-contract="Export\.PackageScopeControls\.v1"/,
+  },
+  {
+    name: 'uses a canonical package scope controls contract',
+    pattern: /type PackageScopeControl[\s\S]*const packageScopeControls: PackageScopeControl\[\] = \[[\s\S]*label: 'Review window'[\s\S]*label: 'Threat family'[\s\S]*label: 'Minimum confidence'/,
+  },
+  {
+    name: 'renders package scope controls from the canonical contract',
+    pattern: /packageScopeControls\.map\(\(control\)[\s\S]*key=\{control\.key\}[\s\S]*label=\{control\.label\}[\s\S]*options=\{control\.options\}[\s\S]*value=\{control\.value\}/,
+  },
+  {
+    name: 'frames package scope as handoff constraints',
+    pattern: /Handoff constraints[\s\S]*Constrain the package to the evidence window, threat family, and confidence floor needed for review\./,
+  },
+  {
+    name: 'uses product-specific maximum record copy',
+    pattern: /Maximum records/,
+  },
+  {
+    name: 'does not keep generic package scope filter labels',
+    absentPattern: /label="Date Range"|label="Threat Type"|label="Minimum Quality"|label="Max Reports"/,
+  },
+  {
     name: 'keeps accessible error alert semantics',
     pattern: /role="alert"/,
   },

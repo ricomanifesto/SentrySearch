@@ -44,6 +44,14 @@ type ExportEvidenceRecord = {
   qualityVariant: 'default' | 'success' | 'warning' | 'error' | 'info';
 };
 
+type PackageScopeControl = {
+  key: 'date_range_days' | 'threat_types' | 'min_quality_score';
+  label: string;
+  options: Array<{ value: string; label: string }>;
+  value: string;
+  onChange: (value: string) => void;
+};
+
 const formatOptions = [
   { value: 'json', label: 'JSON', icon: CodeBracketIcon, description: 'Structured package for downstream tooling' },
   { value: 'csv', label: 'CSV', icon: TableCellsIcon, description: 'Tabular packet for analyst review' },
@@ -192,6 +200,29 @@ export default function ExportPage() {
   const packageScope = selectedReports.length > 0
     ? `${selectedReports.length} selected report${selectedReports.length === 1 ? '' : 's'}`
     : 'All matching reports';
+  const packageScopeControls: PackageScopeControl[] = [
+    {
+      key: 'date_range_days',
+      label: 'Review window',
+      options: dateRangeOptions,
+      value: config.date_range_days?.toString() || '',
+      onChange: (value) => handleConfigChange('date_range_days', value ? parseInt(value) : undefined),
+    },
+    {
+      key: 'threat_types',
+      label: 'Threat family',
+      options: threatTypeOptions,
+      value: config.threat_types?.[0] || '',
+      onChange: (value) => handleConfigChange('threat_types', value ? [value] : undefined),
+    },
+    {
+      key: 'min_quality_score',
+      label: 'Minimum confidence',
+      options: qualityOptions,
+      value: config.min_quality_score?.toString() || '',
+      onChange: (value) => handleConfigChange('min_quality_score', value ? parseFloat(value) : undefined),
+    },
+  ];
 
   return (
     <AuthGuard>
@@ -288,40 +319,30 @@ export default function ExportPage() {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center space-x-2">
-                <FunnelIcon className="h-5 w-5" />
-                <span>Package scope</span>
+          <Card data-contract="Export.PackageScopeControls.v1">
+            <CardHeader className="border-b border-slate-100 pb-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Package scope</p>
+              <CardTitle className="mt-1 flex items-center space-x-2">
+                <FunnelIcon className="h-5 w-5 text-slate-500" />
+                <span>Handoff constraints</span>
               </CardTitle>
+              <p className="mt-2 text-sm leading-6 text-slate-500">
+                Constrain the package to the evidence window, threat family, and confidence floor needed for review.
+              </p>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <Select
-                  label="Date Range"
-                  options={dateRangeOptions}
-                  value={config.date_range_days?.toString() || ''}
-                  onChange={(e) => handleConfigChange('date_range_days', e.target.value ? parseInt(e.target.value) : undefined)}
-                />
-                
-                <Select
-                  label="Threat Type"
-                  options={threatTypeOptions}
-                  value=""
-                  onChange={(e) => {
-                    handleConfigChange('threat_types', e.target.value ? [e.target.value] : undefined);
-                  }}
-                />
-                
-                <Select
-                  label="Minimum Quality"
-                  options={qualityOptions}
-                  value={config.min_quality_score?.toString() || ''}
-                  onChange={(e) => handleConfigChange('min_quality_score', e.target.value ? parseFloat(e.target.value) : undefined)}
-                />
-                
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                {packageScopeControls.map((control) => (
+                  <Select
+                    key={control.key}
+                    label={control.label}
+                    options={control.options}
+                    value={control.value}
+                    onChange={(event) => control.onChange(event.target.value)}
+                  />
+                ))}
                 <Input
-                  label="Max Reports"
+                  label="Maximum records"
                   type="number"
                   value={config.max_reports?.toString() || ''}
                   onChange={(e) => handleConfigChange('max_reports', e.target.value ? parseInt(e.target.value) : undefined)}
