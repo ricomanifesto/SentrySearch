@@ -7,8 +7,6 @@ import {
   DocumentTextIcon,
   TableCellsIcon,
   CodeBracketIcon,
-  CheckCircleIcon,
-  ExclamationTriangleIcon,
   CalendarDaysIcon,
   FunnelIcon,
   ClipboardDocumentCheckIcon,
@@ -50,6 +48,19 @@ type PackageScopeControl = {
   options: Array<{ value: string; label: string }>;
   value: string;
   onChange: (value: string) => void;
+};
+
+type PackageManifestRow = {
+  label: string;
+  value: string;
+  description: string;
+};
+
+type PackageReadinessRow = {
+  label: string;
+  status: string;
+  description: string;
+  variant: 'default' | 'success' | 'warning' | 'error' | 'info';
 };
 
 const formatOptions = [
@@ -200,6 +211,9 @@ export default function ExportPage() {
   const packageScope = selectedReports.length > 0
     ? `${selectedReports.length} selected report${selectedReports.length === 1 ? '' : 's'}`
     : 'All matching reports';
+  const includedEvidenceLabels = packageContentOptions
+    .filter((option) => Boolean(config[option.key]))
+    .map((option) => option.label);
   const packageScopeControls: PackageScopeControl[] = [
     {
       key: 'date_range_days',
@@ -221,6 +235,49 @@ export default function ExportPage() {
       options: qualityOptions,
       value: config.min_quality_score?.toString() || '',
       onChange: (value) => handleConfigChange('min_quality_score', value ? parseFloat(value) : undefined),
+    },
+  ];
+  const packageManifestRows: PackageManifestRow[] = [
+    {
+      label: 'File type',
+      value: config.format.toUpperCase(),
+      description: getFormatPreview(),
+    },
+    {
+      label: 'Included evidence',
+      value: `${includedEvidenceLabels.length} evidence layer${includedEvidenceLabels.length === 1 ? '' : 's'}`,
+      description: includedEvidenceLabels.length > 0
+        ? includedEvidenceLabels.join(', ')
+        : 'No evidence layers selected for this handoff.',
+    },
+    {
+      label: 'Scope boundary',
+      value: packageScope,
+      description: config.max_reports
+        ? `Capped at ${config.max_reports} records before packaging.`
+        : 'No record cap applied before packaging.',
+    },
+  ];
+  const packageReadinessRows: PackageReadinessRow[] = [
+    {
+      label: 'File package',
+      status: selectedFormat?.label ?? config.format.toUpperCase(),
+      description: `${getFormatPreview()} ready for download when generated.`,
+      variant: 'info',
+    },
+    {
+      label: 'Evidence queue',
+      status: selectedReports.length > 0 ? `${selectedReports.length} selected` : 'All matching',
+      description: selectedReports.length > 0
+        ? 'Only selected report records will be packaged.'
+        : 'The current scope will package every matching report record.',
+      variant: selectedReports.length > 0 ? 'success' : 'default',
+    },
+    {
+      label: 'Scope constraints',
+      status: config.max_reports ? `${config.max_reports} record cap` : 'No record cap',
+      description: 'Review window, threat family, and confidence constraints apply before packaging.',
+      variant: config.max_reports ? 'warning' : 'default',
     },
   ];
 
@@ -399,57 +456,33 @@ export default function ExportPage() {
         </div>
 
         <div className="min-w-0 space-y-6">
-          <Card>
+          <Card data-contract="Export.PackageManifest.v1">
             <CardHeader className="border-b border-slate-100 pb-4">
               <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Package manifest</p>
               <CardTitle className="mt-1 text-base text-slate-950">Handoff summary</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="space-y-4">
-                <div>
-                  <h4 className="mb-2 text-sm font-medium text-slate-950">Selected format</h4>
-                  <div className="flex min-w-0 items-start gap-2">
-                    <Badge variant="info">
-                      {config.format.toUpperCase()}
-                    </Badge>
-                    <span className="min-w-0 text-sm leading-6 text-slate-600">
-                      {getFormatPreview()}
-                    </span>
-                  </div>
-                </div>
-
-                <div>
-                  <h4 className="mb-2 text-sm font-medium text-slate-950">Included evidence</h4>
-                  <div className="space-y-1">
-                    {packageContentOptions.map((option) => (
-                      <div key={option.key} className="flex items-center space-x-2">
-                        {Boolean(config[option.key]) ? (
-                          <CheckCircleIcon className="h-4 w-4 text-green-600" />
-                        ) : (
-                          <ExclamationTriangleIcon className="h-4 w-4 text-gray-400" />
-                        )}
-                        <span className="text-sm text-slate-600">{option.label}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <h4 className="mb-2 text-sm font-medium text-slate-950">Scope</h4>
-                  <p className="text-sm text-slate-600">
-                    {packageScope}
-                  </p>
-                  {config.max_reports && (
-                    <p className="text-xs text-gray-500">
-                      Limited to {config.max_reports} reports
+              <div className="space-y-3">
+                {packageManifestRows.map((row) => (
+                  <div key={row.label} className="rounded-md border border-slate-200 bg-white p-3">
+                    <div className="flex min-w-0 items-start justify-between gap-3">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        {row.label}
+                      </span>
+                      <Badge variant="info" size="sm" className="shrink-0 rounded-md">
+                        {row.value}
+                      </Badge>
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-slate-600">
+                      {row.description}
                     </p>
-                  )}
-                </div>
+                  </div>
+                ))}
               </div>
             </CardContent>
           </Card>
 
-          <Card>
+          <Card data-contract="Export.PackageReadiness.v1">
             <CardHeader>
               <CardTitle className="flex items-center space-x-2">
                 <CalendarDaysIcon className="h-5 w-5" />
@@ -458,12 +491,19 @@ export default function ExportPage() {
             </CardHeader>
             <CardContent>
               <div className="space-y-3 text-sm text-slate-600">
-                <p>
-                  {selectedFormat?.label ?? config.format.toUpperCase()} package with {packageScope.toLowerCase()}.
-                </p>
-                <p>
-                  Filters apply before packaging, with a maximum of {config.max_reports || 'all'} reports.
-                </p>
+                {packageReadinessRows.map((row) => (
+                  <div key={row.label} className="rounded-md border border-slate-200 bg-white p-3">
+                    <div className="flex min-w-0 items-start justify-between gap-3">
+                      <span className="font-medium text-slate-950">{row.label}</span>
+                      <Badge variant={row.variant} size="sm" className="shrink-0 rounded-md">
+                        {row.status}
+                      </Badge>
+                    </div>
+                    <p className="mt-2 leading-6 text-slate-600">
+                      {row.description}
+                    </p>
+                  </div>
+                ))}
                 {exportMutation.error && (
                   <div role="alert" className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
                     The export package could not be prepared. Adjust the package settings and try again.

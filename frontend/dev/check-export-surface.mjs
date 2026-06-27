@@ -52,8 +52,8 @@ const expectations = [
     pattern: /packageContentOptions\.map\(\(option\)[\s\S]*checked=\{Boolean\(config\[option\.key\]\)\}[\s\S]*handleConfigChange\(option\.key, e\.target\.checked\)/,
   },
   {
-    name: 'renders manifest included evidence from the canonical contract',
-    pattern: /packageContentOptions\.map\(\(option\)[\s\S]*\{Boolean\(config\[option\.key\]\) \? \([\s\S]*<span className="text-sm text-slate-600">\{option\.label\}<\/span>/,
+    name: 'derives manifest included evidence from the canonical content contract',
+    pattern: /const includedEvidenceLabels = packageContentOptions[\s\S]*\.filter\(\(option\) => Boolean\(config\[option\.key\]\)\)[\s\S]*\.map\(\(option\) => option\.label\)/,
   },
   {
     name: 'declares the package scope controls contract',
@@ -138,6 +138,34 @@ const expectations = [
   {
     name: 'frames the sidebar summary as a package manifest',
     pattern: /Package manifest/,
+  },
+  {
+    name: 'declares the package manifest contract',
+    pattern: /data-contract="Export\.PackageManifest\.v1"/,
+  },
+  {
+    name: 'uses a canonical package manifest row contract',
+    pattern: /type PackageManifestRow[\s\S]*const packageManifestRows: PackageManifestRow\[\] = \[[\s\S]*label: 'File type'[\s\S]*label: 'Included evidence'[\s\S]*label: 'Scope boundary'/,
+  },
+  {
+    name: 'renders package manifest rows from the canonical contract',
+    pattern: /packageManifestRows\.map\(\(row\)[\s\S]*key=\{row\.label\}[\s\S]*\{row\.value\}[\s\S]*\{row\.description\}/,
+  },
+  {
+    name: 'declares the package readiness contract',
+    pattern: /data-contract="Export\.PackageReadiness\.v1"/,
+  },
+  {
+    name: 'uses a canonical package readiness row contract',
+    pattern: /type PackageReadinessRow[\s\S]*const packageReadinessRows: PackageReadinessRow\[\] = \[[\s\S]*label: 'File package'[\s\S]*label: 'Evidence queue'[\s\S]*label: 'Scope constraints'/,
+  },
+  {
+    name: 'renders package readiness rows from the canonical contract',
+    pattern: /packageReadinessRows\.map\(\(row\)[\s\S]*key=\{row\.label\}[\s\S]*\{row\.label\}[\s\S]*\{row\.status\}[\s\S]*\{row\.description\}/,
+  },
+  {
+    name: 'does not keep generic sidebar readiness prose',
+    absentPattern: /\{selectedFormat\?\.label \?\? config\.format\.toUpperCase\(\)\} package with \{packageScope\.toLowerCase\(\)\}|Filters apply before packaging/,
   },
   {
     name: 'uses confidence language for selected report scores',
