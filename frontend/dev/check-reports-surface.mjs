@@ -47,6 +47,26 @@ const expectations = [
     pattern: /data-contract="Card\.ReportReviewRecord\.v1"/,
   },
   {
+    name: 'extracts report record rendering into a named component',
+    source: reportsPage,
+    pattern: /function ReportReviewRecord\(/,
+  },
+  {
+    name: 'uses a canonical report record signals collection',
+    source: reportsPage,
+    pattern: /const reportRecordSignals/,
+  },
+  {
+    name: 'declares the report record signals contract',
+    source: reportsPage,
+    pattern: /data-contract="Reports\.ReviewRecordSignals\.v1"/,
+  },
+  {
+    name: 'renders report record signals from the canonical collection',
+    source: reportsPage,
+    pattern: /reportRecordSignals\.map\(\(signal\)[\s\S]*signal\.label[\s\S]*signal\.value[\s\S]*signal\.detail/,
+  },
+  {
     name: 'surfaces provenance posture in the report queue',
     source: reportsPage,
     pattern: /Provenance posture/,
@@ -115,6 +135,11 @@ const expectations = [
     name: 'keeps source and review affordance visible',
     source: reportsPage,
     pattern: /Report body and available context/,
+  },
+  {
+    name: 'does not keep the old loose report signal grid',
+    source: reportsPage,
+    absentPattern: /mt-3 grid gap-3 sm:grid-cols-2/,
   },
   {
     name: 'uses a non-leaky reports error state',
