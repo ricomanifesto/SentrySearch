@@ -24,13 +24,27 @@ interface GenerateFormData {
   analysis_type: 'comprehensive' | 'quick' | 'custom';
 }
 
-const targetGroups = [
+type TargetSeedGroup = {
+  label: string;
+  description: string;
+  examples: string[];
+};
+
+type QualityGateRow = {
+  label: string;
+  status: string;
+  description: string;
+};
+
+const targetGroups: TargetSeedGroup[] = [
   {
     label: 'Observed threats',
+    description: 'Seed requests with malware families and attack tools already seen in analyst queues.',
     examples: ['ShadowPad', 'Cobalt Strike', 'BumbleBee', 'StealC'],
   },
   {
     label: 'Exposed technologies',
+    description: 'Start from vulnerable or exposed platforms that need source-backed review.',
     examples: ['SAP NetWeaver', 'Microsoft Exchange', 'VMware vCenter', 'AnyDesk'],
   },
 ];
@@ -55,18 +69,34 @@ const reviewDepthOptions = [
   {
     value: 'custom',
     name: 'Focused analyst note',
-    detail: 'Focused analysis for a specific campaign, asset class, or review workflow.',
+    detail: 'Focused analysis for a specific campaign, asset class, or review queue.',
     sla: 'Variable',
     variant: 'warning' as const,
     evidence: ['campaign framing', 'asset context', 'analyst-specific scope'],
   },
 ];
 
-const qualityChecks = [
-  'Source-backed findings',
-  'Detection and mitigation guidance',
-  'Risk and confidence framing',
-  'Review-ready report record',
+const qualityGates: QualityGateRow[] = [
+  {
+    label: 'Source-backed findings',
+    status: 'Required',
+    description: 'The report should tie claims back to collected source context and extracted evidence.',
+  },
+  {
+    label: 'Detection and mitigation guidance',
+    status: 'Expected',
+    description: 'Output should include useful defender actions when the source material supports them.',
+  },
+  {
+    label: 'Risk and confidence framing',
+    status: 'Expected',
+    description: 'Analysts should see confidence and risk posture before saving or sharing the record.',
+  },
+  {
+    label: 'Review-ready report record',
+    status: 'Required',
+    description: 'Generated output should land as a saved intelligence record ready for follow-up review.',
+  },
 ];
 
 export default function GeneratePage() {
@@ -342,15 +372,16 @@ export default function GeneratePage() {
           </Card>
 
           <aside className="min-w-0 space-y-4">
-            <Card className="min-w-0 border-slate-200 shadow-sm">
+            <Card data-contract="Generate.TargetSeedLibrary.v1" className="min-w-0 border-slate-200 shadow-sm">
               <CardHeader>
-                <CardTitle className="text-base">Seed a target</CardTitle>
+                <CardTitle className="text-base">Target seed library</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
                   {targetGroups.map((group) => (
                     <div key={group.label}>
                       <h4 className="text-sm font-medium text-slate-800">{group.label}</h4>
+                      <p className="mt-1 text-sm leading-5 text-slate-600">{group.description}</p>
                       <div className="mt-2 flex flex-wrap gap-2">
                         {group.examples.map((example) => (
                           <button
@@ -370,19 +401,24 @@ export default function GeneratePage() {
               </CardContent>
             </Card>
 
-            <Card className="min-w-0 border-slate-200 shadow-sm">
+            <Card data-contract="Generate.QualityGateChecklist.v1" className="min-w-0 border-slate-200 shadow-sm">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-base">
                   <SparklesIcon className="h-4 w-4 text-blue-600" />
-                  Report quality checks
+                  Review quality gates
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <ul className="space-y-2 text-sm leading-6 text-slate-600">
-                  {qualityChecks.map((check) => (
-                    <li key={check} className="flex gap-2">
-                      <span className="mt-2 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-blue-600" />
-                      <span>{check}</span>
+                <ul className="space-y-3 text-sm leading-6 text-slate-600">
+                  {qualityGates.map((gate) => (
+                    <li key={gate.label} className="rounded-md border border-slate-200 bg-white p-3">
+                      <div className="flex min-w-0 items-start justify-between gap-3">
+                        <span className="font-medium text-slate-950">{gate.label}</span>
+                        <Badge variant="info" size="sm" className="shrink-0 rounded-md">
+                          {gate.status}
+                        </Badge>
+                      </div>
+                      <p className="mt-2 leading-5 text-slate-600">{gate.description}</p>
                     </li>
                   ))}
                 </ul>
