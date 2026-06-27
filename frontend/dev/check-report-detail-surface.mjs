@@ -24,6 +24,18 @@ const expectations = [
     pattern: /Intelligence narrative/,
   },
   {
+    name: 'declares the report detail surface contract',
+    pattern: /data-surface="report-detail-record"/,
+  },
+  {
+    name: 'uses the shared surface header component',
+    pattern: /<SurfaceHeader[\s\S]*eyebrow="Intelligence record"/,
+  },
+  {
+    name: 'imports the shared surface header component',
+    pattern: /import \{ SurfaceHeader \} from '@\/components\/ui\/SurfaceHeader';/,
+  },
+  {
     name: 'keeps source transparency visible',
     pattern: /Source context/,
   },
@@ -38,6 +50,10 @@ const expectations = [
   {
     name: 'renders source review guidance from the canonical checklist',
     pattern: /sourceReviewChecklist\.map\(\(item\)[\s\S]*item\.label[\s\S]*item\.status[\s\S]*item\.description/,
+  },
+  {
+    name: 'declares the source review checklist contract',
+    pattern: /data-contract="Report\.SourceReviewChecklist\.v1"/,
   },
   {
     name: 'uses a canonical record summary signals collection',
@@ -94,6 +110,10 @@ const expectations = [
   {
     name: 'does not render raw loading errors',
     absentPattern: /error\?\.message|error\.message/,
+  },
+  {
+    name: 'does not keep one-off report detail shell colors',
+    absentPattern: /bg-\[#f7f7f3\]|text-\[#171915\]/,
   },
   {
     name: 'does not overstate saved source data availability',
