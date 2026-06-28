@@ -24,7 +24,7 @@ import {
   ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline';
 
-import { api } from '@/lib/api';
+import { api, type ReportDetail } from '@/lib/api';
 import { formatDate, formatRelativeTime, formatProcessingTime, downloadAsFile } from '@/lib/utils';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -32,26 +32,64 @@ import { Badge, type BadgeProps } from '@/components/ui/Badge';
 import { AuthGuard } from '@/components/AuthGuard';
 import { SurfaceHeader } from '@/components/ui/SurfaceHeader';
 
+const LOCAL_REPORT_DETAIL_FIXTURE_ID = 'local-visual-fixture';
+
+const localReportDetailFixture: ReportDetail = {
+  id: LOCAL_REPORT_DETAIL_FIXTURE_ID,
+  tool_name: 'Acme Remote Access Toolkit',
+  category: 'intrusion_set_tooling',
+  threat_type: 'credential_access',
+  quality_score: 4.3,
+  created_at: '2026-06-14T16:45:00.000Z',
+  processing_time_ms: 18420,
+  content_preview: 'Analyst-ready profile covering observed abuse paths, source posture, and extraction fields.',
+  markdown_content: [
+    '# Acme Remote Access Toolkit',
+    '',
+    'Acme Remote Access Toolkit is reviewed as a dual-use administration utility with credential access and persistence concerns.',
+    '',
+    '## Analyst Notes',
+    '- Validate vendor provenance before reuse.',
+    '- Compare observed behavior against saved extraction fields.',
+    '- Treat unauthenticated exposure as a follow-up investigation priority.',
+  ].join('\n'),
+  search_tags: ['remote-access', 'credential-access', 'source-review', 'fixture'],
+  threat_data: {
+    observed_capabilities: ['remote shell', 'credential capture', 'scheduled task persistence'],
+    source_posture: 'Representative local fixture for report detail visual QA',
+    review_priority: 'high',
+  },
+};
+
 export default function ReportDetailPage() {
-  return (
+  const params = useParams();
+  const reportId = params?.id as string;
+  const isLocalVisualFixture =
+    process.env.NODE_ENV === 'development' && reportId === LOCAL_REPORT_DETAIL_FIXTURE_ID;
+
+  return isLocalVisualFixture ? (
+    <ReportDetailContent fixtureReport={localReportDetailFixture} />
+  ) : (
     <AuthGuard>
       <ReportDetailContent />
     </AuthGuard>
   );
 }
 
-function ReportDetailContent() {
+function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }) {
   const params = useParams();
   const router = useRouter();
   const queryClient = useQueryClient();
   const reportId = params?.id as string;
+  const isFixtureRecord = Boolean(fixtureReport);
 
   // Fetch report data
-  const { data: report, isLoading, error } = useQuery({
+  const { data: fetchedReport, isLoading, error } = useQuery({
     queryKey: ['report', reportId],
     queryFn: () => api.getReport(reportId, true),
-    enabled: !!reportId,
+    enabled: !!reportId && !fixtureReport,
   });
+  const report = fixtureReport ?? fetchedReport;
 
   // Delete mutation
   const deleteMutation = useMutation({
@@ -70,6 +108,8 @@ function ReportDetailContent() {
   };
 
   const handleDelete = () => {
+    if (isFixtureRecord) return;
+
     if (confirm('Are you sure you want to delete this report? This action cannot be undone.')) {
       deleteMutation.mutate();
     }
@@ -187,6 +227,12 @@ function ReportDetailContent() {
   return (
     <div data-surface="report-detail-record" className="min-h-screen overflow-x-hidden bg-slate-50 py-6 text-slate-950 sm:py-10">
       <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
+        {isFixtureRecord ? (
+          <span data-contract="Report.LocalVisualFixture.v1" className="sr-only">
+            Local report detail visual fixture
+          </span>
+        ) : null}
+
         <div className="mb-6">
           <Button
             variant="ghost"
@@ -234,6 +280,7 @@ function ReportDetailContent() {
                   size="sm"
                   onClick={handleDelete}
                   loading={deleteMutation.isPending}
+                  disabled={isFixtureRecord || deleteMutation.isPending}
                   className="min-h-10 gap-2"
                 >
                   <TrashIcon className="h-4 w-4" />

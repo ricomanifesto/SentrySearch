@@ -13,7 +13,7 @@ const expectations = [
   },
   {
     name: 'keeps report fetching inside the guarded detail component',
-    pattern: /function ReportDetailContent\(\)[\s\S]*useQuery\(/,
+    pattern: /function ReportDetailContent\(\{ fixtureReport \}: \{ fixtureReport\?: ReportDetail \}\)[\s\S]*useQuery\(/,
   },
   {
     name: 'anchors the surface as an intelligence record',
@@ -34,6 +34,18 @@ const expectations = [
   {
     name: 'imports the shared surface header component',
     pattern: /import \{ SurfaceHeader \} from '@\/components\/ui\/SurfaceHeader';/,
+  },
+  {
+    name: 'declares the local report detail fixture id',
+    pattern: /const LOCAL_REPORT_DETAIL_FIXTURE_ID = 'local-visual-fixture'/,
+  },
+  {
+    name: 'guards the report detail fixture to development only',
+    pattern: /process\.env\.NODE_ENV === 'development'[\s\S]*reportId === LOCAL_REPORT_DETAIL_FIXTURE_ID/,
+  },
+  {
+    name: 'keeps normal report ids behind the auth boundary',
+    pattern: /return isLocalVisualFixture \? \([\s\S]*<ReportDetailContent fixtureReport=\{localReportDetailFixture\} \/>[\s\S]*\) : \([\s\S]*<AuthGuard>[\s\S]*<ReportDetailContent \/>[\s\S]*<\/AuthGuard>/,
   },
   {
     name: 'keeps source transparency visible',
@@ -58,6 +70,18 @@ const expectations = [
   {
     name: 'uses a canonical record summary signals collection',
     pattern: /const recordSummarySignals = \[[\s\S]*label: 'Confidence'[\s\S]*label: 'Category'[\s\S]*label: 'Threat type'[\s\S]*label: 'Generated'/,
+  },
+  {
+    name: 'declares the local report detail fixture contract',
+    pattern: /data-contract="Report\.LocalVisualFixture\.v1"/,
+  },
+  {
+    name: 'disables report fetching when fixture data is present',
+    pattern: /enabled: !!reportId && !fixtureReport/,
+  },
+  {
+    name: 'prevents fixture delete actions from mutating the backend',
+    pattern: /disabled=\{isFixtureRecord \|\| deleteMutation\.isPending\}/,
   },
   {
     name: 'declares the report record summary signals contract',
