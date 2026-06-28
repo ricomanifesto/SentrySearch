@@ -1,20 +1,102 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-  color-scheme: light;
-}
-
 @theme inline {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+}
+
+:root {
+  color-scheme: light;
+
+  --background: #fafafa;
+  --foreground: #18181b;
+
+  --surface-0: #fafafa;
+  --surface-1: #ffffff;
+  --surface-2: #f4f4f5;
+
+  --text-primary: #18181b;
+  --text-secondary: #52525b;
+  --text-muted: #a1a1aa;
+
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --on-accent: #ffffff;
+  --bg-accent: #eff6ff;
+  --text-accent: #1d4ed8;
+
+  --bg-success: #f0fdf4;
+  --text-success: #15803d;
+  --border-success: #bbf7d0;
+  --bg-warning: #fffbeb;
+  --text-warning: #b45309;
+  --border-warning: #fcd34d;
+  --bg-danger: #fef2f2;
+  --text-danger: #b91c1c;
+  --border-danger: #fecaca;
+
+  --radius: 0.5rem;
+  --radius-lg: 0.75rem;
+
+  --dur-fast: 150ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
 }
 
 body {
   background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.fade-up {
+  animation: fade-up var(--dur-slow) var(--ease-out) both;
+}
+
+.fade-up-1 {
+  animation-delay: 70ms;
+}
+
+.fade-up-2 {
+  animation-delay: 140ms;
+}
+
+.fade-up-3 {
+  animation-delay: 210ms;
+}
+
+.fade-up-4 {
+  animation-delay: 280ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

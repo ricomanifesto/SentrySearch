@@ -1,340 +1,169 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import Link from 'next/link';
-import { useQuery } from '@tanstack/react-query';
-import {
-  ChartBarIcon,
-  DocumentTextIcon,
-  PlusIcon,
-  MagnifyingGlassIcon,
-  ShieldCheckIcon,
-  ArrowTrendingUpIcon,
-  ClipboardDocumentCheckIcon,
-} from '@heroicons/react/24/outline';
+import { useRouter } from 'next/navigation';
+import { ArrowRightIcon } from '@heroicons/react/24/outline';
 
-import { api } from '@/lib/api';
-import { formatRelativeTime, formatQualityScore } from '@/lib/utils';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Button } from '@/components/ui/Button';
-import { Badge } from '@/components/ui/Badge';
-import { ActivityFeed } from '@/components/ActivityFeed';
-import { AuthGuard } from '@/components/AuthGuard';
+import { useAuth } from '@/contexts/AuthContext';
 
-const THREAT_COVERAGE_ROW_LIMIT = 5;
+const steps = [
+  {
+    n: '01',
+    title: 'Name a target',
+    body: 'A malware family, attack tool, or exposed technology that needs a source-backed profile.',
+  },
+  {
+    n: '02',
+    title: 'Research and synthesis',
+    body: 'Sources are gathered and analyzed into a structured profile, with the evidence kept alongside each section.',
+  },
+  {
+    n: '03',
+    title: 'Review the report',
+    body: 'Read the narrative, detection guidance, and mitigations, then save it to your review queue.',
+  },
+];
 
-type ThreatCoverageRow = {
-  threatType: string;
-  label: string;
-  count: number;
-  coveragePercent: number;
-};
+const sampleFindings = [
+  {
+    body: 'Modular backdoor linked to state-aligned espionage, typically delivered through DLL side-loading.',
+    cite: 'source · vendor threat report',
+  },
+  {
+    body: 'Detection: signed but anomalous DLLs loaded by otherwise trusted host processes.',
+    cite: 'guidance · detection',
+  },
+];
 
-function formatThreatCoverageLabel(threatType: string) {
-  return threatType.replace(/_/g, ' ');
-}
+export default function Landing() {
+  const { user, loading } = useAuth();
+  const router = useRouter();
 
-function buildThreatCoverageRows(distribution?: Record<string, number>): ThreatCoverageRow[] {
-  if (!distribution) {
-    return [];
-  }
-
-  const entries = Object.entries(distribution)
-    .filter(([, count]) => Number.isFinite(count) && count > 0)
-    .sort(([, a], [, b]) => b - a)
-    .slice(0, THREAT_COVERAGE_ROW_LIMIT);
-
-  const maxCount = Math.max(...entries.map(([, count]) => count), 0);
-
-  return entries.map(([threatType, count]) => ({
-    threatType,
-    label: formatThreatCoverageLabel(threatType),
-    count,
-    coveragePercent: maxCount > 0 ? Math.max(8, Math.round((count / maxCount) * 100)) : 0,
-  }));
-}
-
-export default function Dashboard() {
-  const { data: analytics, isLoading: analyticsLoading, error: analyticsError } = useQuery({
-    queryKey: ['analytics', 'dashboard'],
-    queryFn: () => api.getDashboardAnalytics(),
-  });
-
-  const { data: recentReports, isLoading: reportsLoading } = useQuery({
-    queryKey: ['reports', 'recent'],
-    queryFn: () => api.listReports(1, 5),
-  });
-
-  const threatCoverageRows = buildThreatCoverageRows(analytics?.threat_distribution);
-
-  const briefingSignals = [
-    {
-      label: 'Intelligence library',
-      value: analytics?.summary.total_reports ?? 0,
-      detail: 'Saved reports ready for review',
-      icon: DocumentTextIcon,
-      tone: 'text-cyan-700',
-    },
-    {
-      label: 'Briefed this week',
-      value: analytics?.summary.reports_this_week ?? 0,
-      detail: 'New intelligence generated',
-      icon: ChartBarIcon,
-      tone: 'text-emerald-700',
-    },
-    {
-      label: 'Analyst confidence',
-      value: analytics?.summary.avg_quality_score?.toFixed(1) ?? '0.0',
-      detail: 'Average report quality score',
-      icon: MagnifyingGlassIcon,
-      tone: 'text-amber-700',
-    },
-  ];
+  useEffect(() => {
+    if (!loading && user) {
+      router.replace('/dashboard');
+    }
+  }, [user, loading, router]);
 
   return (
-    <AuthGuard>
-      <div data-surface="dashboard-workspace" className="min-h-screen overflow-x-hidden bg-zinc-50 py-6 sm:py-10">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <section className="mb-8 border-y border-zinc-200 bg-white px-4 py-6 shadow-sm sm:px-6 lg:px-8">
-            <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_21rem] lg:items-end">
-              <div className="max-w-3xl">
-                <Badge variant="info" size="sm" className="mb-3 rounded-md bg-cyan-50 text-cyan-800">
-                  Intelligence briefing
-                </Badge>
-                <h1 className="text-2xl font-semibold leading-tight text-zinc-950 sm:text-4xl">
-                  Review the current threat-intelligence workspace
-                </h1>
-                <p className="mt-3 max-w-2xl text-base leading-7 text-zinc-600 sm:text-lg">
-                  Track generated reports, source coverage, and confidence signals before opening the next investigation.
-                </p>
-              </div>
-
-              <div className="rounded-md border border-zinc-200 bg-zinc-50 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Source posture</p>
-                    <p className="mt-1 text-sm text-zinc-700">Local briefing state, saved reports, and activity signals.</p>
-                  </div>
-                  <div className="rounded-md bg-white p-2 text-emerald-700 shadow-sm">
-                    <ShieldCheckIcon className="h-5 w-5" />
-                  </div>
-                </div>
-              </div>
+    <main data-surface="landing" className="overflow-x-hidden bg-[var(--surface-0)]">
+      <section className="mx-auto max-w-5xl px-6 pb-24 pt-24 lg:px-8">
+        <div className="grid items-center gap-14 lg:grid-cols-[minmax(0,1fr)_minmax(0,26rem)]">
+          <div className="fade-up">
+            <p className="text-sm font-medium text-blue-700">Source-backed threat intelligence</p>
+            <h1 className="mt-4 text-balance text-4xl font-semibold leading-[1.08] tracking-tight text-zinc-950 sm:text-5xl">
+              Threat reports you can actually defend
+            </h1>
+            <p className="mt-5 max-w-md text-lg leading-8 text-zinc-600">
+              SentrySearch researches malware, attack tools, and exposed
+              technologies, then assembles a structured report with detection
+              guidance and the evidence behind every claim.
+            </p>
+            <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+              <Link
+                href="/auth/signup"
+                className="group inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-zinc-950 px-6 text-base font-medium text-white transition-colors duration-150 hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 focus-visible:ring-offset-2"
+              >
+                Get started
+                <ArrowRightIcon className="h-4 w-4 transition-transform duration-150 group-hover:translate-x-0.5" />
+              </Link>
+              <Link
+                href="/auth/signin"
+                className="inline-flex h-11 items-center justify-center rounded-lg border border-zinc-300 bg-white px-6 text-base font-medium text-zinc-800 transition-colors duration-150 hover:bg-zinc-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-2"
+              >
+                Sign in
+              </Link>
             </div>
-          </section>
-
-          <section className="mb-8 grid gap-4 lg:grid-cols-[minmax(0,1fr)_21rem]">
-            <div data-contract="Action.PrimaryInvestigation.v1" className="rounded-md border border-zinc-200 bg-white p-4 shadow-sm">
-              <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-sm font-semibold text-zinc-950">Next investigation</p>
-                  <p className="text-sm text-zinc-500">Start from generation, search, or the report library.</p>
-                </div>
-              </div>
-              <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-                <Link href="/generate">
-                  <Button size="lg" className="min-h-11 w-full gap-2 rounded-md bg-zinc-950 hover:bg-zinc-800 sm:w-auto">
-                    <PlusIcon className="h-5 w-5" />
-                    <span>Generate intelligence</span>
-                  </Button>
-                </Link>
-                <Link href="/search">
-                  <Button variant="outline" size="lg" className="min-h-11 w-full gap-2 rounded-md border-zinc-300 text-zinc-800 sm:w-auto">
-                    <MagnifyingGlassIcon className="h-5 w-5" />
-                    <span>Search intelligence</span>
-                  </Button>
-                </Link>
-                <Link href="/reports">
-                  <Button variant="outline" size="lg" className="min-h-11 w-full gap-2 rounded-md border-zinc-300 text-zinc-800 sm:w-auto">
-                    <DocumentTextIcon className="h-5 w-5" />
-                    <span>Review saved reports</span>
-                  </Button>
-                </Link>
-              </div>
-            </div>
-
-            <aside className="rounded-md border border-zinc-200 bg-zinc-950 p-4 text-white shadow-sm">
-              <p className="text-xs font-semibold uppercase tracking-wide text-cyan-200">Operations rail</p>
-              <p className="mt-2 text-sm leading-6 text-zinc-200">
-                Use this workspace to reconcile source gaps, stale briefings, and confidence changes before escalation.
-              </p>
-            </aside>
-          </section>
-
-          <section className="mb-8">
-            <div className="mb-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Briefing signal strip</p>
-              <p className="mt-1 text-sm text-zinc-500">Core workspace signals for saved intelligence, recent output, and confidence.</p>
-            </div>
-            <dl
-              data-contract="Dashboard.BriefingSignalStrip.v1"
-              className="grid gap-px overflow-hidden rounded-md border border-zinc-200 bg-zinc-200 sm:grid-cols-3"
-            >
-              {briefingSignals.map((signal) => {
-                const Icon = signal.icon;
-
-                return (
-                  <div key={signal.label} className="bg-white px-4 py-5 shadow-sm">
-                    <dt className="mb-4 flex items-center justify-between gap-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">
-                      <span>{signal.label}</span>
-                      <Icon aria-hidden="true" className={`h-6 w-6 ${signal.tone}`} />
-                    </dt>
-                    <dd className="text-2xl font-semibold text-zinc-950">{signal.value}</dd>
-                    <dd className="mt-1 text-sm leading-6 text-zinc-600">{signal.detail}</dd>
-                  </div>
-                );
-              })}
-            </dl>
-          </section>
-
-          <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(17rem,0.85fr)_minmax(17rem,0.85fr)]">
-            <Card className="border-zinc-200 shadow-sm">
-              <CardHeader className="border-b border-zinc-100 pb-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Review queue</p>
-                    <CardTitle className="mt-1 text-base text-zinc-950">Recent intelligence</CardTitle>
-                  </div>
-                  <ClipboardDocumentCheckIcon className="h-5 w-5 text-zinc-500" />
-                </div>
-                <p className="mt-2 text-xs leading-5 text-zinc-500">Reopen reports for source context and confidence review.</p>
-              </CardHeader>
-              <CardContent className="pt-1">
-                {reportsLoading ? (
-                  <div className="space-y-4">
-                    {[...Array(3)].map((_, i) => (
-                      <div key={i} className="animate-pulse">
-                        <div className="mb-2 h-4 w-3/4 rounded bg-slate-200"></div>
-                        <div className="h-3 w-1/2 rounded bg-slate-200"></div>
-                      </div>
-                    ))}
-                  </div>
-                ) : recentReports?.reports.length ? (
-                  <div className="divide-y divide-zinc-100">
-                    {recentReports.reports.map((report) => {
-                      const qualityScore = formatQualityScore(report.quality_score);
-                      return (
-                        <div key={report.id} className="flex items-center justify-between gap-3 py-3 first:pt-0">
-                          <div className="min-w-0 flex-1">
-                            <Link
-                              href={`/reports/${report.id}`}
-                              className="block truncate text-sm font-semibold text-zinc-950 hover:text-cyan-700"
-                            >
-                              {report.tool_name}
-                            </Link>
-                            <p className="text-xs text-zinc-500">
-                              {formatRelativeTime(report.created_at)}
-                            </p>
-                          </div>
-                          <div className="flex items-center space-x-2">
-                            <Badge
-                              variant={
-                                report.quality_score >= 4.0 ? 'success' :
-                                report.quality_score >= 3.0 ? 'info' :
-                                report.quality_score >= 2.0 ? 'warning' : 'error'
-                              }
-                              size="sm"
-                            >
-                              {qualityScore.formatted}
-                            </Badge>
-                          </div>
-                        </div>
-                      );
-                    })}
-                    <div className="pt-4">
-                      <Link href="/reports">
-                        <Button variant="ghost" size="sm" className="w-full rounded-md text-zinc-800 hover:bg-zinc-100">
-                          Review saved reports
-                        </Button>
-                      </Link>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="py-8 text-center">
-                    <DocumentTextIcon className="mx-auto mb-4 h-12 w-12 text-zinc-400" />
-                    <p className="mb-4 text-zinc-500">No saved intelligence is queued for review yet</p>
-                    <Link href="/generate">
-                      <Button size="sm" className="rounded-md">Generate intelligence</Button>
-                    </Link>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card data-contract="Dashboard.ThreatCoverageMap.v1" className="border-zinc-200 shadow-sm">
-              <CardHeader className="border-b border-zinc-100 pb-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Coverage map</p>
-                    <CardTitle className="mt-1 text-base text-zinc-950">Threat patterns</CardTitle>
-                  </div>
-                  <ArrowTrendingUpIcon className="h-5 w-5 text-zinc-500" />
-                </div>
-                <p className="mt-2 text-xs leading-5 text-zinc-500">Analyst triage view of the patterns represented in saved reports.</p>
-              </CardHeader>
-              <CardContent className="pt-1">
-                {analyticsLoading ? (
-                  <div className="space-y-3">
-                    {[...Array(4)].map((_, i) => (
-                      <div key={i} className="animate-pulse">
-                        <div className="h-3 w-full rounded bg-slate-200"></div>
-                      </div>
-                    ))}
-                  </div>
-                ) : threatCoverageRows.length > 0 ? (
-                  <div className="space-y-3">
-                    {threatCoverageRows.map((row) => (
-                      <div key={row.threatType} className="flex items-center justify-between gap-3">
-                        <span className="min-w-0 flex-1 truncate text-sm capitalize text-zinc-700">
-                          {row.label}
-                        </span>
-                        <div className="flex items-center gap-2">
-                          <div className="h-2 w-16 rounded-full bg-zinc-200">
-                            <div
-                              className="h-2 rounded-full bg-emerald-700"
-                              style={{ width: `${row.coveragePercent}%` }}
-                            ></div>
-                          </div>
-                          <span className="w-8 text-right text-sm font-semibold text-zinc-950">
-                            {row.count}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="py-8 text-center">
-                    <ChartBarIcon className="mx-auto mb-4 h-12 w-12 text-zinc-400" />
-                    <p className="text-zinc-500">Coverage appears after reports classify threat patterns</p>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            <ActivityFeed limit={6} compact={true} />
+            <p className="mt-4 text-base text-zinc-500">
+              Or{' '}
+              <Link
+                href="/sample"
+                className="font-medium text-blue-700 underline-offset-4 hover:underline"
+              >
+                see a sample report
+              </Link>{' '}
+              — no account needed.
+            </p>
           </div>
 
-          {analyticsError && (
-            <Card variant="outlined" className="mt-8 border-red-200 bg-red-50">
-              <CardContent>
-                <div className="flex items-center">
-                  <div className="flex-shrink-0">
-                    <div className="h-5 w-5 text-red-400">!</div>
-                  </div>
-                  <div className="ml-3">
-                    <h3 className="text-sm font-medium text-red-800">
-                      The briefing could not refresh
-                    </h3>
-                    <p className="mt-1 text-sm text-red-600">
-                      Try again shortly or continue with saved reports while the data source reconnects.
-                    </p>
-                  </div>
+          <Link
+            href="/sample"
+            className="fade-up fade-up-2 group block rounded-xl border border-zinc-200 bg-white transition-colors duration-150 hover:border-zinc-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-2"
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-zinc-200 px-5 py-4">
+              <div className="flex items-center gap-3">
+                <span className="font-mono text-base font-medium text-zinc-950">ShadowPad</span>
+                <span className="rounded-md bg-blue-50 px-2 py-1 text-sm font-medium text-blue-700">
+                  High confidence
+                </span>
+              </div>
+              <span className="text-sm text-zinc-400">Example report</span>
+            </div>
+            <div className="divide-y divide-zinc-100">
+              {sampleFindings.map((f) => (
+                <div key={f.cite} className="px-5 py-4">
+                  <p className="text-base leading-7 text-zinc-800">{f.body}</p>
+                  <p className="mt-2 font-mono text-sm text-zinc-500">{f.cite}</p>
                 </div>
-              </CardContent>
-            </Card>
-          )}
+              ))}
+            </div>
+            <div className="flex items-center gap-1.5 border-t border-zinc-100 px-5 py-3 text-base font-medium text-blue-700">
+              View full sample report
+              <ArrowRightIcon className="h-4 w-4 transition-transform duration-150 group-hover:translate-x-0.5" />
+            </div>
+          </Link>
         </div>
-      </div>
-    </AuthGuard>
+      </section>
+
+      <section className="border-y border-zinc-200 bg-white">
+        <div className="mx-auto max-w-5xl px-6 py-20 lg:px-8">
+          <div className="max-w-2xl">
+            <p className="text-sm font-medium text-blue-700">How it works</p>
+            <h2 className="mt-3 text-2xl font-semibold tracking-tight text-zinc-950">
+              From a name to a report you can defend
+            </h2>
+          </div>
+
+          <ol className="mt-10 grid gap-px overflow-hidden rounded-xl border border-zinc-200 bg-zinc-200 sm:grid-cols-3">
+            {steps.map((step) => (
+              <li key={step.n} className="bg-white p-6">
+                <span className="font-mono text-base font-medium text-blue-700">{step.n}</span>
+                <h3 className="mt-3 text-base font-semibold text-zinc-950">{step.title}</h3>
+                <p className="mt-2 text-base leading-7 text-zinc-600">{step.body}</p>
+              </li>
+            ))}
+          </ol>
+        </div>
+      </section>
+
+      <section className="mx-auto max-w-5xl px-6 py-24 lg:px-8">
+        <div className="rounded-2xl border border-zinc-200 bg-zinc-950 px-6 py-14 text-center sm:px-12">
+          <h2 className="text-2xl font-semibold tracking-tight text-white">
+            Generate your first report
+          </h2>
+          <p className="mx-auto mt-3 max-w-md text-base leading-7 text-zinc-300">
+            Create a workspace to run a report and keep your saved intelligence in
+            one place.
+          </p>
+          <div className="mt-8 flex justify-center">
+            <Link
+              href="/auth/signup"
+              className="group inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-white px-6 text-base font-medium text-zinc-950 transition-colors duration-150 hover:bg-zinc-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950"
+            >
+              Get started
+              <ArrowRightIcon className="h-4 w-4 transition-transform duration-150 group-hover:translate-x-0.5" />
+            </Link>
+          </div>
+        </div>
+      </section>
+
+      <footer className="border-t border-zinc-200">
+        <div className="mx-auto flex max-w-5xl flex-col items-center justify-between gap-3 px-6 py-8 text-base text-zinc-500 sm:flex-row lg:px-8">
+          <p>SentrySearch</p>
+          <p>Source-backed threat intelligence.</p>
+        </div>
+      </footer>
+    </main>
   );
 }

@@ -121,3 +121,6 @@ frontend/.env.local
 
 # Scripts directory (private)
 scripts/
+
+# Durable goal/working state (private, never committed)
+.goal/

@@ -24,7 +24,7 @@ import {
 import { cn } from '@/lib/utils';
 
 const navigation = [
-  { name: 'Briefing', href: '/', icon: ChartBarIcon },
+  { name: 'Briefing', href: '/dashboard', icon: ChartBarIcon },
   { name: 'Reports', href: '/reports', icon: DocumentTextIcon },
   { name: 'Analytics', href: '/analytics', icon: ChartBarIcon },
   { name: 'Export', href: '/export', icon: ArrowDownTrayIcon },
@@ -39,44 +39,44 @@ export function Navigation() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const pathname = usePathname();
   const { user, signOut } = useAuth();
-  
-  // User is admin if logged in
-  const isAdmin = !!user;
-  const allNavigation = isAdmin ? [...navigation, ...adminNavigation] : navigation;
+
+  // App navigation is only meaningful once signed in.
+  const allNavigation = user ? [...navigation, ...adminNavigation] : [];
+  const homeHref = user ? '/dashboard' : '/';
 
   return (
-    <nav className="bg-white shadow-sm border-b border-gray-200">
+    <nav className="border-b border-zinc-200 bg-white">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="flex h-16 justify-between">
           {/* Logo and main navigation */}
           <div className="flex">
             {/* Logo */}
             <div className="flex flex-shrink-0 items-center">
-              <Link href="/" className="flex items-center space-x-2">
-                <div className="h-8 w-8 bg-blue-600 rounded-lg flex items-center justify-center">
+              <Link href={homeHref} className="flex items-center space-x-2">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600">
                   <MagnifyingGlassIcon className="h-5 w-5 text-white" />
                 </div>
-                <span className="text-xl font-bold text-gray-900">
+                <span className="text-lg font-semibold tracking-tight text-zinc-950">
                   SentrySearch
                 </span>
               </Link>
             </div>
 
             {/* Desktop navigation */}
-            <div className="hidden sm:ml-6 sm:flex sm:space-x-8">
+            <div className="hidden sm:ml-8 sm:flex sm:space-x-6">
               {allNavigation.map((item) => {
                 const Icon = item.icon;
                 const isActive = pathname === item.href;
-                
+
                 return (
                   <Link
                     key={item.name}
                     href={item.href}
                     className={cn(
-                      'inline-flex items-center space-x-1 border-b-2 px-1 pt-1 text-sm font-medium transition-colors',
+                      'inline-flex items-center space-x-1.5 border-b-2 px-1 pt-1 text-sm font-medium transition-colors',
                       isActive
-                        ? 'border-blue-500 text-gray-900'
-                        : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
+                        ? 'border-blue-600 text-zinc-950'
+                        : 'border-transparent text-zinc-500 hover:border-zinc-300 hover:text-zinc-800'
                     )}
                   >
                     <Icon className="h-4 w-4" />
@@ -91,7 +91,7 @@ export function Navigation() {
           <div className="flex items-center sm:hidden">
             <button
               type="button"
-              className="inline-flex items-center justify-center rounded-md p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+              className="inline-flex items-center justify-center rounded-md p-2 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
             >
               <span className="sr-only">Open main menu</span>
@@ -109,21 +109,21 @@ export function Navigation() {
               <>
                 <Link
                   href="/settings"
-                  className="text-gray-500 hover:text-gray-700 p-2 rounded-md hover:bg-gray-100"
+                  className="rounded-md p-2 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700"
                   title="Settings"
                 >
                   <Cog6ToothIcon className="h-5 w-5" />
                 </Link>
                 <div className="flex items-center space-x-3">
                   <div className="flex items-center space-x-2">
-                    <UserIcon className="h-5 w-5 text-gray-400" />
-                    <span className="text-sm text-gray-700">
+                    <UserIcon className="h-5 w-5 text-zinc-400" />
+                    <span className="text-sm text-zinc-700">
                       {user.user_metadata?.name || user.email}
                     </span>
                   </div>
                   <button
                     onClick={() => signOut()}
-                    className="text-gray-500 hover:text-gray-700 p-2 rounded-md hover:bg-gray-100"
+                    className="rounded-md p-2 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700"
                     title="Sign out"
                   >
                     <ArrowRightOnRectangleIcon className="h-5 w-5" />
@@ -131,38 +131,33 @@ export function Navigation() {
                 </div>
               </>
             ) : (
-              <div className="flex space-x-2">
+              <div className="flex items-center space-x-2">
                 <Link
                   href="/auth/signin"
-                  className="text-gray-500 hover:text-gray-700 px-3 py-2 rounded-md text-sm font-medium"
+                  className="rounded-lg px-3 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100"
                 >
                   Sign in
                 </Link>
                 <Link
                   href="/auth/signup"
-                  className="bg-blue-600 text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium"
+                  className="rounded-lg bg-zinc-950 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-800"
                 >
                   Sign up
                 </Link>
               </div>
             )}
-            {/* Health status indicator */}
-            <div className="flex items-center space-x-2">
-              <div className="h-2 w-2 bg-green-400 rounded-full"></div>
-              <span className="text-xs text-gray-500">Online</span>
-            </div>
           </div>
         </div>
       </div>
 
       {/* Mobile menu */}
       {mobileMenuOpen && (
-        <div className="sm:hidden">
+        <div className="border-t border-zinc-200 sm:hidden">
           <div className="space-y-1 pb-3 pt-2">
             {allNavigation.map((item) => {
               const Icon = item.icon;
               const isActive = pathname === item.href;
-              
+
               return (
                 <Link
                   key={item.name}
@@ -170,8 +165,8 @@ export function Navigation() {
                   className={cn(
                     'flex items-center space-x-3 border-l-4 py-2 pl-3 pr-4 text-base font-medium transition-colors',
                     isActive
-                      ? 'border-blue-500 bg-blue-50 text-blue-700'
-                      : 'border-transparent text-gray-500 hover:border-gray-300 hover:bg-gray-50 hover:text-gray-700'
+                      ? 'border-blue-600 bg-blue-50 text-blue-700'
+                      : 'border-transparent text-zinc-500 hover:border-zinc-300 hover:bg-zinc-50 hover:text-zinc-700'
                   )}
                   onClick={() => setMobileMenuOpen(false)}
                 >
@@ -180,6 +175,25 @@ export function Navigation() {
                 </Link>
               );
             })}
+
+            {!user && (
+              <div className="flex flex-col gap-2 px-3 pt-2">
+                <Link
+                  href="/auth/signin"
+                  className="flex h-11 items-center justify-center rounded-lg border border-zinc-300 text-sm font-medium text-zinc-800"
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  Sign in
+                </Link>
+                <Link
+                  href="/auth/signup"
+                  className="flex h-11 items-center justify-center rounded-lg bg-zinc-950 text-sm font-medium text-white"
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  Sign up
+                </Link>
+              </div>
+            )}
           </div>
         </div>
       )}

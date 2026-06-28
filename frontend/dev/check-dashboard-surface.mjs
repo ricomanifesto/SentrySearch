@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const dashboardPath = resolve(here, '../src/app/page.tsx');
+const dashboardPath = resolve(here, '../src/app/dashboard/page.tsx');
 const activityFeedPath = resolve(here, '../src/components/ActivityFeed.tsx');
 const navigationPath = resolve(here, '../src/components/layout/Navigation.tsx');
 const dashboard = await readFile(dashboardPath, 'utf8');
@@ -22,9 +22,9 @@ const expectations = [
     absentPattern: />Dashboard</,
   },
   {
-    name: 'labels the home navigation as the briefing surface',
+    name: 'labels the dashboard navigation as the briefing surface',
     source: navigation,
-    pattern: /name: 'Briefing', href: '\/'/,
+    pattern: /name: 'Briefing', href: '\/dashboard'/,
   },
   {
     name: 'uses product-specific generation action copy',

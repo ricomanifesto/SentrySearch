@@ -11,6 +11,8 @@
     "check:dashboard-surface": "node dev/check-dashboard-surface.mjs",
     "check:export-surface": "node dev/check-export-surface.mjs",
     "check:generate-surface": "node dev/check-generate-surface.mjs",
+    "check:landing-surface": "node dev/check-landing-surface.mjs",
+    "check:sample-surface": "node dev/check-sample-surface.mjs",
     "check:report-detail-surface": "node dev/check-report-detail-surface.mjs",
     "check:reports-surface": "node dev/check-reports-surface.mjs",
     "check:search-surface": "node dev/check-search-surface.mjs",
