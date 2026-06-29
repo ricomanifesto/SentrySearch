@@ -59,7 +59,9 @@ export default function GeneratePage() {
   const router = useRouter();
   const [formData, setFormData] = useState<GenerateFormData>({
     tool_name: '',
-    enable_ml_guidance: true,
+    // ML-powered guidance is disabled platform-wide until its backend service is
+    // restored; the base report still includes a detection and mitigation section.
+    enable_ml_guidance: false,
     analysis_type: 'comprehensive',
   });
 
@@ -116,25 +118,6 @@ export default function GeneratePage() {
               <p className="mt-2 text-sm text-zinc-500">
                 Use the exact name analysts or asset owners use in tickets and reports.
               </p>
-
-              <label className="mt-6 flex cursor-pointer items-start gap-3 rounded-lg border border-zinc-200 bg-[var(--surface-0)] p-4 transition-colors hover:border-zinc-300">
-                <input
-                  type="checkbox"
-                  checked={formData.enable_ml_guidance}
-                  onChange={(e) => setFormData((prev) => ({ ...prev, enable_ml_guidance: e.target.checked }))}
-                  disabled={isLoading}
-                  className="mt-0.5 h-4 w-4 rounded border-zinc-300 text-blue-600 focus:ring-blue-500"
-                />
-                <span>
-                  <span className="block text-sm font-medium text-zinc-950">
-                    Include detection and mitigation guidance
-                  </span>
-                  <span className="mt-1 block text-sm leading-6 text-zinc-600">
-                    Adds detection ideas, behavioral cues, and risk framing to the
-                    report. Turn off to stay closer to raw source extraction.
-                  </span>
-                </span>
-              </label>
 
               {error && (
                 <div role="alert" className="mt-6 rounded-lg border border-red-200 bg-red-50 p-4">

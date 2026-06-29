@@ -32,12 +32,12 @@ const expectations = [
     pattern: /ShadowPad or SAP NetWeaver/,
   },
   {
-    name: 'exposes the real ML-guidance control',
-    pattern: /enable_ml_guidance/,
+    name: 'keeps ML guidance disabled platform-wide',
+    pattern: /enable_ml_guidance: false/,
   },
   {
-    name: 'labels the guidance control honestly',
-    pattern: /Include detection and mitigation guidance/,
+    name: 'does not expose the ML guidance toggle while its service is down',
+    absentPattern: /Include detection and mitigation guidance|type="checkbox"/,
   },
   {
     name: 'declares the target seed library contract',
