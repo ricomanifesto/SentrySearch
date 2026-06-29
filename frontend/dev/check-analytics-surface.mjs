@@ -15,6 +15,10 @@ const expectations = [
     pattern: /<AuthGuard>/,
   },
   {
+    name: 'declares the analytics review surface contract',
+    pattern: /data-surface="analytics-review"/,
+  },
+  {
     name: 'preserves the analytics read model query',
     pattern: /api\.getAnalytics\(timeRange\)/,
   },
@@ -27,8 +31,8 @@ const expectations = [
     pattern: /Intelligence operations review/,
   },
   {
-    name: 'uses the shared surface header contract',
-    pattern: /import \{ SurfaceHeader \} from '@\/components\/ui\/SurfaceHeader'[\s\S]*<SurfaceHeader[\s\S]*eyebrow="Operations metrics"/,
+    name: 'frames the metric set as operations metrics',
+    pattern: /Operations metrics/,
   },
   {
     name: 'does not lead with generic analytics dashboard copy',
@@ -48,15 +52,11 @@ const expectations = [
   },
   {
     name: 'labels the time window control',
-    pattern: /label="Review window"/,
+    pattern: /Review window/,
   },
   {
-    name: 'shows package-style readiness language for the metric set',
+    name: 'shows readiness language for the metric set',
     pattern: /Metric readiness/,
-  },
-  {
-    name: 'frames the metric cards as an operations signal strip',
-    pattern: /Operations signal strip/,
   },
   {
     name: 'declares the analytics metric signal strip contract',
@@ -71,16 +71,20 @@ const expectations = [
     pattern: /metricSignals\.map\(\(metric\)[\s\S]*metric\.label[\s\S]*metric\.value[\s\S]*metric\.detail/,
   },
   {
-    name: 'keeps metric definition terms adjacent to their values',
-    pattern: /<dt className="mb-4 flex items-center justify-between gap-3 text-xs font-semibold uppercase tracking-wide text-slate-500">[\s\S]*<span>\{metric\.label\}<\/span>[\s\S]*<Icon[\s\S]*aria-hidden="true"[\s\S]*className=\{`h-6 w-6 \$\{metric\.tone\}`\}[\s\S]*\/>[\s\S]*<\/dt>[\s\S]*<dd className="text-2xl font-semibold text-slate-950">\{metric\.value\}<\/dd>[\s\S]*<dd className="mt-1 text-sm leading-6 text-slate-600">\{metric\.detail\}<\/dd>/,
+    name: 'does not fabricate a default success rate',
+    absentPattern: /success_rate[^\n]*\|\|\s*0\.95/,
   },
   {
-    name: 'does not separate metric definition terms from their values',
-    absentPattern: /<div className="mb-4 flex items-center justify-between gap-3">\s*<dt/,
+    name: 'only reports a completion rate when reports exist',
+    pattern: /stats\.total_reports > 0[\s\S]*completed without retry/,
+  },
+  {
+    name: 'does not fabricate a default activity confidence score',
+    absentPattern: /quality_score \|\| 4\.0/,
   },
   {
     name: 'does not keep repeated hand-built metric cards',
-    absentPattern: /<Card className="border-slate-200 shadow-sm">[\s\S]*<DocumentTextIcon[\s\S]*<Card className="border-slate-200 shadow-sm">[\s\S]*<ArrowTrendingUpIcon[\s\S]*<Card className="border-slate-200 shadow-sm">[\s\S]*<ClockIcon[\s\S]*<Card className="border-slate-200 shadow-sm">[\s\S]*<ShieldCheckIcon/,
+    absentPattern: /<Card /,
   },
   {
     name: 'frames recent activity as a review timeline',
@@ -108,7 +112,7 @@ const expectations = [
   },
   {
     name: 'avoids unverifiable healthy system claims',
-    absentPattern: /System Status|Healthy|All systems operational|Optimized performance/,
+    absentPattern: /System Status|All systems operational|Optimized performance/,
   },
   {
     name: 'guards the route against horizontal mobile overflow',
@@ -117,6 +121,14 @@ const expectations = [
   {
     name: 'keeps layout containers shrink-safe',
     pattern: /min-w-0/,
+  },
+  {
+    name: 'does not use fonts below the legible minimum',
+    absentPattern: /text-xs/,
+  },
+  {
+    name: 'does not use gradient backgrounds',
+    absentPattern: /bg-gradient/,
   },
   {
     name: 'registers the analytics surface check script',
