@@ -14,11 +14,11 @@ from src.core.opencode_client import (
 )
 
 
-def test_default_model_uses_free_openrouter_agentic_model(monkeypatch):
+def test_default_model_is_a_valid_openrouter_model(monkeypatch):
     monkeypatch.delenv("SENTRYSEARCH_MODEL", raising=False)
 
-    assert DEFAULT_MODEL == "meta-llama/llama-3.3-70b-instruct:free"
-    assert resolve_model_name() == "meta-llama/llama-3.3-70b-instruct:free"
+    assert DEFAULT_MODEL == "meta-llama/llama-3.3-70b-instruct"
+    assert resolve_model_name() == "meta-llama/llama-3.3-70b-instruct"
 
 
 def test_model_selection_requires_provider_model():
@@ -36,7 +36,7 @@ def test_model_selection_allows_openrouter_nested_model_id():
 def test_resolve_openrouter_model_strips_route_prefix(monkeypatch):
     monkeypatch.delenv("SENTRYSEARCH_MODEL", raising=False)
 
-    assert resolve_openrouter_model() == "meta-llama/llama-3.3-70b-instruct:free"
+    assert resolve_openrouter_model() == "meta-llama/llama-3.3-70b-instruct"
     assert (
         resolve_openrouter_model("openrouter/anthropic/claude-sonnet-4-5")
         == "anthropic/claude-sonnet-4-5"
