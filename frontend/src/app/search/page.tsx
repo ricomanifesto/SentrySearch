@@ -3,22 +3,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
-import {
-  AdjustmentsHorizontalIcon,
-  CalendarDaysIcon,
-  DocumentMagnifyingGlassIcon,
-  EyeIcon,
-  MagnifyingGlassIcon,
-} from '@heroicons/react/24/outline';
+import { MagnifyingGlassIcon, ArrowRightIcon } from '@heroicons/react/24/outline';
 
 import { api, type Report } from '@/lib/api';
 import { formatDate, formatProcessingTime, formatRelativeTime } from '@/lib/utils';
 import { AuthGuard } from '@/components/AuthGuard';
-import { Badge } from '@/components/ui/Badge';
-import { Button } from '@/components/ui/Button';
-import { Card, CardContent } from '@/components/ui/Card';
-import { Select } from '@/components/ui/Select';
-import { SurfaceHeader } from '@/components/ui/SurfaceHeader';
 
 interface SearchState {
   query: string;
@@ -70,14 +59,17 @@ const sortOrderOptions = [
   { value: 'asc', label: 'Ascending' },
 ];
 
-const getQualityVariant = (score: number) =>
-  score >= 4.0 ? 'success' : score >= 3.0 ? 'info' : score >= 2.0 ? 'warning' : 'error';
-
 const getQualityLabel = (score: number) =>
   score >= 4.0 ? 'High confidence' : score >= 3.0 ? 'Reviewable' : score >= 2.0 ? 'Needs review' : 'Low confidence';
 
 const formatTaxonomyLabel = (value: string) =>
-  value.replace(/_/g, ' ').replace(/\b\w/g, letter => letter.toUpperCase());
+  value.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+const selectClass =
+  'mt-1.5 block h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition-colors focus:border-blue-500 focus:ring-2 focus:ring-blue-100';
+
+const secondaryButtonClass =
+  'inline-flex h-11 items-center justify-center gap-2 rounded-lg border border-zinc-300 bg-white px-4 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 disabled:pointer-events-none disabled:opacity-50';
 
 export default function SearchPage() {
   return (
@@ -101,12 +93,9 @@ function SearchWorkspace() {
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
-      setFilters(prev => (
-        prev.query === searchInput ? prev : { ...prev, query: searchInput }
-      ));
+      setFilters((prev) => (prev.query === searchInput ? prev : { ...prev, query: searchInput }));
       setCurrentPage(1);
     }, 300);
-
     return () => window.clearTimeout(timeoutId);
   }, [searchInput]);
 
@@ -130,19 +119,13 @@ function SearchWorkspace() {
       },
       currentPage,
       20,
-      {
-        sort_by: filters.sortBy,
-        sort_order: filters.sortOrder,
-      }
+      { sort_by: filters.sortBy, sort_order: filters.sortOrder },
     ),
   });
 
   const threatTypeOptions = useMemo(() => [
     { value: '', label: 'All threat types' },
-    ...(filterOptions?.threat_types.map(type => ({
-      value: type,
-      label: type.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
-    })) || []),
+    ...(filterOptions?.threat_types.map((type) => ({ value: type, label: formatTaxonomyLabel(type) })) || []),
   ], [filterOptions]);
 
   const queryWorkbenchControls: QueryWorkbenchControl[] = useMemo(() => [
@@ -154,153 +137,112 @@ function SearchWorkspace() {
   ], [threatTypeOptions]);
 
   const updateFilter = (key: keyof SearchState, value: string) => {
-    setFilters(prev => ({ ...prev, [key]: value }));
+    setFilters((prev) => ({ ...prev, [key]: value }));
     setCurrentPage(1);
   };
 
   const clearFilters = () => {
     setSearchInput('');
-    setFilters({
-      query: '',
-      threatType: '',
-      minQuality: '',
-      dateRangeDays: '',
-      sortBy: 'created_at',
-      sortOrder: 'desc',
-    });
+    setFilters({ query: '', threatType: '', minQuality: '', dateRangeDays: '', sortBy: 'created_at', sortOrder: 'desc' });
     setCurrentPage(1);
   };
 
-  const activeFilterCount = [
-    filters.query,
-    filters.threatType,
-    filters.minQuality,
-    filters.dateRangeDays,
-  ].filter(Boolean).length;
+  const activeFilterCount = [filters.query, filters.threatType, filters.minQuality, filters.dateRangeDays].filter(Boolean).length;
   const hasActiveFilters = activeFilterCount > 0;
   const totalReports = searchData?.pagination.total ?? 0;
   const pageStart = searchData ? ((searchData.pagination.page - 1) * searchData.pagination.limit) + 1 : 0;
   const pageEnd = searchData ? Math.min(searchData.pagination.page * searchData.pagination.limit, totalReports) : 0;
 
   return (
-    <div data-surface="search-review-workspace" className="min-h-screen overflow-x-hidden bg-slate-50 py-6 sm:py-10">
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <SurfaceHeader
-            eyebrow="Search workspace"
-            title="Find saved intelligence by target and threat context"
-            description="Search the fields supported by the backend contract, then reopen the source-backed report record for review."
-          />
+    <main data-surface="search-review-workspace" className="overflow-x-hidden bg-[var(--surface-0)]">
+      <div className="mx-auto max-w-6xl px-6 py-12 lg:px-8">
+        <div className="max-w-2xl">
+          <p className="text-sm font-medium text-blue-700">Search workspace</p>
+          <h1 className="mt-3 text-3xl font-semibold tracking-tight text-zinc-950">Find saved intelligence</h1>
+          <p className="mt-4 text-lg leading-8 text-zinc-600">
+            Search saved reports by target and threat context, then reopen the
+            source-backed record for review.
+          </p>
+        </div>
 
-          <Card data-contract="Search.QueryWorkbenchControls.v1" className="mb-6 border-slate-200 shadow-sm">
-            <CardContent className="p-4 sm:p-5">
-              <div className="mb-4 flex flex-col gap-1 border-b border-slate-100 pb-4 sm:flex-row sm:items-end sm:justify-between">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Query bench</p>
-                  <p className="mt-1 text-sm leading-6 text-slate-600">
-                    Tune target, threat, quality, and date constraints before opening a saved intelligence record.
-                  </p>
-                </div>
-                <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                  {hasActiveFilters ? `${activeFilterCount} active workbench constraints` : 'No workbench constraints'}
-                </span>
-              </div>
-              <label className="relative block">
-                <span className="sr-only">Search saved intelligence</span>
-                <MagnifyingGlassIcon className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="search"
-                  placeholder="Search by target, category, or threat type"
-                  value={searchInput}
-                  onChange={handleSearchInputChange}
-                  className="h-11 w-full rounded-md border border-slate-300 bg-white pl-10 pr-4 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
-                />
+        <section data-contract="Search.QueryWorkbenchControls.v1" className="mt-8 rounded-xl border border-zinc-200 bg-white p-5">
+          <label className="relative block">
+            <span className="sr-only">Search saved intelligence</span>
+            <MagnifyingGlassIcon className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" aria-hidden="true" />
+            <input
+              type="search"
+              placeholder="Search by target, category, or threat type"
+              value={searchInput}
+              onChange={handleSearchInputChange}
+              className="h-11 w-full rounded-lg border border-zinc-300 bg-white pl-10 pr-4 text-sm text-zinc-950 outline-none transition-colors placeholder:text-zinc-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+            />
+          </label>
+
+          <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
+            {queryWorkbenchControls.map((control) => (
+              <label key={control.key} className="block">
+                <span className="block text-sm font-medium text-zinc-800">{control.label}</span>
+                <select
+                  value={filters[control.key]}
+                  onChange={(event) => updateFilter(control.key, event.target.value)}
+                  className={selectClass}
+                >
+                  {control.options.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
               </label>
+            ))}
+          </div>
 
-              <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
-                {queryWorkbenchControls.map((control) => (
-                  <Select
-                    key={control.key}
-                    label={control.label}
-                    options={control.options}
-                    value={filters[control.key]}
-                    onChange={(event) => updateFilter(control.key, event.target.value)}
-                  />
-                ))}
-              </div>
-
-              {hasActiveFilters && (
-                <div className="mt-4 flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
-                  <span className="text-sm text-slate-600">
-                    {activeFilterCount} active search {activeFilterCount === 1 ? 'constraint' : 'constraints'}
-                  </span>
-                  <Button variant="ghost" size="sm" onClick={clearFilters}>
-                    Clear workbench constraints
-                  </Button>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {searchData && (
-            <div className="mb-4 grid gap-3 rounded-md border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-              <span className="space-y-1">
-                <span className="block">
-                  <span className="font-semibold text-slate-950">Review docket:</span>{' '}
-                  {totalReports === 0 ? 'no matching saved intelligence' : `showing ${pageStart}-${pageEnd} of ${totalReports} matches`}
-                </span>
-                <span className="block text-xs text-slate-500">
-                  Sorted by {sortOptions.find(option => option.value === filters.sortBy)?.label.toLowerCase()} · {filters.sortOrder}
-                </span>
+          {hasActiveFilters && (
+            <div className="mt-4 flex items-center justify-between gap-3 border-t border-zinc-100 pt-4">
+              <span className="text-sm text-zinc-600">
+                {activeFilterCount} active workbench {activeFilterCount === 1 ? 'constraint' : 'constraints'}
               </span>
-              <span className="rounded-md bg-slate-50 px-3 py-2 leading-5 text-slate-700">
-                Provenance review: open matched records to inspect available detail context
-              </span>
+              <button type="button" onClick={clearFilters} className="text-sm font-medium text-blue-700 hover:underline">
+                Clear workbench constraints
+              </button>
             </div>
           )}
+        </section>
 
+        {searchData && (
+          <p className="mt-4 text-sm text-zinc-500">
+            {totalReports === 0 ? 'No matching saved intelligence' : `Showing ${pageStart}–${pageEnd} of ${totalReports} matches`}
+          </p>
+        )}
+
+        <div className="mt-4">
           {isLoading ? (
             <div className="space-y-4" role="status" aria-label="Searching saved intelligence">
               {[...Array(4)].map((_, index) => (
-                <Card key={index} className="border-slate-200">
-                  <CardContent className="p-5">
-                    <div className="animate-pulse space-y-4">
-                      <div className="h-5 w-1/3 rounded bg-slate-200" />
-                      <div className="h-4 w-2/3 rounded bg-slate-200" />
-                      <div className="h-4 w-full rounded bg-slate-200" />
-                    </div>
-                  </CardContent>
-                </Card>
+                <div key={index} className="h-28 animate-pulse rounded-xl bg-zinc-100" />
               ))}
             </div>
           ) : error ? (
-            <Card className="border-red-200 bg-red-50">
-              <CardContent className="py-10 text-center" role="alert">
-                <DocumentMagnifyingGlassIcon className="mx-auto mb-4 h-12 w-12 text-red-400" />
-                <h2 className="mb-2 text-lg font-semibold text-red-900">Search is unavailable</h2>
-                <p className="mx-auto max-w-md text-sm leading-6 text-red-700">
-                  Saved intelligence search could not be completed. Retry from this page or use the reports review queue.
-                </p>
-              </CardContent>
-            </Card>
+            <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-6 text-center">
+              <h2 className="text-base font-semibold text-red-900">Search is unavailable</h2>
+              <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-red-700">
+                Saved intelligence search could not be completed. Retry from this page, or use the reports review queue.
+              </p>
+            </div>
           ) : searchData?.reports.length === 0 ? (
-            <Card className="border-slate-200">
-              <CardContent className="py-12 text-center">
-                <AdjustmentsHorizontalIcon className="mx-auto mb-4 h-16 w-16 text-slate-400" />
-                <h2 className="mb-2 text-lg font-semibold text-slate-950">
-                  {hasActiveFilters ? 'No saved intelligence matched' : 'Search is ready'}
-                </h2>
-                <p className="mx-auto mb-6 max-w-md text-sm leading-6 text-slate-600">
-                  {hasActiveFilters
-                    ? 'Adjust the target, threat type, date, or quality filters to broaden the search.'
-                    : 'Enter a target, category, or threat type to search across saved reports.'}
-                </p>
-                {hasActiveFilters && (
-                  <Button variant="outline" onClick={clearFilters}>
-                    Clear workbench constraints
-                  </Button>
-                )}
-              </CardContent>
-            </Card>
+            <div className="rounded-xl border border-dashed border-zinc-300 px-6 py-12 text-center">
+              <h2 className="text-base font-semibold text-zinc-950">
+                {hasActiveFilters ? 'No saved intelligence matched' : 'Search is ready'}
+              </h2>
+              <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-zinc-500">
+                {hasActiveFilters
+                  ? 'Adjust the target, threat type, date, or quality filters to broaden the search.'
+                  : 'Enter a target, category, or threat type to search across saved reports.'}
+              </p>
+              {hasActiveFilters && (
+                <button type="button" onClick={clearFilters} className={`${secondaryButtonClass} mt-6`}>
+                  Clear workbench constraints
+                </button>
+              )}
+            </div>
           ) : (
             <>
               <div className="space-y-4">
@@ -311,47 +253,42 @@ function SearchWorkspace() {
 
               {searchData && searchData.pagination.pages > 1 && (
                 <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <span className="text-sm text-slate-600">
-                    Page {currentPage} of {searchData.pagination.pages}
-                  </span>
+                  <span className="text-sm text-zinc-600">Page {currentPage} of {searchData.pagination.pages}</span>
                   <div className="flex gap-2">
-                    <Button
-                      variant="outline"
+                    <button
+                      type="button"
                       disabled={currentPage <= 1}
-                      onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                      onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                      className={secondaryButtonClass}
                     >
                       Previous
-                    </Button>
-                    <Button
-                      variant="outline"
+                    </button>
+                    <button
+                      type="button"
                       disabled={currentPage >= searchData.pagination.pages}
-                      onClick={() => setCurrentPage(prev => Math.min(searchData.pagination.pages, prev + 1))}
+                      onClick={() => setCurrentPage((prev) => Math.min(searchData.pagination.pages, prev + 1))}
+                      className={secondaryButtonClass}
                     >
                       Next
-                    </Button>
+                    </button>
                   </div>
                 </div>
               )}
             </>
           )}
+        </div>
       </div>
-    </div>
+    </main>
   );
 }
 
 function SearchResultRecord({ report }: { report: Report }) {
-  const qualityVariant = getQualityVariant(report.quality_score);
   const qualityLabel = getQualityLabel(report.quality_score);
   const resultReviewSignals: ResultReviewSignal[] = [
     {
       label: 'Analyst confidence',
       value: `${qualityLabel} · ${report.quality_score.toFixed(1)}`,
       description: 'Quality score carried from the saved report',
-    },
-    {
-      label: 'Provenance review',
-      value: 'Open record',
-      description: 'Inspect available detail context before reuse',
     },
     {
       label: 'Generated',
@@ -366,83 +303,49 @@ function SearchResultRecord({ report }: { report: Report }) {
   ];
 
   return (
-    <Card
+    <article
       data-contract="Card.SearchResultRecord.v1"
-      className="overflow-hidden border-slate-200 shadow-sm transition hover:border-slate-300 hover:shadow-md"
+      className="rounded-xl border border-zinc-200 bg-white p-5 transition-colors hover:border-zinc-300 sm:p-6"
     >
-      <CardContent className="p-0">
-        <article className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_15rem]">
-          <div className="min-w-0 p-5 sm:p-6">
-            <div className="mb-4 flex flex-wrap items-center gap-2">
-              <Badge variant={qualityVariant} size="sm" className="rounded-md">
-                {qualityLabel} · {report.quality_score.toFixed(1)}
-              </Badge>
-              {report.category && (
-                <Badge variant="default" size="sm" className="rounded-md">
-                  {formatTaxonomyLabel(report.category)}
-                </Badge>
-              )}
-              {report.threat_type && (
-                <Badge variant="default" size="sm" className="rounded-md">
-                  {formatTaxonomyLabel(report.threat_type)}
-                </Badge>
-              )}
-            </div>
-
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-              <div className="min-w-0">
-                <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">
-                  Decision signals
-                </p>
-                <h2 className="mt-1 truncate text-xl font-semibold text-slate-950">
-                  {report.tool_name}
-                </h2>
-              </div>
-              <span className="inline-flex items-center gap-1 text-sm text-slate-500">
-                <CalendarDaysIcon className="h-4 w-4" />
-                {formatDate(report.created_at)}
-              </span>
-            </div>
-
-            <dl
-              data-contract="Search.ResultReviewSignals.v1"
-              className="mt-4 grid gap-px overflow-hidden rounded-md border border-slate-200 bg-slate-200 sm:grid-cols-2 xl:grid-cols-4"
-            >
-              {resultReviewSignals.map((signal) => (
-                <div key={signal.label} className="bg-slate-50 px-3 py-3">
-                  <dt className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                    {signal.label}
-                  </dt>
-                  <dd className="mt-1 text-sm font-semibold text-slate-950">
-                    {signal.value}
-                  </dd>
-                  <dd className="mt-1 text-xs leading-5 text-slate-500">
-                    {signal.description}
-                  </dd>
-                </div>
-              ))}
-            </dl>
-
-            <p className="mt-4 line-clamp-2 max-w-4xl text-sm leading-6 text-slate-600">
-              {report.content_preview || 'No preview was saved for this report. Open it to inspect the full intelligence record.'}
-            </p>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <Link href={`/reports/${report.id}`} className="block truncate text-xl font-semibold text-zinc-950 hover:text-blue-700">
+            {report.tool_name}
+          </Link>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="rounded-md bg-blue-50 px-2 py-1 text-sm font-medium text-blue-700">
+              {qualityLabel} · {report.quality_score.toFixed(1)}
+            </span>
+            {report.category && (
+              <span className="rounded-md bg-zinc-100 px-2 py-1 text-sm text-zinc-700">{formatTaxonomyLabel(report.category)}</span>
+            )}
+            {report.threat_type && (
+              <span className="rounded-md bg-zinc-100 px-2 py-1 text-sm text-zinc-700">{formatTaxonomyLabel(report.threat_type)}</span>
+            )}
           </div>
+        </div>
+        <Link href={`/reports/${report.id}`} className={`${secondaryButtonClass} shrink-0`}>
+          Open record
+          <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
+        </Link>
+      </div>
 
-          <aside className="border-t border-slate-200 bg-slate-950 p-5 text-white lg:border-l lg:border-t-0">
-            <p className="text-xs font-semibold uppercase tracking-wide text-cyan-200">Inspection brief</p>
-            <h3 className="mt-2 text-base font-semibold">Review record</h3>
-            <p className="mt-2 text-sm leading-6 text-slate-300">
-              Open the saved record to inspect available detail context before reuse.
-            </p>
-            <Link href={`/reports/${report.id}`} className="mt-4 block">
-              <Button size="sm" variant="secondary" className="min-h-10 w-full gap-2 bg-white text-slate-950 hover:bg-slate-100">
-                <EyeIcon className="h-4 w-4" />
-                Open intelligence record
-              </Button>
-            </Link>
-          </aside>
-        </article>
-      </CardContent>
-    </Card>
+      <dl
+        data-contract="Search.ResultReviewSignals.v1"
+        className="mt-4 grid gap-px overflow-hidden rounded-lg border border-zinc-200 bg-zinc-200 sm:grid-cols-3"
+      >
+        {resultReviewSignals.map((signal) => (
+          <div key={signal.label} className="bg-white px-3 py-3">
+            <dt className="text-sm text-zinc-500">{signal.label}</dt>
+            <dd className="mt-1 text-sm font-medium text-zinc-950">{signal.value}</dd>
+            <dd className="mt-0.5 text-sm leading-5 text-zinc-500">{signal.description}</dd>
+          </div>
+        ))}
+      </dl>
+
+      <p className="mt-4 line-clamp-2 text-sm leading-6 text-zinc-600">
+        {report.content_preview || 'No preview was saved for this report. Open it to inspect the full intelligence record.'}
+      </p>
+    </article>
   );
 }
