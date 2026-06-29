@@ -61,6 +61,25 @@ class DatabaseManager:
             logger.error(f"Error creating tables: {e}")
             raise
     
+    def migrate_schema(self):
+        """Apply idempotent, additive schema migrations to an existing database.
+
+        ``create_all`` only creates missing tables; it never adds columns to a table
+        that already exists. New nullable/defaulted columns are added here with
+        ``ADD COLUMN IF NOT EXISTS`` so a deploy self-heals without a manual migration.
+        """
+        statements = [
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'completed'",
+        ]
+        try:
+            with self.engine.begin() as connection:
+                for statement in statements:
+                    connection.execute(text(statement))
+            logger.info("Database schema migrations applied")
+        except Exception as e:
+            logger.error(f"Error applying schema migrations: {e}")
+            raise
+
     def test_connection(self):
         """Test database connection"""
         try:
@@ -101,6 +120,10 @@ def get_db_session():
 def create_tables():
     """Create database tables"""
     return db_manager.create_tables()
+
+def migrate_schema():
+    """Apply additive schema migrations"""
+    return db_manager.migrate_schema()
 
 def test_connection():
     """Test database connection"""
