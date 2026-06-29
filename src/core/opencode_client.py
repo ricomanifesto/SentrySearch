@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 
-DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct"
 MODEL_ENV_VAR = "SENTRYSEARCH_MODEL"
 OPENROUTER_BASE_URL_ENV_VAR = "OPENROUTER_BASE_URL"
 OPENROUTER_API_KEY_ENV_VAR = "OPENROUTER_API_KEY"
