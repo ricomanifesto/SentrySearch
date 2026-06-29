@@ -17,8 +17,8 @@ from src.core.opencode_client import (
 def test_default_model_uses_free_openrouter_agentic_model(monkeypatch):
     monkeypatch.delenv("SENTRYSEARCH_MODEL", raising=False)
 
-    assert DEFAULT_MODEL == "openrouter/nex-agi/nex-n2-pro:free"
-    assert resolve_model_name() == "openrouter/nex-agi/nex-n2-pro:free"
+    assert DEFAULT_MODEL == "meta-llama/llama-3.3-70b-instruct:free"
+    assert resolve_model_name() == "meta-llama/llama-3.3-70b-instruct:free"
 
 
 def test_model_selection_requires_provider_model():
@@ -36,8 +36,11 @@ def test_model_selection_allows_openrouter_nested_model_id():
 def test_resolve_openrouter_model_strips_route_prefix(monkeypatch):
     monkeypatch.delenv("SENTRYSEARCH_MODEL", raising=False)
 
-    assert resolve_openrouter_model() == "nex-agi/nex-n2-pro:free"
-    assert resolve_openrouter_model("anthropic/claude-sonnet-4-5") == "anthropic/claude-sonnet-4-5"
+    assert resolve_openrouter_model() == "meta-llama/llama-3.3-70b-instruct:free"
+    assert (
+        resolve_openrouter_model("openrouter/anthropic/claude-sonnet-4-5")
+        == "anthropic/claude-sonnet-4-5"
+    )
 
 
 def test_model_client_posts_to_openrouter():
