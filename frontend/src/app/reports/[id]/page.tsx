@@ -1,36 +1,21 @@
 /**
  * Individual Report Detail Page
- * 
- * Displays a single threat intelligence report with full content,
- * metadata, and export options.
+ *
+ * Displays a single threat intelligence report with full content, metadata,
+ * and export options.
  */
 
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useParams, useRouter } from 'next/navigation';
-import {
-  DocumentTextIcon,
-  ArrowDownTrayIcon,
-  TrashIcon,
-  ClockIcon,
-  StarIcon,
-  TagIcon,
-  ArrowLeftIcon,
-  CircleStackIcon,
-  ShieldCheckIcon,
-  CheckCircleIcon,
-  ExclamationTriangleIcon,
-} from '@heroicons/react/24/outline';
+import { ArrowLeftIcon, ArrowDownTrayIcon, TrashIcon } from '@heroicons/react/24/outline';
 
 import { api, type ReportDetail } from '@/lib/api';
 import { formatDate, formatRelativeTime, formatProcessingTime, downloadAsFile } from '@/lib/utils';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Button } from '@/components/ui/Button';
-import { Badge, type BadgeProps } from '@/components/ui/Badge';
 import { AuthGuard } from '@/components/AuthGuard';
-import { SurfaceHeader } from '@/components/ui/SurfaceHeader';
 
 const LOCAL_REPORT_DETAIL_FIXTURE_ID = 'local-visual-fixture';
 
@@ -61,6 +46,9 @@ const localReportDetailFixture: ReportDetail = {
   },
 };
 
+const secondaryButtonClass =
+  'inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-zinc-300 bg-white px-4 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 disabled:pointer-events-none disabled:opacity-50';
+
 export default function ReportDetailPage() {
   const params = useParams();
   const reportId = params?.id as string;
@@ -83,7 +71,6 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
   const reportId = params?.id as string;
   const isFixtureRecord = Boolean(fixtureReport);
 
-  // Fetch report data
   const { data: fetchedReport, isLoading, error } = useQuery({
     queryKey: ['report', reportId],
     queryFn: () => api.getReport(reportId, true),
@@ -91,7 +78,6 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
   });
   const report = fixtureReport ?? fetchedReport;
 
-  // Delete mutation
   const deleteMutation = useMutation({
     mutationFn: () => api.deleteReport(reportId),
     onSuccess: () => {
@@ -102,14 +88,12 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
 
   const handleDownload = () => {
     if (!report?.markdown_content) return;
-    
     const filename = `${report.tool_name.replace(/[^a-zA-Z0-9]/g, '_')}_report.md`;
     downloadAsFile(report.markdown_content, filename, 'text/markdown');
   };
 
   const handleDelete = () => {
     if (isFixtureRecord) return;
-
     if (confirm('Are you sure you want to delete this report? This action cannot be undone.')) {
       deleteMutation.mutate();
     }
@@ -117,83 +101,58 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
 
   if (isLoading) {
     return (
-      <div className="min-h-screen overflow-x-hidden bg-slate-50 py-6 sm:py-10">
-        <div
-          className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8"
-          role="status"
-          aria-label="Loading report record"
-        >
+      <main className="overflow-x-hidden bg-[var(--surface-0)]">
+        <div className="mx-auto max-w-5xl px-6 py-12 lg:px-8" role="status" aria-label="Loading report record">
           <div className="animate-pulse space-y-5">
-            <div className="h-4 w-40 rounded bg-slate-200" />
-            <div className="h-10 w-2/3 rounded bg-slate-200" />
-            <div className="grid gap-4 md:grid-cols-3">
-              <div className="h-28 rounded bg-white" />
-              <div className="h-28 rounded bg-white" />
-              <div className="h-28 rounded bg-white" />
+            <div className="h-4 w-40 rounded bg-zinc-200" />
+            <div className="h-10 w-2/3 rounded bg-zinc-200" />
+            <div className="grid gap-4 sm:grid-cols-4">
+              {[...Array(4)].map((_, i) => (
+                <div key={i} className="h-20 rounded-lg bg-zinc-100" />
+              ))}
             </div>
-            <div className="h-80 rounded bg-white" />
+            <div className="h-80 rounded-xl bg-zinc-100" />
           </div>
         </div>
-      </div>
+      </main>
     );
   }
 
   if (error || !report) {
     return (
-      <div className="min-h-screen overflow-x-hidden bg-slate-50 px-4 py-10 sm:px-6 lg:px-8">
-        <div className="mx-auto max-w-3xl rounded-md border border-red-200 bg-red-50 px-6 py-10 text-center sm:px-10" role="alert">
-          <DocumentTextIcon className="mx-auto mb-4 h-12 w-12 text-red-500" />
-          <h1 className="text-2xl font-semibold text-red-950">Report record unavailable</h1>
-          <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-red-700">
-            This saved intelligence record could not be opened. Return to the review queue and try another report.
-          </p>
-          <Button variant="outline" onClick={() => router.push('/reports')} className="mt-6">
-            Back to saved intelligence
-          </Button>
+      <main className="overflow-x-hidden bg-[var(--surface-0)]">
+        <div className="mx-auto max-w-2xl px-6 py-16 lg:px-8">
+          <div className="rounded-xl border border-red-200 bg-red-50 px-6 py-10 text-center" role="alert">
+            <h1 className="text-2xl font-semibold text-red-900">Report record unavailable</h1>
+            <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-red-700">
+              This saved record could not be opened. Return to the review queue and try another report.
+            </p>
+            <button type="button" onClick={() => router.push('/reports')} className={`${secondaryButtonClass} mt-6`}>
+              Back to saved intelligence
+            </button>
+          </div>
         </div>
-      </div>
+      </main>
     );
   }
 
   const qualityScore = report.quality_score || 0;
-  const qualityVariant: BadgeProps['variant'] =
-    qualityScore >= 4.0 ? 'success' :
-    qualityScore >= 3.0 ? 'info' :
-    qualityScore >= 2.0 ? 'warning' : 'error';
   const qualityLabel =
-    qualityScore >= 4.0 ? 'High confidence' :
-    qualityScore >= 3.0 ? 'Reviewable' :
-    qualityScore >= 2.0 ? 'Needs review' : 'Low confidence';
+    qualityScore >= 4.0 ? 'High confidence'
+      : qualityScore >= 3.0 ? 'Reviewable'
+        : qualityScore >= 2.0 ? 'Needs review' : 'Low confidence';
+
   const recordSummarySignals = [
-    {
-      label: 'Confidence',
-      value: `${qualityScore.toFixed(1)} / 5.0`,
-      detail: qualityLabel,
-      icon: StarIcon,
-      badgeVariant: qualityVariant,
-    },
-    {
-      label: 'Category',
-      value: report.category || 'Unclassified',
-      detail: 'Report classification',
-      icon: TagIcon,
-      badgeVariant: 'info' as const,
-    },
-    {
-      label: 'Threat type',
-      value: report.threat_type || 'Unclassified',
-      detail: 'Observed behavior family',
-      icon: ShieldCheckIcon,
-      badgeVariant: 'success' as const,
-    },
+    { label: 'Confidence', value: `${qualityScore.toFixed(1)} / 5.0`, detail: qualityLabel },
+    { label: 'Category', value: report.category || 'Unclassified', detail: 'Report classification' },
+    { label: 'Threat type', value: report.threat_type || 'Unclassified', detail: 'Observed behavior family' },
     {
       label: 'Generated',
       value: formatRelativeTime(report.created_at),
       detail: report.processing_time_ms ? `${formatProcessingTime(report.processing_time_ms)} generation` : 'Runtime not recorded',
-      icon: ClockIcon,
-      badgeVariant: 'default' as const,
     },
   ];
+
   const sourceReviewChecklist = [
     {
       label: 'Narrative review',
@@ -201,8 +160,7 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
         ? 'Review the saved narrative against the metadata signals before reuse.'
         : 'Narrative content is absent; use structured extraction data for review context.',
       status: report.markdown_content ? 'Ready' : 'Missing narrative',
-      icon: report.markdown_content ? CheckCircleIcon : ExclamationTriangleIcon,
-      tone: report.markdown_content ? 'ready' : 'warning',
+      ready: Boolean(report.markdown_content),
     },
     {
       label: 'Source transparency',
@@ -210,8 +168,7 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
         ? 'Search tags are attached for provenance and retrieval context.'
         : 'No search tags are attached to this saved report record.',
       status: report.search_tags && report.search_tags.length > 0 ? `${report.search_tags.length} tags` : 'No tags',
-      icon: report.search_tags && report.search_tags.length > 0 ? CheckCircleIcon : ExclamationTriangleIcon,
-      tone: report.search_tags && report.search_tags.length > 0 ? 'ready' : 'warning',
+      ready: Boolean(report.search_tags && report.search_tags.length > 0),
     },
     {
       label: 'Extraction audit',
@@ -219,212 +176,119 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
         ? 'Structured extraction data is available for field-level inspection.'
         : 'Structured extraction data is not saved on this report record.',
       status: report.threat_data ? 'Available' : 'Unavailable',
-      icon: report.threat_data ? CheckCircleIcon : ExclamationTriangleIcon,
-      tone: report.threat_data ? 'ready' : 'warning',
+      ready: Boolean(report.threat_data),
     },
   ];
 
   return (
-    <div data-surface="report-detail-record" className="min-h-screen overflow-x-hidden bg-slate-50 py-6 text-slate-950 sm:py-10">
-      <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
+    <main data-surface="report-detail-record" className="overflow-x-hidden bg-[var(--surface-0)]">
+      <div className="mx-auto max-w-5xl px-6 py-12 lg:px-8">
         {isFixtureRecord ? (
-          <span data-contract="Report.LocalVisualFixture.v1" className="sr-only">
-            Local report detail visual fixture
-          </span>
+          <span data-contract="Report.LocalVisualFixture.v1" className="sr-only">Local report detail visual fixture</span>
         ) : null}
 
-        <div className="mb-6">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => router.back()}
-            className="mb-5 gap-2 text-slate-600"
-          >
-            <ArrowLeftIcon className="h-4 w-4" />
-            Back to review queue
-          </Button>
+        <Link href="/reports" className="inline-flex items-center gap-1.5 text-sm text-zinc-500 transition-colors hover:text-zinc-800">
+          <ArrowLeftIcon className="h-4 w-4" aria-hidden="true" />
+          Back to review queue
+        </Link>
 
-          <SurfaceHeader
-            eyebrow="Intelligence record"
-            title={report.tool_name}
-            description="Inspect the saved narrative, confidence signals, source context, and extraction fields before reuse."
-            meta={(
-              <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm text-slate-600">
-                <span className="inline-flex items-center gap-1">
-                  <ClockIcon className="h-4 w-4" />
-                  {formatRelativeTime(report.created_at)}
-                </span>
-                <span>{formatDate(report.created_at)}</span>
-                {report.processing_time_ms ? (
-                  <span>{formatProcessingTime(report.processing_time_ms)} generation</span>
-                ) : null}
-              </div>
-            )}
-            action={(
-              <div className="flex flex-col gap-3 sm:flex-row lg:justify-end">
-                <Badge variant={qualityVariant} size="sm" className="min-h-10 justify-center rounded-md px-3">
-                  {qualityLabel} intelligence record
-                </Badge>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleDownload}
-                  disabled={!report.markdown_content}
-                  className="min-h-10 gap-2"
-                >
-                  <ArrowDownTrayIcon className="h-4 w-4" />
-                  Download markdown
-                </Button>
-                <Button
-                  variant="danger"
-                  size="sm"
-                  onClick={handleDelete}
-                  loading={deleteMutation.isPending}
-                  disabled={isFixtureRecord || deleteMutation.isPending}
-                  className="min-h-10 gap-2"
-                >
-                  <TrashIcon className="h-4 w-4" />
-                  Delete record
-                </Button>
-              </div>
-            )}
-          />
-        </div>
-
-        <section className="mb-8">
-          <div className="mb-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#6f755f]">Record summary signals</p>
-            <p className="mt-1 text-sm leading-6 text-[#5d6458]">
-              Core fields for confidence, classification, threat family, and generation timing.
+        <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-blue-700">Intelligence record</p>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-zinc-950">{report.tool_name}</h1>
+            <p className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-zinc-500">
+              <span>{formatRelativeTime(report.created_at)}</span>
+              <span>{formatDate(report.created_at)}</span>
+              {report.processing_time_ms ? <span>{formatProcessingTime(report.processing_time_ms)} generation</span> : null}
             </p>
           </div>
-          <dl
-            data-contract="Report.RecordSummarySignals.v1"
-            className="grid gap-px overflow-hidden border border-[#d8d9ce] bg-[#d8d9ce] md:grid-cols-2 xl:grid-cols-4"
-          >
-            {recordSummarySignals.map((item) => {
-              const Icon = item.icon;
+          <div className="flex shrink-0 gap-2">
+            <button type="button" onClick={handleDownload} disabled={!report.markdown_content} className={secondaryButtonClass}>
+              <ArrowDownTrayIcon className="h-4 w-4" aria-hidden="true" />
+              Download markdown
+            </button>
+            <button
+              type="button"
+              onClick={handleDelete}
+              disabled={isFixtureRecord || deleteMutation.isPending}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-red-200 bg-white px-4 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-300 disabled:pointer-events-none disabled:opacity-50"
+            >
+              <TrashIcon className="h-4 w-4" aria-hidden="true" />
+              Delete record
+            </button>
+          </div>
+        </div>
 
-              return (
-                <div key={item.label} className="bg-white px-5 py-4">
-                  <div className="mb-3 flex items-center justify-between gap-3">
-                    <dt className="text-xs font-semibold uppercase tracking-[0.14em] text-[#6f755f]">
-                      {item.label}
-                    </dt>
-                    <Icon className="h-5 w-5 text-[#6f755f]" />
-                  </div>
-                  <dd className="text-2xl font-semibold text-slate-950">{item.value}</dd>
-                  <Badge variant={item.badgeVariant} size="sm" className="mt-3 rounded-md">
-                    {item.detail}
-                  </Badge>
-                </div>
-              );
-            })}
-          </dl>
-        </section>
+        <dl
+          data-contract="Report.RecordSummarySignals.v1"
+          className="mt-8 grid gap-px overflow-hidden rounded-xl border border-zinc-200 bg-zinc-200 sm:grid-cols-2 xl:grid-cols-4"
+        >
+          {recordSummarySignals.map((signal) => (
+            <div key={signal.label} className="min-w-0 bg-white px-4 py-4">
+              <dt className="text-sm text-zinc-500">{signal.label}</dt>
+              <dd className="mt-1 truncate text-base font-semibold capitalize text-zinc-950">{signal.value}</dd>
+              <dd className="mt-0.5 text-sm text-zinc-500">{signal.detail}</dd>
+            </div>
+          ))}
+        </dl>
 
         {report.search_tags && report.search_tags.length > 0 && (
-          <section className="mb-8 border border-[#d8d9ce] bg-white p-5">
-            <div className="mb-4 flex items-center gap-2">
-              <TagIcon className="h-5 w-5 text-[#6f755f]" />
-              <h2 className="text-base font-semibold text-[#20231f]">Search and review tags</h2>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {report.search_tags.map((tag, index) => (
-                <Badge key={index} variant="default" size="sm" className="rounded-md">
-                  {tag}
-                </Badge>
-              ))}
-            </div>
-          </section>
+          <div className="mt-6 flex flex-wrap gap-2">
+            {report.search_tags.map((tag, index) => (
+              <span key={index} className="rounded-md bg-zinc-100 px-2 py-1 text-sm text-zinc-700">{tag}</span>
+            ))}
+          </div>
         )}
 
-        <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_18rem]">
-          <Card className="border-[#d8d9ce] shadow-sm">
-            <CardHeader>
-              <CardTitle>Intelligence narrative</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {report.markdown_content ? (
-                <article className="max-w-none">
-                  <pre className="whitespace-pre-wrap break-words border-l border-[#b9bea8] bg-[#fbfbf7] px-5 py-4 text-sm leading-7 text-[#2f332d]">
-                    {report.markdown_content}
-                  </pre>
-                </article>
-              ) : (
-                <div className="border border-[#e4e5da] bg-[#fbfbf7] px-5 py-8 text-center text-[#5d6458]">
-                  <DocumentTextIcon className="mx-auto mb-4 h-12 w-12 text-[#8b927f]" />
-                  <h2 className="text-base font-semibold text-[#20231f]">Narrative unavailable</h2>
-                  <p className="mx-auto mt-2 max-w-md text-sm leading-6">
-                    This report record does not include saved markdown content. Use the structured extraction data and tags for review context.
-                  </p>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          <aside className="space-y-4">
-            <section data-contract="Report.SourceReviewChecklist.v1" className="border border-[#d8d9ce] bg-white p-5">
-              <div className="mb-4 flex items-start gap-3">
-                <ShieldCheckIcon className="mt-0.5 h-5 w-5 text-[#6f755f]" />
-                <div>
-                  <h2 className="text-base font-semibold text-[#20231f]">Review readiness</h2>
-                  <p className="mt-1 text-sm leading-6 text-[#5d6458]">
-                    Source context is checked against the narrative, search tags, and extraction data before follow-up use.
-                  </p>
-                </div>
+        <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem]">
+          <section className="min-w-0 rounded-xl border border-zinc-200 bg-white p-6">
+            <h2 className="text-base font-semibold text-zinc-950">Intelligence narrative</h2>
+            {report.markdown_content ? (
+              <pre className="mt-4 overflow-x-auto whitespace-pre-wrap break-words rounded-lg border border-zinc-200 bg-[var(--surface-0)] px-5 py-4 font-mono text-sm leading-7 text-zinc-800">
+                {report.markdown_content}
+              </pre>
+            ) : (
+              <div className="mt-4 rounded-lg border border-dashed border-zinc-300 px-5 py-8 text-center">
+                <p className="text-sm font-medium text-zinc-950">Narrative unavailable</p>
+                <p className="mx-auto mt-1 max-w-md text-sm leading-6 text-zinc-500">
+                  This record has no saved narrative. Use the structured extraction data and tags for review context.
+                </p>
               </div>
+            )}
+          </section>
 
-              <div className="space-y-3">
-                {sourceReviewChecklist.map((item) => {
-                  const Icon = item.icon;
-                  const isReady = item.tone === 'ready';
-
-                  return (
-                    <div key={item.label} className="border border-[#e4e5da] bg-[#fbfbf7] p-3">
-                      <div className="flex items-start gap-3">
-                        <Icon className={`mt-0.5 h-5 w-5 shrink-0 ${isReady ? 'text-[#2f7d55]' : 'text-[#b87928]'}`} />
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <h3 className="text-sm font-semibold text-[#20231f]">{item.label}</h3>
-                            <span className="border border-[#d8d9ce] bg-white px-2 py-0.5 text-xs font-medium text-[#5d6458]">
-                              {item.status}
-                            </span>
-                          </div>
-                          <p className="mt-1 text-sm leading-5 text-[#5d6458]">{item.description}</p>
-                        </div>
-                      </div>
+          <aside className="min-w-0 space-y-4">
+            <section data-contract="Report.SourceReviewChecklist.v1" className="rounded-xl border border-zinc-200 bg-white p-5">
+              <h2 className="text-base font-semibold text-zinc-950">Review readiness</h2>
+              <p className="mt-1 text-sm leading-6 text-zinc-500">
+                Source context checked against the narrative, tags, and extraction data.
+              </p>
+              <div className="mt-4 space-y-3">
+                {sourceReviewChecklist.map((item) => (
+                  <div key={item.label}>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-sm font-medium text-zinc-950">{item.label}</h3>
+                      <span className={`rounded-md px-2 py-0.5 text-sm font-medium ${item.ready ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'}`}>
+                        {item.status}
+                      </span>
                     </div>
-                  );
-                })}
+                    <p className="mt-1 text-sm leading-6 text-zinc-500">{item.description}</p>
+                  </div>
+                ))}
               </div>
             </section>
-
-            <div className="border border-[#d8d9ce] bg-white p-5">
-              <div className="mb-3 flex items-center gap-2">
-                <CircleStackIcon className="h-5 w-5 text-[#6f755f]" />
-                <h2 className="text-base font-semibold text-[#20231f]">Source context</h2>
-              </div>
-              <p className="text-sm leading-6 text-[#5d6458]">
-                Source context is limited to whichever narrative, tags, and structured extraction fields are saved on this record.
-              </p>
-            </div>
           </aside>
         </div>
 
         {report.threat_data && (
-          <Card className="mt-8 border-[#d8d9ce] shadow-sm">
-            <CardHeader>
-              <CardTitle>Structured extraction data</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <pre className="max-h-[32rem] overflow-auto border border-[#e4e5da] bg-[#fbfbf7] p-4 text-xs leading-6 text-[#2f332d]">
-                {JSON.stringify(report.threat_data, null, 2)}
-              </pre>
-            </CardContent>
-          </Card>
+          <section className="mt-8 rounded-xl border border-zinc-200 bg-white p-6">
+            <h2 className="text-base font-semibold text-zinc-950">Structured extraction data</h2>
+            <pre className="mt-4 max-h-[32rem] overflow-auto rounded-lg border border-zinc-200 bg-[var(--surface-0)] p-4 font-mono text-sm leading-6 text-zinc-800">
+              {JSON.stringify(report.threat_data, null, 2)}
+            </pre>
+          </section>
         )}
       </div>
-    </div>
+    </main>
   );
 }
