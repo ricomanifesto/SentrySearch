@@ -114,3 +114,28 @@ def test_model_client_requires_api_key(monkeypatch):
             model="openrouter/nex-agi/nex-n2-pro:free",
             messages=[{"role": "user", "content": "hello"}],
         )
+
+
+def test_model_client_retries_on_empty_response(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda *_args: None)
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, json={"choices": [{"message": {"content": ""}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "recovered report"}}]})
+
+    client = ModelClient(
+        base_url="http://openrouter.test",
+        transport=httpx.MockTransport(handler),
+        api_key="test-key",
+    )
+
+    response = client.messages.create(
+        model="openrouter/nex-agi/nex-n2-pro:free",
+        messages=[{"role": "user", "content": "go"}],
+    )
+
+    assert calls["n"] == 2
+    assert response.content[0].text == "recovered report"

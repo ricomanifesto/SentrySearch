@@ -10,11 +10,17 @@ stable for the generators that depend on it.
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
 import httpx
+
+# A successful response that carries no text is usually a transient provider hiccup;
+# retry a few times before surfacing it as an error.
+EMPTY_RESPONSE_RETRIES = 3
+EMPTY_RESPONSE_RETRY_DELAY = 1.5
 
 DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct"
 MODEL_ENV_VAR = "SENTRYSEARCH_MODEL"
@@ -99,28 +105,42 @@ class ModelClient:
         if (temperature := kwargs.get("temperature")) is not None:
             payload["temperature"] = temperature
 
-        with httpx.Client(
-            base_url=self.base_url,
-            timeout=self.timeout,
-            transport=self.transport,
-        ) as client:
-            response = client.post(
-                "/chat/completions",
-                json=payload,
-                headers=self._headers(),
-            )
-            self._raise_for_status(response, "generate model message")
+        headers = self._headers()
+        last_empty_error: ModelClientError | None = None
+        for attempt in range(EMPTY_RESPONSE_RETRIES):
+            with httpx.Client(
+                base_url=self.base_url,
+                timeout=self.timeout,
+                transport=self.transport,
+            ) as client:
+                response = client.post(
+                    "/chat/completions",
+                    json=payload,
+                    headers=headers,
+                )
+                self._raise_for_status(response, "generate model message")
 
-        body = response.json()
-        text = self._extract_text(body)
-        usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
-        return SimpleNamespace(
-            content=[SimpleNamespace(type="text", text=text)],
-            usage=SimpleNamespace(
-                input_tokens=int(usage.get("prompt_tokens", 0) or 0),
-                output_tokens=int(usage.get("completion_tokens", 0) or 0),
-            ),
-        )
+            body = response.json()
+            try:
+                text = self._extract_text(body)
+            except ModelClientError as error:
+                # A successful response with no text is usually transient; retry.
+                last_empty_error = error
+                if attempt + 1 < EMPTY_RESPONSE_RETRIES:
+                    time.sleep(EMPTY_RESPONSE_RETRY_DELAY * (attempt + 1))
+                    continue
+                raise
+
+            usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text=text)],
+                usage=SimpleNamespace(
+                    input_tokens=int(usage.get("prompt_tokens", 0) or 0),
+                    output_tokens=int(usage.get("completion_tokens", 0) or 0),
+                ),
+            )
+
+        raise last_empty_error or ModelClientError("Model response did not include text output")
 
     def _api_key_value(self) -> str:
         key = self._api_key or os.getenv(OPENROUTER_API_KEY_ENV_VAR, "")
@@ -150,9 +170,7 @@ class ModelClient:
             role = message.get("role", "user")
             content = self._content_to_text(message.get("content", ""))
             if tools and role == "user" and index == last_index:
-                content = (
-                    f"{content}\n\nAvailable research tools requested by caller:\n{tools}"
-                )
+                content = f"{content}\n\nAvailable research tools requested by caller:\n{tools}"
             messages.append({"role": role, "content": content})
 
         if not messages:
@@ -187,11 +205,7 @@ class ModelClient:
             if isinstance(content, str) and content.strip():
                 return content
             if isinstance(content, list):
-                texts = [
-                    str(part.get("text", ""))
-                    for part in content
-                    if isinstance(part, dict)
-                ]
+                texts = [str(part.get("text", "")) for part in content if isinstance(part, dict)]
                 joined = "\n".join(text for text in texts if text.strip())
                 if joined.strip():
                     return joined
