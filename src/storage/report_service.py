@@ -548,6 +548,11 @@ class ReportStorageService:
                     return None
 
                 report_dict = report.to_dict()
+                # Full extraction data and tags are only needed on a single-report
+                # fetch (the record view), not the list, so they're added here rather
+                # than in the shared, list-facing to_dict().
+                report_dict["threat_data"] = report.threat_data
+                report_dict["search_tags"] = report.search_tags or []
 
                 # Load content from S3 if requested
                 if include_content:
