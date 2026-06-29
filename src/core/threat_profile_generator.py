@@ -21,6 +21,27 @@ from src.core.ml_guidance_generator import MLGuidanceGenerator, ThreatCharacteri
 from src.core.trace_exporter import get_trace_exporter
 from src.core.performance_metrics import PerformanceTracker
 
+# A lone backslash not introducing a valid single-character JSON escape.
+_LONE_INVALID_ESCAPE = re.compile(r'\\(?!["/bfnrtu])')
+_ESCAPED_BACKSLASH_PLACEHOLDER = "\x00"
+
+
+def repair_invalid_json_escapes(text: str) -> str:
+    """Escape stray backslashes that aren't valid JSON escape sequences.
+
+    Models routinely emit string values containing Windows paths (``C:\\Users``)
+    or regex fragments (``\\d+``) where the backslash is not a legal JSON escape,
+    which makes strict ``json.loads`` reject an otherwise-complete object.
+
+    Already-valid escaped backslashes (``\\\\``) are protected first so they aren't
+    disturbed; each remaining lone backslash is then doubled unless it introduces a
+    valid escape (``\\n``, ``\\"``, ``\\uXXXX`` …). This repairs the common case
+    without corrupting legitimate escapes.
+    """
+    protected = text.replace("\\\\", _ESCAPED_BACKSLASH_PLACEHOLDER)
+    repaired = _LONE_INVALID_ESCAPE.sub(r"\\\\", protected)
+    return repaired.replace(_ESCAPED_BACKSLASH_PLACEHOLDER, "\\\\")
+
 
 class ThreatProfileGenerator:
     def __init__(
@@ -441,16 +462,27 @@ Remember: Accuracy and source verification through the available research tools 
                     self.performance_tracker.record_parsing_result(True)
 
             except json.JSONDecodeError as e:
-                print(f"DEBUG: JSON parsing failed: {e}")
-                print(f"DEBUG: JSON text preview: {json_text[:500]}")
+                print(f"DEBUG: JSON parsing failed: {e}; attempting escape repair")
 
-                # Record failed parsing
-                if self.enable_metrics and self.performance_tracker:
-                    self.performance_tracker.record_parsing_result(False, str(e))
+                # Stray backslashes (paths, regex) are the common cause; repair the
+                # invalid escapes and retry before giving up.
+                try:
+                    json_data = json.loads(repair_invalid_json_escapes(json_text))
+                    print("DEBUG: JSON parsing successful after escape repair")
+                    if self.enable_metrics and self.performance_tracker:
+                        self.performance_tracker.record_parsing_result(True)
+                except json.JSONDecodeError as repair_error:
+                    print(f"DEBUG: JSON parsing failed after repair: {repair_error}")
+                    print(f"DEBUG: JSON text preview: {json_text[:500]}")
 
-                raise ValueError(
-                    f"Invalid JSON in response: {str(e)}. JSON preview: {json_text[:500]}"
-                )
+                    # Record failed parsing
+                    if self.enable_metrics and self.performance_tracker:
+                        self.performance_tracker.record_parsing_result(False, str(repair_error))
+
+                    raise ValueError(
+                        f"Invalid JSON in response: {str(repair_error)}. "
+                        f"JSON preview: {json_text[:500]}"
+                    )
 
             if not json_data:
                 raise ValueError("Empty JSON data received")
