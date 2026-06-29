@@ -315,7 +315,10 @@ Remember: Accuracy and source verification through the available research tools 
             api_start_time = time.time()
             response = self._api_call_with_retry(
                 model=resolve_model_name(),
-                max_tokens=8192,
+                # The full profile is returned as a single JSON object; cap output at
+                # the model's ceiling so a large profile isn't truncated mid-JSON
+                # (which leaves the object unparseable and fails the whole report).
+                max_tokens=16384,
                 temperature=0.3,
                 messages=[{"role": "user", "content": prompt}],
                 tools=[{"type": "available research tools", "name": "web_search"}],
