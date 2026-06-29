@@ -6,6 +6,9 @@ import Link from "next/link"
 import { useAuth } from "@/contexts/AuthContext"
 import { AuthFrame, AuthNotice } from "@/components/auth/AuthFrame"
 
+const fieldClass =
+  "mt-2 block h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition-colors placeholder:text-zinc-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+
 export default function SignUp() {
   const [name, setName] = useState("")
   const [email, setEmail] = useState("")
@@ -19,7 +22,7 @@ export default function SignUp() {
 
   useEffect(() => {
     if (user) {
-      router.push("/")
+      router.push("/dashboard")
     }
   }, [user, router])
 
@@ -29,12 +32,12 @@ export default function SignUp() {
     setSuccess(false)
 
     if (password !== confirmPassword) {
-      setError("Passwords do not match")
+      setError("Those passwords don't match.")
       return
     }
 
     if (password.length < 6) {
-      setError("Password must be at least 6 characters long")
+      setError("Use a password of at least 6 characters.")
       return
     }
 
@@ -49,7 +52,7 @@ export default function SignUp() {
         setSuccess(true)
       }
     } catch {
-      setError("An unexpected error occurred. Please try again.")
+      setError("Something went wrong. Try again.")
     } finally {
       setLoading(false)
     }
@@ -58,25 +61,25 @@ export default function SignUp() {
   if (success) {
     return (
       <AuthNotice
-        title="Confirm your workspace email"
+        title="Confirm your email"
         description="We sent a confirmation link to your inbox. Complete that step to activate report generation, saved intelligence, and source review."
         actionHref="/auth/signin"
-        actionLabel="Return to analyst access"
+        actionLabel="Return to sign in"
       />
     )
   }
 
   return (
     <AuthFrame
-      eyebrow="Workspace request"
-      title="Create an analyst workspace"
-      description="Set up access for report generation, saved intelligence, and source-backed review queues."
+      eyebrow="Create account"
+      title="Create your workspace"
+      description="Set up access for report generation, saved intelligence, and source-backed review."
       footer={
         <p>
           Already have access?{" "}
           <Link
             href="/auth/signin"
-            className="font-medium text-[#4d5f24] underline-offset-4 hover:underline"
+            className="font-medium text-blue-700 underline-offset-4 hover:underline"
           >
             Open your workspace
           </Link>
@@ -87,18 +90,15 @@ export default function SignUp() {
         {error && (
           <div
             role="alert"
-            className="border border-[#efc7c3] bg-[#fff7f6] px-4 py-3 text-sm leading-6 text-[#9d2b22]"
+            className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm leading-6 text-red-800"
           >
             {error}
           </div>
         )}
 
         <div>
-          <label
-            htmlFor="name"
-            className="block text-sm font-medium text-[#343832]"
-          >
-            Analyst name
+          <label htmlFor="name" className="block text-sm font-medium text-zinc-800">
+            Name
           </label>
           <input
             id="name"
@@ -106,7 +106,7 @@ export default function SignUp() {
             type="text"
             autoComplete="name"
             required
-            className="mt-2 block h-11 w-full border border-[#cfd2c6] bg-white px-3 text-sm text-[#171915] outline-none placeholder:text-[#898f82] focus:border-[#6f7b41] focus:ring-2 focus:ring-[#dfe7c7]"
+            className={fieldClass}
             placeholder="Threat intelligence analyst"
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -114,10 +114,7 @@ export default function SignUp() {
         </div>
 
         <div>
-          <label
-            htmlFor="email"
-            className="block text-sm font-medium text-[#343832]"
-          >
+          <label htmlFor="email" className="block text-sm font-medium text-zinc-800">
             Work email
           </label>
           <input
@@ -126,7 +123,7 @@ export default function SignUp() {
             type="email"
             autoComplete="email"
             required
-            className="mt-2 block h-11 w-full border border-[#cfd2c6] bg-white px-3 text-sm text-[#171915] outline-none placeholder:text-[#898f82] focus:border-[#6f7b41] focus:ring-2 focus:ring-[#dfe7c7]"
+            className={fieldClass}
             placeholder="analyst@company.com"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
@@ -134,10 +131,7 @@ export default function SignUp() {
         </div>
 
         <div>
-          <label
-            htmlFor="password"
-            className="block text-sm font-medium text-[#343832]"
-          >
+          <label htmlFor="password" className="block text-sm font-medium text-zinc-800">
             Password
           </label>
           <input
@@ -145,7 +139,7 @@ export default function SignUp() {
             name="password"
             type="password"
             required
-            className="mt-2 block h-11 w-full border border-[#cfd2c6] bg-white px-3 text-sm text-[#171915] outline-none placeholder:text-[#898f82] focus:border-[#6f7b41] focus:ring-2 focus:ring-[#dfe7c7]"
+            className={fieldClass}
             placeholder="Use at least 6 characters"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
@@ -155,7 +149,7 @@ export default function SignUp() {
         <div>
           <label
             htmlFor="confirmPassword"
-            className="block text-sm font-medium text-[#343832]"
+            className="block text-sm font-medium text-zinc-800"
           >
             Confirm password
           </label>
@@ -164,8 +158,8 @@ export default function SignUp() {
             name="confirmPassword"
             type="password"
             required
-            className="mt-2 block h-11 w-full border border-[#cfd2c6] bg-white px-3 text-sm text-[#171915] outline-none placeholder:text-[#898f82] focus:border-[#6f7b41] focus:ring-2 focus:ring-[#dfe7c7]"
-            placeholder="Repeat the workspace password"
+            className={fieldClass}
+            placeholder="Repeat the password"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
           />
@@ -174,9 +168,9 @@ export default function SignUp() {
         <button
           type="submit"
           disabled={loading}
-          className="flex h-11 w-full items-center justify-center bg-[#20231f] px-4 text-sm font-semibold text-white transition-colors hover:bg-[#343832] focus:outline-none focus:ring-2 focus:ring-[#6f7b41] focus:ring-offset-2 disabled:pointer-events-none disabled:opacity-60"
+          className="flex h-11 w-full items-center justify-center rounded-lg bg-zinc-950 px-4 text-sm font-medium text-white transition-colors hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-60"
         >
-          {loading ? "Creating workspace..." : "Create workspace"}
+          {loading ? "Creating workspace…" : "Create workspace"}
         </button>
       </form>
     </AuthFrame>

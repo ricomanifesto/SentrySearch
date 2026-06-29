@@ -1,0 +1,36 @@
+name: Keep-alive
+
+# Pings the backend health endpoint on a schedule so the managed Postgres does
+# not go idle and auto-pause. The health check opens a real database connection,
+# which counts as activity. Runs every 3 days, well under the 7-day idle window.
+
+on:
+  schedule:
+    - cron: "0 12 */3 * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    name: Ping backend health
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit the health endpoint
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://sentrysearch-production.up.railway.app' }}
+        run: |
+          url="${BACKEND_URL%/}/api/health"
+          echo "Pinging $url"
+          for attempt in 1 2 3 4 5; do
+            code=$(curl -sS -o /tmp/body.txt -w "%{http_code}" --max-time 60 "$url" || echo "000")
+            echo "Attempt $attempt: HTTP $code"
+            cat /tmp/body.txt || true
+            echo
+            if [ "$code" = "200" ]; then
+              echo "Backend healthy."
+              exit 0
+            fi
+            echo "Not healthy yet (likely cold start); waiting before retry..."
+            sleep 30
+          done
+          echo "::error::Backend did not return HTTP 200 after retries."
+          exit 1

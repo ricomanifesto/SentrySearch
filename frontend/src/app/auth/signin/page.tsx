@@ -6,6 +6,9 @@ import Link from "next/link"
 import { useAuth } from "@/contexts/AuthContext"
 import { AuthFrame } from "@/components/auth/AuthFrame"
 
+const fieldClass =
+  "mt-2 block h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition-colors placeholder:text-zinc-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+
 export default function SignIn() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
@@ -16,7 +19,7 @@ export default function SignIn() {
 
   useEffect(() => {
     if (user) {
-      router.push("/")
+      router.push("/dashboard")
     }
   }, [user, router])
 
@@ -31,10 +34,10 @@ export default function SignIn() {
       if (error) {
         setError(error.message)
       } else {
-        router.push("/")
+        router.push("/dashboard")
       }
     } catch {
-      setError("An unexpected error occurred. Please try again.")
+      setError("Something went wrong. Try again.")
     } finally {
       setLoading(false)
     }
@@ -43,16 +46,16 @@ export default function SignIn() {
   return (
     <AuthFrame
       eyebrow="Analyst access"
-      title="Open your intelligence workspace"
+      title="Open your workspace"
       description="Continue reviewing saved reports, source context, and generated threat intelligence from one account."
       footer={
         <p>
           New to SentrySearch?{" "}
           <Link
             href="/auth/signup"
-            className="font-medium text-[#4d5f24] underline-offset-4 hover:underline"
+            className="font-medium text-blue-700 underline-offset-4 hover:underline"
           >
-            Request a workspace account
+            Create a workspace
           </Link>
         </p>
       }
@@ -61,17 +64,14 @@ export default function SignIn() {
         {error && (
           <div
             role="alert"
-            className="border border-[#efc7c3] bg-[#fff7f6] px-4 py-3 text-sm leading-6 text-[#9d2b22]"
+            className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm leading-6 text-red-800"
           >
             {error}
           </div>
         )}
 
         <div>
-          <label
-            htmlFor="email"
-            className="block text-sm font-medium text-[#343832]"
-          >
+          <label htmlFor="email" className="block text-sm font-medium text-zinc-800">
             Work email
           </label>
           <input
@@ -80,7 +80,7 @@ export default function SignIn() {
             type="email"
             autoComplete="email"
             required
-            className="mt-2 block h-11 w-full border border-[#cfd2c6] bg-white px-3 text-sm text-[#171915] outline-none placeholder:text-[#898f82] focus:border-[#6f7b41] focus:ring-2 focus:ring-[#dfe7c7]"
+            className={fieldClass}
             placeholder="analyst@company.com"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
@@ -88,10 +88,7 @@ export default function SignIn() {
         </div>
 
         <div>
-          <label
-            htmlFor="password"
-            className="block text-sm font-medium text-[#343832]"
-          >
+          <label htmlFor="password" className="block text-sm font-medium text-zinc-800">
             Password
           </label>
           <input
@@ -100,7 +97,7 @@ export default function SignIn() {
             type="password"
             autoComplete="current-password"
             required
-            className="mt-2 block h-11 w-full border border-[#cfd2c6] bg-white px-3 text-sm text-[#171915] outline-none placeholder:text-[#898f82] focus:border-[#6f7b41] focus:ring-2 focus:ring-[#dfe7c7]"
+            className={fieldClass}
             placeholder="Enter your workspace password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
@@ -110,9 +107,9 @@ export default function SignIn() {
         <button
           type="submit"
           disabled={loading}
-          className="flex h-11 w-full items-center justify-center bg-[#20231f] px-4 text-sm font-semibold text-white transition-colors hover:bg-[#343832] focus:outline-none focus:ring-2 focus:ring-[#6f7b41] focus:ring-offset-2 disabled:pointer-events-none disabled:opacity-60"
+          className="flex h-11 w-full items-center justify-center rounded-lg bg-zinc-950 px-4 text-sm font-medium text-white transition-colors hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-60"
         >
-          {loading ? "Opening workspace..." : "Open workspace"}
+          {loading ? "Opening workspace…" : "Open workspace"}
         </button>
       </form>
     </AuthFrame>

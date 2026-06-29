@@ -14,8 +14,20 @@ export const routeSurfaces = [
   {
     route: '/',
     page: 'src/app/page.tsx',
+    script: 'check:landing-surface',
+    guard: 'dev/check-landing-surface.mjs',
+  },
+  {
+    route: '/dashboard',
+    page: 'src/app/dashboard/page.tsx',
     script: 'check:dashboard-surface',
     guard: 'dev/check-dashboard-surface.mjs',
+  },
+  {
+    route: '/sample',
+    page: 'src/app/sample/page.tsx',
+    script: 'check:sample-surface',
+    guard: 'dev/check-sample-surface.mjs',
   },
   {
     route: '/admin',

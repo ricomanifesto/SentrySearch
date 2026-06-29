@@ -25,7 +25,7 @@ const expectations = [
   {
     name: 'frames auth as a threat-intelligence workspace entry',
     source: authFrame,
-    pattern: /Enter the intelligence review room/,
+    pattern: /Source-backed threat intelligence/,
   },
   {
     name: 'keeps product-specific source review context visible',
@@ -35,17 +35,17 @@ const expectations = [
   {
     name: 'uses product-specific sign-in title copy',
     source: signIn,
-    pattern: /Open your intelligence workspace/,
+    pattern: /Open your workspace/,
   },
   {
     name: 'uses product-specific sign-up title copy',
     source: signUp,
-    pattern: /Create an analyst workspace/,
+    pattern: /Create your workspace/,
   },
   {
     name: 'uses product-specific success copy',
     source: signUp,
-    pattern: /Confirm your workspace email/,
+    pattern: /Confirm your email/,
   },
   {
     name: 'keeps sign-in routed through the auth API boundary',
@@ -98,9 +98,9 @@ const expectations = [
     absentPattern: /bg-gray-50/,
   },
   {
-    name: 'uses stable non-rounded panel framing',
+    name: 'uses stable tokenized panel framing',
     source: authFrame,
-    pattern: /border border-\[#d8d9ce\] bg-white p-6/,
+    pattern: /rounded-2xl border border-zinc-200 bg-white p-6/,
   },
   {
     name: 'declares the auth entry surface contract',
@@ -115,12 +115,12 @@ const expectations = [
   {
     name: 'keeps mobile auth hero type below desktop scale',
     source: authFrame,
-    pattern: /text-3xl[\s\S]*sm:text-5xl/,
+    pattern: /text-4xl[\s\S]*sm:text-5xl/,
   },
   {
     name: 'uses a compact mobile auth layout before expanding on desktop',
     source: authFrame,
-    pattern: /gap-6[\s\S]*lg:gap-10/,
+    pattern: /gap-10[\s\S]*lg:gap-16/,
   },
   {
     name: 'surfaces the auth form earlier on mobile',
