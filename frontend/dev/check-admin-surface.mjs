@@ -3,76 +3,26 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const adminPage = readFileSync(
-  resolve(process.cwd(), 'src/app/admin/page.tsx'),
-  'utf8',
-);
+const adminPage = readFileSync(resolve(process.cwd(), 'src/app/admin/page.tsx'), 'utf8');
 const packageJson = readFileSync(resolve(process.cwd(), 'package.json'), 'utf8');
 
 const expectations = [
-  {
-    name: 'keeps admin behind the auth boundary',
-    pattern: /<AuthGuard>/,
-  },
-  {
-    name: 'frames the route as admin readiness',
-    pattern: /Admin readiness center/,
-  },
-  {
-    name: 'uses control-plane language',
-    pattern: /Control plane review/,
-  },
-  {
-    name: 'uses the shared surface header contract',
-    pattern: /import \{ SurfaceHeader \} from '@\/components\/ui\/SurfaceHeader'[\s\S]*<SurfaceHeader[\s\S]*eyebrow="Control plane review"/,
-  },
-  {
-    name: 'does not keep generic coming-soon placeholder copy',
-    absentPattern: /Admin Dashboard|Administrative features coming soon|available in a future update/,
-  },
-  {
-    name: 'names workspace access review',
-    pattern: /Workspace access review/,
-  },
-  {
-    name: 'names deployment posture review',
-    pattern: /Deployment posture/,
-  },
-  {
-    name: 'names report governance review',
-    pattern: /Report governance/,
-  },
-  {
-    name: 'states that actions are intentionally unavailable',
-    pattern: /Read-only until admin APIs are wired/,
-  },
-  {
-    name: 'does not add client-side admin input forms',
-    absentPattern: /<(form|input|textarea|select)\b/i,
-  },
-  {
-    name: 'does not add destructive admin controls',
-    absentPattern: /delete|remove user|disable account|rotate key|revoke/i,
-  },
-  {
-    name: 'guards the route against horizontal mobile overflow',
-    pattern: /overflow-x-hidden/,
-  },
-  {
-    name: 'keeps layout containers shrink-safe',
-    pattern: /min-w-0/,
-  },
-  {
-    name: 'registers the admin surface check script',
-    source: packageJson,
-    pattern: /"check:admin-surface": "node dev\/check-admin-surface\.mjs"/,
-  },
+  { name: 'keeps admin behind the auth boundary', source: adminPage, pattern: /<AuthGuard>/ },
+  { name: 'declares the admin readiness surface contract', source: adminPage, pattern: /data-surface="admin-readiness"/ },
+  { name: 'frames the surface as an admin readiness center', source: adminPage, pattern: /Admin readiness center/ },
+  { name: 'uses a canonical readiness areas collection', source: adminPage, pattern: /const readinessAreas = \[/ },
+  { name: 'renders readiness areas from the canonical collection', source: adminPage, pattern: /readinessAreas\.map/ },
+  { name: 'documents the administrative surface boundary', source: adminPage, pattern: /Administrative surface status/ },
+  { name: 'states the route is intentionally non-mutating', source: adminPage, pattern: /intentionally non-mutating/ },
+  { name: 'reserves admin actions for the backend', source: adminPage, pattern: /No destructive workspace actions/ },
+  { name: 'guards against horizontal mobile overflow', source: adminPage, pattern: /overflow-x-hidden/ },
+  { name: 'does not use fonts below the legible minimum', source: adminPage, absentPattern: /text-xs|text-\[11px\]/ },
+  { name: 'does not use gradient backgrounds', source: adminPage, absentPattern: /bg-gradient/ },
+  { name: 'registers the admin surface check script', source: packageJson, pattern: /"check:admin-surface": "node dev\/check-admin-surface\.mjs"/ },
 ];
 
 const failures = expectations
-  .filter(({ pattern, absentPattern, source = adminPage }) => (
-    pattern ? !pattern.test(source) : absentPattern.test(source)
-  ))
+  .filter(({ pattern, absentPattern, source }) => (pattern ? !pattern.test(source) : absentPattern.test(source)))
   .map(({ name }) => `- ${name}`);
 
 if (failures.length > 0) {

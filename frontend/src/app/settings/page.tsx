@@ -2,13 +2,21 @@
 
 import { useAuth } from "@/contexts/AuthContext"
 import { AuthGuard } from "@/components/AuthGuard"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
-import { SurfaceHeader } from "@/components/ui/SurfaceHeader"
-import {
-  IdentificationIcon,
-  ServerStackIcon,
-  ShieldCheckIcon,
-} from "@heroicons/react/24/outline"
+
+const generationPolicy = [
+  {
+    title: "Server-side gateway",
+    description: "Report generation uses the configured backend model path for this deployment.",
+  },
+  {
+    title: "Provider keys stay server-side",
+    description: "This page does not collect user-level provider credentials or expose deployment secrets.",
+  },
+  {
+    title: "Policy changes",
+    description: "Generation settings are controlled through backend configuration, not browser-local form fields.",
+  },
+]
 
 export default function Settings() {
   const { user } = useAuth()
@@ -19,119 +27,71 @@ export default function Settings() {
       : "Unavailable in this session"
   const email = user?.email || "Unavailable in this session"
 
+  const identity = [
+    { label: "Display name", value: displayName },
+    { label: "Work email", value: email },
+  ]
+  const accessPosture = [
+    { label: "Account boundary", value: "Required for saved intelligence" },
+    { label: "Report storage", value: "Scoped to authenticated workspace access" },
+  ]
+
   return (
     <AuthGuard>
-      <div className="min-h-screen overflow-x-hidden bg-slate-50 py-6 sm:py-10">
-        <div className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8">
-          <SurfaceHeader
-            eyebrow="Workspace boundary"
-            title="Workspace access controls"
-            description="Review the account context and generation policy that govern saved intelligence in this browser session."
-          />
+      <main data-surface="settings-workspace" className="overflow-x-hidden bg-[var(--surface-0)]">
+        <div className="mx-auto max-w-5xl px-6 py-12 lg:px-8">
+          <div className="max-w-2xl">
+            <p className="text-sm font-medium text-blue-700">Workspace</p>
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight text-zinc-950">Workspace access</h1>
+            <p className="mt-4 text-lg leading-8 text-zinc-600">
+              The account context and generation policy that govern saved
+              intelligence in this session.
+            </p>
+          </div>
 
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-            <Card className="min-w-0 border-slate-200 shadow-sm lg:col-span-2">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-slate-950">
-                  <IdentificationIcon className="h-5 w-5 text-slate-700" />
-                  Workspace identity
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <div className="min-w-0 border border-slate-200 bg-slate-50 p-4">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      Display name
-                    </p>
-                    <p className="mt-2 break-words text-sm font-medium text-slate-950">
-                      {displayName}
-                    </p>
+          <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-3">
+            <section className="rounded-xl border border-zinc-200 bg-white p-5 lg:col-span-2">
+              <h2 className="text-base font-semibold text-zinc-950">Workspace identity</h2>
+              <dl className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                {identity.map((row) => (
+                  <div key={row.label} className="min-w-0 rounded-lg border border-zinc-200 bg-[var(--surface-0)] p-4">
+                    <dt className="text-sm text-zinc-500">{row.label}</dt>
+                    <dd className="mt-2 break-words text-sm font-medium text-zinc-950">{row.value}</dd>
                   </div>
-                  <div className="min-w-0 border border-slate-200 bg-slate-50 p-4">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      Work email
-                    </p>
-                    <p className="mt-2 break-words text-sm font-medium text-slate-950">
-                      {email}
-                    </p>
-                  </div>
-                </div>
-                <div className="mt-5 border border-blue-200 bg-blue-50 p-4 text-sm leading-6 text-blue-900">
-                  This identity is read from the active authenticated session.
-                  SentrySearch uses it to keep saved reports and review history
-                  scoped to the current workspace.
-                </div>
-              </CardContent>
-            </Card>
+                ))}
+              </dl>
+              <p className="mt-5 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm leading-6 text-blue-900">
+                This identity is read from the active authenticated session. SentrySearch
+                uses it to keep saved reports and review history scoped to this workspace.
+              </p>
+            </section>
 
-            <Card className="min-w-0 border-slate-200 shadow-sm">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-slate-950">
-                  <ShieldCheckIcon className="h-5 w-5 text-slate-700" />
-                  Access posture
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4 text-sm leading-6 text-slate-600">
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      Account boundary
-                    </p>
-                    <p className="mt-1 text-slate-950">
-                      Required for saved intelligence
-                    </p>
+            <section className="rounded-xl border border-zinc-200 bg-white p-5">
+              <h2 className="text-base font-semibold text-zinc-950">Access posture</h2>
+              <dl className="mt-4 space-y-4">
+                {accessPosture.map((row) => (
+                  <div key={row.label}>
+                    <dt className="text-sm text-zinc-500">{row.label}</dt>
+                    <dd className="mt-1 text-sm font-medium text-zinc-950">{row.value}</dd>
                   </div>
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      Report storage
-                    </p>
-                    <p className="mt-1 text-slate-950">
-                      Scoped to authenticated workspace access
-                    </p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+                ))}
+              </dl>
+            </section>
 
-            <Card className="min-w-0 border-slate-200 shadow-sm lg:col-span-3">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-slate-950">
-                  <ServerStackIcon className="h-5 w-5 text-slate-700" />
-                  Generation policy
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                  <div className="min-w-0 border border-slate-200 bg-white p-4">
-                    <p className="text-sm font-semibold text-slate-950">
-                      Server-side gateway
-                    </p>
-                    <p className="mt-2 text-sm leading-6 text-slate-600">
-                      Report generation uses the configured backend model path for this deployment.
-                    </p>
+            <section className="rounded-xl border border-zinc-200 bg-white p-5 lg:col-span-3">
+              <h2 className="text-base font-semibold text-zinc-950">Generation policy</h2>
+              <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+                {generationPolicy.map((item) => (
+                  <div key={item.title} className="min-w-0 rounded-lg border border-zinc-200 bg-[var(--surface-0)] p-4">
+                    <p className="text-sm font-medium text-zinc-950">{item.title}</p>
+                    <p className="mt-2 text-sm leading-6 text-zinc-600">{item.description}</p>
                   </div>
-                  <div className="min-w-0 border border-slate-200 bg-white p-4">
-                    <p className="text-sm font-semibold text-slate-950">
-                      Provider keys remain server-side
-                    </p>
-                    <p className="mt-2 text-sm leading-6 text-slate-600">
-                      This page does not collect user-level provider credentials or expose deployment secrets.
-                    </p>
-                  </div>
-                  <div className="min-w-0 border border-slate-200 bg-white p-4">
-                    <p className="text-sm font-semibold text-slate-950">
-                      Policy changes
-                    </p>
-                    <p className="mt-2 text-sm leading-6 text-slate-600">
-                      Generation settings are controlled through backend configuration rather than browser-local form fields.
-                    </p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+                ))}
+              </div>
+            </section>
           </div>
         </div>
-      </div>
+      </main>
     </AuthGuard>
   )
 }
