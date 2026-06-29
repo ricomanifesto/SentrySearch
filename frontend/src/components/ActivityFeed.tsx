@@ -5,7 +5,6 @@ import { useQuery } from '@tanstack/react-query';
 import {
   DocumentTextIcon,
   UserIcon,
-  ClockIcon,
   ExclamationTriangleIcon,
   ArrowDownTrayIcon,
   PlusIcon,
@@ -15,8 +14,6 @@ import {
 
 import { api } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/utils';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Badge } from '@/components/ui/Badge';
 
 interface ActivityEvent {
   id: string;
@@ -36,7 +33,6 @@ type ActivityTrailRow = {
   timestamp: string;
   severity: ActivityEvent['severity'];
   Icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
-  tone: string;
   metadataSummary?: string;
 };
 
@@ -52,25 +48,13 @@ const getActivityIcon = (type: string) => {
   }
 };
 
-const getSeverityVariant = (severity: string) => {
+const severityDotClass = (severity: string) => {
   switch (severity) {
-    case 'success': return 'success';
-    case 'warning': return 'warning';
-    case 'error': return 'error';
+    case 'success': return 'bg-green-500';
+    case 'warning': return 'bg-amber-500';
+    case 'error': return 'bg-red-500';
     case 'info':
-    default: return 'info';
-  }
-};
-
-const getActivityTone = (type: string) => {
-  switch (type) {
-    case 'report_created': return 'bg-emerald-50 text-emerald-700';
-    case 'report_viewed': return 'bg-cyan-50 text-cyan-700';
-    case 'report_deleted': return 'bg-red-50 text-red-700';
-    case 'export_generated': return 'bg-violet-50 text-violet-700';
-    case 'user_login': return 'bg-indigo-50 text-indigo-700';
-    case 'system_error': return 'bg-red-50 text-red-700';
-    default: return 'bg-zinc-100 text-zinc-700';
+    default: return 'bg-blue-500';
   }
 };
 
@@ -78,19 +62,15 @@ function summarizeActivityMetadata(metadata?: Record<string, unknown>) {
   if (!metadata) {
     return undefined;
   }
-
   if (typeof metadata.tool_name === 'string') {
     return metadata.tool_name;
   }
-
   if (typeof metadata.format === 'string' && typeof metadata.count === 'number') {
     return `${metadata.count} ${metadata.format.toUpperCase()} records`;
   }
-
   if (typeof metadata.source === 'string') {
     return `${metadata.source} source`;
   }
-
   return undefined;
 }
 
@@ -102,7 +82,6 @@ function buildActivityTrailRows(activities: ActivityEvent[]): ActivityTrailRow[]
     timestamp: formatRelativeTime(activity.created_at),
     severity: activity.severity,
     Icon: getActivityIcon(activity.type),
-    tone: getActivityTone(activity.type),
     metadataSummary: summarizeActivityMetadata(activity.metadata),
   }));
 }
@@ -118,172 +97,80 @@ export function ActivityFeed({ userId, limit = 10, showHeader = true, compact = 
   const { data: activities, isLoading, error } = useQuery({
     queryKey: ['activities', userId, limit],
     queryFn: () => api.getActivities(),
-    refetchInterval: 30000, // Refresh every 30 seconds
+    refetchInterval: 30000,
   });
 
-  const mockActivities: ActivityEvent[] = [
-    {
-      id: '1',
-      type: 'report_created',
-      user_id: '1',
-      username: 'admin',
-      description: 'Generated threat intelligence report for ShadowPad',
-      metadata: { report_id: 'rpt_123', tool_name: 'ShadowPad', quality_score: 4.2 },
-      created_at: new Date(Date.now() - 300000).toISOString(), // 5 minutes ago
-      severity: 'success'
-    },
-    {
-      id: '2',
-      type: 'export_generated',
-      user_id: '2',
-      username: 'analyst1',
-      description: 'Exported 15 reports in JSON format',
-      metadata: { format: 'json', count: 15 },
-      created_at: new Date(Date.now() - 900000).toISOString(), // 15 minutes ago
-      severity: 'info'
-    },
-    {
-      id: '3',
-      type: 'user_login',
-      user_id: '1',
-      username: 'admin',
-      description: 'Workspace session started',
-      metadata: { session: 'active' },
-      created_at: new Date(Date.now() - 1800000).toISOString(), // 30 minutes ago
-      severity: 'info'
-    },
-    {
-      id: '4',
-      type: 'report_viewed',
-      user_id: '2',
-      username: 'analyst1',
-      description: 'Viewed report: Cobalt Strike Analysis',
-      metadata: { report_id: 'rpt_456', tool_name: 'Cobalt Strike' },
-      created_at: new Date(Date.now() - 2700000).toISOString(), // 45 minutes ago
-      severity: 'info'
-    },
-    {
-      id: '5',
-      type: 'system_error',
-      description: 'Source refresh is waiting on the retry window',
-      metadata: { source: 'reports' },
-      created_at: new Date(Date.now() - 3600000).toISOString(), // 1 hour ago
-      severity: 'warning'
-    },
-    {
-      id: '6',
-      type: 'report_deleted',
-      user_id: '1',
-      username: 'admin',
-      description: 'Deleted report: Outdated Malware Analysis',
-      metadata: { report_id: 'rpt_789' },
-      created_at: new Date(Date.now() - 7200000).toISOString(), // 2 hours ago
-      severity: 'warning'
-    }
-  ];
-
-  const displayActivities = activities || mockActivities;
-  const activityTrailRows = buildActivityTrailRows(displayActivities as ActivityEvent[]);
+  // Only ever render real activity. Never fall back to fabricated events.
+  const activityTrailRows = buildActivityTrailRows((activities as unknown as ActivityEvent[]) || []);
 
   if (error) {
     return (
-      <Card className="border-red-200 bg-red-50">
-        <CardContent className="py-5 text-center">
-          <ExclamationTriangleIcon className="mx-auto mb-2 h-8 w-8 text-red-500" />
-          <p className="text-sm font-medium text-red-700">Activity trail is unavailable right now</p>
-          <p className="mt-1 text-xs leading-5 text-red-600">
-            Continue with saved reports while the workspace events reconnect.
-          </p>
-        </CardContent>
-      </Card>
+      <section data-contract="Dashboard.ActivityTrail.v1" className="rounded-xl border border-red-200 bg-red-50 p-5">
+        <h2 className="text-base font-semibold text-red-900">Activity trail</h2>
+        <p className="mt-2 text-sm leading-6 text-red-700">
+          Activity trail is unavailable right now. Continue with saved reports while the workspace events reconnect.
+        </p>
+      </section>
     );
   }
 
   return (
-    <Card data-contract="Dashboard.ActivityTrail.v1" className="border-zinc-200 shadow-sm">
+    <section data-contract="Dashboard.ActivityTrail.v1" className="min-w-0 rounded-xl border border-zinc-200 bg-white p-5">
       {showHeader && (
-        <CardHeader className="border-b border-zinc-100 pb-4">
-          <p className="text-xs font-semibold uppercase tracking-wide text-violet-700">Workspace event log</p>
-          <CardTitle className="mt-1 flex items-center gap-2 text-base text-zinc-950">
-            <ClockIcon className="h-5 w-5 text-zinc-500" />
-            <span>Activity trail</span>
-          </CardTitle>
-          <p className="mt-2 text-xs leading-5 text-zinc-500">
+        <div>
+          <h2 className="text-base font-semibold text-zinc-950">Activity trail</h2>
+          <p className="mt-1 text-sm leading-6 text-zinc-500">
             Recent report, export, and session events for the briefing review.
           </p>
-        </CardHeader>
+        </div>
       )}
-      <CardContent className={showHeader ? '' : 'pt-6'}>
+      <div className={showHeader ? 'mt-4' : ''}>
         {isLoading ? (
-          <div className="space-y-4">
+          <div className="space-y-3" role="status" aria-label="Loading activity trail">
             {[...Array(5)].map((_, i) => (
-              <div key={i} className="animate-pulse">
-                <div className="flex items-start gap-3">
-                  <div className="h-8 w-8 rounded-md bg-zinc-200"></div>
-                  <div className="flex-1 space-y-2">
-                    <div className="h-4 w-3/4 rounded bg-zinc-200"></div>
-                    <div className="h-3 w-1/2 rounded bg-zinc-200"></div>
-                  </div>
-                </div>
-              </div>
+              <div key={i} className="h-12 animate-pulse rounded-lg bg-zinc-100" />
             ))}
           </div>
         ) : activityTrailRows.length === 0 ? (
-          <div className="py-8 text-center text-zinc-500">
-            <ClockIcon className="mx-auto mb-4 h-12 w-12 text-zinc-400" />
-            <p>Activity appears after reports are generated, opened, exported, or retired</p>
+          <div className="rounded-lg border border-dashed border-zinc-300 px-4 py-8 text-center">
+            <p className="text-sm text-zinc-500">
+              Activity appears after reports are generated, opened, exported, or retired.
+            </p>
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-2">
             {activityTrailRows.slice(0, limit).map((activity) => {
               const Icon = activity.Icon;
-
               return (
-                <div key={activity.id} className="flex min-w-0 items-start gap-3 rounded-md border border-zinc-100 bg-white px-3 py-3">
-                  <div className={`flex-shrink-0 rounded-md p-2 ${activity.tone}`}>
+                <div key={activity.id} className="flex min-w-0 items-start gap-3 rounded-lg border border-zinc-100 px-3 py-3">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-zinc-100 text-zinc-600">
                     <Icon aria-hidden="true" className="h-4 w-4" />
                   </div>
-
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 flex-1">
-                        <p className={`text-sm font-medium text-zinc-950 ${compact ? 'truncate' : ''}`}>
-                          {activity.label}
-                        </p>
-
-                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-                          <span className="text-xs text-zinc-500">{activity.detail}</span>
-                          <span className="text-xs text-zinc-400" aria-hidden="true">&middot;</span>
-                          <span className="text-xs text-zinc-500">{activity.timestamp}</span>
-                          {!compact && activity.metadataSummary ? (
-                            <>
-                              <span className="text-xs text-zinc-400" aria-hidden="true">&middot;</span>
-                              <span className="text-xs font-medium text-zinc-600">{activity.metadataSummary}</span>
-                            </>
-                          ) : null}
-                        </div>
-                      </div>
-
-                      <Badge variant={getSeverityVariant(activity.severity)} size="sm">
-                        {activity.severity}
-                      </Badge>
+                  <div className="min-w-0 flex-1">
+                    <p className={`text-sm font-medium text-zinc-950 ${compact ? 'truncate' : ''}`}>{activity.label}</p>
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-zinc-500">
+                      <span>{activity.detail}</span>
+                      <span aria-hidden="true">&middot;</span>
+                      <span>{activity.timestamp}</span>
+                      {!compact && activity.metadataSummary ? (
+                        <>
+                          <span aria-hidden="true">&middot;</span>
+                          <span className="font-medium text-zinc-600">{activity.metadataSummary}</span>
+                        </>
+                      ) : null}
                     </div>
                   </div>
+                  <span
+                    className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${severityDotClass(activity.severity)}`}
+                    aria-label={activity.severity}
+                  />
                 </div>
               );
             })}
           </div>
         )}
-        
-        {activityTrailRows.length > limit && (
-          <div className="mt-4 text-center">
-            <button className="text-sm font-medium text-zinc-700 hover:text-zinc-950">
-              Review full activity trail
-            </button>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   );
 }
 
