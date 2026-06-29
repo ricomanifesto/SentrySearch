@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from storage.report_service import report_service
 from storage.database import db_manager
 from core.threat_profile_generator import ThreatProfileGenerator
+from core.markdown_generator import generate_markdown
 from auth.supabase_auth import AuthenticatedUser, verify_jwt_token
 
 logger = logging.getLogger(__name__)
@@ -312,17 +313,33 @@ def run_report_generation(
     try:
         generator = ThreatProfileGenerator()
         generator.enable_ml_guidance = enable_ml_guidance
-        result = generator.get_threat_intelligence(tool_name=tool_name)
+        profile = generator.get_threat_intelligence(tool_name=tool_name)
 
-        if not result or "error" in result:
+        if not profile or "error" in profile:
             logger.error("Generation returned no usable result for report %s", report_id)
             report_service.mark_report_failed(report_id)
             return
 
-        result["id"] = report_id
-        result.setdefault("tool_name", tool_name)
-        result.setdefault("processing_time_ms", int((time.monotonic() - start) * 1000))
-        report_service.finalize_report(report_id, result, user_id=user_id)
+        # get_threat_intelligence returns the raw profile; map it onto the storage
+        # schema (narrative, structured extraction, quality, tags) the way the record
+        # view expects, rather than persisting the bare profile.
+        quality_data = profile.get("_quality_assessment") or {}
+        elapsed_ms = profile.get("_processing_time_ms") or int((time.monotonic() - start) * 1000)
+        category = profile.get("category") or ""
+        report_data = {
+            "id": report_id,
+            "tool_name": tool_name,
+            "category": category,
+            "threat_type": profile.get("threatType") or "",
+            "quality_score": quality_data.get("overall_score"),
+            "processing_time_ms": elapsed_ms,
+            "threat_data": profile,
+            "quality_assessment": quality_data or None,
+            "markdown_content": generate_markdown(profile),
+            "trace_data": profile.get("_trace_data"),
+            "search_tags": [tag for tag in [tool_name.lower(), category.lower()] if tag],
+        }
+        report_service.finalize_report(report_id, report_data, user_id=user_id)
 
     except Exception as e:  # pragma: no cover - exercised via mark_report_failed test
         logger.exception("Background generation failed for report %s: %s", report_id, e)

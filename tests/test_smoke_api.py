@@ -316,6 +316,45 @@ def test_background_generation_marks_failed_without_leaking_detail(monkeypatch):
     assert marked["report_id"] == "report-1"
 
 
+def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
+    profile = {
+        "coreMetadata": {"name": "Cobalt Strike"},
+        "category": "malware",
+        "threatType": "post_exploitation_framework",
+        "_quality_assessment": {"overall_score": 4.1},
+        "_processing_time_ms": 965000,
+    }
+
+    class Generator:
+        enable_ml_guidance = True
+
+        def get_threat_intelligence(self, tool_name: str):
+            return profile
+
+    monkeypatch.setattr(api_main, "ThreatProfileGenerator", Generator)
+
+    captured = {}
+
+    def finalize_report(report_id, report_data, user_id=None):
+        captured.update(report_id=report_id, report_data=report_data, user_id=user_id)
+        return report_id
+
+    monkeypatch.setattr(api_main.report_service, "finalize_report", finalize_report)
+
+    api_main.run_report_generation("report-9", "Cobalt Strike", False, "analyst-user")
+
+    data = captured["report_data"]
+    assert captured["user_id"] == "analyst-user"
+    # The raw profile is persisted as structured extraction data, plus a rendered
+    # narrative, the quality score, real timing, and search tags.
+    assert data["threat_data"] is profile
+    assert data["quality_score"] == 4.1
+    assert data["processing_time_ms"] == 965000
+    assert data["threat_type"] == "post_exploitation_framework"
+    assert "cobalt strike" in data["search_tags"]
+    assert isinstance(data["markdown_content"], str) and data["markdown_content"]
+
+
 def test_markdown_generation_redacts_internal_exception_detail():
     markdown = generate_markdown(
         {

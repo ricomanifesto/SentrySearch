@@ -461,17 +461,26 @@ class ReportStorageService:
                 report_data["category"] = category
                 report_data["threat_type"] = threat_type
 
+            # Content upload is best-effort: the structured profile and metadata are
+            # persisted in Postgres regardless, so a storage hiccup degrades to a
+            # record without its narrative rather than failing the whole report.
             markdown_s3_key = None
-            if "markdown_content" in report_data:
-                markdown_s3_key = self.s3_manager.upload_markdown_report(
-                    report_id, report_data["markdown_content"]
-                )
+            if report_data.get("markdown_content"):
+                try:
+                    markdown_s3_key = self.s3_manager.upload_markdown_report(
+                        report_id, report_data["markdown_content"]
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not upload markdown for {report_id}: {e}")
 
             trace_s3_key = None
-            if "trace_data" in report_data:
-                trace_s3_key = self.s3_manager.upload_trace_data(
-                    report_id, report_data["trace_data"]
-                )
+            if report_data.get("trace_data"):
+                try:
+                    trace_s3_key = self.s3_manager.upload_trace_data(
+                        report_id, report_data["trace_data"]
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not upload trace data for {report_id}: {e}")
 
             with self.db_manager.get_session() as session:
                 report = session.query(Report).filter(Report.id == report_id).first()
