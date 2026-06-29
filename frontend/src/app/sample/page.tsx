@@ -5,10 +5,10 @@ import Link from 'next/link';
 import { ArrowRightIcon, ArrowLeftIcon } from '@heroicons/react/24/outline';
 
 const signals = [
-  { label: 'Confidence', value: '4.3 / 5.0', detail: 'High confidence' },
-  { label: 'Category', value: 'Backdoor', detail: 'Modular implant' },
-  { label: 'Threat family', value: 'Espionage', detail: 'State-aligned tooling' },
-  { label: 'Sources', value: '4 cited', detail: 'Linked to findings' },
+  { label: 'Confidence', value: '3.5 / 5.0', detail: 'Reviewable' },
+  { label: 'Category', value: 'Malware', detail: 'Post-exploitation framework' },
+  { label: 'Threat family', value: 'Dual-use', detail: 'Red-team tool abused in attacks' },
+  { label: 'Sources', value: '3 cited', detail: 'Linked to findings' },
 ];
 
 type Section = {
@@ -21,42 +21,41 @@ const sections: Section[] = [
   {
     heading: 'Overview',
     paras: [
-      'ShadowPad is a modular backdoor that has been used by multiple China-nexus intrusion sets since it first surfaced publicly in 2017. It is sold and shared privately rather than offered openly, and is typically reserved for targeted intrusions rather than commodity crime.',
-      'It first came to broad attention through a software supply-chain compromise, where the implant was embedded in a legitimately signed product update before detection.',
+      'Cobalt Strike is a commercial penetration-testing and adversary-simulation platform first released in 2012. Red teams use it to emulate real intrusions — and threat actors routinely abuse cracked or leaked copies to deploy malware and establish persistence on compromised systems.',
+      'Its “Beacon” payload has appeared in numerous high-profile incidents, including ransomware operations and data breaches, making it one of the most commonly observed post-exploitation tools in real-world attacks.',
     ],
-    cite: 'source · vendor discovery report (2017)',
+    cite: 'source · official vendor site + MITRE ATT&CK (S0393)',
   },
   {
     heading: 'Capabilities',
     paras: [
-      'The implant is plugin-based: a small loader decrypts and runs additional modules in memory, which keeps most functionality off disk and complicates static analysis. Observed modules cover remote shell access, file and registry operations, and credential collection.',
-      'Command-and-control traffic is commonly tunneled over DNS and HTTP(S), and configuration is obfuscated to slow reverse engineering.',
+      'Operators deploy a configurable Beacon implant supporting remote command execution, file upload and download, and in-memory payload staging that keeps activity off disk. “Malleable” C2 profiles let attackers reshape network traffic to imitate legitimate services.',
+      'Commonly tracked as Beacon or Cobalt Strike Beacon, the tool is actively maintained and remains in active use.',
     ],
-    cite: 'source · malware analysis · structured extraction',
+    cite: 'source · structured extraction',
   },
   {
     heading: 'Detection guidance',
     paras: [
-      'Watch for signed but anomalous DLLs loaded by otherwise trusted host processes — DLL side-loading is a recurring delivery path. Pair image-load telemetry with parent/child process lineage to surface trusted binaries loading unexpected modules.',
-      'On the network, review long-lived or beaconing DNS and HTTP sessions to low-reputation infrastructure that do not match the host application’s normal behavior.',
+      'Hunt for beaconing — regular, low-variance callbacks to low-reputation infrastructure that do not match an application’s normal behavior — and account for the jitter and sleep intervals operators use to blend in. Correlate process-creation and image-load telemetry to surface injected or memory-resident Beacon activity.',
+      'Map observed behavior to the MITRE ATT&CK coverage for Cobalt Strike (S0393), and apply published Beacon and YARA signatures where available.',
     ],
     cite: 'guidance · detection',
   },
   {
     heading: 'Mitigations',
     paras: [
-      'Constrain DLL search order and prefer signed-and-pinned module loading for sensitive applications. Enforce application allow-listing where feasible, and segment management interfaces so a single compromise does not yield broad lateral movement.',
-      'Validate the provenance of vendor updates, and monitor for unexpected changes to the integrity of signed binaries in the software supply chain.',
+      'Constrain and monitor outbound traffic, especially long-lived HTTP(S) and DNS sessions to untrusted infrastructure; egress filtering and TLS inspection reduce Beacon command-and-control viability.',
+      'Enforce application allow-listing and least privilege to limit payload execution and lateral movement, and prioritize EDR coverage that flags in-memory injection and the named-pipe activity associated with Beacon.',
     ],
     cite: 'guidance · mitigation',
   },
 ];
 
 const sources = [
-  'Vendor discovery report — supply-chain compromise analysis (2017)',
-  'Independent malware analysis — module and C2 behavior',
-  'Government advisory — associated intrusion-set activity',
-  'Public sandbox detonation — observed host behavior',
+  'Official vendor documentation — Cobalt Strike (cobaltstrike.com)',
+  'MITRE ATT&CK — Software S0393 (Cobalt Strike)',
+  'Vendor threat reporting — observed use in ransomware and intrusion activity',
 ];
 
 export default function SampleReport() {
@@ -90,14 +89,14 @@ export default function SampleReport() {
         <header className="fade-up mt-8">
           <p className="text-sm font-medium text-blue-700">Threat intelligence report</p>
           <div className="mt-3 flex flex-wrap items-center gap-3">
-            <h1 className="font-mono text-3xl font-semibold tracking-tight text-zinc-950">ShadowPad</h1>
+            <h1 className="font-mono text-3xl font-semibold tracking-tight text-zinc-950">Cobalt Strike</h1>
             <span className="rounded-md bg-blue-50 px-2 py-1 text-sm font-medium text-blue-700">
-              High confidence
+              Reviewable
             </span>
           </div>
           <p className="mt-4 max-w-2xl text-lg leading-8 text-zinc-600">
-            A source-backed profile of the ShadowPad backdoor: how it operates, how
-            to detect it, and how to reduce exposure — with the evidence behind each
+            A source-backed profile of Cobalt Strike: how it operates, how to
+            detect it, and how to reduce exposure — with the evidence behind each
             section.
           </p>
         </header>
