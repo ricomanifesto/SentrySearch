@@ -10,6 +10,7 @@ from src.core.opencode_client import (
     ModelRateLimitError,
     parse_model_selection,
     resolve_model_name,
+    resolve_openrouter_model,
 )
 
 
@@ -32,78 +33,81 @@ def test_model_selection_allows_openrouter_nested_model_id():
     assert model.model_id == "nex-agi/nex-n2-pro:free"
 
 
-def test_model_client_posts_to_opencode():
+def test_resolve_openrouter_model_strips_route_prefix(monkeypatch):
+    monkeypatch.delenv("SENTRYSEARCH_MODEL", raising=False)
+
+    assert resolve_openrouter_model() == "nex-agi/nex-n2-pro:free"
+    assert resolve_openrouter_model("anthropic/claude-sonnet-4-5") == "anthropic/claude-sonnet-4-5"
+
+
+def test_model_client_posts_to_openrouter():
     requests = []
 
     def handler(request):
         requests.append(request)
-        if request.url.path == "/session":
-            return httpx.Response(200, json={"id": "session-1"})
-        if request.url.path == "/session/session-1/message":
-            payload = json.loads(request.content.decode())
-            assert payload["model"] == {
-                "providerID": "openrouter",
-                "modelID": "nex-agi/nex-n2-pro:free",
-            }
-            return httpx.Response(
-                200,
-                json={"parts": [{"type": "text", "text": "threat report"}]},
-            )
-        return httpx.Response(404)
+        assert request.url.path == "/chat/completions"
+        assert request.method == "POST"
+        assert request.headers["authorization"] == "Bearer test-key"
+        payload = json.loads(request.content.decode())
+        assert payload["model"] == "nex-agi/nex-n2-pro:free"
+        assert payload["messages"][-1]["content"].startswith("Analyze Cobalt Strike")
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "threat report"}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+            },
+        )
 
     client = ModelClient(
-        base_url="http://opencode.test",
+        base_url="http://openrouter.test",
         transport=httpx.MockTransport(handler),
+        api_key="test-key",
     )
 
     response = client.messages.create(
         model="openrouter/nex-agi/nex-n2-pro:free",
-        messages=[{"role": "user", "content": "Generate a report"}],
+        messages=[{"role": "user", "content": "Analyze Cobalt Strike"}],
+        tools=[{"type": "available research tools", "name": "web_search"}],
     )
 
+    assert len(requests) == 1
+    assert response.content[0].type == "text"
     assert response.content[0].text == "threat report"
-    assert [request.url.path for request in requests] == [
-        "/session",
-        "/session/session-1/message",
-    ]
+    assert response.usage.input_tokens == 10
+    assert response.usage.output_tokens == 20
 
 
-def test_model_client_redacts_failed_response_body():
+def test_model_client_raises_on_rate_limit():
     def handler(request):
-        if request.url.path == "/session":
-            return httpx.Response(500, text="prompt and provider details")
-        return httpx.Response(404)
+        return httpx.Response(429, json={"error": "rate limited"})
 
     client = ModelClient(
-        base_url="http://opencode.test",
+        base_url="http://openrouter.test",
+        transport=httpx.MockTransport(handler),
+        api_key="test-key",
+    )
+
+    with pytest.raises(ModelRateLimitError):
+        client.messages.create(
+            model="openrouter/nex-agi/nex-n2-pro:free",
+            messages=[{"role": "user", "content": "hello"}],
+        )
+
+
+def test_model_client_requires_api_key(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    def handler(request):  # pragma: no cover - should never be reached
+        return httpx.Response(200, json={"choices": [{"message": {"content": "x"}}]})
+
+    client = ModelClient(
+        base_url="http://openrouter.test",
         transport=httpx.MockTransport(handler),
     )
 
-    with pytest.raises(ModelClientError) as raised:
+    with pytest.raises(ModelClientError):
         client.messages.create(
             model="openrouter/nex-agi/nex-n2-pro:free",
-            messages=[{"role": "user", "content": "Generate a report"}],
+            messages=[{"role": "user", "content": "hello"}],
         )
-
-    assert "Failed to create OpenCode session: HTTP 500" in str(raised.value)
-    assert "prompt and provider details" not in str(raised.value)
-
-
-def test_model_client_redacts_rate_limit_response_body():
-    def handler(request):
-        if request.url.path == "/session":
-            return httpx.Response(429, text="quota token details")
-        return httpx.Response(404)
-
-    client = ModelClient(
-        base_url="http://opencode.test",
-        transport=httpx.MockTransport(handler),
-    )
-
-    with pytest.raises(ModelRateLimitError) as raised:
-        client.messages.create(
-            model="openrouter/nex-agi/nex-n2-pro:free",
-            messages=[{"role": "user", "content": "Generate a report"}],
-        )
-
-    assert str(raised.value) == "OpenCode rate limit exceeded"

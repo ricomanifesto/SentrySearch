@@ -1,4 +1,11 @@
-"""OpenCode-backed model client for threat intelligence generation."""
+"""Model client for threat intelligence generation.
+
+Calls a provider's OpenAI-compatible HTTP API (OpenRouter by default) directly, so
+generation works in any deployment without a local model gateway. The public
+surface (``create_model_client``, ``resolve_model_name``, ``ModelClient`` with a
+``messages.create``/``create_message`` method, ``ModelRateLimitError``) is kept
+stable for the generators that depend on it.
+"""
 
 from __future__ import annotations
 
@@ -11,17 +18,18 @@ import httpx
 
 DEFAULT_MODEL = "openrouter/nex-agi/nex-n2-pro:free"
 MODEL_ENV_VAR = "SENTRYSEARCH_MODEL"
-OPENCODE_BASE_URL_ENV_VAR = "OPENCODE_BASE_URL"
-OPENCODE_SERVER_USERNAME_ENV_VAR = "OPENCODE_SERVER_USERNAME"
-OPENCODE_SERVER_PASSWORD_ENV_VAR = "OPENCODE_SERVER_PASSWORD"
+OPENROUTER_BASE_URL_ENV_VAR = "OPENROUTER_BASE_URL"
+OPENROUTER_API_KEY_ENV_VAR = "OPENROUTER_API_KEY"
+DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_ROUTE_PREFIX = "openrouter/"
 
 
 class ModelRateLimitError(RuntimeError):
-    """Raised when OpenCode reports a rate limit response."""
+    """Raised when the model provider reports a rate limit response."""
 
 
 class ModelClientError(RuntimeError):
-    """Raised when OpenCode cannot return usable model output."""
+    """Raised when the model provider cannot return usable model output."""
 
 
 @dataclass(frozen=True)
@@ -49,6 +57,14 @@ def parse_model_selection(model_name: str | None = None) -> ModelSelection:
     return ModelSelection(provider_id=provider_id, model_id=model_id)
 
 
+def resolve_openrouter_model(model_name: str | None = None) -> str:
+    """Return the OpenRouter model id, dropping a leading ``openrouter/`` route prefix."""
+    value = resolve_model_name(model_name)
+    if value.startswith(OPENROUTER_ROUTE_PREFIX):
+        return value[len(OPENROUTER_ROUTE_PREFIX) :]
+    return value
+
+
 def create_model_client() -> "ModelClient":
     """Create the configured model client."""
     return ModelClient()
@@ -62,99 +78,124 @@ class ModelClient:
         base_url: str | None = None,
         timeout: float = 180.0,
         transport: httpx.BaseTransport | None = None,
+        api_key: str | None = None,
     ) -> None:
         self.base_url = (
-            base_url or os.getenv(OPENCODE_BASE_URL_ENV_VAR, "http://127.0.0.1:4096")
+            base_url or os.getenv(OPENROUTER_BASE_URL_ENV_VAR, DEFAULT_OPENROUTER_BASE_URL)
         ).rstrip("/")
         self.timeout = timeout
         self.transport = transport
+        self._api_key = api_key
         self.messages = _Messages(self)
 
     def create_message(self, **kwargs: Any) -> SimpleNamespace:
-        """Generate a message through an OpenCode server session."""
-        selection = parse_model_selection(kwargs.get("model"))
-        prompt = self._messages_to_prompt(kwargs.get("messages", []))
-        if tools := kwargs.get("tools"):
-            prompt = f"{prompt}\n\nAvailable research tools requested by caller:\n{tools}"
+        """Generate a message through the provider's chat-completions endpoint."""
+        payload: dict[str, Any] = {
+            "model": resolve_openrouter_model(kwargs.get("model")),
+            "messages": self._build_messages(kwargs),
+        }
+        if max_tokens := kwargs.get("max_tokens"):
+            payload["max_tokens"] = max_tokens
+        if (temperature := kwargs.get("temperature")) is not None:
+            payload["temperature"] = temperature
 
-        auth = self._auth()
         with httpx.Client(
             base_url=self.base_url,
             timeout=self.timeout,
             transport=self.transport,
-            auth=auth,
         ) as client:
-            session_response = client.post(
-                "/session",
-                json={"title": "SentrySearch threat intelligence"},
+            response = client.post(
+                "/chat/completions",
+                json=payload,
+                headers=self._headers(),
             )
-            self._raise_for_status(session_response, "create OpenCode session")
-            session_id = session_response.json().get("id")
-            if not session_id:
-                raise ModelClientError("OpenCode did not return a session id")
+            self._raise_for_status(response, "generate model message")
 
-            message_response = client.post(
-                f"/session/{session_id}/message",
-                json={
-                    "model": selection.as_payload(),
-                    "parts": [{"type": "text", "text": prompt}],
-                },
-            )
-            self._raise_for_status(message_response, "generate OpenCode message")
-
-        text = self._extract_text(message_response.json())
+        body = response.json()
+        text = self._extract_text(body)
+        usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
         return SimpleNamespace(
             content=[SimpleNamespace(type="text", text=text)],
-            usage=SimpleNamespace(input_tokens=0, output_tokens=0),
+            usage=SimpleNamespace(
+                input_tokens=int(usage.get("prompt_tokens", 0) or 0),
+                output_tokens=int(usage.get("completion_tokens", 0) or 0),
+            ),
         )
 
-    def _auth(self) -> tuple[str, str] | None:
-        password = os.getenv(OPENCODE_SERVER_PASSWORD_ENV_VAR, "")
-        if not password:
-            return None
-        return (os.getenv(OPENCODE_SERVER_USERNAME_ENV_VAR, "opencode"), password)
+    def _api_key_value(self) -> str:
+        key = self._api_key or os.getenv(OPENROUTER_API_KEY_ENV_VAR, "")
+        if not key:
+            raise ModelClientError(
+                f"{OPENROUTER_API_KEY_ENV_VAR} environment variable is required for model generation"
+            )
+        return key
 
-    def _messages_to_prompt(self, messages: list[dict[str, Any]]) -> str:
-        prompt_parts = []
-        for message in messages:
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._api_key_value()}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://sentry-search.vercel.app",
+            "X-Title": "SentrySearch",
+        }
+
+    def _build_messages(self, kwargs: dict[str, Any]) -> list[dict[str, str]]:
+        messages: list[dict[str, str]] = []
+        if system := kwargs.get("system"):
+            messages.append({"role": "system", "content": self._content_to_text(system)})
+
+        raw = kwargs.get("messages", []) or []
+        tools = kwargs.get("tools")
+        last_index = len(raw) - 1
+        for index, message in enumerate(raw):
             role = message.get("role", "user")
-            content = message.get("content", "")
-            if isinstance(content, list):
-                content = "\n".join(
-                    str(part.get("text", part)) for part in content if isinstance(part, dict)
+            content = self._content_to_text(message.get("content", ""))
+            if tools and role == "user" and index == last_index:
+                content = (
+                    f"{content}\n\nAvailable research tools requested by caller:\n{tools}"
                 )
-            prompt_parts.append(f"{role.upper()}:\n{content}")
-        return "\n\n".join(prompt_parts)
+            messages.append({"role": role, "content": content})
+
+        if not messages:
+            messages.append({"role": "user", "content": ""})
+        return messages
+
+    @staticmethod
+    def _content_to_text(content: Any) -> str:
+        if isinstance(content, list):
+            parts = [
+                str(part.get("text", "")) if isinstance(part, dict) else str(part)
+                for part in content
+            ]
+            return "\n".join(part for part in parts if part)
+        return str(content)
 
     def _raise_for_status(self, response: httpx.Response, action: str) -> None:
         if response.is_success:
             return
         if response.status_code == 429:
-            raise ModelRateLimitError("OpenCode rate limit exceeded")
+            raise ModelRateLimitError("Model provider rate limit exceeded")
         raise ModelClientError(f"Failed to {action}: HTTP {response.status_code}")
 
     def _extract_text(self, payload: dict[str, Any]) -> str:
-        text_parts = []
-        for part in payload.get("parts", []):
-            if not isinstance(part, dict):
+        for choice in payload.get("choices", []):
+            if not isinstance(choice, dict):
                 continue
-            for key in ("text", "content"):
-                value = part.get(key)
-                if isinstance(value, str) and value.strip():
-                    text_parts.append(value)
-                    break
-
-        if text_parts:
-            return "\n".join(text_parts)
-
-        info = payload.get("info", {})
-        if isinstance(info, dict):
-            for key in ("text", "content"):
-                value = info.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value
-
-        raise ModelClientError("OpenCode response did not include text output")
+            message = choice.get("message")
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return content
+            if isinstance(content, list):
+                texts = [
+                    str(part.get("text", ""))
+                    for part in content
+                    if isinstance(part, dict)
+                ]
+                joined = "\n".join(text for text in texts if text.strip())
+                if joined.strip():
+                    return joined
+        raise ModelClientError("Model response did not include text output")
 
 
 class _Messages:
