@@ -3,7 +3,9 @@
 import logging
 import os
 import sys
-from fastapi import FastAPI, HTTPException, Query, Depends, Header
+import time
+import uuid
+from fastapi import FastAPI, HTTPException, Query, Depends, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -19,6 +21,7 @@ load_dotenv()
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from storage.report_service import report_service
+from storage.database import db_manager
 from core.threat_profile_generator import ThreatProfileGenerator
 from auth.supabase_auth import AuthenticatedUser, verify_jwt_token
 
@@ -51,6 +54,15 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+def apply_schema_migrations() -> None:
+    """Self-heal the database schema on boot (additive, idempotent migrations)."""
+    try:
+        db_manager.migrate_schema()
+    except Exception as e:  # pragma: no cover - startup best-effort
+        logger.exception("Schema migration on startup failed: %s", e)
+
+
 # Pydantic models for API
 class ReportCreate(BaseModel):
     tool_name: str = Field(..., description="Target for threat intelligence analysis")
@@ -66,6 +78,7 @@ class ReportResponse(BaseModel):
     quality_score: float
     created_at: datetime
     processing_time_ms: int = 0
+    status: str = "completed"
     content_preview: Optional[str] = None
 
 
@@ -220,6 +233,7 @@ async def list_reports(
                     quality_score=get_quality_score(report),
                     created_at=report["created_at"],
                     processing_time_ms=report.get("processing_time_ms") or 0,
+                    status=report.get("status") or "completed",
                     content_preview=(
                         report.get("markdown_content", "")[:200] + "..."
                         if report.get("markdown_content")
@@ -268,6 +282,7 @@ async def get_report(
             quality_score=get_quality_score(report),
             created_at=report["created_at"],
             processing_time_ms=report.get("processing_time_ms") or 0,
+            status=report.get("status") or "completed",
             markdown_content=report.get("markdown_content") if include_content else None,
             threat_data=report.get("threat_data"),
             search_tags=report.get("search_tags", []),
@@ -279,45 +294,78 @@ async def get_report(
         raise internal_server_error("Failed to get report", e)
 
 
+def run_report_generation(
+    report_id: str,
+    tool_name: str,
+    enable_ml_guidance: bool,
+    user_id: str,
+) -> None:
+    """Run a long report generation off the request path and persist the result.
+
+    Report generation takes several minutes — far longer than a single synchronous
+    HTTP request can stay open behind the platform edge. This runs as a background
+    task so the request returns immediately; the client polls the report until its
+    status leaves "generating". Failures are recorded on the row, never surfaced to
+    the caller, so a provider error can't leak details.
+    """
+    start = time.monotonic()
+    try:
+        generator = ThreatProfileGenerator()
+        generator.enable_ml_guidance = enable_ml_guidance
+        result = generator.get_threat_intelligence(tool_name=tool_name)
+
+        if not result or "error" in result:
+            logger.error("Generation returned no usable result for report %s", report_id)
+            report_service.mark_report_failed(report_id)
+            return
+
+        result["id"] = report_id
+        result.setdefault("tool_name", tool_name)
+        result.setdefault("processing_time_ms", int((time.monotonic() - start) * 1000))
+        report_service.finalize_report(report_id, result, user_id=user_id)
+
+    except Exception as e:  # pragma: no cover - exercised via mark_report_failed test
+        logger.exception("Background generation failed for report %s: %s", report_id, e)
+        try:
+            report_service.mark_report_failed(report_id)
+        except Exception as mark_error:
+            logger.exception("Could not mark report %s failed: %s", report_id, mark_error)
+
+
 @app.post("/api/reports", response_model=Dict[str, str])
 async def create_report(
     report_request: ReportCreate,
+    background_tasks: BackgroundTasks,
     user: AuthenticatedUser = Depends(verify_jwt_token),
 ):
-    """Generate new threat intelligence report"""
+    """Start a threat intelligence report and return immediately.
+
+    Generation runs in the background; the response carries the new report id with
+    status "generating" so the client can poll the report until it completes.
+    """
     try:
-        threat_profile_generator = ThreatProfileGenerator()
-
-        # Set ML guidance preference based on user request
-        threat_profile_generator.enable_ml_guidance = report_request.enable_ml_guidance
-
-        # Generate threat intelligence
-        result = threat_profile_generator.get_threat_intelligence(
-            tool_name=report_request.tool_name
+        report_id = str(uuid.uuid4())
+        report_service.create_pending_report(
+            report_id=report_id,
+            tool_name=report_request.tool_name,
+            user_id=user.id,
         )
-
-        if not result or "error" in result:
-            raise HTTPException(
-                status_code=400,
-                detail="Failed to generate threat intelligence",
-            )
-
-        # Generate report ID and store the report with user ID
-        import uuid
-
-        result["id"] = str(uuid.uuid4())
-        report_id = report_service.store_report(result, user_id=user.id)
-
-        return {
-            "report_id": report_id,
-            "status": "completed",
-            "message": f"Report generated for {report_request.tool_name}",
-        }
-
-    except HTTPException:
-        raise
     except Exception as e:
-        raise internal_server_error("Failed to create report", e)
+        raise internal_server_error("Failed to start report generation", e)
+
+    background_tasks.add_task(
+        run_report_generation,
+        report_id,
+        report_request.tool_name,
+        report_request.enable_ml_guidance,
+        user.id,
+    )
+
+    return {
+        "report_id": report_id,
+        "status": "generating",
+        "message": f"Generating report for {report_request.tool_name}",
+    }
 
 
 @app.delete("/api/reports/{report_id}")
@@ -403,6 +451,7 @@ async def search_reports(
                     quality_score=get_quality_score(report),
                     created_at=report["created_at"],
                     processing_time_ms=report.get("processing_time_ms") or 0,
+                    status=report.get("status") or "completed",
                     content_preview=(
                         report.get("markdown_content", "")[:200] + "..."
                         if report.get("markdown_content")

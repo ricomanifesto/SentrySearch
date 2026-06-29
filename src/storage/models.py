@@ -48,6 +48,11 @@ class Report(Base):
     api_key_hash = Column(String(64))  # Hashed API key for user association
     user_id = Column(String(100))  # Future: actual user system
 
+    # Generation lifecycle: "generating" while a background job runs, then
+    # "completed" or "failed". Defaults to "completed" so rows created before this
+    # column existed are treated as finished.
+    status = Column(String(20), default="completed", index=True)
+
     # Flags and metadata
     is_flagged = Column(Boolean, default=False)
     is_favorite = Column(Boolean, default=False)
@@ -67,6 +72,7 @@ class Report(Base):
             "quality_score": float(self.quality_score) if self.quality_score else None,
             "confidence_score": float(self.confidence_score) if self.confidence_score else None,
             "processing_time_ms": self.processing_time_ms or 0,
+            "status": self.status or "completed",
             "ml_techniques": self.ml_techniques,
             "user_id": self.user_id,
             "is_flagged": self.is_flagged,

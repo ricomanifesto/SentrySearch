@@ -27,6 +27,7 @@ const localReportDetailFixture: ReportDetail = {
   quality_score: 4.3,
   created_at: '2026-06-14T16:45:00.000Z',
   processing_time_ms: 18420,
+  status: 'completed',
   content_preview: 'Analyst-ready profile covering observed abuse paths, source posture, and extraction fields.',
   markdown_content: [
     '# Acme Remote Access Toolkit',
@@ -75,8 +76,12 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
     queryKey: ['report', reportId],
     queryFn: () => api.getReport(reportId, true),
     enabled: !!reportId && !fixtureReport,
+    // Poll while a background generation is still running.
+    refetchInterval: (query) => (query.state.data?.status === 'generating' ? 4000 : false),
   });
   const report = fixtureReport ?? fetchedReport;
+  const isGenerating = report?.status === 'generating';
+  const isFailed = report?.status === 'failed';
 
   const deleteMutation = useMutation({
     mutationFn: () => api.deleteReport(reportId),
@@ -131,6 +136,59 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
               Back to saved intelligence
             </button>
           </div>
+        </div>
+      </main>
+    );
+  }
+
+  if (isGenerating) {
+    return (
+      <main data-surface="report-detail-record" className="overflow-x-hidden bg-[var(--surface-0)]">
+        <div className="mx-auto max-w-3xl px-6 py-16 lg:px-8">
+          <Link href="/reports" className="inline-flex items-center gap-1.5 text-sm text-zinc-500 transition-colors hover:text-zinc-800">
+            <ArrowLeftIcon className="h-4 w-4" aria-hidden="true" />
+            Back to review queue
+          </Link>
+          <section
+            data-contract="Report.GenerationProgress.v1"
+            className="mt-8 rounded-xl border border-zinc-200 bg-white px-6 py-14 text-center"
+            role="status"
+            aria-live="polite"
+          >
+            <span
+              className="mx-auto block h-6 w-6 animate-spin rounded-full border-2 border-zinc-300 border-t-blue-600"
+              aria-hidden="true"
+            />
+            <h1 className="mt-5 text-2xl font-semibold tracking-tight text-zinc-950">
+              Generating {report.tool_name}
+            </h1>
+            <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-zinc-500">
+              SentrySearch is researching sources and assembling the report. Research and
+              synthesis can take a few minutes; this page updates on its own when the record is ready.
+            </p>
+          </section>
+        </div>
+      </main>
+    );
+  }
+
+  if (isFailed) {
+    return (
+      <main data-surface="report-detail-record" className="overflow-x-hidden bg-[var(--surface-0)]">
+        <div className="mx-auto max-w-2xl px-6 py-16 lg:px-8">
+          <section
+            data-contract="Report.GenerationFailed.v1"
+            className="rounded-xl border border-red-200 bg-red-50 px-6 py-10 text-center"
+            role="alert"
+          >
+            <h1 className="text-2xl font-semibold text-red-900">Generation didn&apos;t finish</h1>
+            <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-red-700">
+              This report couldn&apos;t be completed. Start a new run from the generate console and try the target again.
+            </p>
+            <button type="button" onClick={() => router.push('/generate')} className={`${secondaryButtonClass} mt-6`}>
+              Start a new report
+            </button>
+          </section>
         </div>
       </main>
     );

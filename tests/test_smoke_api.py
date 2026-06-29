@@ -7,7 +7,7 @@ from pathlib import Path
 
 from httpx import ASGITransport, AsyncClient
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, BackgroundTasks
 
 from src.auth import supabase_auth
 from src.api import main as api_main
@@ -244,7 +244,52 @@ def test_report_model_exposes_owner_for_api_authorization():
     assert report.to_dict()["user_id"] == "owner-user"
 
 
-def test_create_report_redacts_generation_failure_detail(monkeypatch):
+def test_create_report_starts_background_job_without_synchronous_generation(monkeypatch):
+    generation_called = False
+
+    class Generator:
+        enable_ml_guidance = True
+
+        def get_threat_intelligence(self, tool_name: str):
+            nonlocal generation_called
+            generation_called = True
+            return {"tool_name": tool_name}
+
+    monkeypatch.setattr(api_main, "ThreatProfileGenerator", Generator)
+
+    created = {}
+
+    def create_pending_report(report_id, tool_name, user_id=None):
+        created.update(report_id=report_id, tool_name=tool_name, user_id=user_id)
+        return report_id
+
+    monkeypatch.setattr(api_main.report_service, "create_pending_report", create_pending_report)
+
+    user = supabase_auth.AuthenticatedUser(
+        user_id="analyst-user",
+        email="analyst@example.com",
+        metadata={"role": "analyst"},
+    )
+    background_tasks = BackgroundTasks()
+
+    response = asyncio.run(
+        api_main.create_report(
+            api_main.ReportCreate(tool_name="Cobalt Strike"),
+            background_tasks,
+            user,
+        )
+    )
+
+    assert response["status"] == "generating"
+    assert response["report_id"] == created["report_id"]
+    assert created["tool_name"] == "Cobalt Strike"
+    assert created["user_id"] == "analyst-user"
+    # Generation must be deferred to the background task, never run on the request path.
+    assert generation_called is False
+    assert len(background_tasks.tasks) == 1
+
+
+def test_background_generation_marks_failed_without_leaking_detail(monkeypatch):
     class FailingGenerator:
         enable_ml_guidance = True
 
@@ -253,19 +298,22 @@ def test_create_report_redacts_generation_failure_detail(monkeypatch):
 
     monkeypatch.setattr(api_main, "ThreatProfileGenerator", FailingGenerator)
 
-    user = supabase_auth.AuthenticatedUser(
-        user_id="analyst-user",
-        email="analyst@example.com",
-        metadata={"role": "analyst"},
-    )
+    marked = {}
 
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(api_main.create_report(api_main.ReportCreate(tool_name="SecretTool"), user))
+    def mark_report_failed(report_id):
+        marked["report_id"] = report_id
+        return True
 
-    assert exc_info.value.status_code == 400
-    assert exc_info.value.detail == "Failed to generate threat intelligence"
-    assert "provider key" not in exc_info.value.detail
-    assert "SecretTool" not in exc_info.value.detail
+    def finalize_report(*args, **kwargs):
+        raise AssertionError("finalize_report must not run when generation fails")
+
+    monkeypatch.setattr(api_main.report_service, "mark_report_failed", mark_report_failed)
+    monkeypatch.setattr(api_main.report_service, "finalize_report", finalize_report)
+
+    # Must not raise, and must record the failure on the row rather than surface detail.
+    api_main.run_report_generation("report-1", "SecretTool", True, "analyst-user")
+
+    assert marked["report_id"] == "report-1"
 
 
 def test_markdown_generation_redacts_internal_exception_detail():

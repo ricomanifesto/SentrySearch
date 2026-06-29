@@ -9,6 +9,8 @@ import axios, { AxiosInstance } from 'axios';
 import { createClient, hasSupabaseConfig } from './supabase';
 
 // Types
+export type ReportStatus = 'generating' | 'completed' | 'failed';
+
 export interface Report {
   id: string;
   tool_name: string;
@@ -17,6 +19,7 @@ export interface Report {
   quality_score: number;
   created_at: string;
   processing_time_ms: number;
+  status?: ReportStatus;
   content_preview?: string;
 }
 
@@ -214,10 +217,9 @@ class SentrySearchAPI {
   }
 
   async createReport(request: ReportCreateRequest): Promise<{ report_id: string; status: string; message: string }> {
-    // Use longer timeout for report generation (30 minutes)
-    const response = await this.client.post('/api/reports', request, {
-      timeout: 1800000, // 30 minutes
-    });
+    // Returns immediately: the backend runs generation in the background and the
+    // client polls the report until its status leaves "generating".
+    const response = await this.client.post('/api/reports', request);
     return response.data;
   }
 

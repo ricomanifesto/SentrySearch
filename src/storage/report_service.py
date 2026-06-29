@@ -414,6 +414,121 @@ class ReportStorageService:
             logger.error(f"Error storing report: {e}")
             raise
 
+    def create_pending_report(
+        self, report_id: str, tool_name: str, user_id: str = None
+    ) -> str:
+        """Create a placeholder report row marked 'generating' for a background job.
+
+        The row is pre-categorized from the tool name so the review queue shows a
+        meaningful target while generation runs. The background job later calls
+        ``finalize_report`` (on success) or ``mark_report_failed`` (on failure).
+        """
+        try:
+            category, threat_type = self.categorize_tool(tool_name)
+            with self.db_manager.get_session() as session:
+                report = Report(
+                    id=report_id,
+                    tool_name=tool_name,
+                    category=category,
+                    threat_type=threat_type,
+                    status="generating",
+                    user_id=user_id,
+                    version="1.0",
+                    search_tags=[],
+                )
+                session.add(report)
+                session.commit()
+                logger.info(f"Pending report created: {report_id}")
+                return str(report.id)
+        except Exception as e:
+            logger.error(f"Error creating pending report: {e}")
+            raise
+
+    def finalize_report(
+        self, report_id: str, report_data: Dict[str, Any], user_id: str = None
+    ) -> str:
+        """Populate an existing pending report with generated content and mark it complete.
+
+        Falls back to inserting a fresh row if the pending placeholder is gone.
+        """
+        try:
+            tool_name = report_data.get("tool_name", "")
+            current_category = (report_data.get("category") or "").strip()
+            if not current_category or current_category.lower() in ["", "unknown"]:
+                category, threat_type = self.categorize_tool(
+                    tool_name, report_data.get("threat_data")
+                )
+                report_data["category"] = category
+                report_data["threat_type"] = threat_type
+
+            markdown_s3_key = None
+            if "markdown_content" in report_data:
+                markdown_s3_key = self.s3_manager.upload_markdown_report(
+                    report_id, report_data["markdown_content"]
+                )
+
+            trace_s3_key = None
+            if "trace_data" in report_data:
+                trace_s3_key = self.s3_manager.upload_trace_data(
+                    report_id, report_data["trace_data"]
+                )
+
+            with self.db_manager.get_session() as session:
+                report = session.query(Report).filter(Report.id == report_id).first()
+
+                if report is None:
+                    logger.warning(
+                        f"Pending report {report_id} missing on finalize; inserting fresh row"
+                    )
+                    report_data["id"] = report_id
+                    report_data["status"] = "completed"
+                    return self.store_report(report_data, user_id=user_id)
+
+                if report_data.get("tool_name"):
+                    report.tool_name = report_data["tool_name"]
+                report.category = report_data.get("category", report.category)
+                report.threat_type = report_data.get("threat_type", report.threat_type)
+                report.quality_score = report_data.get("quality_score")
+                report.confidence_score = report_data.get("confidence_score")
+                report.trust_score = report_data.get("trust_score")
+                report.processing_time_ms = report_data.get("processing_time_ms")
+                report.api_calls_count = report_data.get("api_calls_count")
+                report.threat_data = report_data.get("threat_data")
+                report.ml_techniques = report_data.get("ml_techniques")
+                report.quality_assessment = report_data.get("quality_assessment")
+                report.web_sources = report_data.get("web_sources")
+                if markdown_s3_key:
+                    report.markdown_s3_key = markdown_s3_key
+                if trace_s3_key:
+                    report.trace_s3_key = trace_s3_key
+                report.search_tags = report_data.get("search_tags", report.search_tags or [])
+                if user_id and not report.user_id:
+                    report.user_id = user_id
+                report.status = "completed"
+
+                session.commit()
+                logger.info(f"Report finalized successfully: {report_id}")
+                return str(report.id)
+
+        except Exception as e:
+            logger.error(f"Error finalizing report: {e}")
+            raise
+
+    def mark_report_failed(self, report_id: str) -> bool:
+        """Mark a pending report as failed so the UI can surface a retry state."""
+        try:
+            with self.db_manager.get_session() as session:
+                report = session.query(Report).filter(Report.id == report_id).first()
+                if report is None:
+                    return False
+                report.status = "failed"
+                session.commit()
+                logger.info(f"Report marked failed: {report_id}")
+                return True
+        except Exception as e:
+            logger.error(f"Error marking report failed: {e}")
+            return False
+
     def get_report(self, report_id: str, include_content: bool = False) -> Optional[Dict[str, Any]]:
         """Get report by ID with optional content loading"""
         try:
