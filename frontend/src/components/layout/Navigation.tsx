@@ -22,6 +22,7 @@ import {
   Cog6ToothIcon,
 } from '@heroicons/react/24/outline';
 import { cn } from '@/lib/utils';
+import { ThemeToggle } from '@/components/ThemeToggle';
 
 const navigation = [
   { name: 'Briefing', href: '/dashboard', icon: ChartBarIcon },
@@ -88,7 +89,8 @@ export function Navigation() {
           </div>
 
           {/* Mobile menu button */}
-          <div className="flex items-center sm:hidden">
+          <div className="flex items-center gap-1 sm:hidden">
+            <ThemeToggle />
             <button
               type="button"
               className="inline-flex items-center justify-center rounded-md p-2 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
@@ -105,6 +107,7 @@ export function Navigation() {
 
           {/* Desktop right side */}
           <div className="hidden sm:flex sm:items-center sm:space-x-4">
+            <ThemeToggle />
             {user ? (
               <>
                 <Link
