@@ -35,14 +35,17 @@ export const metadata: Metadata = {
   },
 };
 
+const themeScript = `(function(){try{var t=localStorage.getItem('theme');var d=t?t==='dark':window.matchMedia('(prefers-color-scheme: dark)').matches;if(d)document.documentElement.classList.add('dark');}catch(e){}})();`;
+
 export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="h-full">
-      <body className={`${inter.variable} font-sans antialiased h-full bg-gray-50`}>
+    <html lang="en" className="h-full" suppressHydrationWarning>
+      <body className={`${inter.variable} font-sans antialiased h-full bg-[var(--surface-0)]`}>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
         <Providers>
           <div className="min-h-full">
             <Navigation />

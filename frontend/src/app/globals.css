@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme inline {
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -48,6 +50,99 @@
   --dur-slow: 320ms;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+/*
+ * Dark theme. The surfaces use Tailwind's neutral/accent utilities directly, so
+ * the cleanest way to theme them coherently is to remap the underlying color
+ * tokens once here: the neutral ramp is inverted, the brand blue is preserved,
+ * and status colors are re-tuned for a dark background.
+ */
+.dark {
+  color-scheme: dark;
+
+  /* Semantic tokens */
+  --background: #0a0a0b;
+  --foreground: #fafafa;
+  --surface-0: #0a0a0b;
+  --surface-1: #18181b;
+  --surface-2: #232327;
+  --text-primary: #fafafa;
+  --text-secondary: #9a9aa3;
+  --text-muted: #6e6e78;
+  --border: #2c2c31;
+  --border-strong: #3a3a40;
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --on-accent: #ffffff;
+  --bg-accent: #0f1f3a;
+  --text-accent: #93c5fd;
+  --bg-success: #14321f;
+  --text-success: #86efac;
+  --border-success: #14532d;
+  --bg-warning: #271c06;
+  --text-warning: #fbbf24;
+  --border-warning: #6b4f12;
+  --bg-danger: #2a1315;
+  --text-danger: #fca5a5;
+  --border-danger: #7f1d1d;
+
+  /* Neutral ramp (inverted) — shared by zinc, gray, and slate utilities */
+  --color-white: #18181b;
+  --color-zinc-50: #0a0a0b;
+  --color-zinc-100: #232327;
+  --color-zinc-200: #2c2c31;
+  --color-zinc-300: #3a3a40;
+  --color-zinc-400: #6e6e78;
+  --color-zinc-500: #9a9aa3;
+  --color-zinc-600: #b6b6bd;
+  --color-zinc-700: #cfcfd4;
+  --color-zinc-800: #e2e2e5;
+  --color-zinc-900: #f1f1f2;
+  --color-zinc-950: #fafafa;
+  --color-gray-50: #0a0a0b;
+  --color-gray-100: #232327;
+  --color-gray-200: #2c2c31;
+  --color-gray-300: #3a3a40;
+  --color-gray-400: #6e6e78;
+  --color-gray-500: #9a9aa3;
+  --color-gray-600: #b6b6bd;
+  --color-gray-700: #cfcfd4;
+  --color-gray-800: #e2e2e5;
+  --color-gray-900: #f1f1f2;
+  --color-slate-600: #b6b6bd;
+  --color-slate-950: #fafafa;
+
+  /* Brand blue — kept vivid; text shades lightened for contrast on dark */
+  --color-blue-50: #0f1f3a;
+  --color-blue-100: #15294a;
+  --color-blue-200: #1d3a63;
+  --color-blue-300: #2b4d80;
+  --color-blue-700: #93c5fd;
+  --color-blue-800: #bfdbfe;
+  --color-blue-900: #dbeafe;
+
+  /* Status — danger */
+  --color-red-50: #2a1315;
+  --color-red-100: #3a181b;
+  --color-red-200: #7f1d1d;
+  --color-red-300: #991b1b;
+  --color-red-600: #f87171;
+  --color-red-700: #fca5a5;
+  --color-red-800: #fecaca;
+  --color-red-900: #fee2e2;
+
+  /* Status — success */
+  --color-green-100: #14321f;
+  --color-green-800: #86efac;
+
+  /* Status — warning */
+  --color-amber-50: #271c06;
+  --color-amber-200: #6b4f12;
+  --color-amber-700: #fbbf24;
+  --color-amber-900: #fde68a;
+  --color-yellow-100: #2a2406;
+  --color-yellow-800: #fde047;
 }
 
 body {
