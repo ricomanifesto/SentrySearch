@@ -19,6 +19,7 @@ function run(command, args) {
 
 run(process.execPath, ['dev/check-surface-coverage.mjs']);
 run(process.execPath, ['dev/check-surface-coverage-regressions.mjs']);
+run(process.execPath, ['dev/check-metadata-surface.mjs']);
 
 for (const script of uniqueSurfaceScripts) {
   run('npm', ['run', script]);
