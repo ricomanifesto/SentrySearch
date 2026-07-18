@@ -39,6 +39,28 @@ export const metadata: Metadata = {
   },
 };
 
+const structuredData = {
+  "@context": "https://schema.org",
+  "@type": "WebApplication",
+  name: "SentrySearch",
+  url: "https://sentry-search.vercel.app/",
+  description:
+    "SentrySearch turns scattered threat research into searchable security profiles for malware, attack tools, and targeted technologies, with persistent reports, hybrid search, and detection guidance in one workspace.",
+  applicationCategory: "SecurityApplication",
+  operatingSystem: "Web",
+  author: {
+    "@type": "Person",
+    name: "Michael Rico",
+    url: "https://ricomanifesto.com/",
+  },
+  publisher: {
+    "@type": "Organization",
+    name: "Rico Manifesto",
+    url: "https://ricomanifesto.com/",
+  },
+  codeRepository: "https://github.com/ricomanifesto/SentrySearch",
+};
+
 const themeScript = `(function(){try{var t=localStorage.getItem('theme');var d=t?t==='dark':window.matchMedia('(prefers-color-scheme: dark)').matches;if(d)document.documentElement.classList.add('dark');}catch(e){}})();`;
 
 export default function RootLayout({
@@ -48,6 +70,14 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="h-full" suppressHydrationWarning>
+      <head>
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify(structuredData).replace(/</g, "\\u003c"),
+          }}
+        />
+      </head>
       <body className={`${inter.variable} font-sans antialiased h-full bg-[var(--surface-0)]`}>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
         <Providers>
