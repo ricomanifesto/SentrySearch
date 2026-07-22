@@ -289,6 +289,55 @@ def test_create_report_starts_background_job_without_synchronous_generation(monk
     assert len(background_tasks.tasks) == 1
 
 
+@pytest.mark.parametrize("tool_name", ["   ", "x" * 256])
+def test_create_report_rejects_invalid_targets_before_storage(monkeypatch, tool_name):
+    storage_called = False
+
+    def create_pending_report(*_args, **_kwargs):
+        nonlocal storage_called
+        storage_called = True
+
+    monkeypatch.setattr(
+        api_main.report_service,
+        "create_pending_report",
+        create_pending_report,
+    )
+    user = supabase_auth.AuthenticatedUser(
+        user_id="analyst-user",
+        email="analyst@example.com",
+        metadata={"role": "analyst"},
+    )
+
+    async def authenticated_user():
+        return user
+
+    async def request_report():
+        api_main.app.dependency_overrides[api_main.verify_jwt_token] = authenticated_user
+        try:
+            transport = ASGITransport(app=api_main.app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                return await client.post(
+                    "/api/reports",
+                    json={"tool_name": tool_name},
+                )
+        finally:
+            api_main.app.dependency_overrides.clear()
+
+    response = asyncio.run(request_report())
+
+    assert response.status_code == 422
+    assert storage_called is False
+
+
+def test_report_create_normalizes_target_whitespace():
+    request = api_main.ReportCreate(tool_name="  Cobalt Strike  ")
+
+    assert request.tool_name == "Cobalt Strike"
+
+
 def test_background_generation_marks_failed_without_leaking_detail(monkeypatch):
     class FailingGenerator:
         enable_ml_guidance = True
