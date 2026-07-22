@@ -1,5 +1,6 @@
 """SentrySearch FastAPI application."""
 
+from contextlib import asynccontextmanager
 import logging
 import os
 import sys
@@ -28,6 +29,21 @@ from auth.supabase_auth import AuthenticatedUser, verify_jwt_token
 
 logger = logging.getLogger(__name__)
 
+
+def apply_schema_migrations() -> None:
+    """Self-heal the database schema on boot (additive, idempotent migrations)."""
+    try:
+        db_manager.migrate_schema()
+    except Exception as e:  # pragma: no cover - startup best-effort
+        logger.exception("Schema migration on startup failed: %s", e)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    apply_schema_migrations()
+    yield
+
+
 # Initialize FastAPI app
 app = FastAPI(
     title="SentrySearch API",
@@ -35,6 +51,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
+    lifespan=lifespan,
 )
 
 # CORS middleware for frontend integration
@@ -53,16 +70,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-def apply_schema_migrations() -> None:
-    """Self-heal the database schema on boot (additive, idempotent migrations)."""
-    try:
-        db_manager.migrate_schema()
-    except Exception as e:  # pragma: no cover - startup best-effort
-        logger.exception("Schema migration on startup failed: %s", e)
-
 
 # Pydantic models for API
 class ReportCreate(BaseModel):

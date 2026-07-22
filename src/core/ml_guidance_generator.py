@@ -20,7 +20,7 @@ from dataclasses import dataclass
 import logging
 from datetime import datetime
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 from src.search.threat_knowledge_retriever import ThreatKnowledgeRetriever, ThreatCharacteristics
 from src.core.opencode_client import create_model_client, resolve_model_name, ModelRateLimitError
@@ -39,7 +39,10 @@ class MLApproach(BaseModel):
         default=0.5, ge=0.0, le=1.0, description="Applicability score"
     )
 
-    @validator("technique", "source_company", "description", "source_paper", pre=True)
+    @field_validator(
+        "technique", "source_company", "description", "source_paper", mode="before"
+    )
+    @classmethod
     def ensure_string(cls, v):
         """Ensure all string fields are actually strings"""
         if isinstance(v, dict):
