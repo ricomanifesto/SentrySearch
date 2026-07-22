@@ -20,7 +20,7 @@
     "check:settings-surface": "node dev/check-settings-surface.mjs",
     "check:surface-coverage": "node dev/run-surface-checks.mjs",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "eslint . --ignore-pattern next-env.d.ts"
   },
   "dependencies": {
     "@headlessui/react": "^2.2.4",
