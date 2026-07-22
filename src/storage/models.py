@@ -3,7 +3,7 @@ Database models for SentrySearch report storage using SQLAlchemy
 """
 
 from sqlalchemy import Column, String, DateTime, Integer, Numeric, Text, Boolean, JSON
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
 from datetime import datetime
