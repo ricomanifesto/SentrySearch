@@ -31,11 +31,20 @@ export const metadata: Metadata = {
     title: "SentrySearch | Threat Intelligence Research Workspace",
     description: "SentrySearch turns scattered threat research into searchable security profiles, persistent reports, hybrid search, and detection guidance.",
     siteName: "SentrySearch",
+    images: [
+      {
+        url: "/social-preview.png",
+        width: 1280,
+        height: 640,
+        alt: "SentrySearch",
+      },
+    ],
   },
   twitter: {
     card: "summary_large_image",
     title: "SentrySearch | Threat Intelligence Research Workspace",
     description: "SentrySearch turns scattered threat research into searchable security profiles, persistent reports, hybrid search, and detection guidance.",
+    images: ["/social-preview.png"],
   },
 };
 

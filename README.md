@@ -1,7 +1,10 @@
 # SentrySearch
 
 <div align="center">
-  <img src="docs/assets/logo.png" alt="SentrySearch Logo" width="400" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-lockup-dark.png">
+    <img src="docs/assets/logo-lockup-light.png" alt="SentrySearch" width="440">
+  </picture>
 </div>
 
 SentrySearch turns scattered threat research into searchable security profiles for malware, attack tools, and targeted technologies, with persistent reports, hybrid search, and detection guidance in one workspace.
