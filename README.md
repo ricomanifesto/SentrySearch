@@ -3,7 +3,7 @@
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-lockup-dark.png">
-    <img src="docs/assets/logo-lockup-light.png" alt="SentrySearch" width="440">
+    <img src="docs/assets/logo-lockup-light.png" alt="SentrySearch" width="341">
   </picture>
 </div>
 
