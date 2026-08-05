@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="SentrySearch icon">
   <defs>
     <linearGradient id="ssbg" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="512" y2="512">
-      <stop offset="0" stop-color="#8b5cf6"/>
-      <stop offset="1" stop-color="#5b21b6"/>
+      <stop offset="0" stop-color="#ef4444"/>
+      <stop offset="1" stop-color="#991b1b"/>
     </linearGradient>
     <mask id="sstshield">
       <path fill="#ffffff" d="M256 58 C312 86 368 102 420 108 V264 C420 372 354 430 256 462 C158 430 92 372 92 264 V108 C144 102 200 86 256 58 Z"/>
