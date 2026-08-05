@@ -5,11 +5,11 @@
 'use client';
 
 import React, { useState } from 'react';
+import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import {
-  MagnifyingGlassIcon,
   DocumentTextIcon,
   ChartBarIcon,
   PlusIcon,
@@ -54,9 +54,13 @@ export function Navigation() {
             {/* Logo */}
             <div className="flex flex-shrink-0 items-center">
               <Link href={homeHref} className="flex items-center space-x-2">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600">
-                  <MagnifyingGlassIcon className="h-5 w-5 text-white" />
-                </div>
+                <Image
+                  src="/icon.svg"
+                  alt=""
+                  width={32}
+                  height={32}
+                  priority
+                />
                 <span className="text-lg font-semibold tracking-tight text-zinc-950">
                   SentrySearch
                 </span>
