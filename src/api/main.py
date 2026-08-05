@@ -9,7 +9,7 @@ import uuid
 from fastapi import FastAPI, HTTPException, Query, Depends, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 import uvicorn
@@ -71,11 +71,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # Pydantic models for API
 class ReportCreate(BaseModel):
-    tool_name: str = Field(..., description="Target for threat intelligence analysis")
+    tool_name: str = Field(
+        ...,
+        min_length=1,
+        max_length=255,
+        description="Target for threat intelligence analysis",
+    )
     enable_ml_guidance: bool = Field(default=True, description="Enable ML-powered guidance")
     analysis_type: str = Field(default="comprehensive", description="Analysis depth")
+
+    @field_validator("tool_name", mode="before")
+    @classmethod
+    def normalize_tool_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
 
 class ReportResponse(BaseModel):
