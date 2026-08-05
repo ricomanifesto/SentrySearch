@@ -32,6 +32,11 @@ const expectations = [
     pattern: /name: 'Briefing', href: '\/dashboard'/,
   },
   {
+    name: 'uses the shared sentinel-shield mark in the application navigation',
+    source: navigation,
+    pattern: /<Image[\s\S]*src="\/icon\.svg"[\s\S]*alt=""[\s\S]*width=\{32\}[\s\S]*height=\{32\}/,
+  },
+  {
     name: 'declares the primary investigation action contract',
     source: dashboard,
     pattern: /data-contract="Action\.PrimaryInvestigation\.v1"/,
