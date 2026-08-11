@@ -869,11 +869,13 @@ def test_dashboard_analytics_filters_report_reads_by_authenticated_non_admin(mon
 def test_python_tooling_is_uv_managed():
     pyproject = read_text("pyproject.toml")
     lockfile = read_text("uv.lock")
+    railway_requirements = read_text("requirements.txt")
 
     assert "[dependency-groups]" in pyproject
     for tool in ["ruff", "black", "ty", "pytest"]:
         assert f'"{tool}>=' in pyproject
         assert f'name = "{tool}"' in lockfile
+    assert "\nopenai==" in railway_requirements
 
 
 def test_public_docs_do_not_reference_private_workflow_sources():

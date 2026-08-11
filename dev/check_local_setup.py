@@ -76,6 +76,7 @@ def validate_python_tooling_contract() -> None:
     require_contains("uv.lock", 'name = "ruff"')
     require_contains("uv.lock", 'name = "black"')
     require_contains("uv.lock", 'name = "ty"')
+    require_contains("requirements.txt", "\nopenai==")
 
 
 def validate_railway_config_contract() -> None:
