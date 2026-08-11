@@ -48,11 +48,11 @@ class PerformanceTracker:
 
     # Pricing per 1M tokens. Override as provider costs change.
     PRICING = {
-        "openrouter/nex-agi/nex-n2-pro:free": {
-            "input": 0.0,
-            "output": 0.0,
-            "cache_write": 0.0,
-            "cache_read": 0.0,
+        "gpt-5.6-sol": {
+            "input": 5.0,
+            "output": 30.0,
+            "cache_write": 6.25,
+            "cache_read": 0.5,
         }
     }
 
@@ -74,7 +74,7 @@ class PerformanceTracker:
     def start_request(
         self,
         query: str,
-        model: str = "openrouter/nex-agi/nex-n2-pro:free",
+        model: str = "gpt-5.6-sol",
         prompt_type: str = "threat_intel",
         cache_enabled: bool = False,
     ) -> str:
@@ -248,7 +248,7 @@ class PerformanceTracker:
         model = self.current_metrics.model
         pricing = self.PRICING.get(
             model,
-            self.PRICING["openrouter/nex-agi/nex-n2-pro:free"],
+            self.PRICING["gpt-5.6-sol"],
         )
 
         # Base costs

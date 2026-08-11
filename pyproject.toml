@@ -13,6 +13,7 @@ dependencies = [
     "gradio-client>=1.10.0",
     "gradio>=5.0.0",
     "numpy>=1.24.0",
+    "openai>=2.0.0",
     "orjson>=3.0.0",
     "pandas>=2.0.0",
     "pillow>=8.0.0",

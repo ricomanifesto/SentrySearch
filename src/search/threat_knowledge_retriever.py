@@ -17,7 +17,7 @@ import re
 import requests
 from datetime import datetime
 
-from src.core.opencode_client import create_model_client, resolve_model_name, ModelRateLimitError
+from src.core.openai_client import create_model_client, resolve_model_name, ModelRateLimitError
 
 logger = logging.getLogger(__name__)
 

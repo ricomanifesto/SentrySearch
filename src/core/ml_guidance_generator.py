@@ -23,7 +23,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 
 from src.search.threat_knowledge_retriever import ThreatKnowledgeRetriever, ThreatCharacteristics
-from src.core.opencode_client import create_model_client, resolve_model_name, ModelRateLimitError
+from src.core.openai_client import create_model_client, resolve_model_name, ModelRateLimitError
 
 logger = logging.getLogger(__name__)
 

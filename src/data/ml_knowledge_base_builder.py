@@ -27,7 +27,7 @@ import requests
 from bs4 import BeautifulSoup
 import chromadb
 from chromadb.config import Settings
-from src.core.opencode_client import create_model_client, resolve_model_name, ModelRateLimitError
+from src.core.openai_client import create_model_client, resolve_model_name, ModelRateLimitError
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 

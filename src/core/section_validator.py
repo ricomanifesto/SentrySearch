@@ -5,7 +5,7 @@ Section validation using LLM-as-Judge for quality control
 import json
 import time
 import random
-from src.core.opencode_client import create_model_client, resolve_model_name, ModelRateLimitError
+from src.core.openai_client import create_model_client, resolve_model_name, ModelRateLimitError
 from typing import Optional, List
 from datetime import datetime
 import re

@@ -1,11 +1,11 @@
 """
-Threat profile generator backed by OpenCode.
+Threat profile generator backed by OpenAI.
 Enhanced with ML-based anomaly detection guidance and trace export for annotator integration.
 """
 
 import os
 import json
-from src.core.opencode_client import (
+from src.core.openai_client import (
     create_model_client,
     resolve_model_name,
     ModelRateLimitError,
@@ -151,7 +151,7 @@ Based on your comprehensive research findings, create a detailed profile in the 
     "version": "Latest known version from research",
     "category": "Tool category (RAT/Backdoor/Trojan/etc)",
     "profileId": "TI_{tool_name.upper().replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}",
-    "profileAuthor": "OpenCode model pipeline",
+    "profileAuthor": "OpenAI model pipeline",
     "createdDate": "{datetime.now().strftime('%Y-%m-%d')}",
     "lastUpdated": "{datetime.now().strftime('%Y-%m-%d')}",
     "profileVersion": "1.0",

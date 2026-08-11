@@ -3,7 +3,7 @@ Parallel Section Validation for SentrySearch
 Implements concurrent LLM-as-a-Judge validation to improve execution speed and user experience
 """
 
-from src.core.opencode_client import create_model_client, resolve_model_name, ModelRateLimitError
+from src.core.openai_client import create_model_client, resolve_model_name, ModelRateLimitError
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Callable
 import time

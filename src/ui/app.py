@@ -218,7 +218,7 @@ def get_download_link(report_id):
 def create_ui():
     """Main function to launch the application"""
     print("🚀 Starting SentrySearch - Threat Intelligence Profile Generator...")
-    print("📌 Make sure OpenCode is running and configured with a model provider.")
+    print("📌 Make sure OPENAI_API_KEY is configured for model generation.")
     print("🌐 Opening web interface...")
 
     with gr.Blocks(
