@@ -84,7 +84,7 @@ class ThreatProfileGenerator:
 
         try:
             if progress_callback:
-                progress_callback(0.1, "🔍 Initializing research...")
+                progress_callback(0.1, "Initializing research...")
 
             print(f"DEBUG: Starting threat intelligence generation for: {tool_name}")
 
@@ -305,7 +305,7 @@ Remember: Accuracy and source verification through the web search tool are more 
                 self.performance_tracker.record_prompt_details(prompt, cache_enabled=False)
 
             if progress_callback:
-                progress_callback(0.2, "🤖 Researching with web search...")
+                progress_callback(0.2, "Researching with web search...")
 
             print("DEBUG: Sending request to model API with web search tool enabled...")
             print(f"DEBUG: Prompt size: {len(prompt)} characters")
@@ -346,9 +346,9 @@ Remember: Accuracy and source verification through the web search tool are more 
             print(f"DEBUG: Captured {len(initial_sources)} initial web search sources")
 
             if progress_callback:
-                progress_callback(0.7, "📊 Processing response...")
+                progress_callback(0.7, "Processing response...")
             if progress_callback:
-                progress_callback(0.75, "🔍 Validating structured response...")
+                progress_callback(0.75, "Validating structured response...")
 
             json_data = parse_threat_profile_response(response)
             attest_profile_sources(json_data, response.web_search_sources)
@@ -378,7 +378,7 @@ Remember: Accuracy and source verification through the web search tool are more 
             # Generate ML guidance BEFORE quality control to leverage all context
             if self.enable_ml_guidance and self.ml_guidance_generator:
                 if progress_callback:
-                    progress_callback(0.75, "🤖 Generating ML detection guidance...")
+                    progress_callback(0.75, "Generating ML detection guidance...")
 
                 if self.enable_tracing and self.trace_exporter:
                     self.trace_exporter.log_stage_start("ml_guidance")
@@ -414,7 +414,7 @@ Remember: Accuracy and source verification through the web search tool are more 
             # Quality control phase - now includes ML guidance validation
             if self.enable_quality_control:
                 if progress_callback:
-                    progress_callback(0.8, "🔍 Running quality validation...")
+                    progress_callback(0.8, "Running quality validation...")
 
                 if self.enable_tracing and self.trace_exporter:
                     self.trace_exporter.log_stage_start("quality_validation")
@@ -431,7 +431,7 @@ Remember: Accuracy and source verification through the web search tool are more 
                 # If improvement is needed, attempt to fix weak sections
                 if validation_results["needs_improvement"]:
                     if progress_callback:
-                        progress_callback(0.9, "🔧 Improving weak sections...")
+                        progress_callback(0.9, "Improving weak sections...")
 
                     json_data = self._improve_weak_sections(
                         json_data, validation_results, progress_callback
@@ -439,7 +439,7 @@ Remember: Accuracy and source verification through the web search tool are more 
 
                     # Re-validate after improvements
                     if progress_callback:
-                        progress_callback(0.95, "✅ Final validation...")
+                        progress_callback(0.95, "Final validation...")
 
                     final_validation = self.validator.validate_complete_profile(
                         json_data, None, tool_name
@@ -465,7 +465,7 @@ Remember: Accuracy and source verification through the web search tool are more 
                     )
 
             if progress_callback:
-                progress_callback(1.0, "✅ Analysis complete!")
+                progress_callback(1.0, "Analysis complete!")
 
             # Complete performance tracking
             if self.enable_metrics and self.performance_tracker:
@@ -532,7 +532,7 @@ Remember: Accuracy and source verification through the web search tool are more 
                     print(f"DEBUG: Failed to export error trace: {trace_error}")
 
             if progress_callback:
-                progress_callback(1.0, f"❌ Error: {str(e)}")
+                progress_callback(1.0, f"Error: {str(e)}")
             raise e
 
     def _improve_weak_sections(
@@ -565,7 +565,7 @@ Remember: Accuracy and source verification through the web search tool are more 
         ):  # Limit to top 2 critical
             if progress_callback:
                 progress = 0.9 + (0.05 * i / max(len(sections_to_improve), 1))
-                progress_callback(progress, f"🔧 Critical fix for {section_name}...")
+                progress_callback(progress, f"Critical fix for {section_name}...")
 
             current_content = improved_profile.get(section_name, {})
 

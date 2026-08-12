@@ -21,14 +21,14 @@ if __name__ == "__main__":
     import uvicorn
     from api.main import app
 
-    print("🚀 Starting SentrySearch API Server")
-    print("📖 API Documentation: http://localhost:8001/api/docs")
-    print("🔍 Health Check: http://localhost:8001/api/health")
+    print("Starting SentrySearch API Server")
+    print("API Documentation: http://localhost:8001/api/docs")
+    print("Health Check: http://localhost:8001/api/health")
 
     # Get port from environment (Railway sets this automatically)
     port = int(os.getenv("PORT", 8001))
 
-    print(f"🚀 Starting on port {port}")
+    print(f"Starting on port {port}")
 
     uvicorn.run(
         app,

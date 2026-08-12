@@ -369,7 +369,7 @@ class SectionValidator:
         for section_name, section_content in sections_to_validate.items():
             if progress_callback:
                 progress = 0.8 + (0.15 * completed / total_sections)
-                progress_callback(progress, f"🔍 Validating {section_name}...")
+                progress_callback(progress, f"Validating {section_name}...")
 
             validation = self.validate_section(section_name, section_content)
             results["section_validations"][section_name] = validation
@@ -414,7 +414,7 @@ class SectionValidator:
                 for i, section_name in enumerate(sections_needing_improvement):
                     if progress_callback:
                         progress_callback(
-                            0.85, f"🔍 Enhancing {section_name} (attempt {attempt})..."
+                            0.85, f"Enhancing {section_name} (attempt {attempt})..."
                         )
 
                     try:
@@ -467,7 +467,7 @@ class SectionValidator:
 
         # Check cross-section consistency
         if progress_callback:
-            progress_callback(0.95, "🔍 Checking consistency...")
+            progress_callback(0.95, "Checking consistency...")
 
         consistency_check = self._check_consistency(profile)
         results["consistency"] = consistency_check

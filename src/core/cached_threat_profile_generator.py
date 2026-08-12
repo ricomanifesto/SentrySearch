@@ -259,7 +259,7 @@ Remember: Accuracy and source verification through the web search tool are more 
 
         try:
             if progress_callback:
-                progress_callback(0.1, "🔍 Initializing research with caching...")
+                progress_callback(0.1, "Initializing research with caching...")
 
             print(f"DEBUG: Starting CACHED threat intelligence generation for: {tool_name}")
 
@@ -311,7 +311,7 @@ Focus on finding information from the most recent 24 months when possible, but i
                 self.performance_tracker.record_prompt_details(full_prompt, cache_enabled=True)
 
             if progress_callback:
-                progress_callback(0.2, "🤖 Researching with cached schema...")
+                progress_callback(0.2, "Researching with cached schema...")
 
             print("DEBUG: Sending request to model API with PROMPT CACHING enabled...")
             print(f"DEBUG: Total prompt size: {len(full_prompt)} characters")
@@ -363,9 +363,9 @@ Focus on finding information from the most recent 24 months when possible, but i
             print(f"DEBUG: Captured {len(initial_sources)} initial web search sources")
 
             if progress_callback:
-                progress_callback(0.7, "📊 Processing cached response...")
+                progress_callback(0.7, "Processing cached response...")
             if progress_callback:
-                progress_callback(0.75, "🔍 Validating structured response...")
+                progress_callback(0.75, "Validating structured response...")
 
             json_data = parse_threat_profile_response(response)
             attest_profile_sources(json_data, response.web_search_sources)
@@ -395,7 +395,7 @@ Focus on finding information from the most recent 24 months when possible, but i
             # Generate ML guidance BEFORE quality control to leverage all context
             if self.enable_ml_guidance and self.ml_guidance_generator:
                 if progress_callback:
-                    progress_callback(0.75, "🤖 Generating ML detection guidance...")
+                    progress_callback(0.75, "Generating ML detection guidance...")
 
                 if self.enable_tracing and self.trace_exporter:
                     self.trace_exporter.log_stage_start("ml_guidance")
@@ -423,7 +423,7 @@ Focus on finding information from the most recent 24 months when possible, but i
             # Quality control phase - simplified for cached version
             if self.enable_quality_control:
                 if progress_callback:
-                    progress_callback(0.8, "🔍 Running quality validation...")
+                    progress_callback(0.8, "Running quality validation...")
 
                 if self.enable_tracing and self.trace_exporter:
                     self.trace_exporter.log_stage_start("quality_validation")
@@ -454,7 +454,7 @@ Focus on finding information from the most recent 24 months when possible, but i
                     )
 
             if progress_callback:
-                progress_callback(1.0, "✅ Analysis complete (CACHED)!")
+                progress_callback(1.0, "Analysis complete (CACHED)!")
 
             # Complete performance tracking
             if self.enable_metrics and self.performance_tracker:
@@ -520,7 +520,7 @@ Focus on finding information from the most recent 24 months when possible, but i
                     print(f"DEBUG: Failed to export error trace: {trace_error}")
 
             if progress_callback:
-                progress_callback(1.0, f"❌ Error: {str(e)}")
+                progress_callback(1.0, f"Error: {str(e)}")
             raise e
 
     def _generate_ml_guidance(self, threat_data: Dict, tool_name: str) -> Optional[Dict]:

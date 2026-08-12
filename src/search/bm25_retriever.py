@@ -401,7 +401,7 @@ class BM25Retriever:
 def main():
     """Test the BM25 retriever"""
     
-    print("🔍 Testing BM25 Retriever")
+    print("Testing BM25 Retriever")
     print("=" * 40)
     
     # Initialize knowledge base and BM25 retriever
@@ -410,12 +410,12 @@ def main():
     
     # Get stats
     stats = bm25_retriever.get_stats()
-    print(f"📊 BM25 Index Stats:")
+    print(f"BM25 Index Stats:")
     print(f"   Documents: {stats['total_documents']}")
     print(f"   Index Available: {stats['index_available']}")
     
     if not stats['index_available']:
-        print("❌ BM25 index not available")
+        print("BM25 index not available")
         return
     
     # Test queries
@@ -428,7 +428,7 @@ def main():
         "graph neural networks"
     ]
     
-    print(f"\n🔍 Testing BM25 Search:")
+    print(f"\nTesting BM25 Search:")
     for query in test_queries:
         print(f"\nQuery: '{query}'")
         
@@ -442,7 +442,7 @@ def main():
             print(f"     BM25 Score: {result.bm25_score:.3f}")
             print(f"     Matched Terms: {', '.join(result.matched_terms[:5])}")
     
-    print(f"\n✅ BM25 retriever test complete!")
+    print(f"\nBM25 retriever test complete!")
 
 
 if __name__ == "__main__":

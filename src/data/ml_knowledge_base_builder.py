@@ -627,7 +627,7 @@ def get_curated_ml_sources() -> List[MLPaperSource]:
 def main():
     """Main function to build the ML knowledge base"""
 
-    print("🔨 Building ML Anomaly Detection Knowledge Base")
+    print("Building ML Anomaly Detection Knowledge Base")
     print("=" * 50)
 
     # Initialize components
@@ -639,48 +639,48 @@ def main():
 
     # Get current stats
     current_stats = knowledge_base.get_stats()
-    print(f"📊 Current knowledge base: {current_stats['total_chunks']} chunks")
+    print(f"Current knowledge base: {current_stats['total_chunks']} chunks")
 
     # Get sources to process
     sources = get_curated_ml_sources()
-    print(f"📚 Processing {len(sources)} ML sources...")
+    print(f"Processing {len(sources)} ML sources...")
 
     # Process each source
     total_chunks_added = 0
     successful_sources = 0
 
     for i, source in enumerate(sources, 1):
-        print(f"\n🔄 [{i}/{len(sources)}] Processing: {source.title}")
+        print(f"\n[{i}/{len(sources)}] Processing: {source.title}")
         print(f"   Company: {source.company} | Year: {source.year}")
 
         # Extract content
         content = content_extractor.extract_from_url(source.url)
 
         if not content:
-            print(f"   ❌ Failed to extract content")
+            print(f"   Failed to extract content")
             continue
 
-        print(f"   📝 Extracted {len(content):,} characters")
+        print(f"   Extracted {len(content):,} characters")
 
         # Process into chunks
         chunks = document_processor.process_document(source, content)
 
         if not chunks:
-            print(f"   ❌ No chunks generated")
+            print(f"   No chunks generated")
             continue
 
-        print(f"   🧩 Generated {len(chunks)} chunks")
+        print(f"   Generated {len(chunks)} chunks")
 
         # Add to knowledge base
         if knowledge_base.add_chunks(chunks):
             total_chunks_added += len(chunks)
             successful_sources += 1
-            print(f"   ✅ Added to knowledge base")
+            print(f"   Added to knowledge base")
         else:
-            print(f"   ❌ Failed to add to knowledge base")
+            print(f"   Failed to add to knowledge base")
 
     # Final stats
-    print(f"\n🎉 Knowledge Base Build Complete!")
+    print(f"\nKnowledge Base Build Complete!")
     print("=" * 50)
     print(f"Sources processed: {successful_sources}/{len(sources)}")
     print(f"Total chunks added: {total_chunks_added}")
@@ -692,7 +692,7 @@ def main():
     print(f"Storage location: {final_stats['storage_path']}")
 
     # Test search
-    print(f"\n🔍 Testing search functionality...")
+    print(f"\nTesting search functionality...")
     test_queries = [
         "How does Netflix detect performance anomalies?",
         "What ML techniques work for fraud detection?",

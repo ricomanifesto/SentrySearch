@@ -507,7 +507,7 @@ Write in clear, professional language suitable for cybersecurity professionals.
     ) -> str:
         """Format guidance sections as markdown"""
 
-        markdown = "## 🤖 ML-Based Anomaly Detection Approaches\n\n"
+        markdown = "## ML-Based Anomaly Detection Approaches\n\n"
 
         # Add overview
         threat_name = ml_guidance.threat_name or "this threat"
@@ -535,7 +535,7 @@ Write in clear, professional language suitable for cybersecurity professionals.
 
         # Add source papers section
         if ml_guidance.source_papers:
-            markdown += "### 📚 Source Papers & Case Studies\n\n"
+            markdown += "### Source Papers & Case Studies\n\n"
             markdown += "The following industry implementations informed these recommendations:\n\n"
 
             for paper in ml_guidance.source_papers[:5]:  # Top 5 papers
@@ -547,7 +547,7 @@ Write in clear, professional language suitable for cybersecurity professionals.
                 markdown += "\n"
 
         # Add implementation priority
-        markdown += "### 🎯 Implementation Priority\n\n"
+        markdown += "### Implementation Priority\n\n"
         markdown += "**Recommended Implementation Order:**\n"
         markdown += (
             "1. **Start with Low Complexity approaches** for immediate detection capabilities\n"
@@ -857,7 +857,7 @@ Write for cybersecurity practitioners who need actionable, threat-specific guida
     ) -> str:
         """Format enhanced guidance sections as markdown with threat context"""
 
-        markdown = "## 🤖 ML-Based Anomaly Detection Approaches\n\n"
+        markdown = "## ML-Based Anomaly Detection Approaches\n\n"
 
         # Add enhanced overview with threat context
         threat_name = ml_guidance.threat_name or "this threat"
@@ -871,7 +871,7 @@ Write for cybersecurity practitioners who need actionable, threat-specific guida
         # Add threat context summary
         context_summary = self._extract_threat_context_summary(complete_threat_data)
         if context_summary != "Limited threat context available.":
-            markdown += "### 🎯 Threat-Specific Context Applied\n\n"
+            markdown += "### Threat-Specific Context Applied\n\n"
             markdown += f"{context_summary}\n\n"
             markdown += "The ML approaches below are specifically designed to detect these threat characteristics.\n\n"
 
@@ -890,7 +890,7 @@ Write for cybersecurity practitioners who need actionable, threat-specific guida
 
         # Add source papers section (same as before)
         if ml_guidance.source_papers:
-            markdown += "### 📚 Source Papers & Case Studies\n\n"
+            markdown += "### Source Papers & Case Studies\n\n"
             markdown += "The following industry implementations informed these threat-specific recommendations:\n\n"
 
             for paper in ml_guidance.source_papers[:5]:  # Top 5 papers
@@ -902,7 +902,7 @@ Write for cybersecurity practitioners who need actionable, threat-specific guida
                 markdown += "\n"
 
         # Enhanced implementation priority with threat context
-        markdown += "### 🎯 Threat-Specific Implementation Priority\n\n"
+        markdown += "### Threat-Specific Implementation Priority\n\n"
         markdown += f"**Recommended Implementation Order for {threat_name}:**\n"
         markdown += (
             "1. **Start with Low Complexity approaches** targeting the identified attack vectors\n"
@@ -926,7 +926,7 @@ Write for cybersecurity practitioners who need actionable, threat-specific guida
     ) -> str:
         """Generate enhanced fallback ML guidance when main pipeline fails"""
 
-        markdown = "## 🤖 ML-Based Anomaly Detection Approaches\n\n"
+        markdown = "## ML-Based Anomaly Detection Approaches\n\n"
         markdown += (
             f"Threat-specific ML detection approaches for {threat_characteristics.threat_name}:\n\n"
         )
@@ -963,7 +963,7 @@ Write for cybersecurity practitioners who need actionable, threat-specific guida
     def _generate_fallback_section(self, threat_characteristics: ThreatCharacteristics) -> str:
         """Generate fallback ML guidance when main pipeline fails"""
 
-        markdown = "## 🤖 ML-Based Anomaly Detection Approaches\n\n"
+        markdown = "## ML-Based Anomaly Detection Approaches\n\n"
         markdown += f"ML-based detection approaches for {threat_characteristics.threat_name}:\n\n"
 
         markdown += "### General Anomaly Detection\n\n"
@@ -994,7 +994,7 @@ Write for cybersecurity practitioners who need actionable, threat-specific guida
 def test_ml_guidance_generator():
     """Test the ML guidance generator"""
 
-    print("📝 Testing ML Guidance Generator")
+    print("Testing ML Guidance Generator")
     print("=" * 40)
 
     # Initialize
@@ -1011,14 +1011,14 @@ def test_ml_guidance_generator():
         time_characteristics="persistent",
     )
 
-    print(f"🎯 Generating ML guidance for: {threat.threat_name}")
+    print(f"Generating ML guidance for: {threat.threat_name}")
     print(f"   Type: {threat.threat_type}")
     print(f"   Attack Vectors: {', '.join(threat.attack_vectors)}")
 
     # Generate guidance
     guidance_markdown = generator.generate_ml_guidance_section(threat)
 
-    print(f"\n📄 Generated ML Guidance:")
+    print(f"\nGenerated ML Guidance:")
     print(f"   Length: {len(guidance_markdown)} characters")
     print(f"   Sections: {guidance_markdown.count('###')} subsections")
 
@@ -1033,12 +1033,12 @@ def test_ml_guidance_generator():
 
     # Show preview
     preview_lines = guidance_markdown.split("\n")[:20]
-    print(f"\n📖 Preview (first 20 lines):")
+    print(f"\nPreview (first 20 lines):")
     print("-" * 40)
     for line in preview_lines:
         print(line)
 
-    print(f"\n✅ ML guidance generation test complete!")
+    print(f"\nML guidance generation test complete!")
 
 
 if __name__ == "__main__":

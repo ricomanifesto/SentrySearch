@@ -1,5 +1,5 @@
 """
-🔍 SentrySearch - Threat Intelligence Profile Generator
+SentrySearch - Threat Intelligence Profile Generator
 """
 
 import gradio as gr
@@ -20,21 +20,21 @@ try:
 
     STORAGE_ENABLED = os.getenv("ENABLE_REPORT_STORAGE", "true").lower() == "true"
     if STORAGE_ENABLED:
-        print("✅ Cloud storage enabled")
+        print("Cloud storage enabled")
     else:
-        print("⚠️ Cloud storage disabled")
+        print("Cloud storage disabled")
 except ImportError as e:
-    print(f"⚠️ Cloud storage not available: {e}")
+    print(f"Cloud storage not available: {e}")
     STORAGE_ENABLED = False
 
 
 def generate_threat_profile(tool_name, enable_quality_control, progress=gr.Progress()):
     """Generate a threat intelligence profile."""
     if not tool_name.strip():
-        return "❌ Please enter a tool name", None
+        return "Please enter a tool name", None
 
     def safe_generation_progress(value, message):
-        if isinstance(message, str) and message.lstrip().startswith(("❌ Error", "Error")):
+        if isinstance(message, str) and message.lstrip().startswith("Error"):
             progress(value, GENERATION_ERROR_MESSAGE)
             return
         progress(value, message)
@@ -51,13 +51,13 @@ def generate_threat_profile(tool_name, enable_quality_control, progress=gr.Progr
         threat_profile_generator.enable_quality_control = enable_quality_control
 
         # Generate threat intelligence
-        progress(0.1, "🔄 Initializing threat intelligence generation...")
+        progress(0.1, "Initializing threat intelligence generation...")
         threat_data = threat_profile_generator.get_threat_intelligence(
             tool_name, progress_callback=safe_generation_progress
         )
 
         # Generate markdown
-        progress(0.98, "📝 Generating markdown report...")
+        progress(0.98, "Generating markdown report...")
         markdown_content = generate_markdown(threat_data)
 
         # Extract quality assessment for display
@@ -65,7 +65,7 @@ def generate_threat_profile(tool_name, enable_quality_control, progress=gr.Progr
         if "_quality_assessment" in threat_data:
             quality_data = threat_data["_quality_assessment"]
 
-        progress(1.0, "✅ Threat intelligence profile generated successfully!")
+        progress(1.0, "Threat intelligence profile generated successfully!")
 
         # Store report in cloud storage if enabled
         if STORAGE_ENABLED:
@@ -85,9 +85,9 @@ def generate_threat_profile(tool_name, enable_quality_control, progress=gr.Progr
                 }
 
                 report_service.store_report(report_data)
-                print(f"✅ Report stored in cloud: {report_data['id']}")
+                print(f"Report stored in cloud: {report_data['id']}")
             except Exception as e:
-                print(f"⚠️ Could not store report in cloud: {e}")
+                print(f"Could not store report in cloud: {e}")
 
         return markdown_content, quality_data
 
@@ -217,9 +217,9 @@ def get_download_link(report_id):
 
 def create_ui():
     """Main function to launch the application"""
-    print("🚀 Starting SentrySearch - Threat Intelligence Profile Generator...")
-    print("📌 Make sure OPENROUTER_API_KEY is configured for model generation.")
-    print("🌐 Opening web interface...")
+    print("Starting SentrySearch - Threat Intelligence Profile Generator...")
+    print("Make sure OPENROUTER_API_KEY is configured for model generation.")
+    print("Opening web interface...")
 
     with gr.Blocks(
         title="SentrySearch: AI-Powered Threat Intelligence", theme=gr.themes.Soft()
@@ -236,12 +236,12 @@ def create_ui():
         # Main interface layout using tabs
         with gr.Tabs():
             # Tab 1: Generate New Report
-            with gr.Tab("🚀 Generate Report"):
+            with gr.Tab("Generate Report"):
                 with gr.Row():
                     with gr.Column(scale=2):
                         # Input section
                         with gr.Group():
-                            gr.Markdown("### 🎯 Configuration & Target Selection")
+                            gr.Markdown("### Configuration & Target Selection")
                             tool_input = gr.Textbox(
                                 label="Tool/Threat Name",
                                 placeholder="Enter the name of a tool, malware, or threat (e.g., 'Cobalt Strike', 'ShadowPad')",
@@ -257,30 +257,30 @@ def create_ui():
 
                             with gr.Row():
                                 generate_btn = gr.Button(
-                                    "🚀 Generate Profile", variant="primary", size="lg"
+                                    "Generate Profile", variant="primary", size="lg"
                                 )
-                                clear_btn = gr.Button("🗑️ Clear", variant="secondary")
+                                clear_btn = gr.Button("Clear", variant="secondary")
 
                 # Results section
                 with gr.Row():
                     with gr.Column():
-                        with gr.Tab("📄 Threat Intelligence Report"):
+                        with gr.Tab("Threat Intelligence Report"):
                             markdown_output = gr.Markdown(
                                 value="Enter a tool name, then click **Generate Profile** to create a threat intelligence report.",
                                 height=600,
                             )
 
                         # Quality Assessment Tab
-                        with gr.Tab("📊 Quality Assessment"):
+                        with gr.Tab("Quality Assessment"):
                             quality_output = gr.JSON(
                                 label="Quality Validation Results", value=None, height=600
                             )
 
             # Tab 2: Report Library
-            with gr.Tab("📚 Report Library"):
+            with gr.Tab("Report Library"):
                 with gr.Row():
                     with gr.Column():
-                        gr.Markdown("### 🗂️ Saved Reports")
+                        gr.Markdown("### Saved Reports")
 
                         # Search and filter controls
                         with gr.Row():
@@ -301,8 +301,8 @@ def create_ui():
                                 value="All",
                                 label="Filter by Category",
                             )
-                            search_btn = gr.Button("🔍 Search", variant="secondary")
-                            refresh_btn = gr.Button("🔄 Refresh", variant="secondary")
+                            search_btn = gr.Button("Search", variant="secondary")
+                            refresh_btn = gr.Button("Refresh", variant="secondary")
 
                         # Report list
                         report_list = gr.Dataframe(
@@ -319,21 +319,21 @@ def create_ui():
                                 placeholder="Click on a report row to select it, then copy the ID here",
                                 lines=1,
                             )
-                            view_btn = gr.Button("👁️ View Report", variant="primary")
-                            download_btn = gr.Button("💾 Download", variant="secondary")
+                            view_btn = gr.Button("View Report", variant="primary")
+                            download_btn = gr.Button("Download", variant="secondary")
 
                 # Report viewer
                 with gr.Row():
                     with gr.Column():
-                        gr.Markdown("### 📖 Report Viewer")
+                        gr.Markdown("### Report Viewer")
 
-                        with gr.Tab("📄 Report Content"):
+                        with gr.Tab("Report Content"):
                             viewed_report = gr.Markdown(
                                 value="Select a report from the library above and click **View Report** to display its content.",
                                 height=600,
                             )
 
-                        with gr.Tab("📊 Report Quality"):
+                        with gr.Tab("Report Quality"):
                             viewed_quality = gr.JSON(
                                 label="Quality Assessment", value=None, height=600
                             )

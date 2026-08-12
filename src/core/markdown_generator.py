@@ -6,13 +6,6 @@ import re
 from datetime import datetime
 from typing import Any, Mapping
 
-RECOMMENDATION_MARKERS = {
-    "PASS": "✅",
-    "ENHANCE": "⚠️",
-    "RETRY": "❌",
-}
-
-
 def format_date(date_str: str) -> str:
     """Format date strings consistently"""
     if not date_str:
@@ -28,17 +21,17 @@ def format_date(date_str: str) -> str:
 
 
 def format_quality_score(score: float) -> str:
-    """Format quality score with emoji indicator"""
+    """Format a quality score with a descriptive rating."""
     if score >= 4.5:
-        return f"✅ {score}/5.0 (Excellent)"
+        return f"{score}/5.0 (Excellent)"
     elif score >= 4.0:
-        return f"✅ {score}/5.0 (Good)"
+        return f"{score}/5.0 (Good)"
     elif score >= 3.5:
-        return f"⚠️ {score}/5.0 (Acceptable)"
+        return f"{score}/5.0 (Acceptable)"
     elif score >= 3.0:
-        return f"⚠️ {score}/5.0 (Needs Improvement)"
+        return f"{score}/5.0 (Needs Improvement)"
     else:
-        return f"❌ {score}/5.0 (Poor)"
+        return f"{score}/5.0 (Poor)"
 
 
 def _humanize_section_name(section_name: str) -> str:
@@ -60,7 +53,7 @@ def render_quality_assessment(quality: Mapping[str, Any]) -> str:
     summary = quality.get("summary", {})
     section_validations = quality.get("section_validations", {})
     lines = [
-        "## 📊 Quality Assessment Report",
+        "## Quality Assessment Report",
         "",
         "### Summary",
         "",
@@ -84,9 +77,8 @@ def render_quality_assessment(quality: Mapping[str, Any]) -> str:
         for section_name, validation in sorted(section_validations.items()):
             overall = validation.get("scores", {}).get("overall", 0)
             recommendation = str(validation.get("recommendation", "UNKNOWN"))
-            marker = RECOMMENDATION_MARKERS.get(recommendation, "❔")
             label = _markdown_table_cell(_humanize_section_name(section_name))
-            status = _markdown_table_cell(f"{marker} {recommendation}")
+            status = _markdown_table_cell(recommendation)
             lines.append(f"| {label} | {overall:.1f}/5.0 | {status} |")
 
     recommendations = quality.get("recommendations", [])
@@ -123,7 +115,7 @@ def generate_markdown(data):
     """Generate markdown report from threat intelligence data"""
 
     if not data or not isinstance(data, dict):
-        return "# ❌ Error\n\nNo valid threat intelligence data provided."
+        return "# Error\n\nNo valid threat intelligence data provided."
 
     md = []
 
@@ -132,7 +124,7 @@ def generate_markdown(data):
         print("MARKDOWN DEBUG: Starting header section...")
         core = data.get("coreMetadata", {})
 
-        md.append(f"# 🛡️ Threat Intelligence Profile: {core.get('name', 'Unknown Tool')}")
+        md.append(f"# Threat Intelligence Profile: {core.get('name', 'Unknown Tool')}")
         md.append("")
 
         # NEW: Add quality score badge if available
@@ -146,7 +138,7 @@ def generate_markdown(data):
         md.append("")
 
         # Metadata table
-        md.append("## 📋 Profile Metadata")
+        md.append("## Profile Metadata")
         md.append("")
         md.append("| Field | Value |")
         md.append("|-------|-------|")
@@ -167,7 +159,7 @@ def generate_markdown(data):
         print("MARKDOWN DEBUG: Starting web search sources section...")
         web_sources = data.get("webSearchSources", {})
         if isinstance(web_sources, dict):
-            md.append("## 🌐 Web Search Sources & Research Methodology")
+            md.append("## Web Search Sources & Research Methodology")
             md.append("")
 
             # Search Strategy
@@ -179,7 +171,7 @@ def generate_markdown(data):
             # Search Queries Used
             queries = web_sources.get("searchQueriesUsed", [])
             if queries and isinstance(queries, list):
-                md.append("### 🔍 Search Queries Used")
+                md.append("### Search Queries Used")
                 md.append("")
                 for query in queries:
                     md.append(f"- `{query}`")
@@ -188,7 +180,7 @@ def generate_markdown(data):
             # Primary Sources
             primary_sources = web_sources.get("primarySources", [])
             if primary_sources and isinstance(primary_sources, list):
-                md.append("### 📚 Primary Sources")
+                md.append("### Primary Sources")
                 md.append("")
                 for source in primary_sources:
                     if isinstance(source, dict):
@@ -214,7 +206,7 @@ def generate_markdown(data):
             freshness = web_sources.get("dataFreshness", "")
             reliability = web_sources.get("sourceReliability", "")
             if freshness or reliability:
-                md.append("### 📊 Data Quality Assessment")
+                md.append("### Data Quality Assessment")
                 md.append("")
                 if freshness:
                     md.append(f"**Data Freshness**: {freshness}")
@@ -228,7 +220,7 @@ def generate_markdown(data):
         print("MARKDOWN DEBUG: Starting tool overview section...")
         overview = data.get("toolOverview", {})
         if isinstance(overview, dict):
-            md.append("## 🔍 Tool Overview")
+            md.append("## Tool Overview")
             md.append("")
             md.append(f"**Description**: {overview.get('description', 'No description available')}")
             md.append("")
@@ -256,7 +248,7 @@ def generate_markdown(data):
         print("MARKDOWN DEBUG: Starting technical details section...")
         technical = data.get("technicalDetails", {})
         if isinstance(technical, dict):
-            md.append("## ⚙️ Technical Details")
+            md.append("## Technical Details")
             md.append("")
             md.append(f"**Architecture**: {technical.get('architecture', 'Unknown')}")
             md.append("")
@@ -302,7 +294,7 @@ def generate_markdown(data):
         print("MARKDOWN DEBUG: Starting C2 section...")
         c2 = data.get("commandAndControl", {})
         if isinstance(c2, dict):
-            md.append("## 🎛️ Command and Control")
+            md.append("## Command and Control")
             md.append("")
 
             md.append(f"**Communication Methods**: {c2.get('communicationMethods', 'Unknown')}")
@@ -369,7 +361,7 @@ def generate_markdown(data):
         print("MARKDOWN DEBUG: Starting threat intelligence section...")
         threat_intel = data.get("threatIntelligence", {})
         if isinstance(threat_intel, dict):
-            md.append("## 🎯 Threat Intelligence")
+            md.append("## Threat Intelligence")
             md.append("")
 
             # Risk Assessment
@@ -429,7 +421,7 @@ def generate_markdown(data):
         print("MARKDOWN DEBUG: Starting forensic artifacts section...")
         forensics = data.get("forensicArtifacts", {})
         if isinstance(forensics, dict):
-            md.append("## 🔍 Forensic Artifacts")
+            md.append("## Forensic Artifacts")
             md.append("")
 
             artifact_types = [
@@ -453,7 +445,7 @@ def generate_markdown(data):
         print("MARKDOWN DEBUG: Starting detection section...")
         detection = data.get("detectionAndMitigation", {})
         if isinstance(detection, dict):
-            md.append("## 🛡️ Detection and Mitigation")
+            md.append("## Detection and Mitigation")
             md.append("")
 
             # YARA Rules
@@ -511,7 +503,7 @@ def generate_markdown(data):
         # Mitigation and Response
         mitigation = data.get("mitigationAndResponse", {})
         if isinstance(mitigation, dict):
-            md.append("## 🚨 Mitigation and Response")
+            md.append("## Mitigation and Response")
             md.append("")
 
             section_types = [
@@ -533,7 +525,7 @@ def generate_markdown(data):
         # References and Intelligence Sharing
         references = data.get("referencesAndIntelligenceSharing", {})
         if isinstance(references, dict):
-            md.append("## 📚 References and Intelligence Sharing")
+            md.append("## References and Intelligence Sharing")
             md.append("")
 
             sources = references.get("sources", [])
@@ -566,7 +558,7 @@ def generate_markdown(data):
         # Integration
         integration = data.get("integration", {})
         if isinstance(integration, dict):
-            md.append("## 🔧 Integration Guidance")
+            md.append("## Integration Guidance")
             md.append("")
             md.append(
                 f"**SIEM Integration**: {integration.get('siemIntegration', 'No guidance available')}"
@@ -588,7 +580,7 @@ def generate_markdown(data):
         # Lineage
         lineage = data.get("lineage", {})
         if isinstance(lineage, dict):
-            md.append("## 🧬 Tool Lineage")
+            md.append("## Tool Lineage")
             md.append("")
 
             variants = lineage.get("variants", [])
@@ -611,7 +603,7 @@ def generate_markdown(data):
         # Contextual Analysis
         context = data.get("contextualAnalysis", {})
         if isinstance(context, dict):
-            md.append("## 📊 Contextual Analysis")
+            md.append("## Contextual Analysis")
             md.append("")
 
             usage = context.get("usageContexts", {})
@@ -641,7 +633,7 @@ def generate_markdown(data):
         # Operational Guidance
         operations = data.get("operationalGuidance", {})
         if isinstance(operations, dict):
-            md.append("## 🎯 Operational Guidance")
+            md.append("## Operational Guidance")
             md.append("")
 
             criteria = operations.get("validationCriteria", [])
@@ -679,7 +671,7 @@ def generate_markdown(data):
             # Add metadata about ML guidance generation
             threat_chars = ml_guidance.get("threatCharacteristics", {})
             if threat_chars:
-                md.append("### 🔧 ML Guidance Metadata")
+                md.append("### ML Guidance Metadata")
                 md.append("")
                 md.append("| Attribute | Value |")
                 md.append("|-----------|-------|")
@@ -698,9 +690,9 @@ def generate_markdown(data):
                 md.append("")
         elif isinstance(ml_guidance, dict) and not ml_guidance.get("enabled", True):
             # Show error information if ML guidance failed
-            md.append("## 🤖 ML-Based Anomaly Detection Approaches")
+            md.append("## ML-Based Anomaly Detection Approaches")
             md.append("")
-            md.append("❌ **ML guidance generation failed**")
+            md.append("**ML guidance generation failed**")
             md.append("")
             md.append("**Error**: ML guidance could not be generated.")
             md.append("")
@@ -721,7 +713,7 @@ def generate_markdown(data):
         if isinstance(comprehensive_sources, dict) and comprehensive_sources.get("enabled", False):
             sources_analysis = comprehensive_sources.get("comprehensiveSourceAnalysis", {})
 
-            md.append("## 📚 Comprehensive Web Search Sources Analysis")
+            md.append("## Comprehensive Web Search Sources Analysis")
             md.append("")
 
             # Overview

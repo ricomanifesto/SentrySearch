@@ -451,7 +451,7 @@ def test_legacy_ui_generation_redacts_internal_exception_detail(monkeypatch):
         def get_threat_intelligence(self, tool_name: str, progress_callback=None):
             if progress_callback:
                 progress_callback(0.5, "Normal generation progress")
-                progress_callback(1.0, f"❌ Error: provider token leaked for {tool_name}")
+                progress_callback(1.0, f"Error: provider token leaked for {tool_name}")
             raise RuntimeError(f"provider token leaked for {tool_name}")
 
     progress_updates = []
@@ -466,7 +466,7 @@ def test_legacy_ui_generation_redacts_internal_exception_detail(monkeypatch):
     assert message == "Error generating profile. Please try again."
     assert quality is None
     assert progress_updates[-1] == (1.0, "Error generating profile. Please try again.")
-    assert progress_updates[0] == (0.1, "🔄 Initializing threat intelligence generation...")
+    assert progress_updates[0] == (0.1, "Initializing threat intelligence generation...")
     assert progress_updates[1] == (0.5, "Normal generation progress")
     assert "provider token" not in message
     assert "SecretTool" not in message

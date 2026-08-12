@@ -717,7 +717,7 @@ def main():
         "WORKERS_URL", "https://sentry-search-hybrid.your-subdomain.workers.dev"
     )
 
-    print("🤖 Testing ML Workers Retriever")
+    print("Testing ML Workers Retriever")
     print("=" * 40)
     print(f"Workers URL: {workers_url}")
 
@@ -727,15 +727,15 @@ def main():
 
     # Test Workers health
     if retriever.workers_client.health_check():
-        print("✅ Workers API is healthy")
+        print("Workers API is healthy")
     else:
-        print("❌ Workers API health check failed")
+        print("Workers API health check failed")
         return
 
     # Test with sample threat
     threat = create_test_threat_characteristics()
 
-    print(f"\n🎯 Testing with threat: {threat.threat_name}")
+    print(f"\nTesting with threat: {threat.threat_name}")
     print(f"   Type: {threat.threat_type}")
     print(f"   Attack Vectors: {', '.join(threat.attack_vectors)}")
     print(f"   Behavior Patterns: {', '.join(threat.behavior_patterns)}")
@@ -743,7 +743,7 @@ def main():
     # Get ML guidance
     guidance = retriever.get_ml_guidance(threat)
 
-    print(f"\n🧠 ML Guidance Generated:")
+    print(f"\nML Guidance Generated:")
     print(f"   ML Approaches: {len(guidance['ml_approaches'])}")
     print(f"   Implementation Considerations: {len(guidance['implementation_considerations'])}")
     print(f"   Source Papers: {len(guidance['source_papers'])}")
@@ -755,18 +755,18 @@ def main():
 
     # Show details
     if guidance["ml_approaches"]:
-        print(f"\n📊 Top ML Approaches:")
+        print(f"\nTop ML Approaches:")
         for i, approach in enumerate(guidance["ml_approaches"][:3], 1):
             print(f"   {i}. {approach['technique']} ({approach['source_company']})")
             print(f"      Hybrid Score: {approach.get('hybrid_score', 0):.3f}")
             print(f"      Method: {approach.get('retrieval_method', 'unknown')}")
 
     if guidance["source_papers"]:
-        print(f"\n📚 Source Papers:")
+        print(f"\nSource Papers:")
         for paper in guidance["source_papers"][:3]:
             print(f"   • {paper['company']} ({paper['year']}): {paper['title'][:60]}...")
 
-    print(f"\n✅ Workers retrieval test complete!")
+    print(f"\nWorkers retrieval test complete!")
 
 
 if __name__ == "__main__":
