@@ -697,7 +697,7 @@ Tool/Threat: {tool_name}
 Current Content: {json.dumps(content, indent=2)}
 
 INSTRUCTIONS:
-1. Use available research tools tool with these specific queries: {search_queries}
+1. Use the web search tool with these specific queries: {search_queries}
 2. Find recent, authoritative sources with technical details
 3. Look for specific IOCs, technical specifications, detection methods
 4. Focus on actionable intelligence that security teams can use
@@ -716,7 +716,7 @@ CRITICAL REQUIREMENTS:
 - Start your response directly with the opening brace {{
 - End your response with the closing brace }}
 - Maintain the exact same JSON structure as the input
-- Only include information from real sources found through available research tools
+- Only include information from real sources found through web search
 - Do not fabricate URLs or technical details
 
 Your entire response must be valid JSON that can be directly parsed."""
@@ -726,7 +726,7 @@ Your entire response must be valid JSON that can be directly parsed."""
                 max_tokens=4000,  # Increased to allow for complete JSON responses
                 temperature=0.3,
                 messages=[{"role": "user", "content": prompt}],
-                tools=[{"type": "available research tools", "name": "web_search"}],
+                tools=[{"type": "web_search"}],
             )
 
             # Extract and track web search sources from this enhancement
@@ -925,6 +925,34 @@ Your entire response must be valid JSON that can be directly parsed."""
         sources = []
 
         print(f"DEBUG: Extracting sources for {section_name}")
+
+        sdk_sources = getattr(response, "web_search_sources", None) or []
+        if sdk_sources:
+            for result in sdk_sources:
+                url = result.get("url", "")
+                title = result.get("title", "")
+                if not url:
+                    continue
+                sources.append(
+                    {
+                        "url": url,
+                        "title": title or self._extract_domain(url),
+                        "domain": self._extract_domain(url),
+                        "snippet": "",
+                        "publishedDate": self._parse_page_age(
+                            result.get("page_age", "unknown")
+                        ),
+                        "accessedDate": datetime.now().strftime("%Y-%m-%d"),
+                        "relevanceToSection": section_name,
+                        "toolContext": tool_name,
+                        "searchPhase": "enhancement",
+                        "contentType": self._classify_content_type(url, title),
+                        "pageAge": result.get("page_age", "unknown"),
+                        "evidenceOrigin": result.get("origin", "web_search_call"),
+                    }
+                )
+            print(f"DEBUG: Extracted {len(sources)} SDK web search sources")
+            return sources
 
         if hasattr(response, "content") and response.content:
             print(f"DEBUG: Found {len(response.content)} content blocks")

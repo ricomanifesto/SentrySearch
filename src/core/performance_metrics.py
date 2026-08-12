@@ -32,27 +32,41 @@ class APIMetrics:
     # Optional fields with defaults
     time_to_first_token_ms: Optional[int] = None
     cached_tokens: int = 0
+    cache_write_tokens: int = 0
+    reasoning_tokens: int = 0
+    total_tokens: int = 0
+    web_search_calls: int = 0
+    source_count: int = 0
     cache_write_cost: float = 0.0
     cache_read_cost: float = 0.0
+    web_search_cost: float = 0.0
     total_cost: float = 0.0
     cache_enabled: bool = False
     cache_hit: bool = False
     prompt_size_chars: int = 0
     response_valid: bool = True
-    json_parsed: bool = True
+    json_parsed: bool = False
+    schema_valid: bool = False
+    source_attested: bool = False
     error_message: Optional[str] = None
 
 
 class PerformanceTracker:
     """Tracks and logs performance metrics for prompt caching comparison"""
 
-    # Pricing per 1M tokens. Override as provider costs change.
+    # Standard short-context pricing per 1M tokens and per 1K tool calls.
+    LONG_CONTEXT_THRESHOLD = 272_000
     PRICING = {
         "gpt-5.6-sol": {
             "input": 5.0,
             "output": 30.0,
             "cache_write": 6.25,
             "cache_read": 0.5,
+            "long_input": 10.0,
+            "long_output": 45.0,
+            "long_cache_write": 12.5,
+            "long_cache_read": 1.0,
+            "web_search_per_1k_calls": 10.0,
         }
     }
 
@@ -157,16 +171,35 @@ class PerformanceTracker:
             usage = response.usage
             self.current_metrics.input_tokens = getattr(usage, "input_tokens", 0)
             self.current_metrics.output_tokens = getattr(usage, "output_tokens", 0)
+            self.current_metrics.cached_tokens = getattr(usage, "cached_tokens", 0)
+            self.current_metrics.cache_write_tokens = getattr(usage, "cache_write_tokens", 0)
+            self.current_metrics.reasoning_tokens = getattr(usage, "reasoning_tokens", 0)
+            self.current_metrics.total_tokens = getattr(
+                usage,
+                "total_tokens",
+                self.current_metrics.input_tokens + self.current_metrics.output_tokens,
+            )
 
-            # Check for cache-specific token counts
-            if hasattr(usage, "cache_creation_input_tokens"):
-                # For cache writes
-                cache_write_tokens = getattr(usage, "cache_creation_input_tokens", 0)
-                self.current_metrics.cached_tokens = cache_write_tokens
-            elif hasattr(usage, "cache_read_input_tokens"):
-                # For cache reads
-                cache_read_tokens = getattr(usage, "cache_read_input_tokens", 0)
-                self.current_metrics.cached_tokens = cache_read_tokens
+            # Keep old response shapes readable while metrics files roll forward.
+            self.current_metrics.cache_write_tokens = getattr(
+                usage,
+                "cache_creation_input_tokens",
+                self.current_metrics.cache_write_tokens,
+            )
+            self.current_metrics.cached_tokens = getattr(
+                usage,
+                "cache_read_input_tokens",
+                self.current_metrics.cached_tokens,
+            )
+            self.current_metrics.cache_hit = bool(
+                self.current_metrics.cache_hit or self.current_metrics.cached_tokens
+            )
+
+        tool_events = getattr(response, "tool_events", []) or []
+        self.current_metrics.web_search_calls = sum(
+            1 for event in tool_events if event.get("type") == "web_search_call"
+        )
+        self.current_metrics.source_count = len(getattr(response, "web_search_sources", []) or [])
 
         # Calculate costs
         self._calculate_costs()
@@ -174,7 +207,9 @@ class PerformanceTracker:
         print(
             f"DEBUG: Recorded API response - latency: {self.current_metrics.latency_ms}ms, "
             f"tokens: {self.current_metrics.input_tokens}+{self.current_metrics.output_tokens}, "
-            f"cache_hit: {cache_hit}"
+            f"web_search_calls: {self.current_metrics.web_search_calls}, "
+            f"sources: {self.current_metrics.source_count}, "
+            f"cache_hit: {self.current_metrics.cache_hit}"
         )
 
     def record_error(self, error: Exception):
@@ -207,7 +242,25 @@ class PerformanceTracker:
             return
 
         self.current_metrics.json_parsed = success
+        self.current_metrics.schema_valid = success
         if not success and error:
+            self.current_metrics.error_message = error
+
+    def record_contract_result(
+        self,
+        *,
+        schema_valid: bool,
+        source_attested: bool,
+        error: Optional[str] = None,
+    ) -> None:
+        """Record the structured-output and source-attestation result."""
+        if not self.current_metrics:
+            return
+
+        self.current_metrics.json_parsed = schema_valid
+        self.current_metrics.schema_valid = schema_valid
+        self.current_metrics.source_attested = source_attested
+        if error:
             self.current_metrics.error_message = error
 
     def finish_request(self) -> Optional[APIMetrics]:
@@ -251,26 +304,31 @@ class PerformanceTracker:
             self.PRICING["gpt-5.6-sol"],
         )
 
-        # Base costs
-        self.current_metrics.input_cost = (self.current_metrics.input_tokens / 1_000_000) * pricing[
-            "input"
-        ]
+        long_context = self.current_metrics.input_tokens > self.LONG_CONTEXT_THRESHOLD
+        input_rate = pricing["long_input"] if long_context else pricing["input"]
+        output_rate = pricing["long_output"] if long_context else pricing["output"]
+        cache_write_rate = pricing["long_cache_write"] if long_context else pricing["cache_write"]
+        cache_read_rate = pricing["long_cache_read"] if long_context else pricing["cache_read"]
+        uncached_input_tokens = max(
+            0,
+            self.current_metrics.input_tokens
+            - self.current_metrics.cached_tokens
+            - self.current_metrics.cache_write_tokens,
+        )
+
+        self.current_metrics.input_cost = (uncached_input_tokens / 1_000_000) * input_rate
         self.current_metrics.output_cost = (
             self.current_metrics.output_tokens / 1_000_000
-        ) * pricing["output"]
-
-        # Cache costs
-        if self.current_metrics.cache_enabled and self.current_metrics.cached_tokens > 0:
-            if self.current_metrics.cache_hit:
-                # Cache read cost
-                self.current_metrics.cache_read_cost = (
-                    self.current_metrics.cached_tokens / 1_000_000
-                ) * pricing["cache_read"]
-            else:
-                # Cache write cost
-                self.current_metrics.cache_write_cost = (
-                    self.current_metrics.cached_tokens / 1_000_000
-                ) * pricing["cache_write"]
+        ) * output_rate
+        self.current_metrics.cache_read_cost = (
+            self.current_metrics.cached_tokens / 1_000_000
+        ) * cache_read_rate
+        self.current_metrics.cache_write_cost = (
+            self.current_metrics.cache_write_tokens / 1_000_000
+        ) * cache_write_rate
+        self.current_metrics.web_search_cost = (
+            self.current_metrics.web_search_calls / 1_000
+        ) * pricing["web_search_per_1k_calls"]
 
         # Total cost
         self.current_metrics.total_cost = (
@@ -278,6 +336,7 @@ class PerformanceTracker:
             + self.current_metrics.output_cost
             + self.current_metrics.cache_write_cost
             + self.current_metrics.cache_read_cost
+            + self.current_metrics.web_search_cost
         )
 
     def _save_metrics(self, metrics: APIMetrics):
@@ -340,6 +399,13 @@ class PerformanceTracker:
                 "avg_latency_ms": sum(latencies) / len(latencies),
                 "avg_cost_usd": sum(costs) / len(costs),
                 "avg_input_tokens": sum(input_tokens) / len(input_tokens),
+                "schema_success_rate": sum(m.schema_valid for m in valid_metrics)
+                / len(valid_metrics),
+                "source_attestation_rate": sum(m.source_attested for m in valid_metrics)
+                / len(valid_metrics),
+                "avg_source_count": sum(m.source_count for m in valid_metrics) / len(valid_metrics),
+                "avg_web_search_calls": sum(m.web_search_calls for m in valid_metrics)
+                / len(valid_metrics),
                 "total_cost_usd": sum(costs),
             }
 
@@ -375,4 +441,23 @@ class PerformanceTracker:
                 "improvement": f"{latency_improvement:.1f}% faster",
                 "cost_reduction": f"{cost_improvement:.1f}% cheaper",
             },
+        }
+
+    def generate_evaluation_summary(self, metrics: list[APIMetrics]) -> Dict[str, Any]:
+        """Summarize the quality, latency, usage, and cost of representative runs."""
+        if not metrics:
+            return {"error": "No evaluation data"}
+
+        count = len(metrics)
+        return {
+            "count": count,
+            "response_success_rate": sum(m.response_valid for m in metrics) / count,
+            "schema_success_rate": sum(m.schema_valid for m in metrics) / count,
+            "source_attestation_rate": sum(m.source_attested for m in metrics) / count,
+            "avg_latency_ms": sum(m.latency_ms for m in metrics) / count,
+            "avg_cost_usd": sum(m.total_cost for m in metrics) / count,
+            "total_cost_usd": sum(m.total_cost for m in metrics),
+            "avg_reasoning_tokens": sum(m.reasoning_tokens for m in metrics) / count,
+            "avg_source_count": sum(m.source_count for m in metrics) / count,
+            "avg_web_search_calls": sum(m.web_search_calls for m in metrics) / count,
         }

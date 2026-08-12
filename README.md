@@ -71,7 +71,7 @@ npm run build
 - **Auth:** Supabase JWT authentication.
 - **Data:** PostgreSQL stores report metadata and search indexes; S3 stores markdown reports and artifacts.
 - **Search:** Pinecone provides vector similarity search; Cloudflare Workers orchestrate hybrid search.
-- **AI:** the official OpenAI SDK generates threat analysis through the Responses API.
+- **AI:** the official OpenAI SDK generates schema-validated threat analysis through the Responses API and hosted web search.
 
 ## Related Projects
 

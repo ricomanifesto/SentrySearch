@@ -12,35 +12,17 @@ from src.core.openai_client import (
 )
 from typing import Dict, Any, Optional, Callable
 from datetime import datetime
-import re
-from pydantic import ValidationError
 import time
 import random
 from src.core.section_validator import SectionValidator, SectionImprover
 from src.core.ml_guidance_generator import MLGuidanceGenerator, ThreatCharacteristics
 from src.core.trace_exporter import get_trace_exporter
 from src.core.performance_metrics import PerformanceTracker
-
-# A lone backslash not introducing a valid single-character JSON escape.
-_LONE_INVALID_ESCAPE = re.compile(r'\\(?!["/bfnrtu])')
-_ESCAPED_BACKSLASH_PLACEHOLDER = "\x00"
-
-
-def repair_invalid_json_escapes(text: str) -> str:
-    """Escape stray backslashes that aren't valid JSON escape sequences.
-
-    Models routinely emit string values containing Windows paths (``C:\\Users``)
-    or regex fragments (``\\d+``) where the backslash is not a legal JSON escape,
-    which makes strict ``json.loads`` reject an otherwise-complete object.
-
-    Already-valid escaped backslashes (``\\\\``) are protected first so they aren't
-    disturbed; each remaining lone backslash is then doubled unless it introduces a
-    valid escape (``\\n``, ``\\"``, ``\\uXXXX`` …). This repairs the common case
-    without corrupting legitimate escapes.
-    """
-    protected = text.replace("\\\\", _ESCAPED_BACKSLASH_PLACEHOLDER)
-    repaired = _LONE_INVALID_ESCAPE.sub(r"\\\\", protected)
-    return repaired.replace(_ESCAPED_BACKSLASH_PLACEHOLDER, "\\\\")
+from src.core.threat_profile_schema import (
+    ThreatProfile,
+    attest_profile_sources,
+    parse_threat_profile_response,
+)
 
 
 class ThreatProfileGenerator:
@@ -123,9 +105,9 @@ class ThreatProfileGenerator:
 
 Today's date is {datetime.now().strftime('%B %d, %Y')}.
 
-CRITICAL: You MUST use the available research tools tool extensively to find the most current, verified information. Do NOT hallucinate or invent URLs, sources, or information. All sources must be real and accessible through your available research tools tool.
+CRITICAL: You MUST use the web search tool extensively to find the most current, verified information. Do NOT hallucinate or invent URLs, sources, or information. All sources must be real and accessible through your web search tool.
 
-Please perform a thorough deep dive research using the available research tools tool to find comprehensive information about {tool_name}, including:
+Please perform a thorough deep dive research using the web search tool to find comprehensive information about {tool_name}, including:
 - Recent vulnerabilities and exploits (search for CVEs, security advisories)
 - Technical details and architecture (search for technical analyses, documentation)
 - Indicators of compromise (IOCs) (search for threat intelligence reports, IOC feeds)
@@ -141,7 +123,7 @@ SEARCH STRATEGY: Use multiple specific search queries to gather comprehensive in
 5. "{tool_name} vulnerability CVE"
 6. "{tool_name} security advisory"
 
-Focus on finding information from 2024-2025 when possible, but include relevant historical context.
+Focus on finding information from the most recent 24 months when possible, but include relevant historical context.
 
 Based on your comprehensive research findings, create a detailed profile in the following JSON format:
 
@@ -162,18 +144,18 @@ Based on your comprehensive research findings, create a detailed profile in the 
     "searchQueriesUsed": ["REQUIRED: List the actual search queries you executed"],
     "primarySources": [
       {{
-        "url": "REQUIRED: Real, accessible URL from your available research tools tool results - NO hallucinated URLs",
-        "title": "REQUIRED: Actual title from the available research tools tool results",
-        "domain": "REQUIRED: Actual domain name from available research tools tool results",
+        "url": "REQUIRED: Real, accessible URL from your web search tool results - NO hallucinated URLs",
+        "title": "REQUIRED: Actual title from the web search tool results",
+        "domain": "REQUIRED: Actual domain name from web search tool results",
         "accessDate": "{datetime.now().strftime('%Y-%m-%d')}",
         "relevanceScore": "High/Medium/Low based on content relevance",
         "contentType": "Report/Article/Advisory/Blog/Database/Documentation",
         "keyFindings": "REQUIRED: Specific information extracted from this real source"
       }}
     ],
-    "searchStrategy": "REQUIRED: Describe your actual available research tools tool approach and methodology",
-    "dataFreshness": "REQUIRED: How recent the available research tools tool information is",
-    "sourceReliability": "REQUIRED: Assessment based on actual domain authority and content quality from available research tools tool"
+    "searchStrategy": "REQUIRED: Describe your actual web search tool approach and methodology",
+    "dataFreshness": "REQUIRED: How recent the web search tool information is",
+    "sourceReliability": "REQUIRED: Assessment based on actual domain authority and content quality from web search tool"
   }},
   "toolOverview": {{
     "description": "Comprehensive description based on findings",
@@ -264,7 +246,7 @@ Based on your comprehensive research findings, create a detailed profile in the 
     "sources": [
       {{
         "title": "Source title",
-        "url": "URL from available research tools tool results",
+        "url": "URL from web search tool results",
         "date": "Publication date",
         "relevanceScore": "High/Medium/Low"
       }}
@@ -301,7 +283,7 @@ Based on your comprehensive research findings, create a detailed profile in the 
       {{
         "resourceType": "Type of resource",
         "name": "Resource name",
-        "url": "URL from available research tools tool",
+        "url": "URL from web search tool",
         "focus": "Resource focus"
       }}
     ]
@@ -309,14 +291,14 @@ Based on your comprehensive research findings, create a detailed profile in the 
 }}
 
 CRITICAL INSTRUCTIONS FOR OUTPUT:
-1. Return ONLY the JSON object populated with verified information from your available research tools tool results
+1. Return ONLY the JSON object populated with verified information from your web search tool results
 2. NEVER invent, hallucinate, or fabricate URLs, sources, or technical details
-3. If you cannot find information for certain sections through the available research tools tool, explicitly state "No verified information found through available research tools tool" rather than making up content
-4. All URLs in webSearchSources and referencesAndIntelligenceSharing MUST be real URLs from your actual available research tools tool results
-5. Cross-reference claims across multiple sources when possible using the available research tools tool
-6. If available research tools tool results are limited, acknowledge this limitation in the relevant sections
+3. If you cannot find information for certain sections through the web search tool, explicitly state "No verified information found through web search tool" rather than making up content
+4. All URLs in webSearchSources and referencesAndIntelligenceSharing MUST be real URLs from your actual web search tool results
+5. Cross-reference claims across multiple sources when possible using the web search tool
+6. If web search tool results are limited, acknowledge this limitation in the relevant sections
 
-Remember: Accuracy and source verification through the available research tools tool are more important than completeness. Real, verified information from available research tools is infinitely more valuable than hallucinated content."""
+Remember: Accuracy and source verification through the web search tool are more important than completeness. Real, verified information from web search is infinitely more valuable than hallucinated content."""
 
             # Record prompt details for metrics
             if self.enable_metrics and self.performance_tracker:
@@ -342,7 +324,8 @@ Remember: Accuracy and source verification through the available research tools 
                 max_tokens=16384,
                 temperature=0.3,
                 messages=[{"role": "user", "content": prompt}],
-                tools=[{"type": "available research tools", "name": "web_search"}],
+                tools=[{"type": "web_search"}],
+                response_format=ThreatProfile,
             )
 
             # Record API response metrics
@@ -355,9 +338,6 @@ Remember: Accuracy and source verification through the available research tools 
                     time_to_first_token=time_to_first_token,
                 )
 
-            if self.enable_tracing and self.trace_exporter:
-                self.trace_exporter.log_stage_end("web_search")
-
             # Extract initial web search sources from the main response
             initial_sources = self.validator._extract_web_search_sources_from_response(
                 response, "initial_research", tool_name
@@ -365,136 +345,34 @@ Remember: Accuracy and source verification through the available research tools 
             self.validator.web_search_sources.extend(initial_sources)
             print(f"DEBUG: Captured {len(initial_sources)} initial web search sources")
 
-            # Extract response text (existing logic)
-            response_text = ""
-            if hasattr(response, "content") and response.content:
-                text_blocks = []
-                found_tool_result = False
-
-                for content in response.content:
-                    if hasattr(content, "type"):
-                        if content.type == "web_search_tool_result":
-                            found_tool_result = True
-                        elif content.type == "text" and found_tool_result:
-                            if hasattr(content, "text"):
-                                text_blocks.append(content.text)
-
-                if text_blocks:
-                    response_text = " ".join(text_blocks)
-                else:
-                    for content in response.content:
-                        if hasattr(content, "type") and content.type == "text":
-                            if hasattr(content, "text"):
-                                response_text += content.text + "\n"
-
-            response_text = response_text.strip()
-
-            print("DEBUG: Received response from model API")
-
             if progress_callback:
                 progress_callback(0.7, "📊 Processing response...")
-            print(f"DEBUG: Response length: {len(response_text)} characters")
-            print(f"DEBUG: Response preview: {response_text[:200]}...")
-
-            # Find the JSON content in the response using bracket matching
-            json_text = None
-            json_start = -1
-
-            # Find the first opening brace
-            start_pos = response_text.find("{")
-            if start_pos == -1:
-                print(f"DEBUG: No JSON found in response")
-                raise ValueError(
-                    f"No JSON found in response. Response preview: {response_text[:1000]}"
-                )
-
-            # Use bracket matching to find the complete JSON object
-            brace_count = 0
-            json_end = -1
-            in_string = False
-            escape_next = False
-
-            for i in range(start_pos, len(response_text)):
-                char = response_text[i]
-
-                if escape_next:
-                    escape_next = False
-                    continue
-
-                if char == "\\" and in_string:
-                    escape_next = True
-                    continue
-
-                if char == '"' and not escape_next:
-                    in_string = not in_string
-                    continue
-
-                if not in_string:
-                    if char == "{":
-                        brace_count += 1
-                    elif char == "}":
-                        brace_count -= 1
-                        if brace_count == 0:
-                            json_end = i + 1
-                            break
-
-            if json_end == -1:
-                print(f"DEBUG: No complete JSON object found in response")
-                raise ValueError(
-                    f"No complete JSON object found in response. Response preview: {response_text[:1000]}"
-                )
-
-            json_text = response_text[start_pos:json_end]
-            json_start = start_pos
-
-            print(f"DEBUG: JSON boundaries - start: {json_start}, end: {json_end}")
-            print(f"DEBUG: Extracted JSON length: {len(json_text)} characters")
-
             if progress_callback:
-                progress_callback(0.75, "🔍 Parsing JSON response...")
+                progress_callback(0.75, "🔍 Validating structured response...")
 
-            try:
-                json_data = json.loads(json_text)
-                print("DEBUG: JSON parsing successful")
+            json_data = parse_threat_profile_response(response)
+            attest_profile_sources(json_data, response.web_search_sources)
 
-                # Record successful parsing
-                if self.enable_metrics and self.performance_tracker:
-                    self.performance_tracker.record_parsing_result(True)
+            if self.enable_metrics and self.performance_tracker:
+                self.performance_tracker.record_contract_result(
+                    schema_valid=True,
+                    source_attested=True,
+                )
 
-            except json.JSONDecodeError as e:
-                print(f"DEBUG: JSON parsing failed: {e}; attempting escape repair")
-
-                # Stray backslashes (paths, regex) are the common cause; repair the
-                # invalid escapes and retry before giving up.
-                try:
-                    json_data = json.loads(repair_invalid_json_escapes(json_text))
-                    print("DEBUG: JSON parsing successful after escape repair")
-                    if self.enable_metrics and self.performance_tracker:
-                        self.performance_tracker.record_parsing_result(True)
-                except json.JSONDecodeError as repair_error:
-                    print(f"DEBUG: JSON parsing failed after repair: {repair_error}")
-                    print(f"DEBUG: JSON text preview: {json_text[:500]}")
-
-                    # Record failed parsing
-                    if self.enable_metrics and self.performance_tracker:
-                        self.performance_tracker.record_parsing_result(False, str(repair_error))
-
-                    raise ValueError(
-                        f"Invalid JSON in response: {str(repair_error)}. "
-                        f"JSON preview: {json_text[:500]}"
-                    )
-
-            if not json_data:
-                raise ValueError("Empty JSON data received")
-
-            # Validate that we have a dictionary with the expected structure
-            if not isinstance(json_data, dict):
-                raise ValueError(
-                    f"Invalid response format: Expected JSON object but got {type(json_data).__name__}"
+            if self.enable_tracing and self.trace_exporter:
+                self.trace_exporter.log_model_tool_events(response.tool_events)
+                self.trace_exporter.log_stage_end(
+                    "web_search",
+                    source_count=len(response.web_search_sources),
+                    tool_event_count=len(response.tool_events),
+                    response_id=response.response_id,
+                    model=response.model,
                 )
 
             print(
-                f"DEBUG: Initial generation successful. JSON contains {len(json_data)} top-level keys"
+                "DEBUG: Structured generation successful. "
+                f"Profile contains {len(json_data)} top-level sections and "
+                f"{len(response.web_search_sources)} attested sources"
             )
 
             # Generate ML guidance BEFORE quality control to leverage all context

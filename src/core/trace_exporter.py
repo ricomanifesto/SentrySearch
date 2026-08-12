@@ -134,6 +134,7 @@ class TraceExporter:
             "ml_techniques": [],
             "final_guidance": "",
             "web_search_sources": [],
+            "model_tool_events": [],
             "quality_metrics": {},
             "processing_times": {},
             "errors": [],
@@ -254,6 +255,11 @@ class TraceExporter:
         """Log web search sources used"""
         if self.current_trace:
             self.current_trace["web_search_sources"] = sources
+
+    def log_model_tool_events(self, events: List[Dict]):
+        """Log sanitized hosted-tool execution metadata from the model response."""
+        if self.current_trace:
+            self.current_trace["model_tool_events"] = events
     
     def log_final_guidance(self, guidance: str):
         """Log final threat intelligence guidance"""
