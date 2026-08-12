@@ -11,18 +11,21 @@ import {
 } from '@heroicons/react/24/outline';
 
 import { api, type Report } from '@/lib/api';
+import {
+  countActiveReportFilters,
+  defaultReportQuery,
+  formatTaxonomyLabel,
+  getQualityLabel,
+  qualityFilterOptions,
+  reportSortOptions,
+  sortOrderOptions,
+  toListReportFilters,
+  type ReportQueryState,
+} from '@/lib/report-query';
 import { debounce, formatDate, formatProcessingTime, formatRelativeTime } from '@/lib/utils';
 import { AuthGuard } from '@/components/AuthGuard';
 
-interface FilterState {
-  query: string;
-  threat_type: string;
-  min_quality: string;
-  sort_by: string;
-  sort_order: string;
-}
-
-type ReviewQueueControlKey = 'threat_type' | 'min_quality' | 'sort_by' | 'sort_order';
+type ReviewQueueControlKey = 'threatType' | 'minQuality' | 'sortBy' | 'sortOrder';
 
 type ReviewQueueControl = {
   key: ReviewQueueControlKey;
@@ -36,32 +39,6 @@ type ReportRecordSignal = {
   detail: string;
 };
 
-const sortOptions = [
-  { value: 'created_at', label: 'Date created' },
-  { value: 'quality_score', label: 'Quality score' },
-  { value: 'tool_name', label: 'Target name' },
-  { value: 'processing_time_ms', label: 'Processing time' },
-];
-
-const sortOrderOptions = [
-  { value: 'desc', label: 'Descending' },
-  { value: 'asc', label: 'Ascending' },
-];
-
-const qualityOptions = [
-  { value: '', label: 'Any quality' },
-  { value: '4.0', label: '4.0+ high confidence' },
-  { value: '3.0', label: '3.0+ reviewable' },
-  { value: '2.0', label: '2.0+ needs review' },
-  { value: '1.0', label: '1.0+ low confidence' },
-];
-
-const getQualityLabel = (score: number) =>
-  score >= 4.0 ? 'High confidence' : score >= 3.0 ? 'Reviewable' : score >= 2.0 ? 'Needs review' : 'Low confidence';
-
-const formatTaxonomyLabel = (value: string) =>
-  value.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
-
 const selectClass =
   'mt-1.5 block h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition-colors focus:border-blue-500 focus:ring-2 focus:ring-blue-100';
 
@@ -73,13 +50,7 @@ const primaryButtonClass =
 
 export default function ReportsPage() {
   const [currentPage, setCurrentPage] = useState(1);
-  const [filters, setFilters] = useState<FilterState>({
-    query: '',
-    threat_type: '',
-    min_quality: '',
-    sort_by: 'created_at',
-    sort_order: 'desc',
-  });
+  const [filters, setFilters] = useState<ReportQueryState>({ ...defaultReportQuery });
   const [showFilters, setShowFilters] = useState(false);
 
   const debouncedSearch = useMemo(
@@ -92,13 +63,7 @@ export default function ReportsPage() {
 
   const { data: reportsData, isLoading, error } = useQuery({
     queryKey: ['reports', 'list', currentPage, filters],
-    queryFn: () => api.listReports(currentPage, 20, {
-      query: filters.query || undefined,
-      threat_type: filters.threat_type || undefined,
-      min_quality: filters.min_quality ? parseFloat(filters.min_quality) : undefined,
-      sort_by: filters.sort_by,
-      sort_order: filters.sort_order,
-    }),
+    queryFn: () => api.listReports(currentPage, 20, toListReportFilters(filters)),
   });
 
   const { data: filterOptions } = useQuery({
@@ -115,14 +80,14 @@ export default function ReportsPage() {
   ], [filterOptions]);
 
   const reviewQueueControls: ReviewQueueControl[] = useMemo(() => [
-    { key: 'threat_type', label: 'Threat type', options: threatTypeOptions },
-    { key: 'min_quality', label: 'Minimum quality', options: qualityOptions },
-    { key: 'sort_by', label: 'Sort by', options: sortOptions },
-    { key: 'sort_order', label: 'Order', options: sortOrderOptions },
+    { key: 'threatType', label: 'Threat type', options: threatTypeOptions },
+    { key: 'minQuality', label: 'Minimum quality', options: qualityFilterOptions },
+    { key: 'sortBy', label: 'Sort by', options: reportSortOptions },
+    { key: 'sortOrder', label: 'Order', options: sortOrderOptions },
   ], [threatTypeOptions]);
 
-  const handleFilterChange = (key: keyof FilterState, value: string) => {
-    setFilters((prev) => ({ ...prev, [key]: value }));
+  const handleFilterChange = (key: ReviewQueueControlKey, value: string) => {
+    setFilters((prev) => ({ ...prev, [key]: value } as ReportQueryState));
     setCurrentPage(1);
   };
 
@@ -131,12 +96,12 @@ export default function ReportsPage() {
   };
 
   const clearFilters = () => {
-    setFilters({ query: '', threat_type: '', min_quality: '', sort_by: 'created_at', sort_order: 'desc' });
+    setFilters({ ...defaultReportQuery });
     setCurrentPage(1);
   };
 
-  const hasActiveFilters = Boolean(filters.query || filters.threat_type || filters.min_quality);
-  const activeFilterCount = [filters.query, filters.threat_type, filters.min_quality].filter(Boolean).length;
+  const activeFilterCount = countActiveReportFilters(filters);
+  const hasActiveFilters = activeFilterCount > 0;
   const totalReports = reportsData?.pagination.total ?? 0;
   const pageStart = reportsData ? ((reportsData.pagination.page - 1) * reportsData.pagination.limit) + 1 : 0;
   const pageEnd = reportsData ? Math.min(reportsData.pagination.page * reportsData.pagination.limit, reportsData.pagination.total) : 0;

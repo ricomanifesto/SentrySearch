@@ -38,7 +38,7 @@ uv run python run_api.py
 
 # Frontend, in a second terminal
 cd frontend
-npm install
+npm ci
 cp .env.example .env.local
 npm run dev
 ```
@@ -54,7 +54,7 @@ uv sync --locked
 uv run python dev/check_local_setup.py
 ```
 
-This verifies the local environment, documentation and frontend URL contract, backend linting and formatting, type checks, pytest, FastAPI imports, API docs rendering, health endpoint behavior, and protected report creation without Supabase credentials. It does not call OpenRouter, Supabase, AWS, Pinecone, Railway, Vercel, Cloudflare, or local PostgreSQL.
+This verifies the local environment, documentation and frontend URL contract, backend linting and formatting, type checks, pytest, FastAPI imports, API docs rendering, health endpoint behavior, protected report creation without Supabase credentials, and the Cloudflare Worker request contract. It does not call OpenRouter, Supabase, AWS, Pinecone, Railway, Vercel, Cloudflare, or local PostgreSQL.
 
 Frontend validation requires `frontend/node_modules`:
 

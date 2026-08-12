@@ -2,30 +2,34 @@
 
 from contextlib import asynccontextmanager
 import logging
-import os
-import sys
 import time
 import uuid
 from fastapi import FastAPI, HTTPException, Query, Depends, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import uvicorn
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
-# Add src to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-from storage.report_service import report_service
-from storage.database import db_manager
-from core.threat_profile_generator import ThreatProfileGenerator
-from core.markdown_generator import generate_markdown
-from auth.supabase_auth import AuthenticatedUser, verify_jwt_token
+from src.storage.report_service import report_service
+from src.storage.database import db_manager
+from src.core.threat_profile_generator import ThreatProfileGenerator
+from src.core.markdown_generator import generate_markdown
+from src.auth.supabase_auth import AuthenticatedUser, verify_jwt_token
+from src.api.contracts import (
+    PaginationParams,
+    ReportCreate,
+    ReportDetail,
+    ReportResponse,
+    ReportSortKey,
+    SearchFilters,
+    SortDirection,
+)
+from src.domain.reports import ReportAnalyticsRecord, ReportStatus
 
 logger = logging.getLogger(__name__)
 
@@ -61,73 +65,20 @@ app.add_middleware(
         "http://localhost:3000",
         "http://localhost:3003",
         "https://sentry-search.vercel.app",
-        "https://sentry-search-2k3f26n3c-michael-ricos-projects.vercel.app",
-        "https://sentry-search-git-main-michael-ricos-projects.vercel.app",
-        "https://sentry-search-2ftm00kao-michael-ricos-projects.vercel.app",
-        "https://*.vercel.app",
     ],
+    allow_origin_regex=r"https://[a-zA-Z0-9-]+\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# Pydantic models for API
-class ReportCreate(BaseModel):
-    tool_name: str = Field(
-        ...,
-        min_length=1,
-        max_length=255,
-        description="Target for threat intelligence analysis",
-    )
-    enable_ml_guidance: bool = Field(default=True, description="Enable ML-powered guidance")
-    analysis_type: str = Field(default="comprehensive", description="Analysis depth")
-
-    @field_validator("tool_name", mode="before")
-    @classmethod
-    def normalize_tool_name(cls, value):
-        return value.strip() if isinstance(value, str) else value
-
-
-class ReportResponse(BaseModel):
-    id: str
-    tool_name: str
-    category: str
-    threat_type: str
-    quality_score: float
-    created_at: datetime
-    processing_time_ms: int = 0
-    status: str = "completed"
-    content_preview: Optional[str] = None
-
-
-class ReportDetail(ReportResponse):
-    markdown_content: Optional[str] = None
-    threat_data: Optional[Dict[str, Any]] = None
-    search_tags: List[str] = []
-
-
-class SearchFilters(BaseModel):
-    query: Optional[str] = None
-    threat_types: List[str] = []
-    date_range_days: Optional[int] = None
-    min_quality_score: Optional[float] = None
-    tags: List[str] = []
-
-
-class PaginationParams(BaseModel):
-    page: int = Field(default=1, ge=1)
-    limit: int = Field(default=20, ge=1, le=100)
-    sort_by: str = Field(default="created_at")
-    sort_order: str = Field(default="desc")
-
-
 # Helper functions
 def get_pagination_params(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    sort_by: str = Query("created_at"),
-    sort_order: str = Query("desc"),
+    sort_by: ReportSortKey = Query("created_at"),
+    sort_order: SortDirection = Query("desc"),
 ) -> PaginationParams:
     return PaginationParams(page=page, limit=limit, sort_by=sort_by, sort_order=sort_order)
 
@@ -138,11 +89,11 @@ def internal_server_error(message: str, exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail=message)
 
 
-def get_report_scope(user: AuthenticatedUser) -> Dict[str, str]:
-    """Return report filters needed to isolate non-admin users."""
+def get_report_user_id(user: AuthenticatedUser) -> str | None:
+    """Return the user constraint for report reads, or none for admins."""
     if user.metadata.get("role") == "admin":
-        return {}
-    return {"user_id": user.id}
+        return None
+    return user.id
 
 
 def get_quality_score(report: Dict[str, Any]) -> float:
@@ -151,6 +102,86 @@ def get_quality_score(report: Dict[str, Any]) -> float:
 
 def get_report_label(report: Dict[str, Any], field: str) -> str:
     return report.get(field) or "unknown"
+
+
+def get_report_status(report: Dict[str, Any]) -> ReportStatus:
+    return ReportStatus(report.get("status") or ReportStatus.COMPLETED.value)
+
+
+def build_analytics_trends(
+    records: List[ReportAnalyticsRecord], *, start_date: datetime, days: int
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Derive stable analytics series from persisted report observations."""
+
+    dates = [(start_date + timedelta(days=offset)).date() for offset in range(days + 1)]
+    daily_counts = {date: 0 for date in dates}
+    processing_by_date: Dict[Any, List[int]] = {date: [] for date in dates}
+    threat_counts: Dict[str, int] = {}
+    quality_buckets = {
+        "4.0-5.0": 0,
+        "3.0-3.9": 0,
+        "2.0-2.9": 0,
+        "1.0-1.9": 0,
+        "0.0-0.9": 0,
+    }
+
+    for record in records:
+        report_date = record.created_at.date()
+        if report_date in daily_counts:
+            daily_counts[report_date] += 1
+            if record.processing_time_ms is not None:
+                processing_by_date[report_date].append(record.processing_time_ms)
+        if record.threat_type:
+            threat_counts[record.threat_type] = threat_counts.get(record.threat_type, 0) + 1
+        if record.quality_score is not None:
+            score = record.quality_score
+            if score >= 4:
+                quality_buckets["4.0-5.0"] += 1
+            elif score >= 3:
+                quality_buckets["3.0-3.9"] += 1
+            elif score >= 2:
+                quality_buckets["2.0-2.9"] += 1
+            elif score >= 1:
+                quality_buckets["1.0-1.9"] += 1
+            else:
+                quality_buckets["0.0-0.9"] += 1
+
+    threat_total = sum(threat_counts.values())
+    quality_total = sum(quality_buckets.values())
+    return {
+        "daily_reports": [
+            {"date": date.isoformat(), "count": daily_counts[date]} for date in dates
+        ],
+        "threat_type_distribution": [
+            {
+                "threat_type": threat_type,
+                "count": count,
+                "percentage": (count / threat_total * 100) if threat_total else 0.0,
+            }
+            for threat_type, count in sorted(
+                threat_counts.items(), key=lambda item: (-item[1], item[0])
+            )[:10]
+        ],
+        "quality_score_distribution": [
+            {
+                "range": label,
+                "count": count,
+                "percentage": (count / quality_total * 100) if quality_total else 0.0,
+            }
+            for label, count in quality_buckets.items()
+        ],
+        "processing_time_trends": [
+            {
+                "date": date.isoformat(),
+                "avg_time_ms": (
+                    sum(processing_by_date[date]) / len(processing_by_date[date])
+                    if processing_by_date[date]
+                    else 0.0
+                ),
+            }
+            for date in dates
+        ],
+    }
 
 
 # API Routes
@@ -171,7 +202,7 @@ async def health_check():
         return {
             "status": "healthy" if db_status else "degraded",
             "database": "connected" if db_status else "disconnected",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
     except Exception as e:
         logger.exception("Health check failed: %s", e)
@@ -216,17 +247,7 @@ async def list_reports(
         # Calculate offset
         offset = (pagination.page - 1) * pagination.limit
 
-        # Build filters
-        filters = {}
-        if query:
-            filters["search_query"] = query
-        if threat_type:
-            filters["threat_type"] = threat_type
-        if min_quality:
-            filters["min_quality_score"] = min_quality
-
-        # Add user filter unless user is admin
-        filters.update(get_report_scope(user))
+        user_id = get_report_user_id(user)
 
         # Get reports
         reports = report_service.list_reports(
@@ -234,11 +255,19 @@ async def list_reports(
             offset=offset,
             sort_by=pagination.sort_by,
             sort_order=pagination.sort_order,
-            **filters,
+            search_query=query,
+            threat_type=threat_type,
+            min_quality_score=min_quality,
+            user_id=user_id,
         )
 
         # Get total count for pagination
-        total_count = report_service.count_reports(**filters)
+        total_count = report_service.count_reports(
+            search_query=query,
+            threat_type=threat_type,
+            min_quality_score=min_quality,
+            user_id=user_id,
+        )
 
         # Convert to response models
         report_responses = []
@@ -252,7 +281,7 @@ async def list_reports(
                     quality_score=get_quality_score(report),
                     created_at=report["created_at"],
                     processing_time_ms=report.get("processing_time_ms") or 0,
-                    status=report.get("status") or "completed",
+                    status=get_report_status(report),
                     content_preview=(
                         report.get("markdown_content", "")[:200] + "..."
                         if report.get("markdown_content")
@@ -269,7 +298,11 @@ async def list_reports(
                 "total": total_count,
                 "pages": (total_count + pagination.limit - 1) // pagination.limit,
             },
-            "filters": filters,
+            "filters": {
+                "query": query,
+                "threat_type": threat_type,
+                "min_quality": min_quality,
+            },
         }
 
     except Exception as e:
@@ -290,7 +323,7 @@ async def get_report(
             raise HTTPException(status_code=404, detail="Report not found")
 
         # Check if user owns this report unless user is admin
-        if get_report_scope(user) and report.get("user_id") != user.id:
+        if get_report_user_id(user) and report.get("user_id") != user.id:
             raise HTTPException(status_code=404, detail="Report not found")
 
         return ReportDetail(
@@ -301,7 +334,7 @@ async def get_report(
             quality_score=get_quality_score(report),
             created_at=report["created_at"],
             processing_time_ms=report.get("processing_time_ms") or 0,
-            status=report.get("status") or "completed",
+            status=get_report_status(report),
             markdown_content=report.get("markdown_content") if include_content else None,
             threat_data=report.get("threat_data"),
             search_tags=report.get("search_tags", []),
@@ -414,7 +447,7 @@ async def delete_report(report_id: str, user: AuthenticatedUser = Depends(verify
             raise HTTPException(status_code=404, detail="Report not found")
 
         # Check if user owns this report or is admin
-        if get_report_scope(user) and report.get("user_id") != user.id:
+        if get_report_user_id(user) and report.get("user_id") != user.id:
             raise HTTPException(status_code=404, detail="Report not found")
 
         success = report_service.delete_report(report_id)
@@ -448,16 +481,18 @@ async def search_reports(
             search_params["search_query"] = filters.query
         if filters.threat_types:
             search_params["threat_types"] = filters.threat_types
-        if filters.min_quality_score:
+        if filters.min_quality_score is not None:
             search_params["min_quality_score"] = filters.min_quality_score
         if filters.tags:
             search_params["tags"] = filters.tags
         if filters.date_range_days:
-            search_params["created_after"] = datetime.utcnow() - timedelta(
+            search_params["created_after"] = datetime.now(timezone.utc) - timedelta(
                 days=filters.date_range_days
             )
 
-        search_params.update(get_report_scope(user))
+        user_id = get_report_user_id(user)
+        if user_id:
+            search_params["user_id"] = user_id
 
         # Calculate offset
         offset = (pagination.page - 1) * pagination.limit
@@ -486,7 +521,7 @@ async def search_reports(
                     quality_score=get_quality_score(report),
                     created_at=report["created_at"],
                     processing_time_ms=report.get("processing_time_ms") or 0,
-                    status=report.get("status") or "completed",
+                    status=get_report_status(report),
                     content_preview=(
                         report.get("markdown_content", "")[:200] + "..."
                         if report.get("markdown_content")
@@ -514,12 +549,12 @@ async def search_reports(
 async def get_search_filters(user: AuthenticatedUser = Depends(verify_jwt_token)):
     """Get available filter options for search"""
     try:
-        report_scope = get_report_scope(user)
+        user_id = get_report_user_id(user)
 
         # Get unique values for filtering
-        threat_types = report_service.get_unique_threat_types(**report_scope)
-        categories = report_service.get_unique_categories(**report_scope)
-        tags = report_service.get_popular_tags(limit=50, **report_scope)
+        threat_types = report_service.get_unique_threat_types(user_id=user_id)
+        categories = report_service.get_unique_categories(user_id=user_id)
+        tags = report_service.get_popular_tags(limit=50, user_id=user_id)
 
         return {
             "threat_types": threat_types,
@@ -578,70 +613,49 @@ async def get_analytics(
         days = days_map.get(time_range, 30)
 
         # Date calculations
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         start_date = now - timedelta(days=days)
         yesterday = now - timedelta(days=1)
         week_ago = now - timedelta(days=7)
-        report_scope = get_report_scope(user)
+        user_id = get_report_user_id(user)
 
         # Overview metrics
-        total_reports = report_service.count_reports(**report_scope)
-        reports_24h = report_service.count_reports(created_after=yesterday, **report_scope)
-        reports_7d = report_service.count_reports(created_after=week_ago, **report_scope)
-        reports_period = report_service.count_reports(created_after=start_date, **report_scope)
+        total_reports = report_service.count_reports(user_id=user_id)
+        reports_24h = report_service.count_reports(created_after=yesterday, user_id=user_id)
+        reports_7d = report_service.count_reports(created_after=week_ago, user_id=user_id)
+        reports_period = report_service.count_reports(created_after=start_date, user_id=user_id)
 
-        # Get average quality score and processing time
-        quality_stats = report_service.get_quality_score_distribution(**report_scope)
-        avg_quality = quality_stats.get("average", 0.0)
-
-        # Get processing time stats (simulate for now)
-        avg_processing_time = 45000  # 45 seconds average
-
-        # Most common threat type
-        threat_stats = report_service.get_threat_type_stats(**report_scope)
-        most_common_threat = (
-            max(threat_stats.items(), key=lambda x: x[1])[0] if threat_stats else "unknown"
-        )
-
-        # Success rate (simulate)
-        success_rate = 0.95
-
-        # Daily trends (simulate with basic data)
-        daily_reports = []
-        for i in range(min(days, 30)):  # Last 30 days max
-            date = now - timedelta(days=i)
-            count = max(0, int(reports_period / days) + (i % 3) - 1)  # Simulate variation
-            daily_reports.append({"date": date.isoformat(), "count": count})
-        daily_reports.reverse()
-
-        # Threat type distribution
-        threat_distribution = []
-        total_for_percentage = sum(threat_stats.values()) if threat_stats else 1
-        for threat_type, count in list(threat_stats.items())[:10]:  # Top 10
-            percentage = (count / total_for_percentage) * 100
-            threat_distribution.append(
-                {"threat_type": threat_type, "count": count, "percentage": percentage}
-            )
-
-        # Quality score distribution
-        quality_distribution = [
-            {"range": "4.0-5.0", "count": int(total_reports * 0.3), "percentage": 30},
-            {"range": "3.0-3.9", "count": int(total_reports * 0.4), "percentage": 40},
-            {"range": "2.0-2.9", "count": int(total_reports * 0.2), "percentage": 20},
-            {"range": "1.0-1.9", "count": int(total_reports * 0.1), "percentage": 10},
+        records = report_service.list_analytics_records(created_after=start_date, user_id=user_id)
+        quality_scores = [
+            record.quality_score for record in records if record.quality_score is not None
         ]
-
-        # Processing time trends (simulate)
-        processing_trends = []
-        for i in range(min(days, 7)):  # Last 7 days
-            date = now - timedelta(days=i)
-            avg_time = avg_processing_time + (i * 1000)  # Simulate variation
-            processing_trends.append({"date": date.isoformat(), "avg_time_ms": avg_time})
-        processing_trends.reverse()
+        processing_times = [
+            record.processing_time_ms for record in records if record.processing_time_ms is not None
+        ]
+        avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else 0.0
+        avg_processing_time = (
+            sum(processing_times) / len(processing_times) if processing_times else 0.0
+        )
+        trends = build_analytics_trends(records, start_date=start_date, days=days)
+        threat_distribution = trends["threat_type_distribution"]
+        most_common_threat = (
+            threat_distribution[0]["threat_type"] if threat_distribution else "unknown"
+        )
+        terminal_records = [
+            record
+            for record in records
+            if record.status in (ReportStatus.COMPLETED, ReportStatus.FAILED)
+        ]
+        success_rate = (
+            sum(record.status is ReportStatus.COMPLETED for record in terminal_records)
+            / len(terminal_records)
+            if terminal_records
+            else 0.0
+        )
 
         # Recent activity
         recent_reports = report_service.list_reports(
-            limit=10, sort_by="created_at", sort_order="desc", **report_scope
+            limit=10, sort_by="created_at", sort_order="desc", user_id=user_id
         )
         recent_activity = []
         for report in recent_reports:
@@ -650,7 +664,7 @@ async def get_analytics(
                     "id": report["id"],
                     "tool_name": report["tool_name"],
                     "quality_score": report.get("quality_score", 0.0),
-                    "processing_time_ms": report.get("processing_time_ms", avg_processing_time),
+                    "processing_time_ms": report.get("processing_time_ms") or 0,
                     "created_at": report["created_at"],
                     "threat_type": report.get("threat_type"),
                 }
@@ -668,10 +682,10 @@ async def get_analytics(
                 "success_rate": success_rate,
             },
             "trends": {
-                "daily_reports": daily_reports,
+                "daily_reports": trends["daily_reports"],
                 "threat_type_distribution": threat_distribution,
-                "quality_score_distribution": quality_distribution,
-                "processing_time_trends": processing_trends,
+                "quality_score_distribution": trends["quality_score_distribution"],
+                "processing_time_trends": trends["processing_time_trends"],
             },
             "recent_activity": recent_activity,
         }
@@ -684,23 +698,23 @@ async def get_analytics(
 async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_token)):
     """Get dashboard analytics data"""
     try:
-        report_scope = get_report_scope(user)
+        user_id = get_report_user_id(user)
 
         # Get basic metrics
-        total_reports = report_service.count_reports(**report_scope)
+        total_reports = report_service.count_reports(user_id=user_id)
         recent_reports = report_service.count_reports(
-            created_after=datetime.utcnow() - timedelta(days=7), **report_scope
+            created_after=datetime.now(timezone.utc) - timedelta(days=7), user_id=user_id
         )
 
         # Get threat type distribution
-        threat_stats = report_service.get_threat_type_stats(**report_scope)
+        threat_stats = report_service.get_threat_type_stats(user_id=user_id)
 
         # Get quality score distribution
-        quality_stats = report_service.get_quality_score_distribution(**report_scope)
+        quality_stats = report_service.get_quality_score_distribution(user_id=user_id)
 
         # Get recent activity
         recent_activity = report_service.list_reports(
-            limit=5, sort_by="created_at", sort_order="desc", **report_scope
+            limit=5, sort_by="created_at", sort_order="desc", user_id=user_id
         )
 
         return {
@@ -728,4 +742,4 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
 
 # Development server
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("src.api.main:app", host="0.0.0.0", port=8000, reload=True)

@@ -5,16 +5,19 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const searchPagePath = resolve(here, '../src/app/search/page.tsx');
 const apiPath = resolve(here, '../src/lib/api.ts');
+const reportQueryPath = resolve(here, '../src/lib/report-query.ts');
 const searchPage = await readFile(searchPagePath, 'utf8');
 const apiClient = await readFile(apiPath, 'utf8');
+const reportQuery = await readFile(reportQueryPath, 'utf8');
 
 const expectations = [
   { name: 'keeps search behind the auth boundary', source: searchPage, pattern: /<AuthGuard>\s*<SearchWorkspace \/>/ },
   { name: 'declares the search workspace surface contract', source: searchPage, pattern: /data-surface="search-review-workspace"/ },
   { name: 'anchors the surface as a search workspace', source: searchPage, pattern: /Search workspace/ },
   { name: 'runs search through the backend search contract', source: searchPage, pattern: /api\.searchReports\(/ },
-  { name: 'passes sort_by to the search query', source: searchPage, pattern: /sort_by: filters\.sortBy/ },
-  { name: 'passes sort_order to the search query', source: searchPage, pattern: /sort_order: filters\.sortOrder/ },
+  { name: 'builds search filters through the shared report query contract', source: searchPage, pattern: /toSearchFilters\(filters\)/ },
+  { name: 'passes sort_by to the search query', source: reportQuery, pattern: /sort_by: state\.sortBy/ },
+  { name: 'passes sort_order to the search query', source: reportQuery, pattern: /sort_order: state\.sortOrder/ },
   { name: 'declares the query workbench controls contract', source: searchPage, pattern: /data-contract="Search\.QueryWorkbenchControls\.v1"/ },
   { name: 'uses a canonical query workbench controls collection', source: searchPage, pattern: /const queryWorkbenchControls/ },
   { name: 'renders workbench controls from the canonical collection', source: searchPage, pattern: /queryWorkbenchControls\.map/ },

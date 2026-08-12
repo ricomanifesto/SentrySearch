@@ -32,6 +32,10 @@ OPENROUTER_APP_TITLE = "SentrySearch"
 class ModelRateLimitError(RuntimeError):
     """Raised when OpenRouter reports a rate limit response."""
 
+    def __init__(self, message: str, response: Any | None = None) -> None:
+        super().__init__(message)
+        self.response = response
+
 
 class ModelClientError(RuntimeError):
     """Raised when OpenRouter cannot return usable model output."""
@@ -114,7 +118,10 @@ class ModelClient:
                 else:
                     response = self._sdk_client.responses.create(**request)
             except openai.RateLimitError as error:
-                raise ModelRateLimitError("OpenRouter rate limit exceeded") from error
+                raise ModelRateLimitError(
+                    "OpenRouter rate limit exceeded",
+                    response=getattr(error, "response", None),
+                ) from error
             except openai.APIConnectionError as error:
                 raise ModelClientError("OpenRouter API unavailable") from error
             except openai.APIStatusError as error:

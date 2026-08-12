@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from httpx import ASGITransport, AsyncClient
@@ -12,6 +12,7 @@ from fastapi import HTTPException, BackgroundTasks
 from src.auth import supabase_auth
 from src.api import main as api_main
 from src.core.markdown_generator import generate_markdown
+from src.domain.reports import ReportAnalyticsRecord, ReportStatus
 from src.storage.models import Report
 from dev.smoke_api import configure_local_environment, run_checks
 
@@ -439,76 +440,6 @@ def test_markdown_generation_redacts_ml_guidance_error_detail():
     assert "**Error**: ML guidance could not be generated for ExampleTool" not in markdown
 
 
-def test_legacy_ui_generation_redacts_internal_exception_detail(monkeypatch):
-    from src.ui import app as ui_app
-
-    class FailingGenerator:
-        enable_quality_control = True
-
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def get_threat_intelligence(self, tool_name: str, progress_callback=None):
-            if progress_callback:
-                progress_callback(0.5, "Normal generation progress")
-                progress_callback(1.0, f"Error: provider token leaked for {tool_name}")
-            raise RuntimeError(f"provider token leaked for {tool_name}")
-
-    progress_updates = []
-
-    def progress(value, message):
-        progress_updates.append((value, message))
-
-    monkeypatch.setattr(ui_app, "CachedThreatProfileGenerator", FailingGenerator)
-
-    message, quality = ui_app.generate_threat_profile("SecretTool", True, progress=progress)
-
-    assert message == "Error generating profile. Please try again."
-    assert quality is None
-    assert progress_updates[-1] == (1.0, "Error generating profile. Please try again.")
-    assert progress_updates[0] == (0.1, "Initializing threat intelligence generation...")
-    assert progress_updates[1] == (0.5, "Normal generation progress")
-    assert "provider token" not in message
-    assert "SecretTool" not in message
-    assert all("provider token" not in update[1] for update in progress_updates)
-    assert all("SecretTool" not in update[1] for update in progress_updates)
-
-
-def test_legacy_ui_report_load_redacts_internal_exception_detail(monkeypatch):
-    from src.ui import app as ui_app
-
-    monkeypatch.setattr(ui_app, "STORAGE_ENABLED", True)
-
-    def get_report(report_id: str, include_content: bool = True):
-        raise RuntimeError(f"storage credential leaked for {report_id}")
-
-    monkeypatch.setattr(ui_app.report_service, "get_report", get_report)
-
-    message, quality = ui_app.view_report("secret-report")
-
-    assert message == "Error loading report. Please try again."
-    assert quality is None
-    assert "storage credential" not in message
-    assert "secret-report" not in message
-
-
-def test_legacy_ui_download_link_redacts_internal_exception_detail(monkeypatch):
-    from src.ui import app as ui_app
-
-    monkeypatch.setattr(ui_app, "STORAGE_ENABLED", True)
-
-    def get_download_url(report_id: str, content_type: str = "markdown"):
-        raise RuntimeError(f"download credential leaked for {report_id}")
-
-    monkeypatch.setattr(ui_app.report_service, "get_download_url", get_download_url)
-
-    message = ui_app.get_download_link("secret-report")
-
-    assert message == "Error generating download link. Please try again."
-    assert "download credential" not in message
-    assert "secret-report" not in message
-
-
 def test_search_reports_requires_auth_before_storage_read(monkeypatch):
     storage_called = False
 
@@ -776,33 +707,23 @@ def test_dashboard_analytics_requires_auth_before_storage_read(monkeypatch):
 
 def test_analytics_filters_report_reads_by_authenticated_non_admin(monkeypatch):
     captured_count_kwargs = []
-    captured_quality_kwargs = {}
-    captured_threat_kwargs = {}
+    captured_analytics_kwargs = {}
     captured_list_kwargs = {}
 
     def count_reports(**kwargs):
         captured_count_kwargs.append(kwargs)
         return 0
 
-    def get_quality_score_distribution(**kwargs):
-        captured_quality_kwargs.update(kwargs)
-        return {"average": 0.0, "distribution": {}, "total_scored": 0}
-
-    def get_threat_type_stats(**kwargs):
-        captured_threat_kwargs.update(kwargs)
-        return {}
+    def list_analytics_records(**kwargs):
+        captured_analytics_kwargs.update(kwargs)
+        return []
 
     def list_reports(**kwargs):
         captured_list_kwargs.update(kwargs)
         return []
 
     monkeypatch.setattr(api_main.report_service, "count_reports", count_reports)
-    monkeypatch.setattr(
-        api_main.report_service,
-        "get_quality_score_distribution",
-        get_quality_score_distribution,
-    )
-    monkeypatch.setattr(api_main.report_service, "get_threat_type_stats", get_threat_type_stats)
+    monkeypatch.setattr(api_main.report_service, "list_analytics_records", list_analytics_records)
     monkeypatch.setattr(api_main.report_service, "list_reports", list_reports)
 
     user = supabase_auth.AuthenticatedUser(
@@ -815,9 +736,47 @@ def test_analytics_filters_report_reads_by_authenticated_non_admin(monkeypatch):
 
     assert response["overview"]["total_reports"] == 0
     assert all(kwargs["user_id"] == "analyst-user" for kwargs in captured_count_kwargs)
-    assert captured_quality_kwargs["user_id"] == "analyst-user"
-    assert captured_threat_kwargs["user_id"] == "analyst-user"
+    assert captured_analytics_kwargs["user_id"] == "analyst-user"
+    assert "created_after" in captured_analytics_kwargs
     assert captured_list_kwargs["user_id"] == "analyst-user"
+
+
+def test_analytics_trends_are_derived_from_persisted_records():
+    start = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    records = [
+        ReportAnalyticsRecord(
+            created_at=start,
+            quality_score=4.5,
+            processing_time_ms=1000,
+            status=ReportStatus.COMPLETED,
+            threat_type="malware",
+        ),
+        ReportAnalyticsRecord(
+            created_at=start + timedelta(days=1),
+            quality_score=2.5,
+            processing_time_ms=3000,
+            status=ReportStatus.FAILED,
+            threat_type="malware",
+        ),
+    ]
+
+    trends = api_main.build_analytics_trends(records, start_date=start, days=1)
+
+    assert [point["count"] for point in trends["daily_reports"]] == [1, 1]
+    assert [point["avg_time_ms"] for point in trends["processing_time_trends"]] == [
+        1000,
+        3000,
+    ]
+    assert trends["threat_type_distribution"] == [
+        {"threat_type": "malware", "count": 2, "percentage": 100.0}
+    ]
+    assert [bucket["count"] for bucket in trends["quality_score_distribution"]] == [
+        1,
+        0,
+        1,
+        0,
+        0,
+    ]
 
 
 def test_dashboard_analytics_filters_report_reads_by_authenticated_non_admin(monkeypatch):
@@ -901,12 +860,16 @@ def test_threat_profile_modules_use_domain_names():
     assert (
         read_text("src/core/threat_profile_generator.py").count("class ThreatProfileGenerator") == 1
     )
-    assert (
-        read_text("src/core/cached_threat_profile_generator.py").count(
-            "class CachedThreatProfileGenerator"
-        )
-        == 1
-    )
+    assert not (REPO_ROOT / "src/core/cached_threat_profile_generator.py").exists()
+    assert not (REPO_ROOT / "src/ui/app.py").exists()
+    assert "class SectionImprover" not in read_text("src/core/section_validator.py")
+    assert "self.improver" not in read_text("src/core/threat_profile_generator.py")
+    assert not (REPO_ROOT / "src/data/ml_knowledge_base_builder.py").exists()
+    assert not (REPO_ROOT / "src/search/bm25_retriever.py").exists()
+    worker_source = read_text("worker.js")
+    assert "/debug-pinecone" not in worker_source
+    assert "/debug-doc" not in worker_source
+    assert "/debug-search" not in worker_source
     assert (
         read_text("src/search/threat_knowledge_retriever.py").count(
             "class ThreatKnowledgeRetriever"
@@ -928,3 +891,20 @@ def test_frontend_supabase_client_is_build_safe_without_preview_env():
     assert "return config;" in api_client
     assert "hasSupabaseConfig() ? createClient() : null" in auth_context
     assert "Authentication is not configured" in auth_context
+
+
+def test_shared_report_contracts_have_one_backend_and_frontend_owner():
+    api_main = read_text("src/api/main.py")
+    api_contracts = read_text("src/api/contracts.py")
+    report_domain = read_text("src/domain/reports.py")
+    api_client = read_text("frontend/src/lib/api.ts")
+    frontend_contracts = read_text("frontend/src/lib/api-contracts.ts")
+    report_query = read_text("frontend/src/lib/report-query.ts")
+
+    assert "class SearchFilters" not in api_main
+    assert "class SearchFilters" in api_contracts
+    assert "class ReportSortField" in report_domain
+    assert "export interface Report" not in api_client
+    assert "export interface Report" in frontend_contracts
+    assert "export const defaultReportQuery" in report_query
+    assert "export function toListReportFilters" in report_query

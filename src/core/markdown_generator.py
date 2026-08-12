@@ -2,9 +2,13 @@
 Markdown generator for converting threat intelligence JSON to readable format
 """
 
+import logging
 import re
 from datetime import datetime
 from typing import Any, Mapping
+
+logger = logging.getLogger(__name__)
+
 
 def format_date(date_str: str) -> str:
     """Format date strings consistently"""
@@ -121,7 +125,7 @@ def generate_markdown(data):
 
     try:
         # Header with core metadata
-        print("MARKDOWN DEBUG: Starting header section...")
+        logger.debug("Starting header section...")
         core = data.get("coreMetadata", {})
 
         md.append(f"# Threat Intelligence Profile: {core.get('name', 'Unknown Tool')}")
@@ -156,7 +160,7 @@ def generate_markdown(data):
 
         # [All existing section generation code remains the same...]
         # Web Search Sources
-        print("MARKDOWN DEBUG: Starting web search sources section...")
+        logger.debug("Starting web search sources section...")
         web_sources = data.get("webSearchSources", {})
         if isinstance(web_sources, dict):
             md.append("## Web Search Sources & Research Methodology")
@@ -217,7 +221,7 @@ def generate_markdown(data):
         # [Continue with all other existing sections...]
 
         # Tool Overview
-        print("MARKDOWN DEBUG: Starting tool overview section...")
+        logger.debug("Starting tool overview section...")
         overview = data.get("toolOverview", {})
         if isinstance(overview, dict):
             md.append("## Tool Overview")
@@ -245,7 +249,7 @@ def generate_markdown(data):
             md.append("")
 
         # Technical Details
-        print("MARKDOWN DEBUG: Starting technical details section...")
+        logger.debug("Starting technical details section...")
         technical = data.get("technicalDetails", {})
         if isinstance(technical, dict):
             md.append("## Technical Details")
@@ -291,7 +295,7 @@ def generate_markdown(data):
             md.append("")
 
         # Command and Control
-        print("MARKDOWN DEBUG: Starting C2 section...")
+        logger.debug("Starting C2 section...")
         c2 = data.get("commandAndControl", {})
         if isinstance(c2, dict):
             md.append("## Command and Control")
@@ -358,7 +362,7 @@ def generate_markdown(data):
                         md.append("")
 
         # Threat Intelligence
-        print("MARKDOWN DEBUG: Starting threat intelligence section...")
+        logger.debug("Starting threat intelligence section...")
         threat_intel = data.get("threatIntelligence", {})
         if isinstance(threat_intel, dict):
             md.append("## Threat Intelligence")
@@ -418,7 +422,7 @@ def generate_markdown(data):
                             md.append("")
 
         # Forensic Artifacts
-        print("MARKDOWN DEBUG: Starting forensic artifacts section...")
+        logger.debug("Starting forensic artifacts section...")
         forensics = data.get("forensicArtifacts", {})
         if isinstance(forensics, dict):
             md.append("## Forensic Artifacts")
@@ -442,7 +446,7 @@ def generate_markdown(data):
                     md.append("")
 
         # Detection and Mitigation
-        print("MARKDOWN DEBUG: Starting detection section...")
+        logger.debug("Starting detection section...")
         detection = data.get("detectionAndMitigation", {})
         if isinstance(detection, dict):
             md.append("## Detection and Mitigation")
@@ -498,7 +502,7 @@ def generate_markdown(data):
                 md.append("")
 
         # Continue with remaining sections...
-        print("MARKDOWN DEBUG: Processing remaining sections...")
+        logger.debug("Processing remaining sections...")
 
         # Mitigation and Response
         mitigation = data.get("mitigationAndResponse", {})
@@ -662,7 +666,7 @@ def generate_markdown(data):
                 md.append("")
 
         # NEW: ML-Based Anomaly Detection Guidance
-        print("MARKDOWN DEBUG: Starting ML guidance section...")
+        logger.debug("Starting ML guidance section...")
         ml_guidance = data.get("mlGuidance", {})
         if isinstance(ml_guidance, dict) and ml_guidance.get("enabled", False):
             md.append(ml_guidance.get("content", ""))
@@ -708,7 +712,7 @@ def generate_markdown(data):
             md.append("")
 
         # NEW: Comprehensive Web Search Sources Section
-        print("MARKDOWN DEBUG: Starting comprehensive sources section...")
+        logger.debug("Starting comprehensive sources section...")
         comprehensive_sources = data.get("comprehensiveWebSearchSources", {})
         if isinstance(comprehensive_sources, dict) and comprehensive_sources.get("enabled", False):
             sources_analysis = comprehensive_sources.get("comprehensiveSourceAnalysis", {})
@@ -840,15 +844,11 @@ def generate_markdown(data):
             md.append(f"**Collection Method**: {capture_method}")
             md.append("")
 
-        print("MARKDOWN DEBUG: Completed all sections successfully")
+        logger.debug("Completed all sections successfully")
         return "\n".join(md)
 
     except Exception as e:
-        print(f"MARKDOWN DEBUG: Exception occurred: {e}")
-        print(f"MARKDOWN DEBUG: Exception type: {type(e)}")
-        import traceback
-
-        traceback.print_exc()
+        logger.exception("Markdown generation failed: %s", e)
         return (
             "# Error in Markdown Generation\n\n"
             "The report could not be rendered. Please retry generation."

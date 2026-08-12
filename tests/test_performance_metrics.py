@@ -1,8 +1,10 @@
 from types import SimpleNamespace
+from contextvars import copy_context
 
 import pytest
 
 from src.core.performance_metrics import PerformanceTracker
+from src.core.trace_exporter import get_trace_exporter
 
 
 def test_performance_tracker_measures_contract_tools_usage_and_cost(tmp_path):
@@ -45,3 +47,36 @@ def test_performance_tracker_measures_contract_tools_usage_and_cost(tmp_path):
     assert summary["avg_reasoning_tokens"] == 40
     assert summary["avg_source_count"] == 2
     assert summary["avg_web_search_calls"] == 2
+
+
+def test_performance_tracker_keeps_request_state_local_to_context(tmp_path):
+    tracker = PerformanceTracker(str(tmp_path / "metrics.jsonl"))
+    first_context = copy_context()
+    second_context = copy_context()
+
+    first_id = first_context.run(tracker.start_request, "First")
+    second_id = second_context.run(tracker.start_request, "Second")
+
+    assert first_id != second_id
+    first_metrics = first_context.run(lambda: tracker.current_metrics)
+    second_metrics = second_context.run(lambda: tracker.current_metrics)
+
+    assert first_metrics is not None
+    assert second_metrics is not None
+    assert first_metrics.query == "First"
+    assert second_metrics.query == "Second"
+    assert tracker.current_metrics is None
+
+
+def test_trace_exporter_factory_does_not_share_active_trace(tmp_path):
+    first = get_trace_exporter(str(tmp_path / "first"))
+    second = get_trace_exporter(str(tmp_path / "second"))
+
+    first.start_trace("First")
+    second.start_trace("Second")
+
+    assert first.current_trace is not None
+    assert second.current_trace is not None
+    assert first is not second
+    assert first.current_trace["tool_name"] == "First"
+    assert second.current_trace["tool_name"] == "Second"

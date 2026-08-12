@@ -21,9 +21,12 @@ supabase_url = os.getenv("NEXT_PUBLIC_SUPABASE_URL")
 service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 if not supabase_url or not service_key:
-    print("Warning: Missing Supabase configuration. Authentication will not work.")
-    print(f"NEXT_PUBLIC_SUPABASE_URL: {'✓' if supabase_url else '✗'}")
-    print(f"SUPABASE_SERVICE_ROLE_KEY: {'✓' if service_key else '✗'}")
+    logger.warning(
+        "Supabase authentication is disabled because required configuration is missing "
+        "(url_configured=%s, service_key_configured=%s)",
+        bool(supabase_url),
+        bool(service_key),
+    )
     supabase = None
 else:
     supabase: Client = create_client(supabase_url, service_key)
@@ -32,7 +35,7 @@ else:
 class AuthenticatedUser:
     """Represents an authenticated user from Supabase"""
 
-    def __init__(self, user_id: str, email: str, metadata: Dict[str, Any] = None):
+    def __init__(self, user_id: str, email: str, metadata: Optional[Dict[str, Any]] = None):
         self.id = user_id
         self.email = email
         self.metadata = metadata or {}
@@ -73,7 +76,7 @@ async def verify_jwt_token(authorization: Optional[str] = Header(None)) -> Authe
         user = response.user
         return AuthenticatedUser(
             user_id=user.id,
-            email=user.email,
+            email=user.email or "",
             metadata=getattr(user, "app_metadata", None) or {},
         )
 

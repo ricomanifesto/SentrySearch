@@ -1,18 +1,25 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useSyncExternalStore } from 'react';
 import { SunIcon, MoonIcon } from '@heroicons/react/24/outline';
+
+const themeChangeEvent = 'sentrysearch:theme-change';
+
+function subscribeToTheme(onStoreChange: () => void) {
+  window.addEventListener(themeChangeEvent, onStoreChange);
+  return () => window.removeEventListener(themeChangeEvent, onStoreChange);
+}
+
+function getThemeSnapshot() {
+  return document.documentElement.classList.contains('dark');
+}
 
 /**
  * Light/dark theme toggle. The initial class is set before paint by an inline
  * script in the root layout, so this only mirrors and updates that state.
  */
 export function ThemeToggle() {
-  const [isDark, setIsDark] = useState(false);
-
-  useEffect(() => {
-    setIsDark(document.documentElement.classList.contains('dark'));
-  }, []);
+  const isDark = useSyncExternalStore(subscribeToTheme, getThemeSnapshot, () => false);
 
   const toggle = () => {
     const next = !document.documentElement.classList.contains('dark');
@@ -22,7 +29,7 @@ export function ThemeToggle() {
     } catch {
       // Ignore storage failures (private mode, etc.); the toggle still applies.
     }
-    setIsDark(next);
+    window.dispatchEvent(new Event(themeChangeEvent));
   };
 
   return (

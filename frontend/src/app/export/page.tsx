@@ -4,20 +4,14 @@ import React, { useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { ArrowDownTrayIcon } from '@heroicons/react/24/outline';
 
-import { api, type Report } from '@/lib/api';
+import { api, type ExportConfig, type Report } from '@/lib/api';
+import {
+  dateRangeFilterOptions,
+  formatTaxonomyLabel,
+  qualityFilterOptions,
+} from '@/lib/report-query';
 import { formatDate, downloadAsFile } from '@/lib/utils';
 import { AuthGuard } from '@/components/AuthGuard';
-
-interface ExportConfig extends Record<string, unknown> {
-  format: 'json' | 'csv' | 'markdown' | 'pdf' | 'xml';
-  include_content: boolean;
-  include_metadata: boolean;
-  include_tags: boolean;
-  date_range_days?: number;
-  threat_types?: string[];
-  min_quality_score?: number;
-  max_reports?: number;
-}
 
 type ExportEvidenceRecord = {
   id: string;
@@ -42,24 +36,7 @@ const formatOptions = [
   { value: 'json', label: 'JSON', description: 'Structured package for downstream tooling' },
   { value: 'csv', label: 'CSV', description: 'Tabular packet for analyst review' },
   { value: 'markdown', label: 'Markdown', description: 'Readable briefing for handoff notes' },
-  { value: 'pdf', label: 'PDF', description: 'Presentation-ready evidence packet' },
   { value: 'xml', label: 'XML', description: 'Structured exchange for legacy systems' },
-];
-
-const dateRangeOptions = [
-  { value: '', label: 'All time' },
-  { value: '7', label: 'Last 7 days' },
-  { value: '30', label: 'Last 30 days' },
-  { value: '90', label: 'Last 90 days' },
-  { value: '365', label: 'Last year' },
-];
-
-const qualityOptions = [
-  { value: '', label: 'Any quality' },
-  { value: '4.0', label: '4.0+ high confidence' },
-  { value: '3.0', label: '3.0+ reviewable' },
-  { value: '2.0', label: '2.0+ needs review' },
-  { value: '1.0', label: '1.0+ low confidence' },
 ];
 
 const packageContentOptions = [
@@ -67,9 +44,6 @@ const packageContentOptions = [
   { key: 'include_metadata' as const, label: 'Processing metadata', description: 'Timestamps, confidence scores, and pipeline details.' },
   { key: 'include_tags' as const, label: 'Source tags', description: 'Search tags and categorization markers.' },
 ];
-
-const formatTaxonomyLabel = (value: string) =>
-  value.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 
 function buildExportEvidenceRecord(report: Report): ExportEvidenceRecord {
   return {
@@ -114,7 +88,6 @@ export default function ExportPage() {
         case 'json': mimeType = 'application/json'; break;
         case 'csv': mimeType = 'text/csv'; break;
         case 'markdown': mimeType = 'text/markdown'; break;
-        case 'pdf': mimeType = 'application/pdf'; break;
         case 'xml': mimeType = 'application/xml'; break;
       }
       downloadAsFile(data, filename, mimeType);
@@ -160,7 +133,7 @@ export default function ExportPage() {
     {
       key: 'date_range_days',
       label: 'Review window',
-      options: dateRangeOptions,
+      options: dateRangeFilterOptions,
       value: config.date_range_days?.toString() || '',
       onChange: (value) => handleConfigChange('date_range_days', value ? parseInt(value) : undefined),
     },
@@ -174,7 +147,7 @@ export default function ExportPage() {
     {
       key: 'min_quality_score',
       label: 'Minimum confidence',
-      options: qualityOptions,
+      options: qualityFilterOptions,
       value: config.min_quality_score?.toString() || '',
       onChange: (value) => handleConfigChange('min_quality_score', value ? parseFloat(value) : undefined),
     },

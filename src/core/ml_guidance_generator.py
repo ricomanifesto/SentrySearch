@@ -13,17 +13,15 @@ Features:
 """
 
 import os
-import time
-import random
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 import logging
-from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
 from src.search.threat_knowledge_retriever import ThreatKnowledgeRetriever, ThreatCharacteristics
-from src.core.openai_client import create_model_client, resolve_model_name, ModelRateLimitError
+from src.core.model_retry import RetryingModelRequests
+from src.core.openai_client import resolve_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +37,7 @@ class MLApproach(BaseModel):
         default=0.5, ge=0.0, le=1.0, description="Applicability score"
     )
 
-    @field_validator(
-        "technique", "source_company", "description", "source_paper", mode="before"
-    )
+    @field_validator("technique", "source_company", "description", "source_paper", mode="before")
     @classmethod
     def ensure_string(cls, v):
         """Ensure all string fields are actually strings"""
@@ -90,7 +86,7 @@ class MLGuidanceSection:
     source_attribution: str
 
 
-class MLGuidanceGenerator:
+class MLGuidanceGenerator(RetryingModelRequests):
     """Generates comprehensive ML guidance in markdown format"""
 
     def __init__(self, model_client):
@@ -104,50 +100,6 @@ class MLGuidanceGenerator:
         self.ml_retriever = ThreatKnowledgeRetriever(model_client, workers_url)
         self.retriever_type = "workers"
         logger.info(f"ML Guidance Generator initialized with Workers retriever: {workers_url}")
-
-    def _api_call_with_retry(self, **kwargs):
-        """Make API call with intelligent retry logic using retry-after header"""
-        max_retries = 3
-        base_delay = 5
-
-        for attempt in range(max_retries):
-            try:
-                print(f"DEBUG: ML Guidance API call attempt {attempt + 1}/{max_retries}")
-                return self.client.messages.create(**kwargs)
-
-            except ModelRateLimitError as e:
-                if attempt == max_retries - 1:
-                    print(f"DEBUG: ML Guidance rate limit exceeded after {max_retries} attempts")
-                    raise e
-
-                # Check if the error response has retry-after information
-                retry_after = None
-                if hasattr(e, "response") and e.response:
-                    retry_after_header = e.response.headers.get("retry-after")
-                    if retry_after_header:
-                        try:
-                            retry_after = float(retry_after_header)
-                            print(
-                                f"DEBUG: ML Guidance API provided retry-after: {retry_after} seconds"
-                            )
-                        except (ValueError, TypeError):
-                            pass
-
-                # Use retry-after if available, otherwise exponential backoff
-                if retry_after:
-                    delay = retry_after + random.uniform(1, 3)
-                else:
-                    delay = base_delay * (2**attempt) + random.uniform(1, 5)
-                    delay = min(delay, 120)
-
-                print(
-                    f"DEBUG: ML Guidance rate limit hit. Waiting {delay:.1f} seconds before retry {attempt + 2}"
-                )
-                time.sleep(delay)
-
-            except Exception as e:
-                print(f"DEBUG: ML Guidance non-rate-limit error: {e}")
-                raise e
 
     def generate_enhanced_ml_guidance_section(
         self,
@@ -186,63 +138,6 @@ class MLGuidanceGenerator:
             return self._generate_enhanced_fallback_section(
                 threat_characteristics, complete_threat_data
             )
-
-    def generate_ml_guidance_section(self, threat_characteristics: ThreatCharacteristics) -> str:
-        """Generate complete ML guidance section in markdown format (legacy method)"""
-
-        try:
-            # Get ML guidance from agentic retriever
-            ml_guidance_raw = self.ml_retriever.get_ml_guidance(
-                threat_characteristics, trace_exporter=None
-            )
-
-            if not ml_guidance_raw or "error" in ml_guidance_raw:
-                return self._generate_fallback_section(threat_characteristics)
-
-            # Parse into Pydantic model for type safety
-            ml_guidance = MLGuidanceData(**ml_guidance_raw)
-
-            # Generate structured sections
-            sections = self._create_guidance_sections(ml_guidance, threat_characteristics)
-
-            # Format as markdown
-            markdown = self._format_as_markdown(sections, ml_guidance)
-
-            return markdown
-
-        except Exception as e:
-            logger.error(f"ML guidance generation failed: {e}")
-            return self._generate_fallback_section(threat_characteristics)
-
-    def _create_guidance_sections(
-        self, ml_guidance: MLGuidanceData, threat_characteristics: ThreatCharacteristics
-    ) -> List[MLGuidanceSection]:
-        """Create structured guidance sections from ML retrieval results"""
-
-        sections = []
-
-        # Group ML approaches by implementation complexity
-        approaches_by_complexity = {"Low": [], "Medium": [], "High": []}
-
-        for approach in ml_guidance.ml_approaches:
-            complexity = self._assess_implementation_complexity(approach)
-            approaches_by_complexity[complexity].append(approach)
-
-        # Create sections for each complexity level
-        for complexity in ["Low", "Medium", "High"]:
-            approaches = approaches_by_complexity[complexity]
-            if approaches:
-                section = self._create_complexity_section(
-                    complexity, approaches, threat_characteristics
-                )
-                sections.append(section)
-
-        # Add implementation considerations section
-        if ml_guidance.implementation_considerations:
-            impl_section = self._create_implementation_section(ml_guidance)
-            sections.append(impl_section)
-
-        return sections
 
     def _assess_implementation_complexity(self, approach: MLApproach) -> str:
         """Assess implementation complexity based on technique and requirements"""
@@ -287,93 +182,6 @@ class MLGuidanceGenerator:
             return "High"
         else:
             return "Medium"
-
-    def _create_complexity_section(
-        self,
-        complexity: str,
-        approaches: List[MLApproach],
-        threat_characteristics: ThreatCharacteristics,
-    ) -> MLGuidanceSection:
-        """Create a section for approaches of specific complexity"""
-
-        # Generate detailed content for this complexity level
-        content = self._generate_section_content(approaches, threat_characteristics, complexity)
-
-        # Determine data requirements
-        data_requirements = self._extract_data_requirements(approaches)
-
-        # Estimate accuracy and timeframe
-        expected_accuracy = self._estimate_accuracy(approaches, complexity)
-        deployment_timeframe = self._estimate_deployment_time(complexity)
-
-        # Create source attribution
-        source_attribution = self._create_source_attribution(approaches)
-
-        return MLGuidanceSection(
-            title=f"{complexity} Complexity Approaches",
-            content=content,
-            implementation_complexity=complexity,
-            data_requirements=data_requirements,
-            expected_accuracy=expected_accuracy,
-            deployment_timeframe=deployment_timeframe,
-            source_attribution=source_attribution,
-        )
-
-    def _generate_section_content(
-        self,
-        approaches: List[MLApproach],
-        threat_characteristics: ThreatCharacteristics,
-        complexity: str,
-    ) -> str:
-        """Generate detailed content for a complexity section"""
-
-        if not approaches:
-            return ""
-
-        # Use LLM to synthesize approaches into coherent guidance
-        prompt = f"""
-Create a comprehensive yet concise detection guidance section for {complexity.lower()} complexity ML approaches.
-
-Threat Context:
-- Name: {threat_characteristics.threat_name}
-- Type: {threat_characteristics.threat_type}
-- Attack Vectors: {', '.join(threat_characteristics.attack_vectors)}
-- Behavior Patterns: {', '.join(threat_characteristics.behavior_patterns)}
-
-Available ML Approaches:
-{self._format_approaches_for_prompt(approaches)}
-
-Create guidance that includes:
-1. Brief overview of the recommended approach(es)
-2. Specific implementation steps
-3. Key features/signals to monitor
-4. Expected detection capabilities
-5. Deployment considerations
-
-Keep it practical and actionable. Focus on what security teams can actually implement.
-Write in clear, professional language suitable for cybersecurity professionals.
-"""
-
-        try:
-            response = self._api_call_with_retry(
-                model=resolve_model_name(),
-                max_tokens=800,
-                messages=[{"role": "user", "content": prompt}],
-            )
-
-            if (
-                response.content
-                and len(response.content) > 0
-                and hasattr(response.content[0], "text")
-            ):
-                return response.content[0].text.strip()
-            else:
-                logger.warning("Empty or invalid response content from model API")
-                return ""
-
-        except Exception as e:
-            logger.error(f"Content generation failed: {e}")
-            return self._create_fallback_content(approaches, complexity)
 
     def _format_approaches_for_prompt(self, approaches: List[MLApproach]) -> str:
         """Format approaches for LLM prompt"""
@@ -478,89 +286,6 @@ Write in clear, professional language suitable for cybersecurity professionals.
                 sources.append(f"{company}: {paper}")
 
         return "; ".join(sources[:3])  # Limit to top 3 sources
-
-    def _create_implementation_section(self, ml_guidance: MLGuidanceData) -> MLGuidanceSection:
-        """Create implementation considerations section"""
-
-        considerations = ml_guidance.implementation_considerations
-
-        content = "**Key Implementation Considerations:**\n\n"
-
-        for consideration in considerations[:3]:  # Top 3 considerations
-            content += f"**{consideration.aspect}:** {consideration.details}"
-            if consideration.source:
-                content += f" (Source: {consideration.source})"
-            content += "\n\n"
-
-        return MLGuidanceSection(
-            title="Implementation Considerations",
-            content=content,
-            implementation_complexity="Various",
-            data_requirements=["Infrastructure assessment", "Data pipeline setup"],
-            expected_accuracy="Depends on implementation quality",
-            deployment_timeframe="Ongoing",
-            source_attribution="; ".join([c.source for c in considerations[:3] if c.source]),
-        )
-
-    def _format_as_markdown(
-        self, sections: List[MLGuidanceSection], ml_guidance: MLGuidanceData
-    ) -> str:
-        """Format guidance sections as markdown"""
-
-        markdown = "## ML-Based Anomaly Detection Approaches\n\n"
-
-        # Add overview
-        threat_name = ml_guidance.threat_name or "this threat"
-        num_approaches = len(ml_guidance.ml_approaches)
-        num_papers = len(ml_guidance.source_papers)
-
-        markdown += f"Based on analysis of {num_papers} industry implementations, "
-        markdown += (
-            f"we identified {num_approaches} relevant ML approaches for detecting {threat_name}. "
-        )
-        markdown += "These recommendations are derived from production deployments at leading technology companies.\n\n"
-
-        # Add sections
-        for section in sections:
-            markdown += f"### {section.title}\n\n"
-            markdown += f"{section.content}\n\n"
-
-            # Add metadata table
-            markdown += "| Metric | Value |\n"
-            markdown += "|--------|-------|\n"
-            markdown += f"| Implementation Complexity | {section.implementation_complexity} |\n"
-            markdown += f"| Expected Accuracy | {section.expected_accuracy} |\n"
-            markdown += f"| Deployment Timeframe | {section.deployment_timeframe} |\n"
-            markdown += f"| Data Requirements | {', '.join(section.data_requirements[:3])} |\n\n"
-
-        # Add source papers section
-        if ml_guidance.source_papers:
-            markdown += "### Source Papers & Case Studies\n\n"
-            markdown += "The following industry implementations informed these recommendations:\n\n"
-
-            for paper in ml_guidance.source_papers[:5]:  # Top 5 papers
-                markdown += f"**{paper.company} ({paper.year})**: {paper.title}\n"
-                if paper.techniques:
-                    markdown += f"*Techniques*: {', '.join(paper.techniques[:3])}\n"
-                if paper.url:
-                    markdown += f"*Source*: [Link]({paper.url})\n"
-                markdown += "\n"
-
-        # Add implementation priority
-        markdown += "### Implementation Priority\n\n"
-        markdown += "**Recommended Implementation Order:**\n"
-        markdown += (
-            "1. **Start with Low Complexity approaches** for immediate detection capabilities\n"
-        )
-        markdown += "2. **Enhance with Medium Complexity methods** for improved accuracy\n"
-        markdown += "3. **Consider High Complexity solutions** for advanced threat detection\n\n"
-
-        # Add disclaimer
-        markdown += "---\n"
-        markdown += "*ML detection recommendations are based on publicly available industry implementations. "
-        markdown += "Effectiveness may vary depending on your specific environment, data quality, and threat landscape.*\n\n"
-
-        return markdown
 
     def _create_enhanced_guidance_sections(
         self,
@@ -679,7 +404,7 @@ Write for cybersecurity practitioners who need actionable, threat-specific guida
 """
 
         try:
-            response = self._api_call_with_retry(
+            response = self._request_model(
                 model=resolve_model_name(),
                 max_tokens=1200,
                 messages=[{"role": "user", "content": prompt}],
@@ -959,87 +684,3 @@ Write for cybersecurity practitioners who need actionable, threat-specific guida
         markdown += "For optimal results, ensure the ML knowledge base and agentic retriever are properly configured.*\n\n"
 
         return markdown
-
-    def _generate_fallback_section(self, threat_characteristics: ThreatCharacteristics) -> str:
-        """Generate fallback ML guidance when main pipeline fails"""
-
-        markdown = "## ML-Based Anomaly Detection Approaches\n\n"
-        markdown += f"ML-based detection approaches for {threat_characteristics.threat_name}:\n\n"
-
-        markdown += "### General Anomaly Detection\n\n"
-        markdown += "**Statistical Anomaly Detection:** Implement baseline statistical monitoring "
-        markdown += (
-            "for unusual patterns in network traffic, user behavior, and system activities. "
-        )
-        markdown += "This approach can detect deviations from normal operational patterns.\n\n"
-
-        markdown += "**Behavioral Analysis:** Monitor for behavior patterns consistent with "
-        markdown += f"{', '.join(threat_characteristics.behavior_patterns)} activities. "
-        markdown += "Focus on temporal analysis and sequence detection.\n\n"
-
-        markdown += "| Metric | Value |\n"
-        markdown += "|--------|-------|\n"
-        markdown += "| Implementation Complexity | Low-Medium |\n"
-        markdown += "| Expected Accuracy | 70-80% |\n"
-        markdown += "| Deployment Timeframe | 2-4 weeks |\n"
-        markdown += "| Data Requirements | Network logs, system logs |\n\n"
-
-        markdown += "---\n"
-        markdown += "*Fallback recommendations provided. For more specific guidance, "
-        markdown += "please ensure the ML knowledge base is properly configured.*\n\n"
-
-        return markdown
-
-
-def test_ml_guidance_generator():
-    """Test the ML guidance generator"""
-
-    print("Testing ML Guidance Generator")
-    print("=" * 40)
-
-    # Initialize
-    model_client = create_model_client()
-    generator = MLGuidanceGenerator(model_client)
-
-    # Test with sample threat
-    threat = ThreatCharacteristics(
-        threat_name="Cobalt Strike",
-        threat_type="post_exploitation_framework",
-        attack_vectors=["network", "memory_injection"],
-        target_assets=["corporate_networks", "endpoints"],
-        behavior_patterns=["lateral_movement", "persistence", "command_control"],
-        time_characteristics="persistent",
-    )
-
-    print(f"Generating ML guidance for: {threat.threat_name}")
-    print(f"   Type: {threat.threat_type}")
-    print(f"   Attack Vectors: {', '.join(threat.attack_vectors)}")
-
-    # Generate guidance
-    guidance_markdown = generator.generate_ml_guidance_section(threat)
-
-    print(f"\nGenerated ML Guidance:")
-    print(f"   Length: {len(guidance_markdown)} characters")
-    print(f"   Sections: {guidance_markdown.count('###')} subsections")
-
-    # Save to file for review
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = f"ml_guidance_test_{timestamp}.md"
-
-    with open(output_file, "w", encoding="utf-8") as f:
-        f.write(guidance_markdown)
-
-    print(f"   Saved to: {output_file}")
-
-    # Show preview
-    preview_lines = guidance_markdown.split("\n")[:20]
-    print(f"\nPreview (first 20 lines):")
-    print("-" * 40)
-    for line in preview_lines:
-        print(line)
-
-    print(f"\nML guidance generation test complete!")
-
-
-if __name__ == "__main__":
-    test_ml_guidance_generator()

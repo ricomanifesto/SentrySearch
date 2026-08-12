@@ -5,8 +5,10 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const reportsPagePath = resolve(here, '../src/app/reports/page.tsx');
 const apiPath = resolve(here, '../src/lib/api.ts');
+const reportQueryPath = resolve(here, '../src/lib/report-query.ts');
 const reportsPage = await readFile(reportsPagePath, 'utf8');
 const apiClient = await readFile(apiPath, 'utf8');
+const reportQuery = await readFile(reportQueryPath, 'utf8');
 
 const expectations = [
   { name: 'keeps reports behind the auth boundary', source: reportsPage, pattern: /<AuthGuard>/ },
@@ -37,8 +39,9 @@ const expectations = [
   { name: 'keeps mobile overflow guarded', source: reportsPage, pattern: /overflow-x-hidden/ },
   { name: 'keeps report search copy aligned with listReports fields', source: reportsPage, pattern: /Search by target, category, or threat type/ },
   { name: 'does not advertise unsupported body or tag search', source: reportsPage, absentPattern: /report text, tag|tag, or threat type/ },
-  { name: 'passes sort_by from the reports page', source: reportsPage, pattern: /sort_by: filters\.sort_by/ },
-  { name: 'passes sort_order from the reports page', source: reportsPage, pattern: /sort_order: filters\.sort_order/ },
+  { name: 'builds list filters through the shared report query contract', source: reportsPage, pattern: /toListReportFilters\(filters\)/ },
+  { name: 'passes sort_by from the shared report query contract', source: reportQuery, pattern: /sort_by: state\.sortBy/ },
+  { name: 'passes sort_order from the shared report query contract', source: reportQuery, pattern: /sort_order: state\.sortOrder/ },
   { name: 'adds sort_by to the listReports API query', source: apiClient, pattern: /params\.append\('sort_by', filters\.sort_by\)/ },
   { name: 'adds sort_order to the listReports API query', source: apiClient, pattern: /params\.append\('sort_order', filters\.sort_order\)/ },
   { name: 'does not use fonts below the legible minimum', source: reportsPage, absentPattern: /text-xs|text-\[11px\]/ },

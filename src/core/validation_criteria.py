@@ -206,26 +206,6 @@ CONSISTENCY_PROMPT = """Evaluate consistency across these threat profile section
 Check technical claims, timelines, source use, and terminology. Return one consistency evaluation that matches the provided response schema."""
 
 
-IMPROVEMENT_PROMPT = """Improve this threat intelligence section.
-
-Section name: {section_name}
-Current content: {content}
-Issues: {issues}
-Requested improvements: {improvements}
-
-Address the missing information, replace generic content with specific details, correct technical inaccuracies, and preserve the input JSON structure. Return only the improved JSON object."""
-
-
-# Compatibility mapping for the existing section improver.
-VALIDATION_PROMPTS = MappingProxyType(
-    {
-        "section_validation": SECTION_EVALUATION_PROMPT,
-        "consistency_check": CONSISTENCY_PROMPT,
-        "improvement_prompt": IMPROVEMENT_PROMPT,
-    }
-)
-
-
 def build_section_evaluation_prompt(
     section_name: str, content: Mapping[str, Any], criteria: SectionCriteria
 ) -> str:

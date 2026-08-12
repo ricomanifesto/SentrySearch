@@ -5,19 +5,15 @@ Threat knowledge retriever that calls Cloudflare Workers for hybrid search.
 instead of local ChromaDB, providing production-ready global performance.
 """
 
-import os
 import json
 import logging
-import time
-import random
-import hashlib
-from typing import List, Dict, Optional, Tuple, Set
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 import re
 import requests
-from datetime import datetime
 
-from src.core.openai_client import create_model_client, resolve_model_name, ModelRateLimitError
+from src.core.model_retry import RetryingModelRequests
+from src.core.openai_client import resolve_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -67,57 +63,11 @@ class WorkersSearchResult:
     matched_terms: List[str]
 
 
-class QueryOptimizer:
+class QueryOptimizer(RetryingModelRequests):
     """Optimizes queries to focus on ML anomaly detection approaches"""
 
     def __init__(self, model_client):
         self.client = model_client
-
-    def _api_call_with_retry(self, **kwargs):
-        """Make API call with intelligent retry logic using retry-after header"""
-        max_retries = 3
-        base_delay = 5
-
-        for attempt in range(max_retries):
-            try:
-                print(f"DEBUG: Query Optimizer API call attempt {attempt + 1}/{max_retries}")
-                return self.client.messages.create(**kwargs)
-
-            except ModelRateLimitError as e:
-                if attempt == max_retries - 1:
-                    print(
-                        f"DEBUG: Query Optimizer rate limit exceeded after {max_retries} attempts"
-                    )
-                    raise e
-
-                # Check if the error response has retry-after information
-                retry_after = None
-                if hasattr(e, "response") and e.response:
-                    retry_after_header = e.response.headers.get("retry-after")
-                    if retry_after_header:
-                        try:
-                            retry_after = float(retry_after_header)
-                            print(
-                                f"DEBUG: Query Optimizer API provided retry-after: {retry_after} seconds"
-                            )
-                        except (ValueError, TypeError):
-                            pass
-
-                # Use retry-after if available, otherwise exponential backoff
-                if retry_after:
-                    delay = retry_after + random.uniform(1, 3)
-                else:
-                    delay = base_delay * (2**attempt) + random.uniform(1, 5)
-                    delay = min(delay, 120)
-
-                print(
-                    f"DEBUG: Query Optimizer rate limit hit. Waiting {delay:.1f} seconds before retry {attempt + 2}"
-                )
-                time.sleep(delay)
-
-            except Exception as e:
-                print(f"DEBUG: Query Optimizer non-rate-limit error: {e}")
-                raise e
 
     def optimize_query(self, threat_characteristics: ThreatCharacteristics) -> OptimizedQuery:
         """Convert threat characteristics into ML-focused queries"""
@@ -153,7 +103,7 @@ REASONING: [1-2 sentences explaining the ML approach rationale]
 """
 
         try:
-            response = self._api_call_with_retry(
+            response = self._request_model(
                 model=resolve_model_name(),
                 max_tokens=600,
                 messages=[{"role": "user", "content": prompt}],
@@ -343,8 +293,8 @@ class WorkersClient:
         self,
         queries: List[str],
         max_results: int = 10,
-        hybrid_weights: Dict = None,
-        filters: Dict = None,
+        hybrid_weights: Optional[Dict] = None,
+        filters: Optional[Dict] = None,
     ) -> List[WorkersSearchResult]:
         """Perform hybrid search using Workers API"""
 
@@ -387,7 +337,7 @@ class WorkersClient:
             raise
 
     def vector_search(
-        self, query: str, max_results: int = 10, filters: Dict = None
+        self, query: str, max_results: int = 10, filters: Optional[Dict] = None
     ) -> List[WorkersSearchResult]:
         """Perform vector search using Workers API"""
 
@@ -407,7 +357,7 @@ class WorkersClient:
             raise
 
     def keyword_search(
-        self, query: str, max_results: int = 10, filters: Dict = None
+        self, query: str, max_results: int = 10, filters: Optional[Dict] = None
     ) -> List[WorkersSearchResult]:
         """Perform keyword search using Workers API"""
 
@@ -695,79 +645,3 @@ class ThreatKnowledgeRetriever:
             "error": "Workers search failed - fallback recommendations provided",
             "workers_available": self.workers_client.health_check(),
         }
-
-
-def create_test_threat_characteristics() -> ThreatCharacteristics:
-    """Create test threat characteristics for validation"""
-
-    return ThreatCharacteristics(
-        threat_name="ShadowPad",
-        threat_type="malware",
-        attack_vectors=["network", "lateral_movement"],
-        target_assets=["corporate_networks", "sensitive_data"],
-        behavior_patterns=["persistence", "data_exfiltration", "command_control"],
-        time_characteristics="persistent",
-    )
-
-
-def main():
-    """Test the ML Workers Retriever"""
-
-    workers_url = os.getenv(
-        "WORKERS_URL", "https://sentry-search-hybrid.your-subdomain.workers.dev"
-    )
-
-    print("Testing ML Workers Retriever")
-    print("=" * 40)
-    print(f"Workers URL: {workers_url}")
-
-    # Create components
-    model_client = create_model_client()
-    retriever = ThreatKnowledgeRetriever(model_client, workers_url)
-
-    # Test Workers health
-    if retriever.workers_client.health_check():
-        print("Workers API is healthy")
-    else:
-        print("Workers API health check failed")
-        return
-
-    # Test with sample threat
-    threat = create_test_threat_characteristics()
-
-    print(f"\nTesting with threat: {threat.threat_name}")
-    print(f"   Type: {threat.threat_type}")
-    print(f"   Attack Vectors: {', '.join(threat.attack_vectors)}")
-    print(f"   Behavior Patterns: {', '.join(threat.behavior_patterns)}")
-
-    # Get ML guidance
-    guidance = retriever.get_ml_guidance(threat)
-
-    print(f"\nML Guidance Generated:")
-    print(f"   ML Approaches: {len(guidance['ml_approaches'])}")
-    print(f"   Implementation Considerations: {len(guidance['implementation_considerations'])}")
-    print(f"   Source Papers: {len(guidance['source_papers'])}")
-
-    if "workers_metadata" in guidance:
-        metadata = guidance["workers_metadata"]
-        print(f"   Workers Results: {metadata['total_results']}")
-        print(f"   Retrieval Methods: {', '.join(metadata['retrieval_methods'])}")
-
-    # Show details
-    if guidance["ml_approaches"]:
-        print(f"\nTop ML Approaches:")
-        for i, approach in enumerate(guidance["ml_approaches"][:3], 1):
-            print(f"   {i}. {approach['technique']} ({approach['source_company']})")
-            print(f"      Hybrid Score: {approach.get('hybrid_score', 0):.3f}")
-            print(f"      Method: {approach.get('retrieval_method', 'unknown')}")
-
-    if guidance["source_papers"]:
-        print(f"\nSource Papers:")
-        for paper in guidance["source_papers"][:3]:
-            print(f"   • {paper['company']} ({paper['year']}): {paper['title'][:60]}...")
-
-    print(f"\nWorkers retrieval test complete!")
-
-
-if __name__ == "__main__":
-    main()

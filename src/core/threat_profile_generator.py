@@ -5,16 +5,16 @@ Enhanced with ML-based anomaly detection guidance and trace export for annotator
 
 import os
 import json
+import logging
 from src.core.openai_client import (
     create_model_client,
     resolve_model_name,
-    ModelRateLimitError,
 )
-from typing import Dict, Any, Optional, Callable
+from src.core.model_retry import RetryingModelRequests
+from typing import Dict, Any, Optional
 from datetime import datetime
 import time
-import random
-from src.core.section_validator import SectionValidator, SectionImprover
+from src.core.section_validator import SectionValidator
 from src.core.ml_guidance_generator import MLGuidanceGenerator, ThreatCharacteristics
 from src.core.trace_exporter import get_trace_exporter
 from src.core.performance_metrics import PerformanceTracker
@@ -24,8 +24,10 @@ from src.core.threat_profile_schema import (
     parse_threat_profile_response,
 )
 
+logger = logging.getLogger(__name__)
 
-class ThreatProfileGenerator:
+
+class ThreatProfileGenerator(RetryingModelRequests):
     def __init__(
         self,
         enable_tracing=True,
@@ -36,14 +38,13 @@ class ThreatProfileGenerator:
         """Initialize the configured model client."""
         self.client = create_model_client()
         self.validator = SectionValidator(self.client)
-        self.improver = SectionImprover(self.client)
         self.enable_quality_control = True
 
         # Initialize performance metrics tracking
         self.enable_metrics = enable_metrics
         if self.enable_metrics:
             self.performance_tracker = PerformanceTracker(metrics_file)
-            print(f"DEBUG: Performance metrics enabled, logging to {metrics_file}")
+            logger.debug(f"Performance metrics enabled, logging to {metrics_file}")
         else:
             self.performance_tracker = None
 
@@ -51,17 +52,19 @@ class ThreatProfileGenerator:
         self.enable_tracing = enable_tracing
         if self.enable_tracing:
             self.trace_exporter = get_trace_exporter(trace_export_dir)
-            print(f"DEBUG: Trace exporter initialized, export directory: {trace_export_dir}")
+            logger.debug(f"Trace exporter initialized, export directory: {trace_export_dir}")
         else:
             self.trace_exporter = None
 
         # Initialize ML guidance generator
         try:
-            self.ml_guidance_generator = MLGuidanceGenerator(self.client)
+            self.ml_guidance_generator: MLGuidanceGenerator | None = MLGuidanceGenerator(
+                self.client
+            )
             self.enable_ml_guidance = True
-            print("DEBUG: ML guidance generator initialized successfully")
+            logger.debug("ML guidance generator initialized successfully")
         except Exception as e:
-            print(f"DEBUG: ML guidance generator initialization failed: {e}")
+            logger.info("ML guidance is unavailable: %s", e)
             self.ml_guidance_generator = None
             self.enable_ml_guidance = False
 
@@ -86,7 +89,7 @@ class ThreatProfileGenerator:
             if progress_callback:
                 progress_callback(0.1, "Initializing research...")
 
-            print(f"DEBUG: Starting threat intelligence generation for: {tool_name}")
+            logger.debug(f"Starting threat intelligence generation for: {tool_name}")
 
             if self.enable_tracing and self.trace_exporter:
                 self.trace_exporter.log_stage_end("initialization")
@@ -307,8 +310,8 @@ Remember: Accuracy and source verification through the web search tool are more 
             if progress_callback:
                 progress_callback(0.2, "Researching with web search...")
 
-            print("DEBUG: Sending request to model API with web search tool enabled...")
-            print(f"DEBUG: Prompt size: {len(prompt)} characters")
+            logger.debug("Sending request to model API with web search tool enabled...")
+            logger.debug(f"Prompt size: {len(prompt)} characters")
 
             # Log web search stage
             if self.enable_tracing and self.trace_exporter:
@@ -316,7 +319,7 @@ Remember: Accuracy and source verification through the web search tool are more 
 
             # Generate threat intelligence using model with retry logic
             api_start_time = time.time()
-            response = self._api_call_with_retry(
+            response = self._request_model(
                 model=resolve_model_name(),
                 # The full profile is returned as a single JSON object; cap output at
                 # the model's ceiling so a large profile isn't truncated mid-JSON
@@ -343,7 +346,7 @@ Remember: Accuracy and source verification through the web search tool are more 
                 response, "initial_research", tool_name
             )
             self.validator.web_search_sources.extend(initial_sources)
-            print(f"DEBUG: Captured {len(initial_sources)} initial web search sources")
+            logger.debug(f"Captured {len(initial_sources)} initial web search sources")
 
             if progress_callback:
                 progress_callback(0.7, "Processing response...")
@@ -369,8 +372,8 @@ Remember: Accuracy and source verification through the web search tool are more 
                     model=response.model,
                 )
 
-            print(
-                "DEBUG: Structured generation successful. "
+            logger.debug(
+                "Structured generation successful. "
                 f"Profile contains {len(json_data)} top-level sections and "
                 f"{len(response.web_search_sources)} attested sources"
             )
@@ -387,7 +390,7 @@ Remember: Accuracy and source verification through the web search tool are more 
                     ml_guidance = self._generate_ml_guidance(json_data, tool_name)
                     if ml_guidance:
                         json_data["mlGuidance"] = ml_guidance
-                        print("DEBUG: ML guidance generated successfully")
+                        logger.debug("ML guidance generated successfully")
 
                         # Log ML guidance for tracing
                         if self.enable_tracing and self.trace_exporter:
@@ -399,11 +402,11 @@ Remember: Accuracy and source verification through the web search tool are more 
                                 pass
                             self.trace_exporter.log_stage_end("ml_guidance", success=True)
                     else:
-                        print("DEBUG: No ML guidance generated")
+                        logger.debug("No ML guidance generated")
                         if self.enable_tracing and self.trace_exporter:
                             self.trace_exporter.log_stage_end("ml_guidance", success=False)
                 except Exception as e:
-                    print(f"DEBUG: ML guidance generation failed: {e}")
+                    logger.warning("ML guidance generation failed: %s", e)
                     if self.enable_tracing and self.trace_exporter:
                         self.trace_exporter.log_error(str(e), "ml_guidance")
                         self.trace_exporter.log_stage_end(
@@ -428,29 +431,12 @@ Remember: Accuracy and source verification through the web search tool are more 
                     self.trace_exporter.log_quality_metrics(validation_results)
                     self.trace_exporter.log_stage_end("quality_validation")
 
-                # If improvement is needed, attempt to fix weak sections
-                if validation_results["needs_improvement"]:
-                    if progress_callback:
-                        progress_callback(0.9, "Improving weak sections...")
+                # The validator owns iterative enhancement and returns its final
+                # assessment, so no second improvement pass is needed here.
+                json_data["_quality_assessment"] = validation_results
 
-                    json_data = self._improve_weak_sections(
-                        json_data, validation_results, progress_callback
-                    )
-
-                    # Re-validate after improvements
-                    if progress_callback:
-                        progress_callback(0.95, "Final validation...")
-
-                    final_validation = self.validator.validate_complete_profile(
-                        json_data, None, tool_name
-                    )
-                    json_data["_quality_assessment"] = final_validation
-                else:
-                    # Attach original validation results
-                    json_data["_quality_assessment"] = validation_results
-
-                print(
-                    f"DEBUG: Quality control complete. Overall score: {validation_results['overall_score']}"
+                logger.debug(
+                    f"Quality control complete. Overall score: {validation_results['overall_score']}"
                 )
 
                 # Add comprehensive web search sources section to the main profile if available
@@ -460,8 +446,8 @@ Remember: Accuracy and source verification through the web search tool are more 
                 ):
                     comprehensive_sources = self.validator.generate_comprehensive_sources_section()
                     json_data["comprehensiveWebSearchSources"] = comprehensive_sources
-                    print(
-                        f"DEBUG: Added comprehensive sources section to main profile with {len(self.validator.web_search_sources)} sources"
+                    logger.debug(
+                        f"Added comprehensive sources section to main profile with {len(self.validator.web_search_sources)} sources"
                     )
 
             if progress_callback:
@@ -471,8 +457,8 @@ Remember: Accuracy and source verification through the web search tool are more 
             if self.enable_metrics and self.performance_tracker:
                 metrics = self.performance_tracker.finish_request()
                 if metrics:
-                    print(
-                        f"DEBUG: Request completed - Latency: {metrics.latency_ms}ms, Cost: ${metrics.total_cost:.4f}"
+                    logger.debug(
+                        f"Request completed - Latency: {metrics.latency_ms}ms, Cost: ${metrics.total_cost:.4f}"
                     )
 
             # Complete trace and export
@@ -495,7 +481,7 @@ Remember: Accuracy and source verification through the web search tool are more 
 
                     # Complete and export trace
                     trace_file = self.trace_exporter.complete_trace(json_data)
-                    print(f"DEBUG: Trace exported to {trace_file}")
+                    logger.debug(f"Trace exported to {trace_file}")
 
                     # Add trace metadata to response
                     json_data["_trace_metadata"] = {
@@ -504,17 +490,13 @@ Remember: Accuracy and source verification through the web search tool are more 
                         "export_enabled": True,
                     }
                 except Exception as trace_error:
-                    print(f"DEBUG: Trace export failed: {trace_error}")
+                    logger.warning("Trace export failed: %s", trace_error)
                     # Don't fail the main process for trace export errors
 
             return json_data
 
         except Exception as e:
-            print(f"DEBUG: Exception occurred: {e}")
-            print(f"DEBUG: Exception type: {type(e)}")
-            import traceback
-
-            traceback.print_exc()
+            logger.exception("Threat profile generation failed: %s", e)
 
             # Record error in performance metrics
             if self.enable_metrics and self.performance_tracker:
@@ -527,58 +509,13 @@ Remember: Accuracy and source verification through the web search tool are more 
                     self.trace_exporter.log_error(str(e), "main_process")
                     # Try to complete trace even on error
                     error_trace_file = self.trace_exporter.complete_trace()
-                    print(f"DEBUG: Error trace exported to {error_trace_file}")
+                    logger.debug(f"Error trace exported to {error_trace_file}")
                 except Exception as trace_error:
-                    print(f"DEBUG: Failed to export error trace: {trace_error}")
+                    logger.warning("Failed to export error trace: %s", trace_error)
 
             if progress_callback:
-                progress_callback(1.0, f"Error: {str(e)}")
-            raise e
-
-    def _improve_weak_sections(
-        self, profile: dict, validation_results: dict, progress_callback: Optional[Callable] = None
-    ) -> dict:
-        """
-        Improve sections that failed validation (legacy method - now handled in validator)
-
-        Args:
-            profile: Current threat intelligence profile
-            validation_results: Validation results indicating weak sections
-            progress_callback: Optional progress callback
-
-        Returns:
-            Improved profile
-        """
-        # This method is now largely replaced by the iterative validation in SectionValidator
-        # Keep minimal implementation for backward compatibility
-        improved_profile = profile.copy()
-        sections_to_improve = []
-
-        # Identify only critical sections needing immediate improvement
-        for section_name, validation in validation_results["section_validations"].items():
-            if validation.get("recommendation") == "RETRY" and validation.get("is_critical"):
-                sections_to_improve.append((section_name, validation))
-
-        # Improve only critical sections (web search enhancement handled in validator)
-        for i, (section_name, validation) in enumerate(
-            sections_to_improve[:2]
-        ):  # Limit to top 2 critical
-            if progress_callback:
-                progress = 0.9 + (0.05 * i / max(len(sections_to_improve), 1))
-                progress_callback(progress, f"Critical fix for {section_name}...")
-
-            current_content = improved_profile.get(section_name, {})
-
-            # Improve section without caching
-            improved_content = self.improver.improve_section(
-                section_name, current_content, validation
-            )
-
-            if improved_content != current_content:
-                improved_profile[section_name] = improved_content
-                print(f"DEBUG: Critical improvement for section: {section_name}")
-
-        return improved_profile
+                progress_callback(1.0, "Analysis failed")
+            raise
 
     def _generate_ml_guidance(self, threat_data: Dict, tool_name: str) -> Optional[Dict]:
         """
@@ -592,13 +529,17 @@ Remember: Accuracy and source verification through the web search tool are more 
             ML guidance data or None if generation fails
         """
         try:
+            guidance_generator = self.ml_guidance_generator
+            if guidance_generator is None:
+                return None
+
             # Extract enhanced threat characteristics from the COMPLETE profile
             threat_characteristics = self._extract_enhanced_threat_characteristics(
                 threat_data, tool_name
             )
 
             # Generate ML guidance using full context
-            ml_guidance_markdown = self.ml_guidance_generator.generate_enhanced_ml_guidance_section(
+            ml_guidance_markdown = guidance_generator.generate_enhanced_ml_guidance_section(
                 threat_characteristics,
                 threat_data,
                 trace_exporter=self.trace_exporter if self.enable_tracing else None,
@@ -630,10 +571,10 @@ Remember: Accuracy and source verification through the web search tool are more 
                 return None
 
         except Exception as e:
-            print(f"DEBUG: ML guidance generation error: {e}")
+            logger.exception("ML guidance generation failed: %s", e)
             return {
                 "enabled": False,
-                "error": str(e),
+                "error": "ML guidance unavailable",
                 "fallbackGuidance": "Consider implementing statistical anomaly detection and behavioral analysis for this threat type.",
                 "qualityScore": 0.0,
             }
@@ -864,52 +805,7 @@ Remember: Accuracy and source verification through the web search tool are more 
             time_characteristics=time_characteristics,
         )
 
-    def _api_call_with_retry(self, **kwargs):
-        """Make API call with intelligent retry logic using retry-after header"""
-        max_retries = 3  # Reduced since we're using smarter delays
-        base_delay = 5  # Minimum delay between retries
-
-        for attempt in range(max_retries):
-            try:
-                print(f"DEBUG: Making API call attempt {attempt + 1}/{max_retries}")
-                return self.client.messages.create(**kwargs)
-
-            except ModelRateLimitError as e:
-                if attempt == max_retries - 1:  # Last attempt
-                    print(f"DEBUG: Rate limit exceeded after {max_retries} attempts")
-                    raise e
-
-                # Check if the error response has retry-after information
-                retry_after = None
-                if hasattr(e, "response") and e.response:
-                    retry_after_header = e.response.headers.get("retry-after")
-                    if retry_after_header:
-                        try:
-                            retry_after = float(retry_after_header)
-                            print(f"DEBUG: API provided retry-after: {retry_after} seconds")
-                        except (ValueError, TypeError):
-                            pass
-
-                # Use retry-after if available, otherwise exponential backoff
-                if retry_after:
-                    delay = retry_after + random.uniform(1, 3)  # Add small jitter
-                else:
-                    # Fallback: exponential backoff with reasonable delays
-                    delay = base_delay * (2**attempt) + random.uniform(1, 5)
-                    # Cap at 2 minutes since token bucket refills continuously
-                    delay = min(delay, 120)
-
-                print(
-                    f"DEBUG: Rate limit hit. Waiting {delay:.1f} seconds before retry {attempt + 2}"
-                )
-                time.sleep(delay)
-
-            except Exception as e:
-                # For non-rate-limit errors, fail immediately
-                print(f"DEBUG: Non-rate-limit error: {e}")
-                raise e
-
-    def save_to_file(self, data: Dict[str, Any], filename: str = None) -> str:
+    def save_to_file(self, data: Dict[str, Any], filename: str | None = None) -> str:
         """Save the threat intelligence data to a JSON file."""
         if filename is None:
             tool_name = data.get("coreMetadata", {}).get("name", "threat_intel")

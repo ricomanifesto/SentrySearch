@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from src.core.section_validator import SectionValidator
 from src.core.validation_criteria import SECTION_CRITERIA, select_profile_sections
 
 ProgressCallback = Callable[[float, str], None]
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -132,7 +134,7 @@ class ParallelSectionValidator(SectionValidator):
             try:
                 result = self.validate_section(section_name, deepcopy(section_content))
             except Exception as error:
-                print(f"Section validation failed for {section_name}: {error}")
+                logger.warning("Section validation failed for %s: %s", section_name, error)
                 criteria = SECTION_CRITERIA[section_name]
                 result = self._create_error_validation(section_name, criteria.is_critical)
             return section_name, result
@@ -198,7 +200,7 @@ class ParallelSectionValidator(SectionValidator):
                     validation=validation,
                 )
             except Exception as error:
-                print(f"Section enhancement failed for {section_name}: {error}")
+                logger.warning("Section enhancement failed for %s: %s", section_name, error)
                 return section_name, None
 
         completed_enhancements: dict[str, SectionEnhancement] = {}

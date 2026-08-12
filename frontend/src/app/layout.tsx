@@ -1,13 +1,7 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/lib/providers";
 import { Navigation } from "@/components/layout/Navigation";
-
-const inter = Inter({
-  subsets: ["latin"],
-  variable: "--font-inter",
-});
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://sentry-search.vercel.app"),
@@ -87,7 +81,7 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body className={`${inter.variable} font-sans antialiased h-full bg-[var(--surface-0)]`}>
+      <body className="font-sans antialiased h-full bg-[var(--surface-0)]">
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
         <Providers>
           <div className="min-h-full">

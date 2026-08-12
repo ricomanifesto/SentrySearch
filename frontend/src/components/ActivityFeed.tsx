@@ -12,19 +12,8 @@ import {
   EyeIcon,
 } from '@heroicons/react/24/outline';
 
-import { api } from '@/lib/api';
+import { api, type ActivityEvent } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/utils';
-
-interface ActivityEvent {
-  id: string;
-  type: 'report_created' | 'report_viewed' | 'report_deleted' | 'export_generated' | 'user_login' | 'system_error';
-  user_id?: string;
-  username?: string;
-  description: string;
-  metadata?: Record<string, unknown>;
-  created_at: string;
-  severity: 'info' | 'warning' | 'error' | 'success';
-}
 
 type ActivityTrailRow = {
   id: string;
@@ -78,7 +67,7 @@ function buildActivityTrailRows(activities: ActivityEvent[]): ActivityTrailRow[]
   return activities.map((activity) => ({
     id: activity.id,
     label: activity.description,
-    detail: activity.username ? `Recorded by ${activity.username}` : 'Workspace event',
+    detail: 'Workspace event',
     timestamp: formatRelativeTime(activity.created_at),
     severity: activity.severity,
     Icon: getActivityIcon(activity.type),
@@ -101,7 +90,7 @@ export function ActivityFeed({ userId, limit = 10, showHeader = true, compact = 
   });
 
   // Only ever render real activity. Never fall back to fabricated events.
-  const activityTrailRows = buildActivityTrailRows((activities as unknown as ActivityEvent[]) || []);
+  const activityTrailRows = buildActivityTrailRows(activities || []);
 
   if (error) {
     return (
@@ -120,7 +109,7 @@ export function ActivityFeed({ userId, limit = 10, showHeader = true, compact = 
         <div>
           <h2 className="text-base font-semibold text-zinc-950">Activity trail</h2>
           <p className="mt-1 text-sm leading-6 text-zinc-500">
-            Recent report, export, and session events for the briefing review.
+            Recently generated reports in this workspace.
           </p>
         </div>
       )}
@@ -134,7 +123,7 @@ export function ActivityFeed({ userId, limit = 10, showHeader = true, compact = 
         ) : activityTrailRows.length === 0 ? (
           <div className="rounded-lg border border-dashed border-zinc-300 px-4 py-8 text-center">
             <p className="text-sm text-zinc-500">
-              Activity appears after reports are generated, opened, exported, or retired.
+              Activity appears after a report is generated.
             </p>
           </div>
         ) : (

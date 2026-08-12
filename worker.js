@@ -5,36 +5,27 @@
  * for production-ready ML threat intelligence retrieval.
  */
 
-// Pinecone client configuration will be accessed via environment
+const MAX_QUERY_COUNT = 10;
+const MAX_QUERY_LENGTH = 500;
+const MAX_RESULTS = 50;
 
 /**
  * Main request handler
  */
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, env) {
     return handleRequest(request, env);
   }
 };
 
 async function handleRequest(request, env) {
-  const url = new URL(request.url);
-  const path = url.pathname;
-
-  // CORS headers for all responses
-  const corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-  };
-
-  // Handle CORS preflight
   if (request.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
+    return withCors(new Response(null, { status: 204 }));
   }
 
   try {
+    const path = new URL(request.url).pathname;
     let response;
-
     switch (path) {
       case '/hybrid-search':
         response = await handleHybridSearch(request, env);
@@ -46,169 +37,96 @@ async function handleRequest(request, env) {
         response = await handleKeywordSearch(request, env);
         break;
       case '/metadata/companies':
-        response = await handleMetadataCompanies(request, env);
+        response = await handleMetadata(request, env, 'meta:companies', 'companies');
         break;
       case '/metadata/years':
-        response = await handleMetadataYears(request, env);
+        response = await handleMetadata(request, env, 'meta:years', 'years');
         break;
       case '/metadata/techniques':
-        response = await handleMetadataTechniques(request, env);
+        response = await handleMetadata(request, env, 'meta:techniques', 'techniques');
         break;
-      case '/health':
-        response = new Response(JSON.stringify({ status: 'healthy', timestamp: new Date().toISOString() }), {
-          headers: { 'Content-Type': 'application/json', ...corsHeaders }
-        });
+      case '/health': {
+        const keywordReady = Boolean(env.SENTRY_KV);
+        const vectorReady = Boolean(
+          env.PINECONE_API_KEY &&
+          env.PINECONE_INDEX_HOST &&
+          env.EMBEDDING_API_KEY &&
+          env.EMBEDDING_API_URL
+        );
+        response = jsonResponse(
+          {
+            status: keywordReady ? (vectorReady ? 'healthy' : 'degraded') : 'unready',
+            keyword_search: keywordReady ? 'configured' : 'unavailable',
+            vector_search: vectorReady ? 'configured' : 'unavailable',
+            timestamp: new Date().toISOString()
+          },
+          keywordReady ? 200 : 503
+        );
         break;
-      case '/debug-pinecone':
-        try {
-          const testQuery = "test";
-          console.log('Testing Pinecone connection...');
-          console.log('PINECONE_API_KEY available:', !!env.PINECONE_API_KEY);
-          console.log('PINECONE_INDEX_HOST available:', !!env.PINECONE_INDEX_HOST);
-          console.log('PINECONE_INDEX_HOST value:', env.PINECONE_INDEX_HOST);
-          console.log('EMBEDDING_API_KEY available:', !!env.EMBEDDING_API_KEY);
-          
-          const embedding = await generateQueryEmbedding(testQuery, env);
-          console.log('Generated embedding:', !!embedding, embedding ? embedding.length : 'null');
-          
-          if (embedding) {
-            const pineconeQuery = {
-              vector: embedding,
-              topK: 1,
-              includeMetadata: true,
-              includeValues: false
-            };
-            
-            console.log('Querying Pinecone...');
-            const pineconeResponse = await fetch(`${env.PINECONE_INDEX_HOST}/query`, {
-              method: 'POST',
-              headers: {
-                'Api-Key': env.PINECONE_API_KEY,
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify(pineconeQuery)
-            });
-            
-            console.log('Pinecone response status:', pineconeResponse.status);
-            const pineconeData = await pineconeResponse.json();
-            console.log('Pinecone data:', JSON.stringify(pineconeData));
-            
-            response = new Response(JSON.stringify({
-              embedding_generated: !!embedding,
-              embedding_dimensions: embedding ? embedding.length : null,
-              pinecone_status: pineconeResponse.status,
-              pinecone_data: pineconeData,
-              secrets_available: {
-                PINECONE_API_KEY: !!env.PINECONE_API_KEY,
-                PINECONE_INDEX_HOST: !!env.PINECONE_INDEX_HOST,
-                PINECONE_INDEX_HOST_VALUE: env.PINECONE_INDEX_HOST,
-                EMBEDDING_API_KEY: !!env.EMBEDDING_API_KEY
-              }
-            }), {
-              headers: { 'Content-Type': 'application/json', ...corsHeaders }
-            });
-          } else {
-            response = new Response(JSON.stringify({
-              error: 'Failed to generate embedding',
-              secrets_available: {
-                PINECONE_API_KEY: !!env.PINECONE_API_KEY,
-                PINECONE_INDEX_HOST: !!env.PINECONE_INDEX_HOST,
-                EMBEDDING_API_KEY: !!env.EMBEDDING_API_KEY
-              }
-            }), {
-              status: 500,
-              headers: { 'Content-Type': 'application/json', ...corsHeaders }
-            });
-          }
-        } catch (error) {
-          console.error('Debug error:', error);
-          response = new Response(JSON.stringify({
-            error: error.message,
-            stack: error.stack,
-            debug_info: {
-              PINECONE_API_KEY: !!env.PINECONE_API_KEY,
-              PINECONE_INDEX_HOST: !!env.PINECONE_INDEX_HOST,
-              PINECONE_INDEX_HOST_VALUE: env.PINECONE_INDEX_HOST,
-              EMBEDDING_API_KEY: !!env.EMBEDDING_API_KEY
-            }
-          }), {
-            status: 500,
-            headers: { 'Content-Type': 'application/json', ...corsHeaders }
-          });
-        }
-        break;
-      case '/debug-doc':
-        const chunkId = url.searchParams.get('chunkId') || 'Netflix_2019_3_aef2991b';
-        try {
-          const docContent = await getDocumentContent(chunkId, env);
-          response = new Response(JSON.stringify({
-            chunkId,
-            hasContent: !!docContent.content,
-            contentLength: docContent.content.length,
-            enrichedLength: docContent.enrichedContent.length,
-            metadata: docContent.metadata,
-            contentPreview: docContent.content.substring(0, 200)
-          }), {
-            headers: { 'Content-Type': 'application/json', ...corsHeaders }
-          });
-        } catch (error) {
-          response = new Response(JSON.stringify({ error: error.message }), {
-            status: 500,
-            headers: { 'Content-Type': 'application/json', ...corsHeaders }
-          });
-        }
-        break;
-      case '/debug-search':
-        const debugQuery = url.searchParams.get('q') || 'Netflix';
-        try {
-          const keywordResults = await performKeywordSearch(debugQuery, 1, {}, env);
-          const debugInfo = {
-            query: debugQuery,
-            resultsCount: keywordResults.length,
-            firstResult: keywordResults[0] || null,
-            hasChunkId: keywordResults[0] ? !!keywordResults[0].chunkId : false,
-            resultKeys: keywordResults[0] ? Object.keys(keywordResults[0]) : [],
-            chunkIdValue: keywordResults[0] ? keywordResults[0].chunkId : 'undefined',
-            chunkIdType: keywordResults[0] ? typeof keywordResults[0].chunkId : 'undefined',
-            fullResult: keywordResults[0] || null
-          };
-          if (keywordResults[0] && keywordResults[0].chunkId) {
-            const docContent = await getDocumentContent(keywordResults[0].chunkId, env);
-            debugInfo.contentCheck = {
-              chunkId: keywordResults[0].chunkId,
-              hasContent: !!docContent.content,
-              contentLength: docContent.content.length
-            };
-          } else if (keywordResults[0]) {
-            debugInfo.contentCheck = { error: "No chunkId in result" };
-          }
-          response = new Response(JSON.stringify(debugInfo), {
-            headers: { 'Content-Type': 'application/json', ...corsHeaders }
-          });
-        } catch (error) {
-          response = new Response(JSON.stringify({ error: error.message }), {
-            status: 500,
-            headers: { 'Content-Type': 'application/json', ...corsHeaders }
-          });
-        }
-        break;
+      }
       default:
-        response = new Response('Not Found', { status: 404, headers: corsHeaders });
+        response = jsonResponse({ error: 'NOT_FOUND' }, 404);
     }
-
-    return response;
-
+    return withCors(response);
   } catch (error) {
     console.error('Request handling error:', error);
-    return new Response(JSON.stringify({
-      error: 'Internal Server Error',
-      message: error.message,
-      timestamp: new Date().toISOString()
-    }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders }
-    });
+    return withCors(jsonResponse({ error: 'INTERNAL_SERVER_ERROR' }, 500));
   }
+}
+
+function jsonResponse(payload, status = 200) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+
+function withCors(response) {
+  const headers = new Headers(response.headers);
+  for (const [name, value] of Object.entries(getCorsHeaders())) {
+    headers.set(name, value);
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+}
+
+function normalizeQuery(value) {
+  if (typeof value !== 'string') return null;
+  const query = value.trim();
+  return query.length > 0 && query.length <= MAX_QUERY_LENGTH ? query : null;
+}
+
+function normalizeMaxResults(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 10;
+  return Math.min(MAX_RESULTS, Math.max(1, Math.trunc(parsed)));
+}
+
+function normalizeFilters(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const normalizeList = (candidate) => Array.isArray(candidate)
+    ? candidate.filter((item) => typeof item === 'string').slice(0, 20)
+    : [];
+  return {
+    companies: normalizeList(value.companies),
+    years: normalizeList(value.years),
+    techniques: normalizeList(value.techniques)
+  };
+}
+
+function normalizeHybridWeights(value) {
+  const vector = Number(value?.vector);
+  const keyword = Number(value?.keyword);
+  if (!Number.isFinite(vector) || !Number.isFinite(keyword) || vector < 0 || keyword < 0) {
+    return { vector: 0.6, keyword: 0.4 };
+  }
+  const total = vector + keyword;
+  return total > 0
+    ? { vector: vector / total, keyword: keyword / total }
+    : { vector: 0.6, keyword: 0.4 };
 }
 
 /**
@@ -216,34 +134,42 @@ async function handleRequest(request, env) {
  */
 async function handleHybridSearch(request, env) {
   if (request.method !== 'POST') {
-    return new Response('Method Not Allowed', { status: 405 });
+    return jsonResponse({ error: 'METHOD_NOT_ALLOWED' }, 405);
   }
 
   const startTime = Date.now();
-  
   try {
     const body = await request.json();
-    const {
-      queries = [],
-      maxResults = 10,
-      hybridWeights = { vector: 0.6, keyword: 0.4 },
-      filters = {},
-      requireBothMethods = false
-    } = body;
-
-    if (!queries || queries.length === 0) {
-      return new Response(JSON.stringify({
-        error: 'INVALID_REQUEST',
-        message: 'At least one query is required'
-      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const queries = Array.isArray(body.queries)
+      ? body.queries
+          .slice(0, MAX_QUERY_COUNT)
+          .map(normalizeQuery)
+          .filter(Boolean)
+      : [];
+    if (queries.length === 0) {
+      return jsonResponse(
+        { error: 'INVALID_REQUEST', message: 'At least one valid query is required' },
+        400
+      );
     }
+
+    const maxResults = normalizeMaxResults(body.maxResults);
+    const hybridWeights = normalizeHybridWeights(body.hybridWeights);
+    const filters = normalizeFilters(body.filters);
+    const requireBothMethods = body.requireBothMethods === true;
 
     // Perform parallel searches
     const searchPromises = queries.map(query => performHybridSearchForQuery(query, maxResults, filters, env));
     const searchResults = await Promise.all(searchPromises);
 
     // Combine and deduplicate results
-    const combinedResults = await combineSearchResults(searchResults, hybridWeights, requireBothMethods, env);
+    const combinedResults = await combineSearchResults(
+      searchResults,
+      hybridWeights,
+      requireBothMethods,
+      maxResults,
+      env
+    );
 
     // Sort by hybrid score and limit results
     const finalResults = combinedResults
@@ -264,16 +190,10 @@ async function handleHybridSearch(request, env) {
       }
     };
 
-    return new Response(JSON.stringify(response), {
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
-    });
-
+    return jsonResponse(response);
   } catch (error) {
     console.error('Hybrid search error:', error);
-    return new Response(JSON.stringify({
-      error: 'SEARCH_FAILED',
-      message: error.message
-    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+    return jsonResponse({ error: 'SEARCH_FAILED' }, 500);
   }
 }
 
@@ -299,17 +219,15 @@ async function performHybridSearchForQuery(query, maxResults, filters, env) {
  */
 async function performVectorSearch(query, maxResults, filters, env) {
   try {
-    // Generate embedding for the query
-    console.log(`Generating embedding for query: "${query}"`);
-    const queryEmbedding = await generateQueryEmbedding(query, env);
-    
-    // Return empty results if no embedding service is configured
-    if (!queryEmbedding) {
-      console.log('Vector search skipped - no embedding generated');
+    if (!env.PINECONE_INDEX_HOST || !env.PINECONE_API_KEY) {
+      console.warn('Vector search is unavailable because Pinecone is not configured');
       return [];
     }
-    
-    console.log(`Generated embedding with ${queryEmbedding.length} dimensions`);
+
+    const queryEmbedding = await generateQueryEmbedding(query, env);
+    if (!queryEmbedding) {
+      return [];
+    }
 
     // Prepare Pinecone query
     const pineconeQuery = {
@@ -321,7 +239,8 @@ async function performVectorSearch(query, maxResults, filters, env) {
 
     // Add filters if provided
     if (filters && Object.keys(filters).length > 0) {
-      pineconeQuery.filter = buildPineconeFilter(filters);
+      const pineconeFilter = buildPineconeFilter(filters);
+      if (pineconeFilter) pineconeQuery.filter = pineconeFilter;
     }
 
     // Query Pinecone
@@ -335,22 +254,17 @@ async function performVectorSearch(query, maxResults, filters, env) {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`Pinecone query failed: ${response.status} - ${errorText}`);
-      throw new Error(`Pinecone query failed: ${response.status} - ${errorText}`);
+      console.error('Pinecone query failed with status %s', response.status);
+      return [];
     }
 
     const data = await response.json();
-    console.log(`Pinecone raw response:`, JSON.stringify(data));
-    console.log(`Pinecone response: ${data.matches?.length || 0} matches found`);
-    
     return data.matches?.map(match => ({
       chunkId: match.id,
       score: match.score,
       metadata: match.metadata,
       method: 'vector'
     })) || [];
-
   } catch (error) {
     console.error('Vector search error:', error);
     return [];
@@ -362,71 +276,42 @@ async function performVectorSearch(query, maxResults, filters, env) {
  */
 async function performKeywordSearch(query, maxResults, filters, env) {
   try {
-    // Tokenize query
     const queryTerms = tokenizeQuery(query);
     if (queryTerms.length === 0) return [];
 
-    // Get BM25 scores for each term
     const termPromises = queryTerms.map(term => getBM25ScoresForTerm(term, env));
     const termResults = await Promise.all(termPromises);
-
-    // Combine scores by document
     const documentScores = new Map();
-    const documentMetadata = new Map();
 
     for (let i = 0; i < queryTerms.length; i++) {
-      const term = queryTerms[i];
       const termData = termResults[i];
-      
       if (termData && termData.postingsList) {
         for (const posting of termData.postingsList) {
-          const chunkId = posting.chunkId || posting.chunk_id; // Try both field names
-          const score = posting.score;
-
-          // Get document metadata for all results
-          if (!documentMetadata.has(chunkId)) {
-            const docMetadata = await getDocumentMetadata(chunkId, env);
-            documentMetadata.set(chunkId, docMetadata);
-            
-            // Apply filters if specified
-            if (filters && Object.keys(filters).length > 0) {
-              if (!passesFilters(docMetadata, filters)) {
-                continue;
-              }
-            }
-          }
-
-          // Accumulate BM25 scores
-          if (documentScores.has(chunkId)) {
-            documentScores.set(chunkId, documentScores.get(chunkId) + score);
-          } else {
-            documentScores.set(chunkId, score);
-          }
+          const chunkId = posting.chunkId || posting.chunk_id;
+          const score = Number(posting.score);
+          if (!chunkId || !Number.isFinite(score)) continue;
+          documentScores.set(chunkId, (documentScores.get(chunkId) || 0) + score);
         }
       }
     }
 
-    // Convert to results array and sort
-    const entries = Array.from(documentScores.entries());
-    
-    const results = entries
-      .map(([chunkId, score]) => {
-        // Ensure chunkId is defined and not null
-        const safeChunkId = chunkId || 'unknown';
-        return {
-          chunkId: safeChunkId,
-          score: score,
-          metadata: documentMetadata.get(chunkId) || {},
-          method: 'keyword',
-          matchedTerms: queryTerms
-        };
-      })
-      .filter(result => result.chunkId !== 'unknown') // Remove invalid results
-      .sort((a, b) => b.score - a.score)
+    const candidates = Array.from(documentScores.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, maxResults * 5);
+    const metadata = await Promise.all(
+      candidates.map(([chunkId]) => getDocumentMetadata(chunkId, env))
+    );
+
+    return candidates
+      .map(([chunkId, score], index) => ({
+        chunkId,
+        score,
+        metadata: metadata[index] || {},
+        method: 'keyword',
+        matchedTerms: queryTerms
+      }))
+      .filter(result => passesFilters(result.metadata, filters))
       .slice(0, maxResults);
-
-    return results;
-
   } catch (error) {
     console.error('Keyword search error:', error);
     return [];
@@ -441,7 +326,7 @@ async function generateQueryEmbedding(query, env) {
   const embeddingModel = env.EMBEDDING_MODEL || 'text-embedding-3-small';
 
   if (!embeddingUrl || !env.EMBEDDING_API_KEY) {
-    console.error('Embedding endpoint is not configured');
+    console.warn('Embedding endpoint is not configured');
     return null;
   }
 
@@ -460,20 +345,17 @@ async function generateQueryEmbedding(query, env) {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error('Embedding API error:', response.status, errorText);
+      console.error('Embedding API failed with status %s', response.status);
       return null;
     }
 
     const data = await response.json();
     
     if (data.data && data.data.length > 0) {
-      const embedding = data.data[0].embedding;
-      console.log(`Generated ${embedding.length}-dimensional embedding for: "${query}"`);
-      return embedding; // Should be 384-dimensional
+      return data.data[0].embedding;
     }
-    
-    console.error('Unexpected embedding format:', data);
+
+    console.error('Embedding API returned an unexpected response shape');
     return null;
     
   } catch (error) {
@@ -494,7 +376,7 @@ function tokenizeQuery(query) {
     .split(/\s+/)
     .filter(token => token.length >= 2);
 
-  return tokens;
+  return [...new Set(tokens)];
 }
 
 /**
@@ -592,7 +474,13 @@ function buildPineconeFilter(filters) {
 /**
  * Combine search results from vector and keyword searches
  */
-async function combineSearchResults(searchResults, hybridWeights, requireBothMethods, env) {
+async function combineSearchResults(
+  searchResults,
+  hybridWeights,
+  requireBothMethods,
+  maxResults,
+  env
+) {
   const combinedResults = new Map();
 
   // Process each query's results
@@ -651,25 +539,8 @@ async function combineSearchResults(searchResults, hybridWeights, requireBothMet
     }
   }
 
-  // Fetch document content for all unique chunk IDs
-  const chunkIds = Array.from(combinedResults.keys());
-  const contentPromises = chunkIds.map(chunkId => getDocumentContent(chunkId, env));
-  const contentResults = await Promise.all(contentPromises);
-
-  // Populate content in results
-  for (let i = 0; i < chunkIds.length; i++) {
-    const chunkId = chunkIds[i];
-    const contentData = contentResults[i];
-    const result = combinedResults.get(chunkId);
-    
-    result.content = contentData.content;
-    result.enrichedContent = contentData.enrichedContent;
-    // Merge metadata (keep existing, add from content)
-    result.metadata = { ...result.metadata, ...formatMetadata(contentData.metadata) };
-  }
-
   // Calculate hybrid scores and filter if required
-  const results = Array.from(combinedResults.values());
+  let results = Array.from(combinedResults.values());
   
   for (const result of results) {
     // Calculate hybrid score using weighted combination
@@ -681,10 +552,23 @@ async function combineSearchResults(searchResults, hybridWeights, requireBothMet
     result.scores.applicabilityScore = result.retrievalMethod === 'hybrid' ? 0.8 : 0.6;
   }
 
-  // Filter results if both methods are required
   if (requireBothMethods) {
-    return results.filter(result => result.retrievalMethod === 'hybrid');
+    results = results.filter(result => result.retrievalMethod === 'hybrid');
   }
+
+  results = results
+    .sort((a, b) => b.scores.hybridScore - a.scores.hybridScore)
+    .slice(0, maxResults);
+
+  const contentResults = await Promise.all(
+    results.map(result => getDocumentContent(result.chunkId, env))
+  );
+  results.forEach((result, index) => {
+    const contentData = contentResults[index];
+    result.content = contentData.content;
+    result.enrichedContent = contentData.enrichedContent;
+    result.metadata = { ...result.metadata, ...formatMetadata(contentData.metadata) };
+  });
 
   return results;
 }
@@ -710,32 +594,27 @@ function formatMetadata(metadata) {
  */
 async function handleVectorSearch(request, env) {
   if (request.method !== 'POST') {
-    return new Response('Method Not Allowed', { status: 405 });
+    return jsonResponse({ error: 'METHOD_NOT_ALLOWED' }, 405);
   }
 
   try {
     const body = await request.json();
-    const { query, maxResults = 10, filters = {} } = body;
+    const query = normalizeQuery(body.query);
 
     if (!query) {
-      return new Response(JSON.stringify({
-        error: 'INVALID_REQUEST',
-        message: 'Query is required'
-      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      return jsonResponse(
+        { error: 'INVALID_REQUEST', message: 'A valid query is required' },
+        400
+      );
     }
 
+    const maxResults = normalizeMaxResults(body.maxResults);
+    const filters = normalizeFilters(body.filters);
     const results = await performVectorSearch(query, maxResults, filters, env);
-
-    return new Response(JSON.stringify({ results }), {
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
-    });
-
+    return jsonResponse({ results });
   } catch (error) {
     console.error('Vector search error:', error);
-    return new Response(JSON.stringify({
-      error: 'SEARCH_FAILED',
-      message: error.message
-    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+    return jsonResponse({ error: 'SEARCH_FAILED' }, 500);
   }
 }
 
@@ -744,80 +623,43 @@ async function handleVectorSearch(request, env) {
  */
 async function handleKeywordSearch(request, env) {
   if (request.method !== 'POST') {
-    return new Response('Method Not Allowed', { status: 405 });
+    return jsonResponse({ error: 'METHOD_NOT_ALLOWED' }, 405);
   }
 
   try {
     const body = await request.json();
-    const { query, maxResults = 10, filters = {} } = body;
+    const query = normalizeQuery(body.query);
 
     if (!query) {
-      return new Response(JSON.stringify({
-        error: 'INVALID_REQUEST',
-        message: 'Query is required'
-      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      return jsonResponse(
+        { error: 'INVALID_REQUEST', message: 'A valid query is required' },
+        400
+      );
     }
 
+    const maxResults = normalizeMaxResults(body.maxResults);
+    const filters = normalizeFilters(body.filters);
     const results = await performKeywordSearch(query, maxResults, filters, env);
-
-    return new Response(JSON.stringify({ results }), {
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
-    });
-
+    return jsonResponse({ results });
   } catch (error) {
     console.error('Keyword search error:', error);
-    return new Response(JSON.stringify({
-      error: 'SEARCH_FAILED',
-      message: error.message
-    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+    return jsonResponse({ error: 'SEARCH_FAILED' }, 500);
   }
 }
 
 /**
- * Metadata Handlers
+ * Metadata handler
  */
-async function handleMetadataCompanies(request, env) {
-  try {
-    const companiesData = await env.SENTRY_KV.get('meta:companies', 'json');
-    return new Response(JSON.stringify(companiesData || { companies: [] }), {
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
-    });
-  } catch (error) {
-    console.error('Get companies error:', error);
-    return new Response(JSON.stringify({ error: 'Failed to get companies' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    });
+async function handleMetadata(request, env, storageKey, responseKey) {
+  if (request.method !== 'GET') {
+    return jsonResponse({ error: 'METHOD_NOT_ALLOWED' }, 405);
   }
-}
-
-async function handleMetadataYears(request, env) {
   try {
-    const yearsData = await env.SENTRY_KV.get('meta:years', 'json');
-    return new Response(JSON.stringify(yearsData || { years: [] }), {
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
-    });
+    const data = await env.SENTRY_KV.get(storageKey, 'json');
+    return jsonResponse(data || { [responseKey]: [] });
   } catch (error) {
-    console.error('Get years error:', error);
-    return new Response(JSON.stringify({ error: 'Failed to get years' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
-}
-
-async function handleMetadataTechniques(request, env) {
-  try {
-    const techniquesData = await env.SENTRY_KV.get('meta:techniques', 'json');
-    return new Response(JSON.stringify(techniquesData || { techniques: [] }), {
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
-    });
-  } catch (error) {
-    console.error('Get techniques error:', error);
-    return new Response(JSON.stringify({ error: 'Failed to get techniques' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    });
+    console.error('Metadata read failed:', error);
+    return jsonResponse({ error: 'METADATA_UNAVAILABLE' }, 500);
   }
 }
 

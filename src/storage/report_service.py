@@ -7,11 +7,18 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 import hashlib
 import json
-from sqlalchemy.orm import Session
-from sqlalchemy import asc, desc, and_, or_
+from sqlalchemy import asc, desc, or_
+
+from src.domain.reports import (
+    ReportAnalyticsRecord,
+    ReportFilters,
+    ReportSortField,
+    ReportStatus,
+    SortOrder,
+)
 
 from .database import db_manager
-from .models import Report, ReportSearch, ReportTag
+from .models import Report
 from .s3_manager import s3_manager
 
 logger = logging.getLogger(__name__)
@@ -24,15 +31,92 @@ class ReportStorageService:
 
     @staticmethod
     def _report_sort_expression(sort_by: str, sort_order: str):
-        sort_column = getattr(Report, sort_by, Report.created_at)
+        try:
+            sort_field = ReportSortField(sort_by)
+        except ValueError:
+            sort_field = ReportSortField.CREATED_AT
+        try:
+            direction = SortOrder(sort_order.lower())
+        except ValueError:
+            direction = SortOrder.DESCENDING
 
-        if sort_order.lower() == "asc":
+        sort_column = getattr(Report, sort_field.value)
+
+        if direction is SortOrder.ASCENDING:
             return asc(sort_column).nulls_last()
 
         return desc(sort_column).nulls_last()
 
+    @staticmethod
+    def _report_filter_expressions(filters: ReportFilters) -> tuple:
+        """Build the shared SQL predicates used by list and count queries."""
+
+        expressions = []
+        if filters.user_id:
+            expressions.append(Report.user_id == filters.user_id)
+        if filters.category:
+            expressions.append(Report.category == filters.category)
+        if filters.threat_type:
+            expressions.append(Report.threat_type == filters.threat_type)
+        if filters.threat_types:
+            expressions.append(Report.threat_type.in_(filters.threat_types))
+        if filters.min_quality_score is not None:
+            expressions.append(Report.quality_score >= filters.min_quality_score)
+        if filters.search_query:
+            pattern = f"%{filters.search_query}%"
+            expressions.append(
+                or_(
+                    Report.tool_name.ilike(pattern),
+                    Report.category.ilike(pattern),
+                    Report.threat_type.ilike(pattern),
+                )
+            )
+        if filters.tags:
+            expressions.append(Report.search_tags.contains(list(filters.tags)))
+        if filters.created_after:
+            expressions.append(Report.created_at >= filters.created_after)
+        return tuple(expressions)
+
+    @staticmethod
+    def _coerce_report_filters(
+        *,
+        category: Optional[str] = None,
+        threat_type: Optional[str] = None,
+        threat_types: Optional[List[str]] = None,
+        min_quality_score: Optional[float] = None,
+        search_query: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        created_after: Optional[datetime] = None,
+        user_id: Optional[str] = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
+    ) -> ReportFilters:
+        """Normalize the legacy keyword surface into one immutable query value."""
+
+        try:
+            sort_field = ReportSortField(sort_by)
+        except ValueError:
+            sort_field = ReportSortField.CREATED_AT
+        try:
+            direction = SortOrder(sort_order.lower())
+        except ValueError:
+            direction = SortOrder.DESCENDING
+
+        return ReportFilters(
+            category=category,
+            threat_type=threat_type,
+            threat_types=tuple(threat_types or ()),
+            min_quality_score=min_quality_score,
+            search_query=search_query,
+            tags=tuple(tags or ()),
+            created_after=created_after,
+            user_id=user_id,
+            sort_by=sort_field,
+            sort_order=direction,
+        )
+
     def categorize_tool(
-        self, tool_name: str, threat_data: Dict[str, Any] = None
+        self, tool_name: str, threat_data: Optional[Dict[str, Any]] = None
     ) -> tuple[str, str]:
         """
         Categorize a tool/threat into category and threat_type based on tool name and metadata.
@@ -336,7 +420,10 @@ class ReportStorageService:
             raise
 
     def store_report(
-        self, report_data: Dict[str, Any], api_key: str = None, user_id: str = None
+        self,
+        report_data: Dict[str, Any],
+        api_key: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> str:
         """Store a complete report with metadata in PostgreSQL and content in S3"""
         try:
@@ -415,7 +502,7 @@ class ReportStorageService:
             raise
 
     def create_pending_report(
-        self, report_id: str, tool_name: str, user_id: str = None
+        self, report_id: str, tool_name: str, user_id: Optional[str] = None
     ) -> str:
         """Create a placeholder report row marked 'generating' for a background job.
 
@@ -431,7 +518,7 @@ class ReportStorageService:
                     tool_name=tool_name,
                     category=category,
                     threat_type=threat_type,
-                    status="generating",
+                    status=ReportStatus.GENERATING.value,
                     user_id=user_id,
                     version="1.0",
                     search_tags=[],
@@ -445,7 +532,10 @@ class ReportStorageService:
             raise
 
     def finalize_report(
-        self, report_id: str, report_data: Dict[str, Any], user_id: str = None
+        self,
+        report_id: str,
+        report_data: Dict[str, Any],
+        user_id: Optional[str] = None,
     ) -> str:
         """Populate an existing pending report with generated content and mark it complete.
 
@@ -490,7 +580,7 @@ class ReportStorageService:
                         f"Pending report {report_id} missing on finalize; inserting fresh row"
                     )
                     report_data["id"] = report_id
-                    report_data["status"] = "completed"
+                    report_data["status"] = ReportStatus.COMPLETED.value
                     return self.store_report(report_data, user_id=user_id)
 
                 if report_data.get("tool_name"):
@@ -513,7 +603,7 @@ class ReportStorageService:
                 report.search_tags = report_data.get("search_tags", report.search_tags or [])
                 if user_id and not report.user_id:
                     report.user_id = user_id
-                report.status = "completed"
+                report.status = ReportStatus.COMPLETED.value
 
                 session.commit()
                 logger.info(f"Report finalized successfully: {report_id}")
@@ -530,7 +620,7 @@ class ReportStorageService:
                 report = session.query(Report).filter(Report.id == report_id).first()
                 if report is None:
                     return False
-                report.status = "failed"
+                report.status = ReportStatus.FAILED.value
                 session.commit()
                 logger.info(f"Report marked failed: {report_id}")
                 return True
@@ -594,42 +684,26 @@ class ReportStorageService:
     ) -> List[Dict[str, Any]]:
         """List reports with filtering and pagination"""
         try:
+            filters = self._coerce_report_filters(
+                category=category,
+                threat_type=threat_type,
+                threat_types=threat_types,
+                min_quality_score=min_quality_score,
+                search_query=search_query,
+                tags=tags,
+                created_after=created_after,
+                user_id=user_id,
+                sort_by=sort_by,
+                sort_order=sort_order,
+            )
             with self.db_manager.get_session() as session:
                 query = session.query(Report)
-
-                # Apply filters
-                if user_id:
-                    query = query.filter(Report.user_id == user_id)
-
-                if category:
-                    query = query.filter(Report.category == category)
-
-                if threat_type:
-                    query = query.filter(Report.threat_type == threat_type)
-
-                if threat_types:
-                    query = query.filter(Report.threat_type.in_(threat_types))
-
-                if min_quality_score is not None:
-                    query = query.filter(Report.quality_score >= min_quality_score)
-
-                if search_query:
-                    # Text search across the fields advertised by the frontend.
-                    search_filter = or_(
-                        Report.tool_name.ilike(f"%{search_query}%"),
-                        Report.category.ilike(f"%{search_query}%"),
-                        Report.threat_type.ilike(f"%{search_query}%"),
-                    )
-                    query = query.filter(search_filter)
-
-                if tags:
-                    query = query.filter(Report.search_tags.contains(tags))
-
-                if created_after:
-                    query = query.filter(Report.created_at >= created_after)
+                query = query.filter(*self._report_filter_expressions(filters))
 
                 # Dynamic sorting
-                query = query.order_by(self._report_sort_expression(sort_by, sort_order))
+                query = query.order_by(
+                    self._report_sort_expression(filters.sort_by, filters.sort_order)
+                )
 
                 # Apply pagination
                 query = query.offset(offset).limit(limit)
@@ -740,36 +814,58 @@ class ReportStorageService:
     def count_reports(self, **filters) -> int:
         """Count total reports with optional filters"""
         try:
+            report_filters = self._coerce_report_filters(
+                category=filters.get("category"),
+                threat_type=filters.get("threat_type"),
+                threat_types=filters.get("threat_types"),
+                min_quality_score=filters.get("min_quality_score"),
+                search_query=filters.get("search_query"),
+                tags=filters.get("tags"),
+                created_after=filters.get("created_after"),
+                user_id=filters.get("user_id"),
+            )
             with self.db_manager.get_session() as session:
                 query = session.query(Report)
-
-                # Apply same filters as list_reports
-                if filters.get("user_id"):
-                    query = query.filter(Report.user_id == filters["user_id"])
-                if filters.get("category"):
-                    query = query.filter(Report.category == filters["category"])
-                if filters.get("threat_type"):
-                    query = query.filter(Report.threat_type == filters["threat_type"])
-                if filters.get("threat_types"):
-                    query = query.filter(Report.threat_type.in_(filters["threat_types"]))
-                if filters.get("min_quality_score") is not None:
-                    query = query.filter(Report.quality_score >= filters["min_quality_score"])
-                if filters.get("search_query"):
-                    search_filter = or_(
-                        Report.tool_name.ilike(f'%{filters["search_query"]}%'),
-                        Report.category.ilike(f'%{filters["search_query"]}%'),
-                        Report.threat_type.ilike(f'%{filters["search_query"]}%'),
-                    )
-                    query = query.filter(search_filter)
-                if filters.get("tags"):
-                    query = query.filter(Report.search_tags.contains(filters["tags"]))
-                if filters.get("created_after"):
-                    query = query.filter(Report.created_at >= filters["created_after"])
-
+                query = query.filter(*self._report_filter_expressions(report_filters))
                 return query.count()
         except Exception as e:
             logger.error(f"Error counting reports: {e}")
-            return 0
+            raise
+
+    def list_analytics_records(
+        self, *, created_after: datetime, user_id: Optional[str] = None
+    ) -> List[ReportAnalyticsRecord]:
+        """Return only the persisted fields required by the analytics endpoint."""
+
+        filters = ReportFilters(created_after=created_after, user_id=user_id)
+        try:
+            with self.db_manager.get_session() as session:
+                rows = (
+                    session.query(
+                        Report.created_at,
+                        Report.quality_score,
+                        Report.processing_time_ms,
+                        Report.status,
+                        Report.threat_type,
+                    )
+                    .filter(*self._report_filter_expressions(filters))
+                    .all()
+                )
+                return [
+                    ReportAnalyticsRecord(
+                        created_at=row.created_at,
+                        quality_score=(
+                            float(row.quality_score) if row.quality_score is not None else None
+                        ),
+                        processing_time_ms=row.processing_time_ms,
+                        status=ReportStatus(row.status or ReportStatus.COMPLETED.value),
+                        threat_type=row.threat_type,
+                    )
+                    for row in rows
+                ]
+        except Exception as e:
+            logger.error(f"Error listing analytics records: {e}")
+            raise
 
     def search_reports(self, **kwargs) -> List[Dict[str, Any]]:
         """Advanced search - currently uses same logic as list_reports"""
@@ -795,7 +891,7 @@ class ReportStorageService:
                 return [r[0] for r in results if r[0]]
         except Exception as e:
             logger.error(f"Error getting threat types: {e}")
-            return []
+            raise
 
     def get_unique_categories(self, user_id: Optional[str] = None) -> List[str]:
         """Get list of unique categories"""
@@ -813,7 +909,7 @@ class ReportStorageService:
                 return [r[0] for r in results if r[0]]
         except Exception as e:
             logger.error(f"Error getting categories: {e}")
-            return []
+            raise
 
     def get_popular_tags(self, limit: int = 50, user_id: Optional[str] = None) -> List[str]:
         """Get most popular tags"""
@@ -840,7 +936,7 @@ class ReportStorageService:
 
         except Exception as e:
             logger.error(f"Error getting popular tags: {e}")
-            return []
+            raise
 
     def get_threat_type_stats(self, user_id: Optional[str] = None) -> Dict[str, int]:
         """Get threat type distribution"""
@@ -861,7 +957,7 @@ class ReportStorageService:
                 return {threat_type: count for threat_type, count in results}
         except Exception as e:
             logger.error(f"Error getting threat type stats: {e}")
-            return {}
+            raise
 
     def get_quality_score_distribution(self, user_id: Optional[str] = None) -> Dict[str, Any]:
         """Get quality score statistics and distribution"""
@@ -900,7 +996,7 @@ class ReportStorageService:
 
         except Exception as e:
             logger.error(f"Error getting quality score distribution: {e}")
-            return {"average": 0.0, "distribution": {}, "total_scored": 0}
+            raise
 
 
 # Global report storage service instance

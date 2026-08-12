@@ -10,7 +10,7 @@ const expectations = [
   { name: 'keeps the export route behind the auth boundary', pattern: /<AuthGuard>/ },
   { name: 'declares the export handoff surface contract', pattern: /data-surface="export-handoff"/ },
   { name: 'frames the surface as an intelligence handoff package', pattern: /Intelligence handoff package/ },
-  { name: 'runs export through the backend export contract', pattern: /api\.exportReports/ },
+  { name: 'runs export through the report export contract', pattern: /api\.exportReports/ },
   { name: 'downloads the prepared package', pattern: /downloadAsFile\(data, filename, mimeType\)/ },
   { name: 'uses a canonical format options collection', pattern: /const formatOptions = \[/ },
   { name: 'renders package formats from the canonical collection', pattern: /formatOptions\.map/ },

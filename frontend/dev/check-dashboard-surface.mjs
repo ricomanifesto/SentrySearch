@@ -159,7 +159,7 @@ const expectations = [
   {
     name: 'uses product-specific empty activity copy',
     source: activityFeed,
-    pattern: /Activity appears after reports are generated, opened, exported, or retired/,
+    pattern: /Activity appears after a report is generated/,
   },
   {
     name: 'does not dump raw activity metadata as key-value badges',

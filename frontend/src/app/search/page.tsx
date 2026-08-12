@@ -6,17 +6,21 @@ import Link from 'next/link';
 import { MagnifyingGlassIcon, ArrowRightIcon } from '@heroicons/react/24/outline';
 
 import { api, type Report } from '@/lib/api';
+import {
+  countActiveReportFilters,
+  dateRangeFilterOptions,
+  defaultReportQuery,
+  formatTaxonomyLabel,
+  getQualityLabel,
+  qualityFilterOptions,
+  reportSortOptions,
+  sortOrderOptions,
+  toReportSort,
+  toSearchFilters,
+  type ReportQueryState,
+} from '@/lib/report-query';
 import { formatDate, formatProcessingTime, formatRelativeTime } from '@/lib/utils';
 import { AuthGuard } from '@/components/AuthGuard';
-
-interface SearchState {
-  query: string;
-  threatType: string;
-  minQuality: string;
-  dateRangeDays: string;
-  sortBy: string;
-  sortOrder: string;
-}
 
 type QueryWorkbenchControlKey = 'threatType' | 'minQuality' | 'dateRangeDays' | 'sortBy' | 'sortOrder';
 
@@ -31,39 +35,6 @@ type ResultReviewSignal = {
   value: string;
   description: string;
 };
-
-const qualityOptions = [
-  { value: '', label: 'Any quality' },
-  { value: '4.0', label: '4.0+ high confidence' },
-  { value: '3.0', label: '3.0+ reviewable' },
-  { value: '2.0', label: '2.0+ needs review' },
-];
-
-const dateRangeOptions = [
-  { value: '', label: 'Any time' },
-  { value: '7', label: 'Last 7 days' },
-  { value: '30', label: 'Last 30 days' },
-  { value: '90', label: 'Last 90 days' },
-  { value: '365', label: 'Last year' },
-];
-
-const sortOptions = [
-  { value: 'created_at', label: 'Date created' },
-  { value: 'quality_score', label: 'Quality score' },
-  { value: 'tool_name', label: 'Target name' },
-  { value: 'processing_time_ms', label: 'Processing time' },
-];
-
-const sortOrderOptions = [
-  { value: 'desc', label: 'Descending' },
-  { value: 'asc', label: 'Ascending' },
-];
-
-const getQualityLabel = (score: number) =>
-  score >= 4.0 ? 'High confidence' : score >= 3.0 ? 'Reviewable' : score >= 2.0 ? 'Needs review' : 'Low confidence';
-
-const formatTaxonomyLabel = (value: string) =>
-  value.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 
 const selectClass =
   'mt-1.5 block h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition-colors focus:border-blue-500 focus:ring-2 focus:ring-blue-100';
@@ -81,14 +52,7 @@ export default function SearchPage() {
 
 function SearchWorkspace() {
   const [currentPage, setCurrentPage] = useState(1);
-  const [filters, setFilters] = useState<SearchState>({
-    query: '',
-    threatType: '',
-    minQuality: '',
-    dateRangeDays: '',
-    sortBy: 'created_at',
-    sortOrder: 'desc',
-  });
+  const [filters, setFilters] = useState<ReportQueryState>({ ...defaultReportQuery });
   const [searchInput, setSearchInput] = useState('');
 
   useEffect(() => {
@@ -111,15 +75,10 @@ function SearchWorkspace() {
   const { data: searchData, isLoading, error } = useQuery({
     queryKey: ['search', 'review-workspace', currentPage, filters],
     queryFn: () => api.searchReports(
-      {
-        query: filters.query || undefined,
-        threat_types: filters.threatType ? [filters.threatType] : undefined,
-        min_quality_score: filters.minQuality ? parseFloat(filters.minQuality) : undefined,
-        date_range_days: filters.dateRangeDays ? parseInt(filters.dateRangeDays, 10) : undefined,
-      },
+      toSearchFilters(filters),
       currentPage,
       20,
-      { sort_by: filters.sortBy, sort_order: filters.sortOrder },
+      toReportSort(filters),
     ),
   });
 
@@ -130,24 +89,24 @@ function SearchWorkspace() {
 
   const queryWorkbenchControls: QueryWorkbenchControl[] = useMemo(() => [
     { key: 'threatType', label: 'Threat type', options: threatTypeOptions },
-    { key: 'minQuality', label: 'Minimum quality', options: qualityOptions },
-    { key: 'dateRangeDays', label: 'Date range', options: dateRangeOptions },
-    { key: 'sortBy', label: 'Sort by', options: sortOptions },
+    { key: 'minQuality', label: 'Minimum quality', options: qualityFilterOptions },
+    { key: 'dateRangeDays', label: 'Date range', options: dateRangeFilterOptions },
+    { key: 'sortBy', label: 'Sort by', options: reportSortOptions },
     { key: 'sortOrder', label: 'Order', options: sortOrderOptions },
   ], [threatTypeOptions]);
 
-  const updateFilter = (key: keyof SearchState, value: string) => {
-    setFilters((prev) => ({ ...prev, [key]: value }));
+  const updateFilter = (key: QueryWorkbenchControlKey, value: string) => {
+    setFilters((prev) => ({ ...prev, [key]: value } as ReportQueryState));
     setCurrentPage(1);
   };
 
   const clearFilters = () => {
     setSearchInput('');
-    setFilters({ query: '', threatType: '', minQuality: '', dateRangeDays: '', sortBy: 'created_at', sortOrder: 'desc' });
+    setFilters({ ...defaultReportQuery });
     setCurrentPage(1);
   };
 
-  const activeFilterCount = [filters.query, filters.threatType, filters.minQuality, filters.dateRangeDays].filter(Boolean).length;
+  const activeFilterCount = countActiveReportFilters(filters);
   const hasActiveFilters = activeFilterCount > 0;
   const totalReports = searchData?.pagination.total ?? 0;
   const pageStart = searchData ? ((searchData.pagination.page - 1) * searchData.pagination.limit) + 1 : 0;

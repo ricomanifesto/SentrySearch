@@ -11,16 +11,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LOCAL_API_URL = "http://localhost:8001"
-PYTHON_RUFF_PATHS = [
+PYTHON_VALIDATION_PATHS = [
     "run_api.py",
-    "run_app.py",
     "src",
-    "dev",
-    "tests",
-]
-PYTHON_FORMAT_TYPE_PATHS = [
-    "run_api.py",
-    "run_app.py",
     "dev",
     "tests",
 ]
@@ -108,10 +101,11 @@ async def main() -> int:
     validate_python_tooling_contract()
     validate_railway_config_contract()
 
-    run_command(["ruff", "check", *PYTHON_RUFF_PATHS])
-    run_command(["black", "--check", *PYTHON_FORMAT_TYPE_PATHS])
-    run_command(["ty", "check", *PYTHON_FORMAT_TYPE_PATHS])
+    run_command(["ruff", "check", *PYTHON_VALIDATION_PATHS])
+    run_command(["black", "--check", *PYTHON_VALIDATION_PATHS])
+    run_command(["ty", "check", *PYTHON_VALIDATION_PATHS])
     run_command([sys.executable, "-B", "-m", "pytest", "tests"])
+    run_command(["node", "dev/check_worker.mjs"])
 
     sys.path.insert(0, str(REPO_ROOT))
     from dev.smoke_api import run_checks  # pylint: disable=import-outside-toplevel

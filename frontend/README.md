@@ -1,11 +1,11 @@
 # SentrySearch Frontend
 
-Professional Next.js frontend for SentrySearch threat intelligence platform.
+Next.js frontend for the SentrySearch threat intelligence platform.
 
 ## Features
 
 - Modern, responsive UI with Tailwind CSS
-- Server-side rendering with Next.js 14
+- App Router rendering with Next.js 16
 - Real-time search and filtering
 - Analytics dashboard
 - Optimistic updates with React Query
@@ -15,14 +15,14 @@ Professional Next.js frontend for SentrySearch threat intelligence platform.
 
 ### Prerequisites
 
-- Node.js 18+ and npm
+- Node.js 20.9+ and npm
 - SentrySearch API server running on `http://localhost:8001`
 
 ### Installation
 
 ```bash
-# Install dependencies
-npm install
+# Install the locked dependencies
+npm ci
 
 # Copy environment config
 cp .env.example .env.local
@@ -45,12 +45,12 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
 
 ## Technology Stack
 
-- **Framework**: Next.js 14 with App Router
+- **Framework**: Next.js 16 with App Router
 - **Styling**: Tailwind CSS
 - **State Management**: React Query (TanStack Query)
 - **HTTP Client**: Axios
 - **Icons**: Heroicons
-- **Typography**: Inter font
+- **Typography**: Native system font stack
 - **Deployment**: Vercel (optimized)
 
 ## Development

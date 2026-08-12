@@ -5,107 +5,49 @@
  * Optimized for Vercel Hobby Plan deployment.
  */
 
-import axios, { AxiosInstance } from 'axios';
+import axios, { type AxiosInstance } from 'axios';
 import { createClient, hasSupabaseConfig } from './supabase';
+import type {
+  ActivityEvent,
+  AnalyticsDashboard,
+  AnalyticsData,
+  ExportConfig,
+  ListReportFilters,
+  PaginatedResponse,
+  Report,
+  ReportCreateRequest,
+  ReportDetail,
+  ReportSort,
+  SearchFilterOptions,
+  SearchFilters,
+} from './api-contracts';
+import { buildReportExport } from './report-export';
 
-// Types
-export type ReportStatus = 'generating' | 'completed' | 'failed';
-
-export interface Report {
-  id: string;
-  tool_name: string;
-  category: string;
-  threat_type: string;
-  quality_score: number;
-  created_at: string;
-  processing_time_ms: number;
-  status?: ReportStatus;
-  content_preview?: string;
-}
-
-export interface ReportDetail extends Report {
-  markdown_content?: string;
-  threat_data?: Record<string, unknown>;
-  search_tags: string[];
-}
-
-export interface ReportCreateRequest {
-  tool_name: string;
-  enable_ml_guidance?: boolean;
-  analysis_type?: 'comprehensive' | 'quick' | 'custom';
-}
-
-export interface SearchFilters {
-  query?: string;
-  threat_types?: string[];
-  date_range_days?: number;
-  min_quality_score?: number;
-  tags?: string[];
-}
-
-export interface PaginatedResponse<T> {
-  reports: T[];
-  pagination: {
-    page: number;
-    limit: number;
-    total: number;
-    pages: number;
-  };
-}
-
-export interface AnalyticsDashboard {
-  summary: {
-    total_reports: number;
-    reports_this_week: number;
-    avg_quality_score: number;
-  };
-  threat_distribution: Record<string, number>;
-  quality_distribution: Record<string, number>;
-  recent_activity: Array<{
-    id: string;
-    tool_name: string;
-    created_at: string;
-    quality_score: number;
-  }>;
-}
-
-export interface AnalyticsData {
-  overview: {
-    total_reports: number;
-    reports_last_24h: number;
-    reports_last_7d: number;
-    reports_last_30d: number;
-    avg_quality_score: number;
-    avg_processing_time_ms: number;
-    most_common_threat_type: string;
-    success_rate: number;
-  };
-  trends: {
-    daily_reports: Array<{ date: string; count: number }>;
-    threat_type_distribution: Array<{ threat_type: string; count: number; percentage: number }>;
-    quality_score_distribution: Array<{ range: string; count: number; percentage: number }>;
-    processing_time_trends: Array<{ date: string; avg_time_ms: number }>;
-  };
-  recent_activity: Array<{
-    id: string;
-    tool_name: string;
-    quality_score: number;
-    processing_time_ms: number;
-    created_at: string;
-    threat_type?: string;
-  }>;
-}
-
-export interface SearchFilterOptions {
-  threat_types: string[];
-  categories: string[];
-  tags: string[];
-  quality_range: { min: number; max: number };
-  date_range_options: Array<{ label: string; days: number }>;
-}
+export type * from './api-contracts';
 
 // API Configuration
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001';
+
+async function mapWithConcurrency<T, U>(
+  items: T[],
+  concurrency: number,
+  task: (item: T) => Promise<U>,
+): Promise<U[]> {
+  const results = new Array<U>(items.length);
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await task(items[index]);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
+}
 
 class SentrySearchAPI {
   private client: AxiosInstance;
@@ -138,7 +80,7 @@ class SentrySearchAPI {
       }
     );
 
-    // Request interceptor for logging (development only)
+    // Request and error logging is intentionally development-only.
     if (process.env.NODE_ENV === 'development') {
       this.client.interceptors.request.use(
         (config) => {
@@ -150,25 +92,15 @@ class SentrySearchAPI {
           return Promise.reject(error);
         }
       );
+      this.client.interceptors.response.use(
+        (response) => response,
+        (error) => {
+          const status = error.response?.status;
+          console.error(status ? `API request failed with status ${status}` : 'API request failed');
+          return Promise.reject(error);
+        },
+      );
     }
-
-    // Response interceptor for error handling
-    this.client.interceptors.response.use(
-      (response) => response,
-      (error) => {
-        if (error.response) {
-          // Server responded with error status
-          console.error(`API Error ${error.response.status}:`, error.response.data);
-        } else if (error.request) {
-          // Request made but no response received
-          console.error('API Network Error:', error.message);
-        } else {
-          // Something else happened
-          console.error('API Error:', error.message);
-        }
-        return Promise.reject(error);
-      }
-    );
   }
 
   private getSupabase() {
@@ -189,13 +121,7 @@ class SentrySearchAPI {
   async listReports(
     page: number = 1,
     limit: number = 20,
-    filters?: {
-      query?: string;
-      threat_type?: string;
-      min_quality?: number;
-      sort_by?: string;
-      sort_order?: string;
-    }
+    filters?: ListReportFilters
   ): Promise<PaginatedResponse<Report>> {
     const params = new URLSearchParams();
     params.append('page', page.toString());
@@ -233,10 +159,7 @@ class SentrySearchAPI {
     filters: SearchFilters,
     page: number = 1,
     limit: number = 20,
-    sort?: {
-      sort_by?: string;
-      sort_order?: string;
-    }
+    sort?: ReportSort
   ): Promise<PaginatedResponse<Report>> {
     const params = new URLSearchParams();
     params.append('page', page.toString());
@@ -264,90 +187,66 @@ class SentrySearchAPI {
     return response.data;
   }
 
-  // Admin endpoints (mock data for now)
-  async getUsers(): Promise<Record<string, unknown>[]> {
-    // Mock data until backend implementation
-    return [
-      {
-        id: '1',
-        username: 'admin',
-        email: 'admin@sentrysearch.com',
-        role: 'admin',
-        status: 'active',
-        last_login: new Date().toISOString(),
-        created_at: new Date(Date.now() - 86400000).toISOString(),
-        reports_count: 25,
-        api_usage_count: 150,
-      },
-      {
-        id: '2',
-        username: 'analyst1',
-        email: 'analyst@sentrysearch.com',
-        role: 'analyst',
-        status: 'active',
-        last_login: new Date(Date.now() - 3600000).toISOString(),
-        created_at: new Date(Date.now() - 86400000 * 7).toISOString(),
-        reports_count: 12,
-        api_usage_count: 89,
-      },
-    ];
-  }
+  async exportReports(config: ExportConfig): Promise<string> {
+    const selectedIds = [...new Set(config.selected_reports ?? [])];
+    const configuredMaximum = typeof config.max_reports === 'number' && Number.isFinite(config.max_reports)
+      ? Math.trunc(config.max_reports)
+      : 1000;
+    const maxReports = Math.min(Math.max(configuredMaximum, 1), 1000);
+    let reports: ReportDetail[];
 
-  async getSystemStatus(): Promise<Record<string, unknown>> {
-    // Mock data until backend implementation
-    return {
-      api_health: 'healthy',
-      database_health: 'healthy',
-      storage_health: 'healthy',
-      active_users: 3,
-      total_requests_24h: 1247,
-      error_rate_24h: 0.02,
-      avg_response_time_ms: 234,
-    };
-  }
-
-  // User management methods removed - not currently needed
-
-  // Export functionality
-  async exportReports(config: Record<string, unknown>): Promise<string> {
-    // Mock implementation - generate sample export data
-    const timestamp = new Date().toISOString();
-    
-    switch (config.format) {
-      case 'json':
-        return JSON.stringify({
-          export_metadata: {
-            timestamp,
-            format: 'json',
-            total_reports: 5,
-            filters: config
+    if (selectedIds.length > 0) {
+      reports = await mapWithConcurrency(
+        selectedIds.slice(0, maxReports),
+        8,
+        (reportId) => this.getReport(reportId, config.include_content),
+      );
+    } else {
+      const summaries: Report[] = [];
+      let page = 1;
+      while (summaries.length < maxReports) {
+        const pageSize = 100;
+        const response = await this.searchReports(
+          {
+            threat_types: config.threat_types,
+            date_range_days: config.date_range_days,
+            min_quality_score: config.min_quality_score,
           },
-          reports: [
-            {
-              id: '1',
-              tool_name: 'ShadowPad',
-              quality_score: 4.2,
-              created_at: timestamp,
-              content: config.include_content ? 'Sample threat intelligence content...' : undefined
-            }
-          ]
-        }, null, 2);
-        
-      case 'csv':
-        return `id,tool_name,quality_score,created_at,threat_type\n1,ShadowPad,4.2,${timestamp},malware\n2,Cobalt Strike,3.8,${timestamp},attack_tool`;
-        
-      case 'markdown':
-        return `# Threat Intelligence Export\n\nGenerated: ${timestamp}\n\n## Reports\n\n### ShadowPad\n- Quality Score: 4.2\n- Created: ${timestamp}\n\nSample threat intelligence content...`;
-        
-      default:
-        return 'Export data';
+          page,
+          pageSize,
+          { sort_by: 'created_at', sort_order: 'desc' },
+        );
+        const remaining = maxReports - summaries.length;
+        summaries.push(...response.reports.slice(0, remaining));
+        if (page >= response.pagination.pages || response.reports.length === 0) break;
+        page += 1;
+      }
+      const needsDetails = config.include_content || config.include_tags;
+      reports = needsDetails
+        ? await mapWithConcurrency(
+            summaries,
+            8,
+            (report) => this.getReport(report.id, config.include_content),
+          )
+        : summaries.map((report) => ({ ...report, search_tags: [] }));
     }
+
+    return buildReportExport(reports, config);
   }
 
-  // Activity tracking
-  async getActivities(): Promise<Record<string, unknown>[]> {
-    // Mock implementation
-    return [];
+  async getActivities(): Promise<ActivityEvent[]> {
+    const analytics = await this.getDashboardAnalytics();
+    return analytics.recent_activity.map((report) => ({
+      id: report.id,
+      type: 'report_created',
+      description: `Generated ${report.tool_name}`,
+      metadata: {
+        tool_name: report.tool_name,
+        quality_score: report.quality_score,
+      },
+      created_at: report.created_at,
+      severity: 'success',
+    }));
   }
 }
 

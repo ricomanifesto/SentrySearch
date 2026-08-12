@@ -11,7 +11,6 @@ from pathlib import Path
 import httpx
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SRC_ROOT = REPO_ROOT / "src"
 
 
 def configure_local_environment() -> None:
@@ -36,9 +35,8 @@ def assert_status(response, expected: set[int], label: str) -> None:
 async def run_checks() -> int:
     configure_local_environment()
     sys.path.insert(0, str(REPO_ROOT))
-    sys.path.insert(0, str(SRC_ROOT))
 
-    from api import main as api_main  # pylint: disable=import-outside-toplevel
+    from src.api import main as api_main  # pylint: disable=import-outside-toplevel
 
     setattr(api_main.report_service, "test_connection", lambda: False)
     app = api_main.app

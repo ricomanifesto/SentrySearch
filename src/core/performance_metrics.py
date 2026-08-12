@@ -6,9 +6,15 @@ Tracks latency, costs, and token usage for baseline and cached comparisons
 import time
 import json
 import os
+from contextvars import ContextVar
 from datetime import datetime
+import logging
+from threading import Lock
 from typing import Dict, Any, Optional
 from dataclasses import dataclass, asdict
+import uuid
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -77,13 +83,34 @@ class PerformanceTracker:
             log_file: Path to JSONL file for storing metrics
         """
         self.log_file = log_file
-        self.current_request_id = None
-        self.current_metrics = None
+        self._current_request_id: ContextVar[Optional[str]] = ContextVar(
+            f"performance_request_id_{id(self)}", default=None
+        )
+        self._current_metrics: ContextVar[Optional[APIMetrics]] = ContextVar(
+            f"performance_metrics_{id(self)}", default=None
+        )
+        self._write_lock = Lock()
 
         # Ensure log directory exists
         os.makedirs(os.path.dirname(log_file) if os.path.dirname(log_file) else ".", exist_ok=True)
 
-        print(f"DEBUG: Performance tracker initialized, logging to {log_file}")
+        logger.debug("Performance metrics will be written to %s", log_file)
+
+    @property
+    def current_request_id(self) -> Optional[str]:
+        return self._current_request_id.get()
+
+    @current_request_id.setter
+    def current_request_id(self, value: Optional[str]) -> None:
+        self._current_request_id.set(value)
+
+    @property
+    def current_metrics(self) -> Optional[APIMetrics]:
+        return self._current_metrics.get()
+
+    @current_metrics.setter
+    def current_metrics(self, value: Optional[APIMetrics]) -> None:
+        self._current_metrics.set(value)
 
     def start_request(
         self,
@@ -103,7 +130,7 @@ class PerformanceTracker:
         Returns:
             Request ID for tracking
         """
-        request_id = f"{prompt_type}_{int(time.time() * 1000)}"
+        request_id = f"{prompt_type}_{uuid.uuid4().hex}"
         start_time = time.time()
 
         self.current_request_id = request_id
@@ -123,7 +150,7 @@ class PerformanceTracker:
             cache_enabled=cache_enabled,
         )
 
-        print(f"DEBUG: Started tracking request {request_id} for query: {query[:50]}...")
+        logger.debug("Started metrics request %s", request_id)
         return request_id
 
     def record_prompt_details(self, prompt_content: str, cache_enabled: bool = False):
@@ -134,14 +161,16 @@ class PerformanceTracker:
             cache_enabled: Whether caching is enabled for this prompt
         """
         if not self.current_metrics:
-            print("DEBUG: Warning - No active request to record prompt for")
+            logger.warning("No active request is available for prompt metrics")
             return
 
         self.current_metrics.prompt_size_chars = len(prompt_content)
         self.current_metrics.cache_enabled = cache_enabled
 
-        print(
-            f"DEBUG: Recorded prompt details - size: {len(prompt_content)} chars, caching: {cache_enabled}"
+        logger.debug(
+            "Recorded prompt metrics: size=%d cache_enabled=%s",
+            len(prompt_content),
+            cache_enabled,
         )
 
     def record_api_response(
@@ -155,7 +184,7 @@ class PerformanceTracker:
             time_to_first_token: Time to first token in seconds
         """
         if not self.current_metrics:
-            print("DEBUG: Warning - No active request to record response for")
+            logger.warning("No active request is available for response metrics")
             return
 
         end_time = time.time()
@@ -209,12 +238,15 @@ class PerformanceTracker:
         # Calculate costs
         self._calculate_costs()
 
-        print(
-            f"DEBUG: Recorded API response - latency: {self.current_metrics.latency_ms}ms, "
-            f"tokens: {self.current_metrics.input_tokens}+{self.current_metrics.output_tokens}, "
-            f"web_search_calls: {self.current_metrics.web_search_calls}, "
-            f"sources: {self.current_metrics.source_count}, "
-            f"cache_hit: {self.current_metrics.cache_hit}"
+        logger.debug(
+            "Recorded model response: latency_ms=%d input_tokens=%d output_tokens=%d "
+            "web_search_calls=%d source_count=%d cache_hit=%s",
+            self.current_metrics.latency_ms,
+            self.current_metrics.input_tokens,
+            self.current_metrics.output_tokens,
+            self.current_metrics.web_search_calls,
+            self.current_metrics.source_count,
+            self.current_metrics.cache_hit,
         )
 
     def record_error(self, error: Exception):
@@ -224,7 +256,7 @@ class PerformanceTracker:
             error: The exception that occurred
         """
         if not self.current_metrics:
-            print("DEBUG: Warning - No active request to record error for")
+            logger.warning("No active request is available for error metrics")
             return
 
         self.current_metrics.end_time = time.time()
@@ -234,7 +266,7 @@ class PerformanceTracker:
         self.current_metrics.response_valid = False
         self.current_metrics.error_message = str(error)
 
-        print(f"DEBUG: Recorded error for request {self.current_request_id}: {error}")
+        logger.debug("Recorded error for request %s: %s", self.current_request_id, error)
 
     def record_parsing_result(self, success: bool, error: Optional[str] = None):
         """Record JSON parsing success/failure
@@ -275,7 +307,7 @@ class PerformanceTracker:
             The completed metrics object
         """
         if not self.current_metrics:
-            print("DEBUG: Warning - No active request to finish")
+            logger.warning("No active metrics request to finish")
             return None
 
         # Ensure end time is set
@@ -295,7 +327,7 @@ class PerformanceTracker:
         self.current_metrics = None
         self.current_request_id = None
 
-        print(f"DEBUG: Finished tracking request {metrics.request_id}")
+        logger.debug("Finished metrics request %s", metrics.request_id)
         return metrics
 
     def _calculate_costs(self):
@@ -347,11 +379,11 @@ class PerformanceTracker:
     def _save_metrics(self, metrics: APIMetrics):
         """Save metrics to the log file"""
         try:
-            with open(self.log_file, "a") as f:
-                json.dump(asdict(metrics), f)
-                f.write("\n")
+            record = json.dumps(asdict(metrics), separators=(",", ":")) + "\n"
+            with self._write_lock, open(self.log_file, "a", encoding="utf-8") as file:
+                file.write(record)
         except Exception as e:
-            print(f"DEBUG: Failed to save metrics: {e}")
+            logger.warning("Failed to save performance metrics: %s", e)
 
     def load_metrics(self) -> list[APIMetrics]:
         """Load all metrics from the log file
@@ -370,7 +402,7 @@ class PerformanceTracker:
                         data = json.loads(line.strip())
                         metrics.append(APIMetrics(**data))
         except Exception as e:
-            print(f"DEBUG: Failed to load metrics: {e}")
+            logger.warning("Failed to load performance metrics: %s", e)
 
         return metrics
 
