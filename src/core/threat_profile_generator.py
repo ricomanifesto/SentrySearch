@@ -1,5 +1,5 @@
 """
-Threat profile generator backed by OpenAI.
+Threat profile generator backed by OpenRouter through the OpenAI SDK.
 Enhanced with ML-based anomaly detection guidance and trace export for annotator integration.
 """
 
@@ -133,7 +133,7 @@ Based on your comprehensive research findings, create a detailed profile in the 
     "version": "Latest known version from research",
     "category": "Tool category (RAT/Backdoor/Trojan/etc)",
     "profileId": "TI_{tool_name.upper().replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}",
-    "profileAuthor": "OpenAI model pipeline",
+    "profileAuthor": "OpenRouter model pipeline",
     "createdDate": "{datetime.now().strftime('%Y-%m-%d')}",
     "lastUpdated": "{datetime.now().strftime('%Y-%m-%d')}",
     "profileVersion": "1.0",

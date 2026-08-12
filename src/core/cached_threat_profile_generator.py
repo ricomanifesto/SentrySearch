@@ -1,5 +1,5 @@
 """
-Cached threat profile generator using OpenAI.
+Cached threat profile generator using OpenRouter through the OpenAI SDK.
 Optimized for the large JSON schema prompt to reduce latency and costs.
 """
 
@@ -80,7 +80,7 @@ class CachedThreatProfileGenerator:
     "version": "Latest known version from research",
     "category": "Tool category (RAT/Backdoor/Trojan/etc)",
     "profileId": "TI_{{tool_name.upper().replace(' ', '_')}}_{{datetime.now().strftime('%Y%m%d')}}",
-    "profileAuthor": "OpenAI model pipeline",
+    "profileAuthor": "OpenRouter model pipeline",
     "createdDate": "{datetime.now().strftime('%Y-%m-%d')}",
     "lastUpdated": "{datetime.now().strftime('%Y-%m-%d')}",
     "profileVersion": "1.0",
@@ -331,8 +331,8 @@ Focus on finding information from the most recent 24 months when possible, but i
                 messages=[
                     {
                         "role": "user",
-                        # OpenAI prompt caching is automatic; actual cache reads and
-                        # writes are recorded from response usage instead of inferred.
+                        # Provider prompt caching is automatic; actual cache reads
+                        # and writes come from response usage instead of inference.
                         "content": research_prompt + "\n\n" + cached_schema,
                     }
                 ],

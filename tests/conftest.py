@@ -8,7 +8,7 @@ def build_threat_profile_data(source_url: str = "https://example.com/report") ->
             "version": "1.0",
             "category": "Backdoor",
             "profileId": "TI_EXAMPLE_THREAT_20260811",
-            "profileAuthor": "OpenAI model pipeline",
+            "profileAuthor": "OpenRouter model pipeline",
             "createdDate": "2026-08-11",
             "lastUpdated": "2026-08-11",
             "profileVersion": "1.0",

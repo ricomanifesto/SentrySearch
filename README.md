@@ -24,7 +24,7 @@ SentrySearch generates structured threat intelligence profiles from a user-suppl
 
 ## Usage
 
-Visit [sentry-search.vercel.app](https://sentry-search.vercel.app), create an account, and generate a threat intelligence report for any malware, attack tool, or technology. Report generation uses the OpenAI Responses API with `gpt-5.6-sol` and `xhigh` reasoning by default.
+Visit [sentry-search.vercel.app](https://sentry-search.vercel.app), create an account, and generate a threat intelligence report for any malware, attack tool, or technology. Report generation routes `meta-llama/llama-3.3-70b-instruct` through OpenRouter by default while retaining the official OpenAI SDK for Responses API requests and Pydantic structured-output parsing.
 
 ## Local Setup
 
@@ -54,7 +54,7 @@ uv sync --locked
 uv run python dev/check_local_setup.py
 ```
 
-This verifies the local environment, documentation and frontend URL contract, backend linting and formatting, type checks, pytest, FastAPI imports, API docs rendering, health endpoint behavior, and protected report creation without Supabase credentials. It does not call OpenAI, Supabase, AWS, Pinecone, Railway, Vercel, Cloudflare, or local PostgreSQL.
+This verifies the local environment, documentation and frontend URL contract, backend linting and formatting, type checks, pytest, FastAPI imports, API docs rendering, health endpoint behavior, and protected report creation without Supabase credentials. It does not call OpenRouter, Supabase, AWS, Pinecone, Railway, Vercel, Cloudflare, or local PostgreSQL.
 
 Frontend validation requires `frontend/node_modules`:
 
@@ -71,7 +71,7 @@ npm run build
 - **Auth:** Supabase JWT authentication.
 - **Data:** PostgreSQL stores report metadata and search indexes; S3 stores markdown reports and artifacts.
 - **Search:** Pinecone provides vector similarity search; Cloudflare Workers orchestrate hybrid search.
-- **AI:** the official OpenAI SDK generates schema-validated threat analysis through the Responses API and hosted web search.
+- **AI:** OpenRouter executes the configured model and hosted web search; the official OpenAI SDK provides the Responses API client, retries, typed responses, and Pydantic structured-output parsing.
 
 ## Related Projects
 

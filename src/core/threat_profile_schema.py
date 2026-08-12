@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class StrictModel(BaseModel):
-    """Base model that keeps the OpenAI structured-output schema closed."""
+    """Base model that keeps the SDK structured-output schema closed."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -224,7 +224,7 @@ def parse_threat_profile_response(response: Any) -> dict[str, Any]:
 
     parsed = getattr(response, "parsed", None)
     if parsed is None:
-        raise ValueError("OpenAI response did not include a parsed threat profile")
+        raise ValueError("Model response did not include a parsed threat profile")
 
     profile = parsed if isinstance(parsed, ThreatProfile) else ThreatProfile.model_validate(parsed)
     return profile.model_dump(mode="json", by_alias=True)
@@ -241,7 +241,7 @@ def attest_profile_sources(
         if (normalized := _normalize_url(str(source.get("url", ""))))
     }
     if not evidence_urls:
-        raise ValueError("OpenAI web search returned no source evidence")
+        raise ValueError("OpenRouter web search returned no source evidence")
 
     claimed_sources = profile["webSearchSources"]["primarySources"]
     claimed_references = profile["referencesAndIntelligenceSharing"]["sources"]
@@ -270,7 +270,7 @@ def attest_profile_sources(
     unattested = sorted(claimed_urls - evidence_urls)
     if unattested:
         raise ValueError(
-            "Threat profile included URLs that were not returned by OpenAI web search: "
+            "Threat profile included URLs that were not returned by OpenRouter web search: "
             + ", ".join(unattested)
         )
 

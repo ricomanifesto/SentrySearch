@@ -54,19 +54,19 @@ class APIMetrics:
 class PerformanceTracker:
     """Tracks and logs performance metrics for prompt caching comparison"""
 
-    # Standard short-context pricing per 1M tokens and per 1K tool calls.
+    # Current OpenRouter list pricing per 1M tokens and per 1K Exa tool calls.
     LONG_CONTEXT_THRESHOLD = 272_000
     PRICING = {
-        "gpt-5.6-sol": {
-            "input": 5.0,
-            "output": 30.0,
-            "cache_write": 6.25,
-            "cache_read": 0.5,
-            "long_input": 10.0,
-            "long_output": 45.0,
-            "long_cache_write": 12.5,
-            "long_cache_read": 1.0,
-            "web_search_per_1k_calls": 10.0,
+        "meta-llama/llama-3.3-70b-instruct": {
+            "input": 0.10,
+            "output": 0.32,
+            "cache_write": 0.10,
+            "cache_read": 0.10,
+            "long_input": 0.10,
+            "long_output": 0.32,
+            "long_cache_write": 0.10,
+            "long_cache_read": 0.10,
+            "web_search_per_1k_calls": 7.0,
         }
     }
 
@@ -88,7 +88,7 @@ class PerformanceTracker:
     def start_request(
         self,
         query: str,
-        model: str = "gpt-5.6-sol",
+        model: str = "meta-llama/llama-3.3-70b-instruct",
         prompt_type: str = "threat_intel",
         cache_enabled: bool = False,
     ) -> str:
@@ -196,8 +196,13 @@ class PerformanceTracker:
             )
 
         tool_events = getattr(response, "tool_events", []) or []
-        self.current_metrics.web_search_calls = sum(
-            1 for event in tool_events if event.get("type") == "web_search_call"
+        reported_web_search_calls = getattr(
+            getattr(response, "usage", None), "web_search_calls", None
+        )
+        self.current_metrics.web_search_calls = (
+            int(reported_web_search_calls)
+            if reported_web_search_calls is not None
+            else sum(1 for event in tool_events if event.get("type") == "web_search_call")
         )
         self.current_metrics.source_count = len(getattr(response, "web_search_sources", []) or [])
 
@@ -301,7 +306,7 @@ class PerformanceTracker:
         model = self.current_metrics.model
         pricing = self.PRICING.get(
             model,
-            self.PRICING["gpt-5.6-sol"],
+            self.PRICING["meta-llama/llama-3.3-70b-instruct"],
         )
 
         long_context = self.current_metrics.input_tokens > self.LONG_CONTEXT_THRESHOLD

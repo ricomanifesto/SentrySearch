@@ -50,7 +50,7 @@ def test_attest_profile_sources_accepts_only_hosted_search_evidence(threat_profi
         "url"
     ] = "https://unverified.example/report"
 
-    with pytest.raises(ValueError, match="not returned by OpenAI web search"):
+    with pytest.raises(ValueError, match="not returned by OpenRouter web search"):
         attest_profile_sources(
             invalid,
             [{"url": "https://example.com/report", "title": "Example report"}],
@@ -68,7 +68,7 @@ def test_attest_profile_sources_accepts_only_hosted_search_evidence(threat_profi
     unverified_resource["operationalGuidance"]["communityResources"][0][
         "url"
     ] = "https://community.example/resource"
-    with pytest.raises(ValueError, match="not returned by OpenAI web search"):
+    with pytest.raises(ValueError, match="not returned by OpenRouter web search"):
         attest_profile_sources(
             unverified_resource,
             [{"url": "https://example.com/report?utm_source=search"}],
@@ -81,7 +81,7 @@ def test_source_attestation_ignores_scheme_and_query_variants(threat_profile_dat
         [{"url": "http://example.com/report?utm_source=search"}],
     )
 
-    with pytest.raises(ValueError, match="not returned by OpenAI web search"):
+    with pytest.raises(ValueError, match="not returned by OpenRouter web search"):
         attest_profile_sources(
             threat_profile_data,
             [{"url": "https://example.com/report?id=other"}],

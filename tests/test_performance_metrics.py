@@ -16,11 +16,9 @@ def test_performance_tracker_measures_contract_tools_usage_and_cost(tmp_path):
             cache_write_tokens=300,
             reasoning_tokens=40,
             total_tokens=1_100,
+            web_search_calls=2,
         ),
-        tool_events=[
-            {"type": "web_search_call"},
-            {"type": "web_search_call"},
-        ],
+        tool_events=[],
         web_search_sources=[{"url": "https://one.example"}, {"url": "https://two.example"}],
     )
 
@@ -37,8 +35,8 @@ def test_performance_tracker_measures_contract_tools_usage_and_cost(tmp_path):
     assert metrics.source_count == 2
     assert metrics.schema_valid is True
     assert metrics.source_attested is True
-    assert metrics.web_search_cost == pytest.approx(0.02)
-    assert metrics.total_cost == pytest.approx(0.027475)
+    assert metrics.web_search_cost == pytest.approx(0.014)
+    assert metrics.total_cost == pytest.approx(0.014132)
 
     summary = tracker.generate_evaluation_summary([metrics])
     assert summary["response_success_rate"] == 1.0
