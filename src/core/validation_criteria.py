@@ -1,206 +1,294 @@
-"""
-Validation criteria and prompts for each section type in threat intelligence profiles
-"""
+"""Evaluation rubrics and structured output contracts for threat profile sections."""
 
-SECTION_CRITERIA = {
-    "webSearchSources": {
-        "required_fields": ["searchQueriesUsed", "primarySources", "searchStrategy"],
-        "quality_checks": [
-            "Search queries should be specific and varied",
-            "Primary sources should include authoritative domains",
-            "Each source should have URL, title, and key findings",
-            "Sources should be recent (check accessDate)",
-            "Multiple source types (reports, advisories, analysis)"
-        ],
-        "min_score": 3.5,
-        "critical": True
-    },
-    "technicalDetails": {
-        "required_fields": ["architecture", "operatingSystems", "capabilities", "dependencies"],
-        "quality_checks": [
-            "Architecture description should be technical, not generic",
-            "Operating systems should include version information where known",
-            "Capabilities should be specific and actionable",
-            "Dependencies should include version numbers",
-            "Should describe technical implementation details"
-        ],
-        "min_score": 4.0,
-        "critical": True
-    },
-    "commandAndControl": {
-        "required_fields": ["communicationMethods", "commonCommands"],
-        "quality_checks": [
-            "C2 methods should include technical details (ports, protocols)",
-            "Command protocols should specify encoding/encryption if known",
-            "Beaconing patterns should include frequency/timing",
-            "Should include detection guidance for C2 traffic",
-            "Common commands should use proper syntax/format"
-        ],
-        "min_score": 3.5,
-        "critical": True
-    },
-    "detectionAndMitigation": {
-        "required_fields": ["iocs", "behavioralIndicators"],
-        "quality_checks": [
-            "IOCs should be properly formatted and valid",
-            "Should include both network and host-based indicators",
-            "Behavioral indicators should be specific, not generic",
-            "IOCs should include context (why they're indicators)",
-            "Should have actionable detection guidance"
-        ],
-        "min_score": 4.0,
-        "critical": True
-    },
-    "threatIntelligence": {
-        "required_fields": ["entities", "riskAssessment"],
-        "quality_checks": [
-            "Threat actors should have attribution confidence levels",
-            "Campaigns should include timeframes",
-            "Risk assessment should justify ratings",
-            "Should link to known TTPs when possible"
-        ],
-        "min_score": 3.0,
-        "critical": False
-    },
-    "forensicArtifacts": {
-        "required_fields": ["fileSystemArtifacts", "registryArtifacts", "networkArtifacts"],
-        "quality_checks": [
-            "Artifacts should be specific file paths/registry keys",
-            "Should indicate what each artifact reveals",
-            "Should cover multiple artifact types",
-            "Memory artifacts should include patterns to search"
-        ],
-        "min_score": 3.5,
-        "critical": False
-    },
-    "mitigationAndResponse": {
-        "required_fields": ["preventiveMeasures", "detectionMethods", "responseActions"],
-        "quality_checks": [
-            "Measures should be actionable and specific",
-            "Should prioritize mitigations by effectiveness",
-            "Response actions should follow incident response best practices",
-            "Should include both technical and procedural measures"
-        ],
-        "min_score": 3.5,
-        "critical": True
-    },
-    "mlGuidance": {
-        "required_fields": ["content", "threatCharacteristics"],
-        "quality_checks": [
-            "ML approaches should be specific to the threat type and behavior patterns",
-            "Should include implementation complexity assessments",
-            "Should reference relevant industry case studies or papers",
-            "Should provide actionable detection methodologies",
-            "Should include data requirements and expected accuracy",
-            "Should leverage all available context from completed threat profile",
-            "Should demonstrate understanding of threat's attack vectors and TTPs"
-        ],
-        "min_score": 4.0,
-        "critical": False,
-        "enhancement_prompt": """Enhance this ML guidance section by searching for additional relevant machine learning detection approaches for this specific threat.
+from __future__ import annotations
 
-Current threat context from completed profile:
-- Threat Name: {threat_name}
-- Attack Vectors: {attack_vectors}
-- Behavior Patterns: {behavior_patterns}
-- Technical Details: {technical_context}
-- C2 Methods: {c2_context}
-- IOCs: {ioc_context}
+import json
+from dataclasses import dataclass
+from enum import StrEnum
+from statistics import fmean
+from types import MappingProxyType
+from typing import Any, Mapping
 
-Search for ML approaches that specifically address:
-1. Detection of the identified attack vectors
-2. Behavioral analysis for the specific behavior patterns
-3. ML techniques for similar threat types
-4. Case studies from companies that faced similar threats
+from pydantic import BaseModel, ConfigDict, Field
 
-Provide specific, actionable ML guidance that leverages all the threat intelligence context gathered."""
+
+class StrictEvaluationModel(BaseModel):
+    """Keep model-generated evaluation payloads closed and finite."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
+class EvaluationRecommendation(StrEnum):
+    """Actions the evaluation pipeline can take for a section."""
+
+    PASS = "PASS"
+    ENHANCE = "ENHANCE"
+    RETRY = "RETRY"
+
+
+class EvaluationScores(StrictEvaluationModel):
+    """The five independently scored dimensions in the evaluation rubric."""
+
+    completeness: float = Field(ge=0, le=5)
+    technical_accuracy: float = Field(ge=0, le=5)
+    source_quality: float = Field(ge=0, le=5)
+    actionability: float = Field(ge=0, le=5)
+    relevance: float = Field(ge=0, le=5)
+
+    def average(self) -> float:
+        """Calculate the aggregate score in application code, not in the model."""
+
+        return round(
+            fmean(
+                (
+                    self.completeness,
+                    self.technical_accuracy,
+                    self.source_quality,
+                    self.actionability,
+                    self.relevance,
+                )
+            ),
+            2,
+        )
+
+
+class SectionEvaluation(StrictEvaluationModel):
+    """Validated output returned by the section evaluator."""
+
+    scores: EvaluationScores
+    missing_information: list[str]
+    weak_areas: list[str]
+    technical_issues: list[str]
+    specific_improvements: list[str]
+    recommendation: EvaluationRecommendation
+    reasoning: str
+
+
+class ConsistencyEvaluation(StrictEvaluationModel):
+    """Validated output returned by the cross-section consistency evaluator."""
+
+    consistency_score: float = Field(ge=0, le=5)
+    inconsistencies: list[str]
+    recommendations: list[str]
+
+
+@dataclass(frozen=True)
+class SectionCriteria:
+    """Static rubric configuration for one eligible profile section."""
+
+    required_fields: tuple[str, ...]
+    quality_checks: tuple[str, ...]
+    minimum_score: float
+    is_critical: bool
+
+
+SECTION_CRITERIA: Mapping[str, SectionCriteria] = MappingProxyType(
+    {
+        "webSearchSources": SectionCriteria(
+            required_fields=("searchQueriesUsed", "primarySources", "searchStrategy"),
+            quality_checks=(
+                "Search queries are specific and varied",
+                "Primary sources include authoritative domains",
+                "Each source includes a URL, title, and key findings",
+                "Source access dates are recent",
+                "The section uses multiple source types",
+            ),
+            minimum_score=3.5,
+            is_critical=True,
+        ),
+        "technicalDetails": SectionCriteria(
+            required_fields=("architecture", "operatingSystems", "capabilities", "dependencies"),
+            quality_checks=(
+                "The architecture description is technical rather than generic",
+                "Operating system versions are included when known",
+                "Capabilities are specific and actionable",
+                "Dependencies include versions when known",
+                "Implementation details support the technical claims",
+            ),
+            minimum_score=4.0,
+            is_critical=True,
+        ),
+        "commandAndControl": SectionCriteria(
+            required_fields=("communicationMethods", "commonCommands"),
+            quality_checks=(
+                "Communication methods include ports and protocols",
+                "Command protocols describe encoding or encryption when known",
+                "Beaconing patterns include timing information",
+                "The section includes detection guidance for command-and-control traffic",
+                "Common commands use the correct syntax",
+            ),
+            minimum_score=3.5,
+            is_critical=True,
+        ),
+        "detectionAndMitigation": SectionCriteria(
+            required_fields=("iocs", "behavioralIndicators"),
+            quality_checks=(
+                "Indicators of compromise are well formed",
+                "Both network and host indicators are included when available",
+                "Behavioral indicators are specific",
+                "Indicators include enough context to explain their relevance",
+                "Detection guidance is actionable",
+            ),
+            minimum_score=4.0,
+            is_critical=True,
+        ),
+        "threatIntelligence": SectionCriteria(
+            required_fields=("entities", "riskAssessment"),
+            quality_checks=(
+                "Threat actor attributions include confidence",
+                "Campaigns include timeframes",
+                "Risk ratings include supporting reasons",
+                "Known tactics and techniques are linked when possible",
+            ),
+            minimum_score=3.0,
+            is_critical=False,
+        ),
+        "forensicArtifacts": SectionCriteria(
+            required_fields=("fileSystemArtifacts", "registryArtifacts", "networkArtifacts"),
+            quality_checks=(
+                "Artifacts use specific file paths, registry keys, or network values",
+                "Each artifact explains what it reveals",
+                "The section covers multiple artifact types",
+                "Memory artifacts include concrete search patterns when available",
+            ),
+            minimum_score=3.5,
+            is_critical=False,
+        ),
+        "mitigationAndResponse": SectionCriteria(
+            required_fields=("preventiveMeasures", "detectionMethods", "responseActions"),
+            quality_checks=(
+                "Measures are specific and actionable",
+                "Mitigations are prioritized by effectiveness",
+                "Response actions follow incident-response practice",
+                "The section includes technical and procedural measures",
+            ),
+            minimum_score=3.5,
+            is_critical=True,
+        ),
     }
-}
+)
 
-VALIDATION_PROMPTS = {
-    "section_validation": """You are a cybersecurity expert evaluating a section of a threat intelligence profile.
+PROFILE_METADATA_FIELDS = frozenset({"coreMetadata", "_quality_assessment"})
 
-Section Name: {section_name}
-Section Content: {content}
 
-Evaluate this section on the following dimensions (score 0-5, where 5 is excellent):
+SECTION_EVALUATION_PROMPT = """You are a cybersecurity expert evaluating one section of a threat intelligence profile.
 
-1. **Completeness** (0-5): Are all expected fields populated with meaningful content?
-   - Required fields: {required_fields}
-   
-2. **Technical Accuracy** (0-5): Is the technical information accurate and properly detailed?
-   - Quality checks: {quality_checks}
-   
-3. **Source Quality** (0-5): Are claims supported by credible sources and properly cited?
-   - For technical claims, are sources provided?
-   - Are sources authoritative for this type of information?
-   
-4. **Actionability** (0-5): Can a security team act on this information?
-   - Are indicators specific enough to implement?
-   - Is guidance clear and practical?
-   
-5. **Relevance** (0-5): Is all content directly relevant to understanding this threat?
-   - No generic filler content
-   - Specific to this threat/tool
+Section name: {section_name}
+Section content:
+{content}
 
-Additionally, identify:
-- Missing critical information that should be included
-- Weak or generic content that needs improvement  
-- Any technical inconsistencies or errors
-- Specific recommendations for improvement
+Score these dimensions from 0 to 5:
+1. Completeness: required fields are populated with meaningful content.
+2. Technical accuracy: claims are accurate and meet the section checks.
+3. Source quality: technical claims use credible, appropriate sources.
+4. Actionability: a security team can act on the information.
+5. Relevance: content is specific to the threat or tool and avoids filler.
 
-Return your evaluation as JSON:
-{{
-    "scores": {{
-        "completeness": <0-5>,
-        "technical_accuracy": <0-5>,
-        "source_quality": <0-5>,
-        "actionability": <0-5>,
-        "relevance": <0-5>,
-        "overall": <average of above scores>
-    }},
-    "missing_information": ["list of missing critical details"],
-    "weak_areas": ["list of areas needing improvement"],
-    "technical_issues": ["list of technical problems"],
-    "specific_improvements": ["concrete suggestions for improvement"],
-    "recommendation": "PASS/RETRY/ENHANCE",
-    "reasoning": "Brief explanation of the evaluation"
-}}
+Required fields:
+- {required_fields}
 
-Recommendation guidelines:
-- PASS: All scores >= {min_score}, no critical issues
-- ENHANCE: Some scores < {min_score} but content is usable
-- RETRY: Critical information missing or major technical issues""",
+Section checks:
+- {quality_checks}
 
-    "consistency_check": """Analyze the consistency across different sections of this threat intelligence profile.
+Identify missing information, weak areas, technical issues, and concrete improvements.
+Choose one recommendation:
+- PASS: every dimension is at least {minimum_score} and no critical issue remains.
+- ENHANCE: some dimensions are below {minimum_score}, but the content is usable.
+- RETRY: critical information is missing or major technical issues make the content unsafe to use.
 
-Profile sections: {sections}
+Return one evaluation object that matches the provided response schema. Do not calculate an overall score; the application calculates it from the five dimensions."""
 
-Check for:
-1. **Technical Consistency**: Do technical details align across sections?
-2. **Temporal Consistency**: Do timelines and dates make sense?
-3. **Source Consistency**: Are sources used appropriately across sections?
-4. **Terminology Consistency**: Are terms used consistently?
 
-Return as JSON:
-{{
-    "consistency_score": <0-5>,
-    "inconsistencies": ["list of found inconsistencies"],
-    "recommendations": ["how to fix inconsistencies"]
-}}""",
+CONSISTENCY_PROMPT = """Evaluate consistency across these threat profile sections:
 
-    "improvement_prompt": """Given this section that needs improvement, generate an enhanced version.
+{sections}
 
-Section Name: {section_name}
-Current Content: {content}
-Issues Identified: {issues}
-Specific Improvements Needed: {improvements}
+Check technical claims, timelines, source use, and terminology. Return one consistency evaluation that matches the provided response schema."""
 
-Generate an improved version that addresses all identified issues. Ensure the improved content:
-1. Addresses all missing information
-2. Replaces generic content with specific details
-3. Fixes any technical inaccuracies
-4. Maintains the same JSON structure
 
-Return ONLY the improved JSON content for this section."""
-}
+IMPROVEMENT_PROMPT = """Improve this threat intelligence section.
+
+Section name: {section_name}
+Current content: {content}
+Issues: {issues}
+Requested improvements: {improvements}
+
+Address the missing information, replace generic content with specific details, correct technical inaccuracies, and preserve the input JSON structure. Return only the improved JSON object."""
+
+
+# Compatibility mapping for the existing section improver.
+VALIDATION_PROMPTS = MappingProxyType(
+    {
+        "section_validation": SECTION_EVALUATION_PROMPT,
+        "consistency_check": CONSISTENCY_PROMPT,
+        "improvement_prompt": IMPROVEMENT_PROMPT,
+    }
+)
+
+
+def build_section_evaluation_prompt(
+    section_name: str, content: Mapping[str, Any], criteria: SectionCriteria
+) -> str:
+    """Render the model prompt from one explicit rubric."""
+
+    return SECTION_EVALUATION_PROMPT.format(
+        section_name=section_name,
+        content=json.dumps(content, indent=2),
+        required_fields="\n- ".join(criteria.required_fields),
+        quality_checks="\n- ".join(criteria.quality_checks),
+        minimum_score=criteria.minimum_score,
+    )
+
+
+def select_profile_sections(
+    profile: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Split a profile into rubric-backed sections and transparent skips."""
+
+    selected = {name: content for name, content in profile.items() if name in SECTION_CRITERIA}
+    skipped = [
+        name
+        for name in profile
+        if name not in SECTION_CRITERIA and name not in PROFILE_METADATA_FIELDS
+    ]
+    return selected, skipped
+
+
+def parse_section_evaluation_response(response: Any, *, minimum_score: float) -> dict[str, Any]:
+    """Return a validated evaluation with host-owned aggregate decisions."""
+
+    parsed = getattr(response, "parsed", None)
+    if parsed is None:
+        raise ValueError("Model response did not include a parsed section evaluation")
+
+    evaluation = (
+        parsed
+        if isinstance(parsed, SectionEvaluation)
+        else SectionEvaluation.model_validate(parsed)
+    )
+    result = evaluation.model_dump(mode="json")
+    result["scores"]["overall"] = evaluation.scores.average()
+    dimension_scores = evaluation.scores.model_dump().values()
+    pass_requirements_met = (
+        all(score >= minimum_score for score in dimension_scores)
+        and not evaluation.missing_information
+        and not evaluation.technical_issues
+    )
+    if evaluation.recommendation == EvaluationRecommendation.PASS and not pass_requirements_met:
+        result["recommendation"] = EvaluationRecommendation.ENHANCE.value
+    return result
+
+
+def parse_consistency_evaluation_response(response: Any) -> dict[str, Any]:
+    """Return a validated consistency evaluation from structured model output."""
+
+    parsed = getattr(response, "parsed", None)
+    if parsed is None:
+        raise ValueError("Model response did not include a parsed consistency evaluation")
+
+    evaluation = (
+        parsed
+        if isinstance(parsed, ConsistencyEvaluation)
+        else ConsistencyEvaluation.model_validate(parsed)
+    )
+    return {**evaluation.model_dump(mode="json"), "was_evaluated": True}

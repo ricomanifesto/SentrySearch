@@ -3,13 +3,25 @@ Section validation using LLM-as-Judge for quality control
 """
 
 import json
-import time
 import random
-from src.core.openai_client import create_model_client, resolve_model_name, ModelRateLimitError
-from typing import Optional, List
-from datetime import datetime
 import re
-from src.core.validation_criteria import SECTION_CRITERIA, VALIDATION_PROMPTS
+import time
+from datetime import datetime, timezone
+from threading import Lock
+from typing import Any, Callable, List, Optional
+
+from src.core.openai_client import ModelRateLimitError, resolve_model_name
+from src.core.validation_criteria import (
+    CONSISTENCY_PROMPT,
+    SECTION_CRITERIA,
+    VALIDATION_PROMPTS,
+    ConsistencyEvaluation,
+    SectionEvaluation,
+    build_section_evaluation_prompt,
+    parse_consistency_evaluation_response,
+    parse_section_evaluation_response,
+    select_profile_sections,
+)
 
 
 class SectionValidator:
@@ -17,7 +29,8 @@ class SectionValidator:
         """Initialize validator with model client"""
         self.client = client
         self.validation_history = []
-        self.web_search_sources = []  # Track all web search sources across validation
+        self.web_search_sources = []
+        self._state_lock = Lock()
 
     def _extract_json_with_bracket_matching(self, text: str) -> Optional[dict]:
         """
@@ -258,32 +271,12 @@ class SectionValidator:
                 print(f"DEBUG: Validation API call attempt {attempt + 1}/{max_retries}")
                 return self.client.messages.create(**kwargs)
 
-            except ModelRateLimitError as e:
+            except ModelRateLimitError:
                 if attempt == max_retries - 1:  # Last attempt
                     print(f"DEBUG: Validation rate limit exceeded after {max_retries} attempts")
-                    raise e
+                    raise
 
-                # Check if the error response has retry-after information
-                retry_after = None
-                if hasattr(e, "response") and e.response:
-                    retry_after_header = e.response.headers.get("retry-after")
-                    if retry_after_header:
-                        try:
-                            retry_after = float(retry_after_header)
-                            print(
-                                f"DEBUG: Validation API provided retry-after: {retry_after} seconds"
-                            )
-                        except (ValueError, TypeError):
-                            pass
-
-                # Use retry-after if available, otherwise exponential backoff
-                if retry_after:
-                    delay = retry_after + random.uniform(1, 3)  # Add small jitter
-                else:
-                    # Fallback: exponential backoff with reasonable delays
-                    delay = base_delay * (2**attempt) + random.uniform(1, 5)
-                    # Cap at 2 minutes since token bucket refills continuously
-                    delay = min(delay, 120)
+                delay = min(base_delay * (2**attempt) + random.uniform(1, 5), 120)
 
                 print(
                     f"DEBUG: Validation rate limit hit. Waiting {delay:.1f} seconds before retry {attempt + 2}"
@@ -295,31 +288,21 @@ class SectionValidator:
                 print(f"DEBUG: Validation non-rate-limit error: {e}")
                 raise e
 
-    def validate_section(self, section_name: str, content: dict, full_context: dict = None) -> dict:
+    def validate_section(self, section_name: str, content: dict) -> dict:
         """
         Validate a specific section using LLM-as-a-Judge approach
 
         Args:
             section_name: Name of the section to validate
             content: Section content to validate
-            full_context: Full profile for context (optional)
-
         Returns:
             Validation results including scores and recommendations
         """
-        # Get criteria for this section
-        criteria = SECTION_CRITERIA.get(section_name, {})
-        if not criteria:
-            return self._create_default_validation()
+        criteria = SECTION_CRITERIA.get(section_name)
+        if criteria is None:
+            raise ValueError(f"No evaluation rubric is defined for {section_name!r}")
 
-        # Format the validation prompt
-        prompt = VALIDATION_PROMPTS["section_validation"].format(
-            section_name=section_name,
-            content=json.dumps(content, indent=2),
-            required_fields=", ".join(criteria.get("required_fields", [])),
-            quality_checks="\n   - ".join(criteria.get("quality_checks", [])),
-            min_score=criteria.get("min_score", 3.5),
-        )
+        prompt = build_section_evaluation_prompt(section_name, content, criteria)
 
         try:
             # Call LLM for validation with retry logic
@@ -328,36 +311,31 @@ class SectionValidator:
                 max_tokens=2000,
                 temperature=0.3,
                 messages=[{"role": "user", "content": prompt}],
+                response_format=SectionEvaluation,
             )
 
-            # Parse response - safe access to content
-            if not response.content or len(response.content) == 0:
-                raise ValueError("Empty response from validation API")
+            validation_result = parse_section_evaluation_response(
+                response, minimum_score=criteria.minimum_score
+            )
 
-            if not hasattr(response.content[0], "text"):
-                raise ValueError("Response content missing text attribute")
-
-            result_text = response.content[0].text.strip()
-            validation_result = self._extract_json_from_text(result_text)
-            if not validation_result:
-                raise ValueError("No valid JSON in response")
-
-            # Add metadata
             validation_result["section_name"] = section_name
-            validation_result["timestamp"] = datetime.now().isoformat()
-            validation_result["is_critical"] = criteria.get("critical", False)
+            validation_result["timestamp"] = datetime.now(timezone.utc).isoformat()
+            validation_result["is_critical"] = criteria.is_critical
 
-            # Store in history
-            self.validation_history.append(validation_result)
+            with self._state_lock:
+                self.validation_history.append(validation_result)
 
             return validation_result
 
         except Exception as e:
             print(f"Validation error for {section_name}: {e}")
-            return self._create_error_validation(str(e))
+            return self._create_error_validation(section_name, criteria.is_critical)
 
     def validate_complete_profile(
-        self, profile: dict, progress_callback: Optional[callable] = None, tool_name: str = None
+        self,
+        profile: dict,
+        progress_callback: Callable[[float, str], None] | None = None,
+        tool_name: str | None = None,
     ) -> dict:
         """
         Validate all sections of a threat intelligence profile with iterative improvement
@@ -370,7 +348,7 @@ class SectionValidator:
         Returns:
             Complete validation results with summary
         """
-        results = {
+        results: dict[str, Any] = {
             "section_validations": {},
             "overall_score": 0,
             "needs_improvement": False,
@@ -378,14 +356,10 @@ class SectionValidator:
             "summary": {},
             "recommendations": [],
             "validation_attempts": {},
+            "skipped_sections": [],
         }
 
-        # Skip metadata and quality assessment sections
-        sections_to_validate = {
-            k: v
-            for k, v in profile.items()
-            if k not in ["coreMetadata", "_quality_assessment", "mlGuidance"]
-        }
+        sections_to_validate, results["skipped_sections"] = select_profile_sections(profile)
 
         total_sections = len(sections_to_validate)
         completed = 0
@@ -397,7 +371,7 @@ class SectionValidator:
                 progress = 0.8 + (0.15 * completed / total_sections)
                 progress_callback(progress, f"🔍 Validating {section_name}...")
 
-            validation = self.validate_section(section_name, section_content, profile)
+            validation = self.validate_section(section_name, section_content)
             results["section_validations"][section_name] = validation
             results["validation_attempts"][section_name] = 1
 
@@ -414,13 +388,14 @@ class SectionValidator:
             sections_needing_improvement = []
             for section_name, validation in results["section_validations"].items():
                 overall_score = validation.get("scores", {}).get("overall", 0)
+                minimum_score = SECTION_CRITERIA[section_name].minimum_score
                 print(f"DEBUG: Section {section_name} has overall score: {overall_score}")
-                if overall_score < 4.0 and overall_score > 0:
+                if 0 < overall_score < minimum_score:
                     sections_needing_improvement.append(section_name)
                     print(
                         f"DEBUG: Added {section_name} to improvement list (score: {overall_score})"
                     )
-                elif overall_score >= 4.0:
+                elif overall_score >= minimum_score:
                     print(f"DEBUG: Section {section_name} has sufficient score: {overall_score}")
                 else:
                     print(f"DEBUG: Section {section_name} has score 0 (likely validation error)")
@@ -464,9 +439,7 @@ class SectionValidator:
                             profile[section_name] = enhanced_content
 
                             # Re-validate enhanced section
-                            new_validation = self.validate_section(
-                                section_name, enhanced_content, profile
-                            )
+                            new_validation = self.validate_section(section_name, enhanced_content)
                             results["section_validations"][section_name] = new_validation
                             results["validation_attempts"][section_name] = attempt
 
@@ -477,7 +450,7 @@ class SectionValidator:
                             )
 
                             # Check if section still needs improvement
-                            if new_score >= 4.0:
+                            if new_score >= SECTION_CRITERIA[section_name].minimum_score:
                                 improved_sections.append(section_name)
                         else:
                             # No enhancement possible, mark as improved to avoid retry
@@ -498,6 +471,10 @@ class SectionValidator:
 
         consistency_check = self._check_consistency(profile)
         results["consistency"] = consistency_check
+
+        # Enhancement can resolve an initial critical issue, so derive this list
+        # from the final validation state rather than incrementally maintaining it.
+        results["critical_issues"] = self._find_critical_issues(results["section_validations"])
 
         # Calculate overall score
         results["overall_score"] = self._calculate_overall_score(results)
@@ -523,18 +500,13 @@ class SectionValidator:
 
     def _check_consistency(self, profile: dict) -> dict:
         """Check consistency across sections"""
-        sections_summary = {
-            name: {
-                "has_content": bool(content),
-                "field_count": len(content) if isinstance(content, dict) else 0,
-            }
+        sections = {
+            name: content
             for name, content in profile.items()
-            if name not in ["coreMetadata", "_quality_assessment"]
+            if name not in {"coreMetadata", "_quality_assessment"}
         }
 
-        prompt = VALIDATION_PROMPTS["consistency_check"].format(
-            sections=json.dumps(sections_summary, indent=2)
-        )
+        prompt = CONSISTENCY_PROMPT.format(sections=json.dumps(sections, indent=2))
 
         try:
             response = self._api_call_with_retry(
@@ -542,24 +514,19 @@ class SectionValidator:
                 max_tokens=1000,
                 temperature=0.3,
                 messages=[{"role": "user", "content": prompt}],
+                response_format=ConsistencyEvaluation,
             )
-
-            # Safe access to response content
-            if not response.content or len(response.content) == 0:
-                raise ValueError("Empty response from consistency check API")
-
-            if not hasattr(response.content[0], "text"):
-                raise ValueError("Response content missing text attribute")
-
-            result_text = response.content[0].text.strip()
-            consistency_result = self._extract_json_from_text(result_text)
-            if consistency_result:
-                return consistency_result
+            return parse_consistency_evaluation_response(response)
 
         except Exception as e:
             print(f"Consistency check error: {e}")
 
-        return {"consistency_score": 3.0, "inconsistencies": [], "recommendations": []}
+        return {
+            "consistency_score": None,
+            "inconsistencies": [],
+            "recommendations": [],
+            "was_evaluated": False,
+        }
 
     def _calculate_overall_score(self, results: dict) -> float:
         """Calculate weighted overall score"""
@@ -577,11 +544,13 @@ class SectionValidator:
             total_weight += weight
 
         # Include consistency score
-        consistency_score = results.get("consistency", {}).get("consistency_score", 3.0)
-        total_score += consistency_score * 0.5
-        total_weight += 0.5
+        consistency = results.get("consistency", {})
+        consistency_score = consistency.get("consistency_score")
+        if consistency.get("was_evaluated", True) and consistency_score is not None:
+            total_score += consistency_score * 0.5
+            total_weight += 0.5
 
-        return round(total_score / total_weight, 2) if total_weight > 0 else 0
+        return round(total_score / total_weight, 2) if total_weight > 0 else 0.0
 
     def _generate_summary(self, results: dict) -> dict:
         """Generate summary of validation results"""
@@ -595,6 +564,11 @@ class SectionValidator:
                 1
                 for v in results["section_validations"].values()
                 if v.get("recommendation") == "PASS"
+            ),
+            "enhance_sections": sum(
+                1
+                for v in results["section_validations"].values()
+                if v.get("recommendation") == "ENHANCE"
             ),
             "failed_sections": sum(
                 1
@@ -619,9 +593,14 @@ class SectionValidator:
                     f"CRITICAL: Fix {issue['section']} - " + ", ".join(issue["issues"][:2])
                 )
 
-        # Low scoring sections
+        critical_sections = {issue["section"] for issue in results["critical_issues"]}
+
+        # Surface the evaluator's concrete action for every non-critical section
+        # that did not pass. A fixed 3.0 threshold would hide valid ENHANCE results
+        # from stricter rubrics such as technicalDetails.
         for section, validation in results["section_validations"].items():
-            if validation.get("scores", {}).get("overall", 0) < 3.0:
+            recommendation = validation.get("recommendation")
+            if recommendation in {"ENHANCE", "RETRY"} and section not in critical_sections:
                 improvements = validation.get("specific_improvements", [])
                 if improvements:
                     recommendations.append(f"Improve {section}: {improvements[0]}")
@@ -633,26 +612,21 @@ class SectionValidator:
 
         return recommendations[:5]  # Top 5 recommendations
 
-    def _create_default_validation(self) -> dict:
-        """Create default validation for unknown sections"""
-        return {
-            "scores": {
-                "completeness": 3.0,
-                "technical_accuracy": 3.0,
-                "source_quality": 3.0,
-                "actionability": 3.0,
-                "relevance": 3.0,
-                "overall": 3.0,
-            },
-            "missing_information": [],
-            "weak_areas": ["Section type not recognized for validation"],
-            "technical_issues": [],
-            "specific_improvements": [],
-            "recommendation": "ENHANCE",
-            "reasoning": "Default validation applied",
-        }
+    @staticmethod
+    def _find_critical_issues(section_validations: dict) -> list[dict]:
+        """Return critical retry findings from the current validation state."""
 
-    def _create_error_validation(self, error: str) -> dict:
+        return [
+            {
+                "section": section_name,
+                "issues": validation.get("missing_information", []),
+            }
+            for section_name, validation in section_validations.items()
+            if validation.get("recommendation") == "RETRY" and validation.get("is_critical", False)
+        ]
+
+    @staticmethod
+    def _create_error_validation(section_name: str, is_critical: bool) -> dict:
         """Create error validation result"""
         return {
             "scores": {
@@ -664,11 +638,14 @@ class SectionValidator:
                 "overall": 0,
             },
             "missing_information": ["Validation failed"],
-            "weak_areas": [f"Error: {error}"],
+            "weak_areas": ["The evaluator did not return a valid result"],
             "technical_issues": ["Validation error occurred"],
             "specific_improvements": ["Retry validation"],
             "recommendation": "RETRY",
-            "reasoning": f"Validation error: {error}",
+            "reasoning": "The section could not be evaluated",
+            "section_name": section_name,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "is_critical": is_critical,
         }
 
     def _enhance_section_with_web_search(
@@ -733,7 +710,8 @@ Your entire response must be valid JSON that can be directly parsed."""
             sources = self._extract_web_search_sources_from_response(
                 response, section_name, tool_name
             )
-            self.web_search_sources.extend(sources)
+            with self._state_lock:
+                self.web_search_sources.extend(sources)
             print(f"DEBUG: Captured {len(sources)} web search sources for {section_name}")
 
             # Extract enhanced content from response
@@ -939,9 +917,7 @@ Your entire response must be valid JSON that can be directly parsed."""
                         "title": title or self._extract_domain(url),
                         "domain": self._extract_domain(url),
                         "snippet": "",
-                        "publishedDate": self._parse_page_age(
-                            result.get("page_age", "unknown")
-                        ),
+                        "publishedDate": self._parse_page_age(result.get("page_age", "unknown")),
                         "accessedDate": datetime.now().strftime("%Y-%m-%d"),
                         "relevanceToSection": section_name,
                         "toolContext": tool_name,
@@ -1352,11 +1328,11 @@ Your entire response must be valid JSON that can be directly parsed."""
         }
 
 
-class SectionImprover:
+class SectionImprover(SectionValidator):
     """Improves sections based on validation feedback"""
 
     def __init__(self, client):
-        self.client = client
+        super().__init__(client)
 
     def _extract_json_from_text(self, text: str) -> Optional[dict]:
         """
@@ -1450,32 +1426,12 @@ class SectionImprover:
                 print(f"DEBUG: Improvement API call attempt {attempt + 1}/{max_retries}")
                 return self.client.messages.create(**kwargs)
 
-            except ModelRateLimitError as e:
+            except ModelRateLimitError:
                 if attempt == max_retries - 1:  # Last attempt
                     print(f"DEBUG: Improvement rate limit exceeded after {max_retries} attempts")
-                    raise e
+                    raise
 
-                # Check if the error response has retry-after information
-                retry_after = None
-                if hasattr(e, "response") and e.response:
-                    retry_after_header = e.response.headers.get("retry-after")
-                    if retry_after_header:
-                        try:
-                            retry_after = float(retry_after_header)
-                            print(
-                                f"DEBUG: Improvement API provided retry-after: {retry_after} seconds"
-                            )
-                        except (ValueError, TypeError):
-                            pass
-
-                # Use retry-after if available, otherwise exponential backoff
-                if retry_after:
-                    delay = retry_after + random.uniform(1, 3)  # Add small jitter
-                else:
-                    # Fallback: exponential backoff with reasonable delays
-                    delay = base_delay * (2**attempt) + random.uniform(1, 5)
-                    # Cap at 2 minutes since token bucket refills continuously
-                    delay = min(delay, 120)
+                delay = min(base_delay * (2**attempt) + random.uniform(1, 5), 120)
 
                 print(
                     f"DEBUG: Improvement rate limit hit. Waiting {delay:.1f} seconds before retry {attempt + 2}"
