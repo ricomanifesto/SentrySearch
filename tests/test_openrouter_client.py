@@ -329,6 +329,31 @@ def test_model_client_retries_empty_chat_completion(monkeypatch):
     assert result.content[0].text == "recovered report"
 
 
+def test_model_client_rotates_routing_session_for_empty_response_retries(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda *_args: None)
+    requests = []
+    client = model_client(
+        [
+            (200, chat_response(""), {}),
+            (200, chat_response(""), {}),
+            (200, chat_response("recovered report"), {}),
+        ],
+        requests,
+    )
+
+    result = client.messages.create(
+        messages=[{"role": "user", "content": "go"}],
+        tools=[{"type": "web_search"}],
+    )
+
+    request_bodies = [json.loads(request.content) for request in requests]
+    assert result.content[-1].text == "recovered report"
+    assert "session_id" not in request_bodies[0]
+    assert request_bodies[1]["session_id"].startswith("sentrysearch-empty-retry-")
+    assert request_bodies[2]["session_id"].startswith("sentrysearch-empty-retry-")
+    assert request_bodies[1]["session_id"] != request_bodies[2]["session_id"]
+
+
 def test_model_client_rejects_legacy_research_tool_declaration():
     client = model_client([(200, chat_response("unused"), {})])
 

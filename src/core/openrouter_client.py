@@ -14,6 +14,7 @@ import time
 from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import httpx
 from pydantic import ValidationError
@@ -128,7 +129,10 @@ class ModelClient:
 
         last_empty_error: ModelClientError | None = None
         for attempt in range(EMPTY_RESPONSE_RETRIES):
-            response = self._post(request)
+            attempt_request = dict(request)
+            if attempt:
+                attempt_request["session_id"] = f"sentrysearch-empty-retry-{uuid4().hex}"
+            response = self._post(attempt_request)
             body = self._response_body(response)
             self._raise_payload_error(body, response)
 
