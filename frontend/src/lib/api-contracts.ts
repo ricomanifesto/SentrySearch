@@ -9,7 +9,7 @@ export interface Report {
   tool_name: string;
   category: string;
   threat_type: string;
-  quality_score: number;
+  quality_score: number | null;
   created_at: string;
   processing_time_ms: number;
   status?: ReportStatus;
@@ -71,7 +71,7 @@ export interface AnalyticsDashboard {
     id: string;
     tool_name: string;
     created_at: string;
-    quality_score: number;
+    quality_score: number | null;
   }>;
 }
 
@@ -95,7 +95,7 @@ export interface AnalyticsData {
   recent_activity: Array<{
     id: string;
     tool_name: string;
-    quality_score: number;
+    quality_score: number | null;
     processing_time_ms: number;
     created_at: string;
     threat_type?: string;

@@ -194,14 +194,19 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
     );
   }
 
-  const qualityScore = report.quality_score || 0;
+  const qualityScore = report.quality_score;
   const qualityLabel =
-    qualityScore >= 4.0 ? 'High confidence'
+    qualityScore == null ? 'Evaluator unavailable'
+      : qualityScore >= 4.0 ? 'High confidence'
       : qualityScore >= 3.0 ? 'Reviewable'
         : qualityScore >= 2.0 ? 'Needs review' : 'Low confidence';
 
   const recordSummarySignals = [
-    { label: 'Confidence', value: `${qualityScore.toFixed(1)} / 5.0`, detail: qualityLabel },
+    {
+      label: 'Confidence',
+      value: qualityScore == null ? 'Not scored' : `${qualityScore.toFixed(1)} / 5.0`,
+      detail: qualityLabel,
+    },
     { label: 'Category', value: report.category || 'Unclassified', detail: 'Report classification' },
     { label: 'Threat type', value: report.threat_type || 'Unclassified', detail: 'Observed behavior family' },
     {

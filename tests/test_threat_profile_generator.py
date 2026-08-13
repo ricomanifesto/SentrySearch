@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.core.section_validator import SectionValidator
+from src.core.parallel_section_validator import ParallelSectionValidator
 from src.core.threat_profile_generator import ThreatProfileGenerator
 from src.core.threat_profile_schema import (
     ThreatProfile,
@@ -138,6 +139,17 @@ def test_section_validator_consumes_normalized_sdk_sources():
     assert sources[0]["url"] == "https://example.com/report"
     assert sources[0]["publishedDate"] == "2026-08-10"
     assert sources[0]["evidenceOrigin"] == "url_citation"
+
+
+def test_threat_profile_generator_uses_bounded_parallel_quality_validation(monkeypatch):
+    monkeypatch.setattr(
+        "src.core.threat_profile_generator.create_model_client",
+        lambda: SimpleNamespace(messages=SimpleNamespace()),
+    )
+
+    generator = ThreatProfileGenerator(enable_tracing=False, enable_metrics=False)
+
+    assert isinstance(generator.validator, ParallelSectionValidator)
 
 
 def test_generation_separates_web_research_from_structured_synthesis(

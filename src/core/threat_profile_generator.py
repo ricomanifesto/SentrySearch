@@ -14,7 +14,7 @@ from src.core.model_retry import RetryingModelRequests
 from typing import Dict, Any, Optional
 from datetime import datetime
 import time
-from src.core.section_validator import SectionValidator
+from src.core.parallel_section_validator import ParallelSectionValidator
 from src.core.ml_guidance_generator import MLGuidanceGenerator, ThreatCharacteristics
 from src.core.trace_exporter import get_trace_exporter
 from src.core.performance_metrics import PerformanceTracker
@@ -37,7 +37,7 @@ class ThreatProfileGenerator(RetryingModelRequests):
     ):
         """Initialize the configured model client."""
         self.client = create_model_client()
-        self.validator = SectionValidator(self.client)
+        self.validator = ParallelSectionValidator(self.client)
         self.enable_quality_control = True
 
         # Initialize performance metrics tracking

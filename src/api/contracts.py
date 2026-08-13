@@ -36,7 +36,7 @@ class ReportResponse(BaseModel):
     tool_name: str
     category: str
     threat_type: str
-    quality_score: float
+    quality_score: float | None
     created_at: datetime
     processing_time_ms: int = 0
     status: ReportStatus = ReportStatus.COMPLETED

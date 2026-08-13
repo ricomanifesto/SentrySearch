@@ -79,7 +79,8 @@ export function countActiveReportFilters(state: ReportQueryState): number {
   return [state.query, state.threatType, state.minQuality, state.dateRangeDays].filter(Boolean).length;
 }
 
-export function getQualityLabel(score: number): string {
+export function getQualityLabel(score: number | null): string {
+  if (score == null) return 'Not scored';
   if (score >= 4) return 'High confidence';
   if (score >= 3) return 'Reviewable';
   if (score >= 2) return 'Needs review';

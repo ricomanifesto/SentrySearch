@@ -40,11 +40,19 @@ export function formatRelativeTime(dateString: string): string {
 /**
  * Format quality score with appropriate styling
  */
-export function formatQualityScore(score: number): {
+export function formatQualityScore(score: number | null): {
   formatted: string;
   color: string;
   bgColor: string;
 } {
+  if (score == null) {
+    return {
+      formatted: '—',
+      color: 'text-zinc-700',
+      bgColor: 'bg-zinc-100'
+    };
+  }
+
   const formatted = score.toFixed(1);
   
   if (score >= 4.0) {

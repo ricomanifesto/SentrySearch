@@ -24,8 +24,10 @@ def format_date(date_str: str) -> str:
         return date_str
 
 
-def format_quality_score(score: float) -> str:
+def format_quality_score(score: float | None) -> str:
     """Format a quality score with a descriptive rating."""
+    if score is None:
+        return "Not scored (evaluator unavailable)"
     if score >= 4.5:
         return f"{score}/5.0 (Excellent)"
     elif score >= 4.0:
@@ -66,6 +68,7 @@ def render_quality_assessment(quality: Mapping[str, Any]) -> str:
         f"- **Sections Passed**: {summary.get('passed_sections', 0)}",
         f"- **Sections to Enhance**: {summary.get('enhance_sections', 0)}",
         f"- **Sections Failed**: {summary.get('failed_sections', 0)}",
+        f"- **Sections Unavailable**: {summary.get('unavailable_sections', 0)}",
     ]
 
     if section_validations:
@@ -79,11 +82,14 @@ def render_quality_assessment(quality: Mapping[str, Any]) -> str:
             ]
         )
         for section_name, validation in sorted(section_validations.items()):
-            overall = validation.get("scores", {}).get("overall", 0)
+            overall = validation.get("scores", {}).get("overall")
             recommendation = str(validation.get("recommendation", "UNKNOWN"))
             label = _markdown_table_cell(_humanize_section_name(section_name))
             status = _markdown_table_cell(recommendation)
-            lines.append(f"| {label} | {overall:.1f}/5.0 | {status} |")
+            score_label = (
+                f"{overall:.1f}/5.0" if isinstance(overall, (int, float)) else "Not scored"
+            )
+            lines.append(f"| {label} | {score_label} | {status} |")
 
     recommendations = quality.get("recommendations", [])
     if recommendations:
@@ -134,7 +140,7 @@ def generate_markdown(data):
         # NEW: Add quality score badge if available
         if "_quality_assessment" in data:
             quality = data["_quality_assessment"]
-            overall_score = quality.get("overall_score", 0)
+            overall_score = quality.get("overall_score")
             md.append(f"**Quality Score**: {format_quality_score(overall_score)}")
             md.append("")
 

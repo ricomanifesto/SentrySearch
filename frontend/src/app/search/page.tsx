@@ -243,10 +243,13 @@ function SearchWorkspace() {
 
 function SearchResultRecord({ report }: { report: Report }) {
   const qualityLabel = getQualityLabel(report.quality_score);
+  const qualityValue = report.quality_score == null
+    ? qualityLabel
+    : `${qualityLabel} · ${report.quality_score.toFixed(1)}`;
   const resultReviewSignals: ResultReviewSignal[] = [
     {
       label: 'Analyst confidence',
-      value: `${qualityLabel} · ${report.quality_score.toFixed(1)}`,
+      value: qualityValue,
       description: 'Quality score carried from the saved report',
     },
     {
@@ -273,7 +276,7 @@ function SearchResultRecord({ report }: { report: Report }) {
           </Link>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <span className="rounded-md bg-blue-50 px-2 py-1 text-sm font-medium text-blue-700">
-              {qualityLabel} · {report.quality_score.toFixed(1)}
+              {qualityValue}
             </span>
             {report.category && (
               <span className="rounded-md bg-zinc-100 px-2 py-1 text-sm text-zinc-700">{formatTaxonomyLabel(report.category)}</span>

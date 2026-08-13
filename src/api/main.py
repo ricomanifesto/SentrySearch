@@ -96,8 +96,9 @@ def get_report_user_id(user: AuthenticatedUser) -> str | None:
     return user.id
 
 
-def get_quality_score(report: Dict[str, Any]) -> float:
-    return report.get("quality_score") or 0.0
+def get_quality_score(report: Dict[str, Any]) -> float | None:
+    score = report.get("quality_score")
+    return float(score) if score is not None else None
 
 
 def get_report_label(report: Dict[str, Any], field: str) -> str:

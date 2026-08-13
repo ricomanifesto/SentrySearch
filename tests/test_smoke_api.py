@@ -594,7 +594,7 @@ def test_report_responses_default_null_quality_score(monkeypatch):
 
     response = asyncio.run(api_main.list_reports(api_main.PaginationParams(), user))
 
-    assert response["reports"][0].quality_score == 0.0
+    assert response["reports"][0].quality_score is None
     assert response["reports"][0].processing_time_ms == 0
     assert response["reports"][0].category == "unknown"
     assert response["reports"][0].threat_type == "unknown"
@@ -623,7 +623,7 @@ def test_report_detail_defaults_null_quality_score(monkeypatch):
 
     response = asyncio.run(api_main.get_report("report-1", True, user))
 
-    assert response.quality_score == 0.0
+    assert response.quality_score is None
     assert response.processing_time_ms == 0
     assert response.category == "unknown"
     assert response.threat_type == "unknown"
@@ -657,7 +657,7 @@ def test_search_results_default_null_quality_score(monkeypatch):
         )
     )
 
-    assert response["reports"][0].quality_score == 0.0
+    assert response["reports"][0].quality_score is None
     assert response["reports"][0].processing_time_ms == 0
     assert response["reports"][0].category == "unknown"
     assert response["reports"][0].threat_type == "unknown"

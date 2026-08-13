@@ -11,7 +11,7 @@ from threading import Lock
 from typing import Any, Callable, List, Optional
 
 from src.core.model_retry import RetryingModelRequests
-from src.core.openrouter_client import resolve_model_name
+from src.core.openrouter_client import resolve_evaluation_model_name, resolve_model_name
 from src.core.validation_criteria import (
     CONSISTENCY_PROMPT,
     SECTION_CRITERIA,
@@ -282,7 +282,7 @@ class SectionValidator(RetryingModelRequests):
         try:
             # Call LLM for validation with retry logic
             response = self._request_model(
-                model=resolve_model_name(),
+                model=resolve_evaluation_model_name(),
                 max_tokens=2000,
                 temperature=0.3,
                 messages=[{"role": "user", "content": prompt}],
@@ -325,7 +325,7 @@ class SectionValidator(RetryingModelRequests):
         """
         results: dict[str, Any] = {
             "section_validations": {},
-            "overall_score": 0,
+            "overall_score": None,
             "needs_improvement": False,
             "critical_issues": [],
             "summary": {},
@@ -362,15 +362,15 @@ class SectionValidator(RetryingModelRequests):
         if tool_name:
             sections_needing_improvement = []
             for section_name, validation in results["section_validations"].items():
-                overall_score = validation.get("scores", {}).get("overall", 0)
+                overall_score = validation.get("scores", {}).get("overall")
                 minimum_score = SECTION_CRITERIA[section_name].minimum_score
                 logger.debug(f"Section {section_name} has overall score: {overall_score}")
-                if 0 < overall_score < minimum_score:
+                if isinstance(overall_score, (int, float)) and 0 < overall_score < minimum_score:
                     sections_needing_improvement.append(section_name)
                     logger.debug(
                         f"Added {section_name} to improvement list (score: {overall_score})"
                     )
-                elif overall_score >= minimum_score:
+                elif isinstance(overall_score, (int, float)) and overall_score >= minimum_score:
                     logger.debug(f"Section {section_name} has sufficient score: {overall_score}")
                 else:
                     logger.debug(f"Section {section_name} has score 0 (likely validation error)")
@@ -453,8 +453,8 @@ class SectionValidator(RetryingModelRequests):
         results["overall_score"] = self._calculate_overall_score(results)
 
         # Determine if improvement is needed
-        results["needs_improvement"] = (
-            len(results["critical_issues"]) > 0 or results["overall_score"] < 3.5
+        results["needs_improvement"] = len(results["critical_issues"]) > 0 or (
+            results["overall_score"] is None or results["overall_score"] < 3.5
         )
 
         # Generate summary and recommendations
@@ -483,7 +483,7 @@ class SectionValidator(RetryingModelRequests):
 
         try:
             response = self._request_model(
-                model=resolve_model_name(),
+                model=resolve_evaluation_model_name(),
                 max_tokens=1000,
                 temperature=0.3,
                 messages=[{"role": "user", "content": prompt}],
@@ -501,14 +501,22 @@ class SectionValidator(RetryingModelRequests):
             "was_evaluated": False,
         }
 
-    def _calculate_overall_score(self, results: dict) -> float:
+    def _calculate_overall_score(self, results: dict) -> float | None:
         """Calculate weighted overall score"""
+        validations = list(results["section_validations"].values())
+        if not validations or any(
+            validation.get("was_evaluated", True) is False
+            or not isinstance(validation.get("scores", {}).get("overall"), (int, float))
+            for validation in validations
+        ):
+            return None
+
         total_score = 0
         total_weight = 0
 
-        for _, validation in results["section_validations"].items():
+        for validation in validations:
             scores = validation.get("scores", {})
-            overall = scores.get("overall", 0)
+            overall = scores["overall"]
 
             # Weight critical sections more heavily
             weight = 1.5 if validation.get("is_critical") else 1.0
@@ -523,13 +531,15 @@ class SectionValidator(RetryingModelRequests):
             total_score += consistency_score * 0.5
             total_weight += 0.5
 
-        return round(total_score / total_weight, 2) if total_weight > 0 else 0.0
+        return round(total_score / total_weight, 2) if total_weight > 0 else None
 
     def _generate_summary(self, results: dict) -> dict:
         """Generate summary of validation results"""
         section_scores = {}
         for section, validation in results["section_validations"].items():
-            section_scores[section] = validation.get("scores", {}).get("overall", 0)
+            score = validation.get("scores", {}).get("overall")
+            if isinstance(score, (int, float)):
+                section_scores[section] = score
 
         return {
             "total_sections": len(results["section_validations"]),
@@ -547,6 +557,11 @@ class SectionValidator(RetryingModelRequests):
                 1
                 for v in results["section_validations"].values()
                 if v.get("recommendation") == "RETRY"
+            ),
+            "unavailable_sections": sum(
+                1
+                for v in results["section_validations"].values()
+                if v.get("was_evaluated", True) is False
             ),
             "average_score": results["overall_score"],
             "weakest_sections": sorted(section_scores.items(), key=lambda x: x[1])[:3],
@@ -603,19 +618,20 @@ class SectionValidator(RetryingModelRequests):
         """Create error validation result"""
         return {
             "scores": {
-                "completeness": 0,
-                "technical_accuracy": 0,
-                "source_quality": 0,
-                "actionability": 0,
-                "relevance": 0,
-                "overall": 0,
+                "completeness": None,
+                "technical_accuracy": None,
+                "source_quality": None,
+                "actionability": None,
+                "relevance": None,
+                "overall": None,
             },
-            "missing_information": ["Validation failed"],
+            "missing_information": [],
             "weak_areas": ["The evaluator did not return a valid result"],
-            "technical_issues": ["Validation error occurred"],
+            "technical_issues": ["Evaluator unavailable"],
             "specific_improvements": ["Retry validation"],
-            "recommendation": "RETRY",
+            "recommendation": "UNAVAILABLE",
             "reasoning": "The section could not be evaluated",
+            "was_evaluated": False,
             "section_name": section_name,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "is_critical": is_critical,

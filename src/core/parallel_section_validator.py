@@ -30,7 +30,7 @@ class ParallelSectionValidator(SectionValidator):
     def __init__(
         self,
         client,
-        max_concurrent_validations: int = 4,
+        max_concurrent_validations: int = 3,
         max_concurrent_enhancements: int = 2,
     ) -> None:
         super().__init__(client)
@@ -39,6 +39,16 @@ class ParallelSectionValidator(SectionValidator):
 
         self.max_concurrent_validations = max_concurrent_validations
         self.max_concurrent_enhancements = max_concurrent_enhancements
+
+    def validate_complete_profile(
+        self,
+        profile: dict,
+        progress_callback: Optional[ProgressCallback] = None,
+        tool_name: str | None = None,
+    ) -> dict:
+        """Use bounded concurrency through the validator's existing public surface."""
+
+        return self.validate_complete_profile_parallel(profile, progress_callback, tool_name)
 
     def validate_complete_profile_parallel(
         self,
@@ -52,7 +62,7 @@ class ParallelSectionValidator(SectionValidator):
         sections_to_validate, skipped_sections = select_profile_sections(profile)
         results: dict[str, Any] = {
             "section_validations": {},
-            "overall_score": 0,
+            "overall_score": None,
             "needs_improvement": False,
             "critical_issues": [],
             "summary": {},
@@ -99,7 +109,7 @@ class ParallelSectionValidator(SectionValidator):
         results["critical_issues"] = self._find_critical_issues(results["section_validations"])
         results["overall_score"] = self._calculate_overall_score(results)
         results["needs_improvement"] = bool(results["critical_issues"]) or (
-            results["overall_score"] < 3.5
+            results["overall_score"] is None or results["overall_score"] < 3.5
         )
         results["summary"] = self._generate_summary(results)
         results["recommendations"] = self._generate_recommendations(results)
@@ -166,13 +176,14 @@ class ParallelSectionValidator(SectionValidator):
     ) -> dict[str, SectionEnhancement]:
         """Propose and evaluate section enhancements without mutating shared state."""
 
-        sections_to_enhance = [
-            section_name
-            for section_name, validation in validation_results["section_validations"].items()
-            if 0
-            < validation.get("scores", {}).get("overall", 0)
-            < SECTION_CRITERIA[section_name].minimum_score
-        ]
+        sections_to_enhance = []
+        for section_name, validation in validation_results["section_validations"].items():
+            score = validation.get("scores", {}).get("overall")
+            if (
+                isinstance(score, (int, float))
+                and 0 < score < SECTION_CRITERIA[section_name].minimum_score
+            ):
+                sections_to_enhance.append(section_name)
         if not sections_to_enhance:
             return {}
 

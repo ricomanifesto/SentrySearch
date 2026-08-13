@@ -49,7 +49,9 @@ function buildExportEvidenceRecord(report: Report): ExportEvidenceRecord {
   return {
     id: report.id,
     title: report.tool_name,
-    confidence: `Confidence ${report.quality_score.toFixed(1)}`,
+    confidence: report.quality_score == null
+      ? 'Confidence not scored'
+      : `Confidence ${report.quality_score.toFixed(1)}`,
     date: formatDate(report.created_at),
     threatType: report.threat_type ? formatTaxonomyLabel(report.threat_type) : undefined,
   };

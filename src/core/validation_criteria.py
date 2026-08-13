@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from statistics import fmean
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Annotated, Any, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -52,24 +52,27 @@ class EvaluationScores(StrictEvaluationModel):
         )
 
 
+EvaluationNote = Annotated[str, Field(min_length=1, max_length=240)]
+
+
 class SectionEvaluation(StrictEvaluationModel):
     """Validated output returned by the section evaluator."""
 
     scores: EvaluationScores
-    missing_information: list[str]
-    weak_areas: list[str]
-    technical_issues: list[str]
-    specific_improvements: list[str]
+    missing_information: list[EvaluationNote] = Field(max_length=3)
+    weak_areas: list[EvaluationNote] = Field(max_length=3)
+    technical_issues: list[EvaluationNote] = Field(max_length=3)
+    specific_improvements: list[EvaluationNote] = Field(max_length=3)
     recommendation: EvaluationRecommendation
-    reasoning: str
+    reasoning: str = Field(min_length=1, max_length=480)
 
 
 class ConsistencyEvaluation(StrictEvaluationModel):
     """Validated output returned by the cross-section consistency evaluator."""
 
     consistency_score: float = Field(ge=0, le=5)
-    inconsistencies: list[str]
-    recommendations: list[str]
+    inconsistencies: list[EvaluationNote] = Field(max_length=5)
+    recommendations: list[EvaluationNote] = Field(max_length=3)
 
 
 @dataclass(frozen=True)
@@ -190,7 +193,8 @@ Required fields:
 Section checks:
 - {quality_checks}
 
-Identify missing information, weak areas, technical issues, and concrete improvements.
+Identify only the most important missing information, weak areas, technical issues, and concrete improvements.
+Keep each list to at most 3 concise one-sentence items. Keep reasoning to at most 2 concise sentences.
 Choose one recommendation:
 - PASS: every dimension is at least {minimum_score} and no critical issue remains.
 - ENHANCE: some dimensions are below {minimum_score}, but the content is usable.
@@ -203,7 +207,7 @@ CONSISTENCY_PROMPT = """Evaluate consistency across these threat profile section
 
 {sections}
 
-Check technical claims, timelines, source use, and terminology. Return one consistency evaluation that matches the provided response schema."""
+Check technical claims, timelines, source use, and terminology. Return at most 5 concise inconsistencies and 3 concise recommendations. Return one consistency evaluation that matches the provided response schema."""
 
 
 def build_section_evaluation_prompt(
@@ -248,6 +252,7 @@ def parse_section_evaluation_response(response: Any, *, minimum_score: float) ->
     )
     result = evaluation.model_dump(mode="json")
     result["scores"]["overall"] = evaluation.scores.average()
+    result["was_evaluated"] = True
     dimension_scores = evaluation.scores.model_dump().values()
     pass_requirements_met = (
         all(score >= minimum_score for score in dimension_scores)

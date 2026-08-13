@@ -24,6 +24,8 @@ EMPTY_RESPONSE_RETRY_DELAY = 1.5
 
 DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct"
 MODEL_ENV_VAR = "SENTRYSEARCH_MODEL"
+DEFAULT_EVALUATION_MODEL = "anthropic/claude-haiku-4.5"
+EVALUATION_MODEL_ENV_VAR = "SENTRYSEARCH_EVALUATION_MODEL"
 OPENROUTER_API_KEY_ENV_VAR = "OPENROUTER_API_KEY"
 OPENROUTER_BASE_URL_ENV_VAR = "OPENROUTER_BASE_URL"
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -64,6 +66,12 @@ class ModelRateLimitError(ModelRetryableError):
 def resolve_model_name(model_name: str | None = None) -> str:
     """Return the configured OpenRouter model ID."""
     return (model_name or os.getenv(MODEL_ENV_VAR, DEFAULT_MODEL)).strip()
+
+
+def resolve_evaluation_model_name(model_name: str | None = None) -> str:
+    """Return the independently configurable OpenRouter judge model ID."""
+
+    return (model_name or os.getenv(EVALUATION_MODEL_ENV_VAR, DEFAULT_EVALUATION_MODEL)).strip()
 
 
 def create_model_client() -> "ModelClient":
@@ -125,6 +133,7 @@ class ModelClient:
         if tools or response_format is not None:
             provider = dict(kwargs.get("provider") or {})
             provider["require_parameters"] = True
+            provider.setdefault("sort", "throughput")
             request["provider"] = provider
 
         last_empty_error: ModelClientError | None = None

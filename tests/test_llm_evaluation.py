@@ -41,6 +41,22 @@ def test_section_evaluation_rejects_out_of_range_scores():
         SectionEvaluation.model_validate(payload)
 
 
+def test_section_evaluation_schema_bounds_narrative_output():
+    schema = SectionEvaluation.model_json_schema()
+
+    for field_name in (
+        "missing_information",
+        "weak_areas",
+        "technical_issues",
+        "specific_improvements",
+    ):
+        field_schema = schema["properties"][field_name]
+        assert field_schema["maxItems"] == 3
+        assert field_schema["items"]["maxLength"] == 240
+
+    assert schema["properties"]["reasoning"]["maxLength"] == 480
+
+
 def test_parsed_section_evaluation_calculates_its_own_overall_score():
     payload = evaluation_payload()
     payload["scores"].update(
@@ -102,11 +118,44 @@ def test_validate_section_uses_the_structured_evaluation_contract():
     result = validator.validate_section("technicalDetails", {"architecture": "client-server"})
 
     assert messages.request is not None
+    assert messages.request["model"] == "anthropic/claude-haiku-4.5"
     assert messages.request["response_format"] is SectionEvaluation
     assert result["scores"]["overall"] == 4.0
     assert result["section_name"] == "technicalDetails"
     assert result["is_critical"] is True
     assert result["timestamp"].endswith("+00:00")
+
+
+def test_error_validation_is_unscored_instead_of_zero_scored():
+    result = SectionValidator._create_error_validation("technicalDetails", True)
+
+    assert result["was_evaluated"] is False
+    assert result["scores"]["overall"] is None
+    assert result["recommendation"] == "UNAVAILABLE"
+    assert result["missing_information"] == []
+
+
+def test_overall_score_is_unavailable_when_any_section_was_not_evaluated():
+    validator = SectionValidator(client=None)
+    results = {
+        "section_validations": {
+            "technicalDetails": {
+                **evaluation_payload(overall_dimensions=4.0),
+                "scores": {**evaluation_payload()["scores"], "overall": 4.0},
+                "was_evaluated": True,
+                "is_critical": True,
+            },
+            "detectionAndMitigation": validator._create_error_validation(
+                "detectionAndMitigation", True
+            ),
+        },
+        "consistency": {
+            "consistency_score": 4.0,
+            "was_evaluated": True,
+        },
+    }
+
+    assert validator._calculate_overall_score(results) is None
 
 
 def test_consistency_check_uses_structured_output_and_section_content():
@@ -130,6 +179,7 @@ def test_consistency_check_uses_structured_output_and_section_content():
     result = validator._check_consistency({"technicalDetails": {"architecture": "client-server"}})
 
     assert messages.request is not None
+    assert messages.request["model"] == "anthropic/claude-haiku-4.5"
     assert messages.request["response_format"] is ConsistencyEvaluation
     assert "client-server" in messages.request["messages"][0]["content"]
     assert result == {
@@ -267,7 +317,7 @@ def test_parallel_metrics_report_observations_without_estimated_speedups():
     metrics = result["parallel_metrics"]
     assert metrics["sections_processed"] == 1
     assert metrics["sections_enhanced"] == 0
-    assert metrics["max_concurrent_validations"] == 4
+    assert metrics["max_concurrent_validations"] == 3
     assert "estimated_sequential_time" not in metrics
     assert "speedup_factor" not in metrics
     assert "time_saved_seconds" not in metrics

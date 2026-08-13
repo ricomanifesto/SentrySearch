@@ -27,6 +27,8 @@ const expectations = [
   { name: 'renders report summary signals from the canonical collection', pattern: /recordSummarySignals\.map\(\(signal\)[\s\S]*signal\.label[\s\S]*signal\.value[\s\S]*signal\.detail/ },
   { name: 'declares the report record summary signals contract', pattern: /data-contract="Report\.RecordSummarySignals\.v1"/ },
   { name: 'frames the side rail as review readiness', pattern: /Review readiness/ },
+  { name: 'labels unavailable confidence honestly', pattern: /qualityScore == null \? 'Evaluator unavailable'/ },
+  { name: 'renders unavailable confidence without fabricating zero', pattern: /qualityScore == null \? 'Not scored'/ },
   { name: 'polls the report while a background generation runs', pattern: /'generating' \? 4000/ },
   { name: 'declares the generation progress contract', pattern: /data-contract="Report\.GenerationProgress\.v1"/ },
   { name: 'declares the generation failed contract', pattern: /data-contract="Report\.GenerationFailed\.v1"/ },

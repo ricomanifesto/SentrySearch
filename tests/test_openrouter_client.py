@@ -5,12 +5,14 @@ import pytest
 from pydantic import BaseModel
 
 from src.core.openrouter_client import (
+    DEFAULT_EVALUATION_MODEL,
     DEFAULT_MODEL,
     DEFAULT_OPENROUTER_BASE_URL,
     ModelClient,
     ModelClientError,
     ModelRateLimitError,
     ModelRetryableError,
+    resolve_evaluation_model_name,
     resolve_model_name,
 )
 from src.core.threat_profile_schema import ThreatProfile
@@ -80,10 +82,21 @@ def model_client(outcomes, requests=None):
 
 def test_defaults_restore_previous_openrouter_model(monkeypatch):
     monkeypatch.delenv("SENTRYSEARCH_MODEL", raising=False)
+    monkeypatch.delenv("SENTRYSEARCH_EVALUATION_MODEL", raising=False)
 
     assert DEFAULT_MODEL == "meta-llama/llama-3.3-70b-instruct"
+    assert DEFAULT_EVALUATION_MODEL == "anthropic/claude-haiku-4.5"
     assert DEFAULT_OPENROUTER_BASE_URL == "https://openrouter.ai/api/v1"
     assert resolve_model_name() == "meta-llama/llama-3.3-70b-instruct"
+    assert resolve_evaluation_model_name() == "anthropic/claude-haiku-4.5"
+
+
+def test_evaluation_model_can_be_overridden_independently(monkeypatch):
+    monkeypatch.setenv("SENTRYSEARCH_MODEL", "example/generator")
+    monkeypatch.setenv("SENTRYSEARCH_EVALUATION_MODEL", "example/evaluator")
+
+    assert resolve_model_name() == "example/generator"
+    assert resolve_evaluation_model_name() == "example/evaluator"
 
 
 def test_model_client_posts_native_openrouter_chat_completion():
@@ -128,7 +141,7 @@ def test_model_client_posts_native_openrouter_chat_completion():
                 },
             }
         ],
-        "provider": {"require_parameters": True},
+        "provider": {"require_parameters": True, "sort": "throughput"},
     }
     assert result.content[0].text == "threat report"
     assert result.usage.input_tokens == 10
@@ -153,7 +166,10 @@ def test_model_client_sends_strict_schema_and_parses_chat_completion():
     assert request_body["response_format"]["json_schema"]["schema"] == (
         StructuredResult.model_json_schema()
     )
-    assert request_body["provider"] == {"require_parameters": True}
+    assert request_body["provider"] == {
+        "require_parameters": True,
+        "sort": "throughput",
+    }
 
 
 def test_model_client_captures_chat_citations():
