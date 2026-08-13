@@ -65,6 +65,7 @@ class ParallelSectionValidator(SectionValidator):
 
         started_at = time.perf_counter()
         sections_to_validate, skipped_sections = select_profile_sections(profile)
+        self.profile_source_context = dict(profile.get("webSearchSources") or {})
         results: dict[str, Any] = {
             "section_validations": {},
             "overall_score": None,
@@ -197,7 +198,7 @@ class ParallelSectionValidator(SectionValidator):
                 and (not evidence_text or section_name in EVIDENCE_ENHANCEMENT_MODELS)
             ):
                 candidates.append((float(score), index, section_name))
-        sections_to_enhance = [section_name for _, _, section_name in sorted(candidates)[:3]]
+        sections_to_enhance = [section_name for _, _, section_name in sorted(candidates)[:5]]
         if not sections_to_enhance:
             return {}
 

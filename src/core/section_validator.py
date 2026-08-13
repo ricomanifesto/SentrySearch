@@ -33,6 +33,7 @@ class SectionValidator(RetryingModelRequests):
         self.client = client
         self.validation_history = []
         self.web_search_sources = []
+        self.profile_source_context: dict[str, Any] = {}
         self._state_lock = Lock()
 
     def _extract_json_with_bracket_matching(self, text: str) -> Optional[dict]:
@@ -278,7 +279,12 @@ class SectionValidator(RetryingModelRequests):
         if criteria is None:
             raise ValueError(f"No evaluation rubric is defined for {section_name!r}")
 
-        prompt = build_section_evaluation_prompt(section_name, content, criteria)
+        prompt = build_section_evaluation_prompt(
+            section_name,
+            content,
+            criteria,
+            source_context=self.profile_source_context,
+        )
 
         try:
             # Call LLM for validation with retry logic
@@ -336,6 +342,7 @@ class SectionValidator(RetryingModelRequests):
         }
 
         sections_to_validate, results["skipped_sections"] = select_profile_sections(profile)
+        self.profile_source_context = dict(profile.get("webSearchSources") or {})
 
         total_sections = len(sections_to_validate)
         completed = 0

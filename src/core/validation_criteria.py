@@ -193,6 +193,11 @@ Required fields:
 Section checks:
 - {quality_checks}
 
+Attested profile source context:
+{source_context}
+
+Use this profile-level source context when scoring source quality and checking whether section claims are supported. Do not assume that lack of inline citations inside this isolated section means the profile lacks sources.
+
 Identify only the most important missing information, weak areas, technical issues, and concrete improvements.
 Keep each list to at most 3 concise one-sentence items. Keep reasoning to at most 2 concise sentences.
 Choose one recommendation:
@@ -211,7 +216,10 @@ Check technical claims, timelines, source use, and terminology. Score consistenc
 
 
 def build_section_evaluation_prompt(
-    section_name: str, content: Mapping[str, Any], criteria: SectionCriteria
+    section_name: str,
+    content: Mapping[str, Any],
+    criteria: SectionCriteria,
+    source_context: Mapping[str, Any] | None = None,
 ) -> str:
     """Render the model prompt from one explicit rubric."""
 
@@ -220,6 +228,7 @@ def build_section_evaluation_prompt(
         content=json.dumps(content, indent=2),
         required_fields="\n- ".join(criteria.required_fields),
         quality_checks="\n- ".join(criteria.quality_checks),
+        source_context=json.dumps(source_context or {}, indent=2),
         minimum_score=criteria.minimum_score,
     )
 

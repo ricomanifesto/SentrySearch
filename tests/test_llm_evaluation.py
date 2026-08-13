@@ -133,6 +133,35 @@ def test_validate_section_uses_the_structured_evaluation_contract():
     assert result["timestamp"].endswith("+00:00")
 
 
+def test_validate_section_includes_profile_source_context_for_source_scoring():
+    class Messages:
+        def __init__(self):
+            self.request: dict | None = None
+
+        def create(self, **kwargs):
+            self.request = kwargs
+            return SimpleNamespace(parsed=SectionEvaluation.model_validate(evaluation_payload()))
+
+    messages = Messages()
+    validator = SectionValidator(SimpleNamespace(messages=messages))
+    validator.profile_source_context = {
+        "primarySources": [
+            {
+                "title": "Vendor report",
+                "url": "https://example.com/vendor-report",
+                "keyFindings": "Observed payload.dll execution.",
+            }
+        ]
+    }
+
+    validator.validate_section("forensicArtifacts", {"fileSystemArtifacts": ["payload.dll"]})
+
+    assert messages.request is not None
+    prompt = messages.request["messages"][0]["content"]
+    assert "Attested profile source context" in prompt
+    assert "https://example.com/vendor-report" in prompt
+
+
 def test_error_validation_is_unscored_instead_of_zero_scored():
     result = SectionValidator._create_error_validation("technicalDetails", True)
 
@@ -362,7 +391,7 @@ def test_parallel_enhancement_rejects_a_lower_scoring_change():
     assert enhancements == {}
 
 
-def test_parallel_enhancement_limits_work_to_three_weakest_sections():
+def test_parallel_enhancement_limits_work_to_five_weakest_sections():
     class ImprovingParallelValidator(ParallelSectionValidator):
         def _enhance_section_with_web_search(self, section_name, content, tool_name):
             return {**content, "enhanced": True}
@@ -380,12 +409,16 @@ def test_parallel_enhancement_limits_work_to_three_weakest_sections():
         "detectionAndMitigation": {"value": "original"},
         "threatIntelligence": {"value": "original"},
         "forensicArtifacts": {"value": "original"},
+        "mitigationAndResponse": {"value": "original"},
+        "technicalDetails": {"value": "original"},
     }
     scores = {
         "commandAndControl": 3.0,
         "detectionAndMitigation": 2.0,
         "threatIntelligence": 1.5,
         "forensicArtifacts": 0.0,
+        "mitigationAndResponse": 2.5,
+        "technicalDetails": 3.4,
     }
     validation_results = {
         "section_validations": {
@@ -403,6 +436,8 @@ def test_parallel_enhancement_limits_work_to_three_weakest_sections():
         "forensicArtifacts",
         "threatIntelligence",
         "detectionAndMitigation",
+        "mitigationAndResponse",
+        "commandAndControl",
     ]
 
 
