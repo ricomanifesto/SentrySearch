@@ -1,5 +1,6 @@
 from copy import deepcopy
 import json
+from threading import Barrier
 from types import SimpleNamespace
 
 import pytest
@@ -159,10 +160,12 @@ def test_generation_separates_web_research_from_structured_synthesis(
         def __init__(self):
             self.requests: list[dict] = []
             self.responses: list[SimpleNamespace] = []
+            self.research_barrier = Barrier(3)
 
         def create(self, **kwargs):
             self.requests.append(kwargs)
-            if len(self.requests) == 1:
+            if kwargs.get("tools"):
+                self.research_barrier.wait(timeout=1)
                 response = SimpleNamespace(
                     content=[
                         SimpleNamespace(
@@ -239,17 +242,26 @@ def test_generation_separates_web_research_from_structured_synthesis(
     result = generator.get_threat_intelligence("Example Threat")
 
     assert result == threat_profile_data
-    assert len(messages.requests) == 2
-    research_request, synthesis_request = messages.requests
-    assert research_request["tools"] == [{"type": "web_search"}]
-    assert "response_format" not in research_request
+    assert len(messages.requests) == 4
+    research_requests = [request for request in messages.requests if request.get("tools")]
+    synthesis_request = next(
+        request for request in messages.requests if request.get("response_format") is ThreatProfile
+    )
+    assert len(research_requests) == 3
+    assert all(request["tools"] == [{"type": "web_search"}] for request in research_requests)
+    assert all("response_format" not in request for request in research_requests)
+    research_prompts = "\n".join(request["messages"][0]["content"] for request in research_requests)
+    assert "architecture" in research_prompts
+    assert "detection" in research_prompts
+    assert "threat actor" in research_prompts
     assert synthesis_request["response_format"] is ThreatProfile
     assert "tools" not in synthesis_request
     assert "https://example.com/report" in synthesis_request["messages"][0]["content"]
     assert "Example Threat uses remote access capabilities" in (
         synthesis_request["messages"][0]["content"]
     )
-    assert messages.responses[1].usage.input_tokens == 40
-    assert messages.responses[1].usage.output_tokens == 60
-    assert messages.responses[1].usage.web_search_calls == 1
-    assert messages.responses[1].usage.total_tokens == 100
+    synthesis_response = next(response for response in messages.responses if response.parsed)
+    assert synthesis_response.usage.input_tokens == 60
+    assert synthesis_response.usage.output_tokens == 100
+    assert synthesis_response.usage.web_search_calls == 3
+    assert synthesis_response.usage.total_tokens == 160
