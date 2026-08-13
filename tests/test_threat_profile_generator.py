@@ -1,10 +1,12 @@
 from copy import deepcopy
+import json
 from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
 from src.core.section_validator import SectionValidator
+from src.core.threat_profile_generator import ThreatProfileGenerator
 from src.core.threat_profile_schema import (
     ThreatProfile,
     attest_profile_sources,
@@ -108,3 +110,106 @@ def test_section_validator_consumes_normalized_sdk_sources():
     assert sources[0]["url"] == "https://example.com/report"
     assert sources[0]["publishedDate"] == "2026-08-10"
     assert sources[0]["evidenceOrigin"] == "url_citation"
+
+
+def test_generation_separates_web_research_from_structured_synthesis(
+    monkeypatch, threat_profile_data
+):
+    class Messages:
+        def __init__(self):
+            self.requests: list[dict] = []
+            self.responses: list[SimpleNamespace] = []
+
+        def create(self, **kwargs):
+            self.requests.append(kwargs)
+            if len(self.requests) == 1:
+                response = SimpleNamespace(
+                    content=[
+                        SimpleNamespace(
+                            type="text",
+                            text=(
+                                "Example Threat uses remote access capabilities. "
+                                "Source: https://example.com/report"
+                            ),
+                        )
+                    ],
+                    parsed=None,
+                    web_search_sources=[
+                        {
+                            "url": "https://example.com/report",
+                            "title": "Example report",
+                            "page_age": "2026-08-11",
+                            "origin": "url_citation",
+                        }
+                    ],
+                    tool_events=[
+                        {
+                            "type": "web_search_call",
+                            "id": "",
+                            "status": "completed",
+                            "action_type": "openrouter:web_search",
+                            "source_count": 1,
+                        }
+                    ],
+                    response_id="research-response",
+                    model="meta-llama/llama-3.3-70b-instruct",
+                    provider="TestProvider",
+                    usage=SimpleNamespace(
+                        input_tokens=10,
+                        output_tokens=20,
+                        cached_tokens=0,
+                        cache_write_tokens=0,
+                        reasoning_tokens=0,
+                        web_search_calls=1,
+                        total_tokens=30,
+                    ),
+                )
+
+            else:
+                response = SimpleNamespace(
+                    content=[SimpleNamespace(type="text", text=json.dumps(threat_profile_data))],
+                    parsed=ThreatProfile.model_validate(threat_profile_data),
+                    web_search_sources=[],
+                    tool_events=[],
+                    response_id="synthesis-response",
+                    model="meta-llama/llama-3.3-70b-instruct",
+                    provider="TestProvider",
+                    usage=SimpleNamespace(
+                        input_tokens=30,
+                        output_tokens=40,
+                        cached_tokens=0,
+                        cache_write_tokens=0,
+                        reasoning_tokens=0,
+                        web_search_calls=0,
+                        total_tokens=70,
+                    ),
+                )
+            self.responses.append(response)
+            return response
+
+    messages = Messages()
+    monkeypatch.setattr(
+        "src.core.threat_profile_generator.create_model_client",
+        lambda: SimpleNamespace(messages=messages),
+    )
+    generator = ThreatProfileGenerator(enable_tracing=False, enable_metrics=False)
+    generator.enable_quality_control = False
+    generator.enable_ml_guidance = False
+
+    result = generator.get_threat_intelligence("Example Threat")
+
+    assert result == threat_profile_data
+    assert len(messages.requests) == 2
+    research_request, synthesis_request = messages.requests
+    assert research_request["tools"] == [{"type": "web_search"}]
+    assert "response_format" not in research_request
+    assert synthesis_request["response_format"] is ThreatProfile
+    assert "tools" not in synthesis_request
+    assert "https://example.com/report" in synthesis_request["messages"][0]["content"]
+    assert "Example Threat uses remote access capabilities" in (
+        synthesis_request["messages"][0]["content"]
+    )
+    assert messages.responses[1].usage.input_tokens == 40
+    assert messages.responses[1].usage.output_tokens == 60
+    assert messages.responses[1].usage.web_search_calls == 1
+    assert messages.responses[1].usage.total_tokens == 100

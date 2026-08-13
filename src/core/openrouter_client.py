@@ -99,6 +99,10 @@ class ModelClient:
         """Generate a message through OpenRouter's Chat Completions API."""
         tools = self._normalize_tools(kwargs.get("tools"))
         response_format = kwargs.get("response_format")
+        if tools and response_format is not None:
+            raise ModelClientError(
+                "Tool use and structured output must use separate OpenRouter requests"
+            )
         request: dict[str, Any] = {
             "model": resolve_model_name(kwargs.get("model")),
             "messages": self._build_messages(kwargs),

@@ -156,8 +156,7 @@ def test_model_client_sends_strict_schema_and_parses_chat_completion():
     assert request_body["provider"] == {"require_parameters": True}
 
 
-def test_model_client_parses_profile_and_captures_chat_citations(threat_profile_data):
-    profile_text = json.dumps(threat_profile_data)
+def test_model_client_captures_chat_citations():
     annotations = [
         {
             "type": "url_citation",
@@ -173,7 +172,7 @@ def test_model_client_parses_profile_and_captures_chat_citations(threat_profile_
             (
                 200,
                 chat_response(
-                    profile_text,
+                    "Evidence-backed research",
                     annotations=annotations,
                     cached_tokens=4,
                     cache_write_tokens=3,
@@ -188,10 +187,9 @@ def test_model_client_parses_profile_and_captures_chat_citations(threat_profile_
     result = client.messages.create(
         messages=[{"role": "user", "content": "Analyze Example Threat"}],
         tools=[{"type": "web_search"}],
-        response_format=ThreatProfile,
     )
 
-    assert result.parsed == ThreatProfile.model_validate(threat_profile_data)
+    assert result.parsed is None
     assert result.response_id == "gen-test"
     assert result.provider == "TestProvider"
     assert result.web_search_sources == [
@@ -216,6 +214,17 @@ def test_model_client_parses_profile_and_captures_chat_citations(threat_profile_
     assert result.usage.reasoning_tokens == 7
     assert result.usage.web_search_calls == 2
     assert result.usage.total_tokens == 30
+
+
+def test_model_client_rejects_server_tools_combined_with_structured_output():
+    client = model_client([(200, chat_response('{"value":"unused"}'), {})])
+
+    with pytest.raises(ModelClientError, match="separate OpenRouter requests"):
+        client.messages.create(
+            messages=[{"role": "user", "content": "Research and structure"}],
+            tools=[{"type": "web_search"}],
+            response_format=StructuredResult,
+        )
 
 
 def test_model_client_maps_http_rate_limit_and_preserves_retry_after():
