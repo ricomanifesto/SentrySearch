@@ -834,7 +834,8 @@ def test_python_tooling_is_uv_managed():
     for tool in ["ruff", "black", "ty", "pytest"]:
         assert f'"{tool}>=' in pyproject
         assert f'name = "{tool}"' in lockfile
-    assert "\nopenai==" in railway_requirements
+    assert "\nhttpx==" in railway_requirements
+    assert "\nopenai==" not in railway_requirements
 
 
 def test_public_docs_do_not_reference_private_workflow_sources():

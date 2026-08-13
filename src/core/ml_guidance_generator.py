@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from src.search.threat_knowledge_retriever import ThreatKnowledgeRetriever, ThreatCharacteristics
 from src.core.model_retry import RetryingModelRequests
-from src.core.openai_client import resolve_model_name
+from src.core.openrouter_client import resolve_model_name
 
 logger = logging.getLogger(__name__)
 

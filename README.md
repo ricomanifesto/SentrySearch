@@ -24,7 +24,7 @@ SentrySearch generates structured threat intelligence profiles from a user-suppl
 
 ## Usage
 
-Visit [sentry-search.vercel.app](https://sentry-search.vercel.app), create an account, and generate a threat intelligence report for any malware, attack tool, or technology. Report generation routes `meta-llama/llama-3.3-70b-instruct` through OpenRouter by default while retaining the official OpenAI SDK for Responses API requests and Pydantic structured-output parsing.
+Visit [sentry-search.vercel.app](https://sentry-search.vercel.app), create an account, and generate a threat intelligence report for any malware, attack tool, or technology. Report generation routes `meta-llama/llama-3.3-70b-instruct` through OpenRouter's native Chat Completions API with hosted web search and strict Pydantic validation.
 
 ## Local Setup
 
@@ -71,7 +71,7 @@ npm run build
 - **Auth:** Supabase JWT authentication.
 - **Data:** PostgreSQL stores report metadata and search indexes; S3 stores markdown reports and artifacts.
 - **Search:** Pinecone provides vector similarity search; Cloudflare Workers orchestrate hybrid search.
-- **AI:** OpenRouter executes the configured model and hosted web search; the official OpenAI SDK provides the Responses API client, retries, typed responses, and Pydantic structured-output parsing.
+- **AI:** A direct OpenRouter Chat Completions client executes the configured model and bounded hosted web search, maps typed provider errors, and validates strict Pydantic structured output.
 
 ## Related Projects
 

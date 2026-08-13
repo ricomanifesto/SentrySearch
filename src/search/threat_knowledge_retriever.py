@@ -13,7 +13,7 @@ import re
 import requests
 
 from src.core.model_retry import RetryingModelRequests
-from src.core.openai_client import resolve_model_name
+from src.core.openrouter_client import resolve_model_name
 
 logger = logging.getLogger(__name__)
 

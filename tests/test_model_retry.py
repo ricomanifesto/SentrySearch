@@ -3,16 +3,16 @@ from typing import Any
 
 import pytest
 
-from src.core.model_retry import RetryPolicy, call_with_rate_limit_retry
-from src.core.openai_client import ModelRateLimitError
+from src.core.model_retry import RetryPolicy, call_with_model_retry
+from src.core.openrouter_client import ModelRateLimitError, ModelRetryableError
 
 
 class RateLimitWithResponse(ModelRateLimitError):
     response: Any
 
 
-def test_rate_limit_retry_uses_bounded_exponential_backoff():
-    outcomes = [ModelRateLimitError("busy"), ModelRateLimitError("busy"), "ok"]
+def test_model_retry_uses_bounded_exponential_backoff():
+    outcomes = [ModelRetryableError("busy"), ModelRetryableError("busy"), "ok"]
     delays = []
 
     def request():
@@ -21,7 +21,7 @@ def test_rate_limit_retry_uses_bounded_exponential_backoff():
             raise outcome
         return outcome
 
-    result = call_with_rate_limit_retry(
+    result = call_with_model_retry(
         request,
         operation="test request",
         policy=RetryPolicy(max_attempts=3, base_delay_seconds=5, max_delay_seconds=120),
@@ -45,7 +45,7 @@ def test_rate_limit_retry_honors_retry_after_header():
             raise outcome
         return outcome
 
-    result = call_with_rate_limit_retry(
+    result = call_with_model_retry(
         request,
         operation="test request",
         sleep=delays.append,
@@ -68,7 +68,7 @@ def test_rate_limit_retry_caps_retry_after_header():
             raise outcome
         return outcome
 
-    result = call_with_rate_limit_retry(
+    result = call_with_model_retry(
         request,
         operation="test request",
         policy=RetryPolicy(max_delay_seconds=30),
@@ -89,7 +89,7 @@ def test_rate_limit_retry_does_not_retry_other_failures():
         raise ValueError("invalid request")
 
     with pytest.raises(ValueError, match="invalid request"):
-        call_with_rate_limit_retry(
+        call_with_model_retry(
             request,
             operation="test request",
             sleep=lambda _delay: None,

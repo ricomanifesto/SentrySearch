@@ -11,7 +11,7 @@ from threading import Lock
 from typing import Any, Callable, List, Optional
 
 from src.core.model_retry import RetryingModelRequests
-from src.core.openai_client import resolve_model_name
+from src.core.openrouter_client import resolve_model_name
 from src.core.validation_criteria import (
     CONSISTENCY_PROMPT,
     SECTION_CRITERIA,
@@ -904,7 +904,7 @@ Your entire response must be valid JSON that can be directly parsed."""
                         "evidenceOrigin": result.get("origin", "web_search_call"),
                     }
                 )
-            logger.debug(f"Extracted {len(sources)} SDK web search sources")
+            logger.debug(f"Extracted {len(sources)} OpenRouter web search sources")
             return sources
 
         if hasattr(response, "content") and response.content:

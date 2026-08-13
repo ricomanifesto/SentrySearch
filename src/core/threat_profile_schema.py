@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class StrictModel(BaseModel):
-    """Base model that keeps the SDK structured-output schema closed."""
+    """Base model that keeps the provider structured-output schema closed."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -220,7 +220,7 @@ class ThreatProfile(StrictModel):
 
 
 def parse_threat_profile_response(response: Any) -> dict[str, Any]:
-    """Return a validated profile from the SDK's parsed response payload."""
+    """Return a validated profile from the model client's parsed payload."""
 
     parsed = getattr(response, "parsed", None)
     if parsed is None:

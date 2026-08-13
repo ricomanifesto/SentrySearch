@@ -1,4 +1,4 @@
-"""One bounded retry policy for rate-limited model requests."""
+"""One bounded retry policy for transient model-provider failures."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import random
 import time
 from typing import Any, TypeVar
 
-from src.core.openai_client import ModelRateLimitError
+from src.core.openrouter_client import ModelRetryableError
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ Result = TypeVar("Result")
 
 @dataclass(frozen=True, slots=True)
 class RetryPolicy:
-    """Rate-limit retry bounds used by every model-backed pipeline."""
+    """Transient-provider retry bounds used by every model-backed pipeline."""
 
     max_attempts: int = 3
     base_delay_seconds: float = 5
@@ -34,7 +34,7 @@ class RetryPolicy:
 DEFAULT_RETRY_POLICY = RetryPolicy()
 
 
-def call_with_rate_limit_retry(
+def call_with_model_retry(
     request: Callable[[], Result],
     *,
     operation: str,
@@ -42,12 +42,12 @@ def call_with_rate_limit_retry(
     sleep: Callable[[float], None] = time.sleep,
     jitter: Callable[[float, float], float] = random.uniform,
 ) -> Result:
-    """Run a request, retrying only explicit provider rate limits."""
+    """Run a request, retrying only explicitly transient provider failures."""
 
     for attempt in range(policy.max_attempts):
         try:
             return request()
-        except ModelRateLimitError as error:
+        except ModelRetryableError as error:
             if attempt + 1 == policy.max_attempts:
                 raise
 
@@ -61,7 +61,7 @@ def call_with_rate_limit_retry(
                 )
 
             logger.warning(
-                "%s rate limited; retrying in %.1f seconds (%d/%d)",
+                "%s hit a retryable provider error; retrying in %.1f seconds (%d/%d)",
                 operation,
                 delay,
                 attempt + 2,
@@ -72,7 +72,7 @@ def call_with_rate_limit_retry(
     raise AssertionError("retry loop exited without a result")
 
 
-def _retry_after_seconds(error: ModelRateLimitError) -> float | None:
+def _retry_after_seconds(error: ModelRetryableError) -> float | None:
     response = getattr(error, "response", None)
     headers = getattr(response, "headers", {}) if response else {}
     value = headers.get("retry-after")
@@ -90,7 +90,7 @@ class RetryingModelRequests:
     client: Any
 
     def _request_model(self, **kwargs: Any) -> Any:
-        return call_with_rate_limit_retry(
+        return call_with_model_retry(
             lambda: self.client.messages.create(**kwargs),
             operation=type(self).__name__,
         )

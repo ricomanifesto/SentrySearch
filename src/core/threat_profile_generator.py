@@ -1,12 +1,12 @@
 """
-Threat profile generator backed by OpenRouter through the OpenAI SDK.
+Threat profile generator backed by OpenRouter's native HTTP API.
 Enhanced with ML-based anomaly detection guidance and trace export for annotator integration.
 """
 
 import os
 import json
 import logging
-from src.core.openai_client import (
+from src.core.openrouter_client import (
     create_model_client,
     resolve_model_name,
 )
