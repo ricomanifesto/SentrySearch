@@ -1,7 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
-import { useRouter } from "next/navigation"
+import { useState } from "react"
 import Link from "next/link"
 import { useAuth } from "@/contexts/AuthContext"
 import { AuthFrame, AuthNotice } from "@/components/auth/AuthFrame"
@@ -9,27 +8,17 @@ import { AuthFrame, AuthNotice } from "@/components/auth/AuthFrame"
 const fieldClass =
   "mt-2 block h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition-colors placeholder:text-zinc-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
 
-export default function SignUp() {
-  const [name, setName] = useState("")
-  const [email, setEmail] = useState("")
+export default function ResetPassword() {
   const [password, setPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
   const [success, setSuccess] = useState(false)
-  const { signUp, user } = useAuth()
-  const router = useRouter()
+  const { user, loading: authLoading, updatePassword } = useAuth()
 
-  useEffect(() => {
-    if (user) {
-      router.push("/dashboard")
-    }
-  }, [user, router])
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault()
     setError("")
-    setSuccess(false)
 
     if (password !== confirmPassword) {
       setError("Those passwords don't match.")
@@ -44,7 +33,7 @@ export default function SignUp() {
     setLoading(true)
 
     try {
-      const { error } = await signUp(email, password, name)
+      const { error } = await updatePassword(password)
 
       if (error) {
         setError(error.message)
@@ -58,32 +47,57 @@ export default function SignUp() {
     }
   }
 
+  if (authLoading) {
+    return (
+      <AuthFrame
+        eyebrow="Account recovery"
+        title="Checking your recovery link"
+        description="Confirming the secure session before accepting a new password."
+        footer={<span>Keep this page open while the link is verified.</span>}
+      >
+        <div role="status" className="text-sm leading-6 text-zinc-600">
+          Checking recovery access…
+        </div>
+      </AuthFrame>
+    )
+  }
+
+  if (!user) {
+    return (
+      <AuthNotice
+        title="Recovery link unavailable"
+        description="This recovery link is invalid or expired. Request a new link and open it in the same browser."
+        actionHref="/auth/forgot-password"
+        actionLabel="Request a new link"
+        notice="Request a new recovery link to restart the secure reset flow."
+      />
+    )
+  }
+
   if (success) {
     return (
       <AuthNotice
-        title="Confirm your email"
-        description="We sent a confirmation link to your inbox. Complete that step to activate report generation, saved intelligence, and source review."
-        actionHref="/auth/signin"
-        actionLabel="Return to sign in"
+        title="Password updated"
+        description="Your new password is active. You can continue into your SentrySearch workspace."
+        actionHref="/dashboard"
+        actionLabel="Open your workspace"
+        notice="Your password was changed for this account."
       />
     )
   }
 
   return (
     <AuthFrame
-      eyebrow="Create account"
-      title="Create your workspace"
-      description="Set up access for report generation, saved intelligence, and source-backed review."
+      eyebrow="Account recovery"
+      title="Choose a new password"
+      description="Use at least 6 characters. Your new password will replace the previous one for this account."
       footer={
-        <p>
-          Already have access?{" "}
-          <Link
-            href="/auth/signin"
-            className="font-medium text-blue-700 underline-offset-4 hover:underline"
-          >
-            Open your workspace
-          </Link>
-        </p>
+        <Link
+          href="/auth/signin"
+          className="font-medium text-blue-700 underline-offset-4 hover:underline"
+        >
+          Return to sign in
+        </Link>
       }
     >
       <form className="space-y-5" onSubmit={handleSubmit}>
@@ -97,52 +111,19 @@ export default function SignUp() {
         )}
 
         <div>
-          <label htmlFor="name" className="block text-sm font-medium text-zinc-800">
-            Name
-          </label>
-          <input
-            id="name"
-            name="name"
-            type="text"
-            autoComplete="name"
-            required
-            className={fieldClass}
-            placeholder="Threat intelligence analyst"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-        </div>
-
-        <div>
-          <label htmlFor="email" className="block text-sm font-medium text-zinc-800">
-            Email
-          </label>
-          <input
-            id="email"
-            name="email"
-            type="email"
-            autoComplete="email"
-            required
-            className={fieldClass}
-            placeholder="you@example.com"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
-        </div>
-
-        <div>
           <label htmlFor="password" className="block text-sm font-medium text-zinc-800">
-            Password
+            New password
           </label>
           <input
             id="password"
             name="password"
             type="password"
+            autoComplete="new-password"
             required
             className={fieldClass}
             placeholder="Use at least 6 characters"
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={(event) => setPassword(event.target.value)}
           />
         </div>
 
@@ -151,17 +132,18 @@ export default function SignUp() {
             htmlFor="confirmPassword"
             className="block text-sm font-medium text-zinc-800"
           >
-            Confirm password
+            Confirm new password
           </label>
           <input
             id="confirmPassword"
             name="confirmPassword"
             type="password"
+            autoComplete="new-password"
             required
             className={fieldClass}
             placeholder="Repeat the password"
             value={confirmPassword}
-            onChange={(e) => setConfirmPassword(e.target.value)}
+            onChange={(event) => setConfirmPassword(event.target.value)}
           />
         </div>
 
@@ -170,7 +152,7 @@ export default function SignUp() {
           disabled={loading}
           className="flex h-11 w-full items-center justify-center rounded-lg bg-zinc-950 px-4 text-sm font-medium text-white transition-colors hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-60"
         >
-          {loading ? "Creating workspace…" : "Create workspace"}
+          {loading ? "Updating password…" : "Update password"}
         </button>
       </form>
     </AuthFrame>

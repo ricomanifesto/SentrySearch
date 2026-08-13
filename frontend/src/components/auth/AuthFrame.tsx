@@ -99,6 +99,7 @@ type AuthNoticeProps = {
   description: string;
   actionHref: string;
   actionLabel: string;
+  notice?: string;
 };
 
 export function AuthNotice({
@@ -106,6 +107,7 @@ export function AuthNotice({
   description,
   actionHref,
   actionLabel,
+  notice = "Your workspace will open after the email confirmation link is complete.",
 }: AuthNoticeProps) {
   return (
     <AuthFrame
@@ -122,7 +124,7 @@ export function AuthNotice({
       }
     >
       <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-4 text-sm leading-6 text-blue-900">
-        Your workspace will open after the email confirmation link is complete.
+        {notice}
       </div>
     </AuthFrame>
   );

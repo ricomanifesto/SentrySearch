@@ -5,16 +5,24 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const signInPath = resolve(here, '../src/app/auth/signin/page.tsx');
 const signUpPath = resolve(here, '../src/app/auth/signup/page.tsx');
+const forgotPasswordPath = resolve(here, '../src/app/auth/forgot-password/page.tsx');
+const resetPasswordPath = resolve(here, '../src/app/auth/reset-password/page.tsx');
 const authFramePath = resolve(here, '../src/components/auth/AuthFrame.tsx');
 const authGuardPath = resolve(here, '../src/components/AuthGuard.tsx');
+const authContextPath = resolve(here, '../src/contexts/AuthContext.tsx');
+const settingsPath = resolve(here, '../src/app/settings/page.tsx');
 const globalsPath = resolve(here, '../src/app/globals.css');
 
 const signIn = await readFile(signInPath, 'utf8');
 const signUp = await readFile(signUpPath, 'utf8');
+const forgotPassword = await readFile(forgotPasswordPath, 'utf8');
+const resetPassword = await readFile(resetPasswordPath, 'utf8');
 const authFrame = await readFile(authFramePath, 'utf8');
 const authGuard = await readFile(authGuardPath, 'utf8');
+const authContext = await readFile(authContextPath, 'utf8');
+const settings = await readFile(settingsPath, 'utf8');
 const globals = await readFile(globalsPath, 'utf8');
-const combined = `${signIn}\n${signUp}\n${authFrame}\n${authGuard}`;
+const combined = `${signIn}\n${signUp}\n${forgotPassword}\n${resetPassword}\n${authFrame}\n${authGuard}\n${settings}`;
 
 const expectations = [
   {
@@ -48,6 +56,21 @@ const expectations = [
     pattern: /Confirm your email/,
   },
   {
+    name: 'uses recovery-specific email guidance',
+    source: forgotPassword,
+    pattern: /notice="Use the newest recovery link/,
+  },
+  {
+    name: 'uses recovery-specific expired-link guidance',
+    source: resetPassword,
+    pattern: /notice="Request a new recovery link/,
+  },
+  {
+    name: 'uses recovery-specific password-update guidance',
+    source: resetPassword,
+    pattern: /notice="Your password was changed/,
+  },
+  {
     name: 'keeps sign-in routed through the auth API boundary',
     source: signIn,
     pattern: /signIn\(email, password\)/,
@@ -56,6 +79,36 @@ const expectations = [
     name: 'keeps sign-up routed through the auth API boundary',
     source: signUp,
     pattern: /signUp\(email, password, name\)/,
+  },
+  {
+    name: 'returns signup confirmations to the current app',
+    source: authContext,
+    pattern: /emailRedirectTo: `\$\{window\.location\.origin\}\/auth\/signin`/,
+  },
+  {
+    name: 'offers password recovery from sign-in',
+    source: signIn,
+    pattern: /href="\/auth\/forgot-password"[\s\S]*Forgot password\?/,
+  },
+  {
+    name: 'requests recovery through the auth API boundary',
+    source: forgotPassword,
+    pattern: /requestPasswordReset\(email\)/,
+  },
+  {
+    name: 'updates recovered passwords through the auth API boundary',
+    source: resetPassword,
+    pattern: /updatePassword\(password\)/,
+  },
+  {
+    name: 'uses the supported Supabase recovery request',
+    source: authContext,
+    pattern: /resetPasswordForEmail\(email,[\s\S]*\/auth\/reset-password/,
+  },
+  {
+    name: 'uses the supported Supabase password update',
+    source: authContext,
+    pattern: /updateUser\(\{ password \}\)/,
   },
   {
     name: 'keeps accessible error alert semantics',
@@ -88,9 +141,9 @@ const expectations = [
     absentPattern: /Sign in to SentrySearch|Create your account|Authentication Required/,
   },
   {
-    name: 'does not link to an unimplemented password reset route',
+    name: 'accepts regular email addresses in account copy',
     source: combined,
-    absentPattern: /forgot-password/,
+    absentPattern: /Work email|analyst@company\.com/,
   },
   {
     name: 'does not rely on the old stock gray auth background',

@@ -9,6 +9,8 @@ type AuthContextType = {
   loading: boolean
   signUp: (email: string, password: string, name: string) => Promise<{ error: Error | null }>
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>
+  requestPasswordReset: (email: string) => Promise<{ error: Error | null }>
+  updatePassword: (password: string) => Promise<{ error: Error | null }>
   signOut: () => Promise<{ error: Error | null }>
 }
 
@@ -54,6 +56,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         email,
         password,
         options: {
+          emailRedirectTo: `${window.location.origin}/auth/signin`,
           data: {
             name,
           },
@@ -94,11 +97,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
+  const requestPasswordReset = async (email: string) => {
+    if (!supabase) {
+      return { error: new Error('Authentication is not configured') }
+    }
+
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/auth/reset-password`,
+      })
+      return { error }
+    } catch (error) {
+      return { error: error as Error }
+    }
+  }
+
+  const updatePassword = async (password: string) => {
+    if (!supabase) {
+      return { error: new Error('Authentication is not configured') }
+    }
+
+    try {
+      const { error } = await supabase.auth.updateUser({ password })
+      return { error }
+    } catch (error) {
+      return { error: error as Error }
+    }
+  }
+
   const value = {
     user,
     loading,
     signUp,
     signIn,
+    requestPasswordReset,
+    updatePassword,
     signOut,
   }
 

@@ -54,6 +54,18 @@ export const routeSurfaces = [
     guard: 'dev/check-auth-surface.mjs',
   },
   {
+    route: '/auth/forgot-password',
+    page: 'src/app/auth/forgot-password/page.tsx',
+    script: 'check:auth-surface',
+    guard: 'dev/check-auth-surface.mjs',
+  },
+  {
+    route: '/auth/reset-password',
+    page: 'src/app/auth/reset-password/page.tsx',
+    script: 'check:auth-surface',
+    guard: 'dev/check-auth-surface.mjs',
+  },
+  {
     route: '/export',
     page: 'src/app/export/page.tsx',
     script: 'check:export-surface',

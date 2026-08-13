@@ -29,7 +29,7 @@ export default function Settings() {
 
   const identity = [
     { label: "Display name", value: displayName },
-    { label: "Work email", value: email },
+    { label: "Email", value: email },
   ]
   const accessPosture = [
     { label: "Account boundary", value: "Required for saved intelligence" },

@@ -72,7 +72,7 @@ export default function SignIn() {
 
         <div>
           <label htmlFor="email" className="block text-sm font-medium text-zinc-800">
-            Work email
+            Email
           </label>
           <input
             id="email"
@@ -81,16 +81,24 @@ export default function SignIn() {
             autoComplete="email"
             required
             className={fieldClass}
-            placeholder="analyst@company.com"
+            placeholder="you@example.com"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
           />
         </div>
 
         <div>
-          <label htmlFor="password" className="block text-sm font-medium text-zinc-800">
-            Password
-          </label>
+          <div className="flex items-center justify-between gap-4">
+            <label htmlFor="password" className="block text-sm font-medium text-zinc-800">
+              Password
+            </label>
+            <Link
+              href="/auth/forgot-password"
+              className="text-sm font-medium text-blue-700 underline-offset-4 hover:underline"
+            >
+              Forgot password?
+            </Link>
+          </div>
           <input
             id="password"
             name="password"
