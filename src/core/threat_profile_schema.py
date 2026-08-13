@@ -245,11 +245,12 @@ def attest_profile_sources(
 ) -> None:
     """Reject profile URLs that were not returned by the hosted web-search tool."""
 
-    evidence_urls = {
-        normalized
+    evidence_url_pairs = [
+        (str(source.get("url", "")).strip(), normalized)
         for source in web_search_sources
         if (normalized := _normalize_url(str(source.get("url", ""))))
-    }
+    ]
+    evidence_urls = {normalized for _, normalized in evidence_url_pairs}
     if not evidence_urls:
         raise ValueError("OpenRouter web search returned no source evidence")
 
@@ -280,6 +281,11 @@ def attest_profile_sources(
         normalized = _normalize_url(raw_url)
         if not normalized:
             raise ValueError(f"Threat profile included an invalid source URL: {raw_url!r}")
+        if normalized not in evidence_urls:
+            replacement = _resolve_unique_attested_descendant(raw_url, evidence_url_pairs)
+            if replacement:
+                source["url"] = replacement
+                normalized = _normalize_url(replacement)
         claimed_urls.add(normalized)
 
     for source in claimed_sources:
@@ -309,6 +315,26 @@ def _prune_unavailable_source_records(sources: list[dict[str, Any]]) -> list[dic
         for source in sources
         if not str(source.get("url", "")).strip().casefold().startswith(sentinel)
     ]
+
+
+def _resolve_unique_attested_descendant(
+    claimed_url: str, evidence_url_pairs: list[tuple[str, str]]
+) -> str:
+    """Expand one shortened source URL only when one attested URL can match it."""
+
+    claimed = urlsplit(claimed_url.strip())
+    if claimed.scheme not in {"http", "https"} or not claimed.hostname or claimed.query:
+        return ""
+    claimed_path = claimed.path.rstrip("/") or "/"
+    matches = []
+    for evidence_url, _ in evidence_url_pairs:
+        evidence = urlsplit(evidence_url)
+        evidence_path = evidence.path.rstrip("/") or "/"
+        same_host = (evidence.hostname or "").lower() == claimed.hostname.lower()
+        is_descendant = evidence_path.startswith(f"{claimed_path}/")
+        if same_host and is_descendant:
+            matches.append(evidence_url)
+    return matches[0] if len(matches) == 1 else ""
 
 
 def _normalize_url(value: str) -> str:

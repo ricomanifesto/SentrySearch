@@ -151,6 +151,43 @@ def test_source_attestation_ignores_scheme_and_query_variants(threat_profile_dat
         )
 
 
+def test_source_attestation_resolves_one_unambiguous_parent_url(threat_profile_data):
+    shortened = deepcopy(threat_profile_data)
+    shortened["referencesAndIntelligenceSharing"]["sources"][0][
+        "url"
+    ] = "https://example.com/reports"
+
+    attest_profile_sources(
+        shortened,
+        [
+            {"url": "https://example.com/report"},
+            {"url": "https://example.com/reports/vendor-analysis"},
+        ],
+    )
+
+    assert shortened["referencesAndIntelligenceSharing"]["sources"][0]["url"] == (
+        "https://example.com/reports/vendor-analysis"
+    )
+
+
+def test_source_attestation_rejects_an_ambiguous_parent_url(threat_profile_data):
+    shortened = deepcopy(threat_profile_data)
+    shortened["webSearchSources"]["primarySources"][0]["url"] = "https://example.com/reports"
+    shortened["referencesAndIntelligenceSharing"]["sources"][0][
+        "url"
+    ] = "https://example.com/reports"
+
+    with pytest.raises(ValueError, match="not returned by OpenRouter web search"):
+        attest_profile_sources(
+            shortened,
+            [
+                {"url": "https://example.com/report"},
+                {"url": "https://example.com/reports/one"},
+                {"url": "https://example.com/reports/two"},
+            ],
+        )
+
+
 def test_section_validator_consumes_normalized_sdk_sources():
     validator = SectionValidator(client=None)
     response = SimpleNamespace(
