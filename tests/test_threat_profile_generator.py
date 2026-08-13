@@ -77,6 +77,34 @@ def test_attest_profile_sources_accepts_only_hosted_search_evidence(threat_profi
         )
 
 
+def test_source_attestation_accepts_declared_parent_domain(threat_profile_data):
+    subdomain_source = deepcopy(threat_profile_data)
+    subdomain_source["webSearchSources"]["primarySources"][0][
+        "url"
+    ] = "https://blog.example.com/report"
+
+    attest_profile_sources(
+        subdomain_source,
+        [
+            {"url": "https://blog.example.com/report", "title": "Example report"},
+            {"url": "https://example.com/report", "title": "Example root report"},
+        ],
+    )
+
+    lookalike_source = deepcopy(subdomain_source)
+    lookalike_source["webSearchSources"]["primarySources"][0][
+        "url"
+    ] = "https://notexample.com/report"
+    with pytest.raises(ValueError, match="domain does not match"):
+        attest_profile_sources(
+            lookalike_source,
+            [
+                {"url": "https://notexample.com/report", "title": "Lookalike report"},
+                {"url": "https://example.com/report", "title": "Example root report"},
+            ],
+        )
+
+
 def test_source_attestation_ignores_scheme_and_query_variants(threat_profile_data):
     attest_profile_sources(
         threat_profile_data,

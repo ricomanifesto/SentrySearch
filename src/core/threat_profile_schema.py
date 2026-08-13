@@ -261,7 +261,8 @@ def attest_profile_sources(
     for source in claimed_sources:
         hostname = (urlsplit(str(source["url"])).hostname or "").lower()
         declared_domain = str(source.get("domain", "")).strip().lower()
-        if declared_domain != hostname:
+        domain_matches = declared_domain == hostname or hostname.endswith(f".{declared_domain}")
+        if not domain_matches:
             raise ValueError(
                 "Threat profile source domain does not match its URL: "
                 f"{declared_domain!r} != {hostname!r}"
