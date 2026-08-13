@@ -429,7 +429,6 @@ async def get_report(
 def run_report_generation(
     report_id: str,
     tool_name: str,
-    enable_ml_guidance: bool,
     user_id: str,
 ) -> None:
     """Run a long report generation off the request path and persist the result.
@@ -443,7 +442,6 @@ def run_report_generation(
     start = time.monotonic()
     try:
         generator = ThreatProfileGenerator()
-        generator.enable_ml_guidance = enable_ml_guidance
         last_stage: GenerationStage | None = None
         stage_order = {
             GenerationStage.RESEARCHING: 1,
@@ -526,7 +524,6 @@ async def create_report(
         run_report_generation,
         report_id,
         report_request.tool_name,
-        report_request.enable_ml_guidance,
         user.id,
     )
 

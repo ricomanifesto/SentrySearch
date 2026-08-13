@@ -174,7 +174,7 @@ const expectations = [
   {
     name: 'pins Turnstile to the page language',
     source: turnstile,
-    pattern: /language: "en"/,
+    pattern: /language: "en-US"/,
   },
   {
     name: 'keeps the guarded loading boundary on shared theme tokens',

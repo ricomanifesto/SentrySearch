@@ -252,8 +252,6 @@ def test_create_report_starts_background_job_without_synchronous_generation(monk
     generation_called = False
 
     class Generator:
-        enable_ml_guidance = True
-
         def get_threat_intelligence(self, tool_name: str, progress_callback=None):
             nonlocal generation_called
             generation_called = True
@@ -344,8 +342,6 @@ def test_report_create_normalizes_target_whitespace():
 
 def test_background_generation_marks_failed_without_leaking_detail(monkeypatch):
     class FailingGenerator:
-        enable_ml_guidance = True
-
         def get_threat_intelligence(self, tool_name: str, progress_callback=None):
             return {"error": f"provider key leaked for {tool_name}"}
 
@@ -364,7 +360,7 @@ def test_background_generation_marks_failed_without_leaking_detail(monkeypatch):
     monkeypatch.setattr(api_main.report_service, "finalize_report", finalize_report)
 
     # Must not raise, and must record the failure on the row rather than surface detail.
-    api_main.run_report_generation("report-1", "SecretTool", True, "analyst-user")
+    api_main.run_report_generation("report-1", "SecretTool", "analyst-user")
 
     assert marked["report_id"] == "report-1"
 
@@ -392,14 +388,11 @@ def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
     }
 
     class Generator:
-        enable_ml_guidance = True
-
         def get_threat_intelligence(self, tool_name: str, progress_callback=None):
             if progress_callback:
                 progress_callback(0.2, "Researching three evidence areas in parallel...")
                 progress_callback(0.7, "Processing response...")
                 progress_callback(0.75, "Validating structured response...")
-                progress_callback(0.75, "Generating ML detection guidance...")
                 progress_callback(0.8, "Running quality validation...")
                 progress_callback(1.0, "Analysis complete!")
             return profile
@@ -421,7 +414,7 @@ def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
         raising=False,
     )
 
-    api_main.run_report_generation("report-9", "Cobalt Strike", False, "analyst-user")
+    api_main.run_report_generation("report-9", "Cobalt Strike", "analyst-user")
 
     data = captured["report_data"]
     assert captured["user_id"] == "analyst-user"
@@ -465,25 +458,6 @@ def test_markdown_generation_redacts_internal_exception_detail():
     )
     assert "not supported" not in markdown
     assert "SecretTool" not in markdown
-
-
-def test_markdown_generation_redacts_ml_guidance_error_detail():
-    markdown = generate_markdown(
-        {
-            "coreMetadata": {"name": "ExampleTool"},
-            "mlGuidance": {
-                "enabled": False,
-                "error": "provider token leaked for ExampleTool",
-                "fallbackGuidance": "Use behavioral anomaly detection.",
-            },
-        }
-    )
-
-    assert "ML guidance generation failed" in markdown
-    assert "**Error**: ML guidance could not be generated." in markdown
-    assert "Use behavioral anomaly detection." in markdown
-    assert "provider token" not in markdown
-    assert "**Error**: ML guidance could not be generated for ExampleTool" not in markdown
 
 
 def test_search_reports_requires_auth_before_storage_read(monkeypatch):
@@ -953,7 +927,7 @@ def test_public_docs_do_not_reference_private_workflow_sources():
         assert marker not in public_text
 
 
-def test_threat_profile_modules_use_domain_names():
+def test_retired_retrieval_stack_is_absent():
     assert (
         read_text("src/core/threat_profile_generator.py").count("class ThreatProfileGenerator") == 1
     )
@@ -963,17 +937,39 @@ def test_threat_profile_modules_use_domain_names():
     assert "self.improver" not in read_text("src/core/threat_profile_generator.py")
     assert not (REPO_ROOT / "src/data/ml_knowledge_base_builder.py").exists()
     assert not (REPO_ROOT / "src/search/bm25_retriever.py").exists()
-    worker_source = read_text("worker.js")
-    assert "/debug-pinecone" not in worker_source
-    assert "/debug-doc" not in worker_source
-    assert "/debug-search" not in worker_source
-    assert (
-        read_text("src/search/threat_knowledge_retriever.py").count(
-            "class ThreatKnowledgeRetriever"
-        )
-        == 1
-    )
     assert not (REPO_ROOT / "src/search/ml_agentic_retriever.py").exists()
+    for retired_path in [
+        "worker.js",
+        "wrangler.toml",
+        "dev/check_worker.mjs",
+        "src/core/ml_guidance_generator.py",
+        "src/search/threat_knowledge_retriever.py",
+    ]:
+        assert not (REPO_ROOT / retired_path).exists()
+
+    product_sources = "\n".join(
+        read_text(path)
+        for path in [
+            ".env.example",
+            "README.md",
+            "pyproject.toml",
+            "src/api/contracts.py",
+            "src/api/main.py",
+            "src/core/markdown_generator.py",
+            "src/core/threat_profile_generator.py",
+            "src/core/trace_exporter.py",
+            "frontend/src/app/generate/page.tsx",
+            "frontend/src/lib/api-contracts.ts",
+        ]
+    )
+    for retired_marker in [
+        "enable_ml_guidance",
+        "mlGuidance",
+        "PINECONE",
+        "WORKERS_URL",
+        "Cloudflare Worker",
+    ]:
+        assert retired_marker not in product_sources
 
 
 def test_frontend_supabase_client_is_build_safe_without_preview_env():

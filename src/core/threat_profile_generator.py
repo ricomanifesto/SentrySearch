@@ -1,7 +1,4 @@
-"""
-Threat profile generator backed by OpenRouter's native HTTP API.
-Enhanced with ML-based anomaly detection guidance and trace export for annotator integration.
-"""
+"""Threat profile generator backed by OpenRouter's native HTTP API."""
 
 import os
 import json
@@ -13,11 +10,10 @@ from src.core.openrouter_client import (
     resolve_model_name,
 )
 from src.core.model_retry import RetryingModelRequests
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from datetime import datetime
 import time
 from src.core.parallel_section_validator import ParallelSectionValidator
-from src.core.ml_guidance_generator import MLGuidanceGenerator, ThreatCharacteristics
 from src.core.trace_exporter import get_trace_exporter
 from src.core.performance_metrics import PerformanceTracker
 from src.core.threat_profile_schema import (
@@ -63,18 +59,6 @@ class ThreatProfileGenerator(RetryingModelRequests):
             logger.debug(f"Trace exporter initialized, export directory: {trace_export_dir}")
         else:
             self.trace_exporter = None
-
-        # Initialize ML guidance generator
-        try:
-            self.ml_guidance_generator: MLGuidanceGenerator | None = MLGuidanceGenerator(
-                self.client
-            )
-            self.enable_ml_guidance = True
-            logger.debug("ML guidance generator initialized successfully")
-        except Exception as e:
-            logger.info("ML guidance is unavailable: %s", e)
-            self.ml_guidance_generator = None
-            self.enable_ml_guidance = False
 
     def _research_evidence(self, tool_name: str) -> SimpleNamespace:
         """Collect independent evidence areas concurrently through OpenRouter web search."""
@@ -494,43 +478,7 @@ END ATTESTED SOURCE CATALOG"""
                 f"{len(response.web_search_sources)} attested sources"
             )
 
-            # Generate ML guidance BEFORE quality control to leverage all context
-            if self.enable_ml_guidance and self.ml_guidance_generator:
-                if progress_callback:
-                    progress_callback(0.75, "Generating ML detection guidance...")
-
-                if self.enable_tracing and self.trace_exporter:
-                    self.trace_exporter.log_stage_start("ml_guidance")
-
-                try:
-                    ml_guidance = self._generate_ml_guidance(json_data, tool_name)
-                    if ml_guidance:
-                        json_data["mlGuidance"] = ml_guidance
-                        logger.debug("ML guidance generated successfully")
-
-                        # Log ML guidance for tracing
-                        if self.enable_tracing and self.trace_exporter:
-                            # Extract ML techniques from the guidance
-                            ml_techniques = []
-                            if isinstance(ml_guidance, dict) and "content" in ml_guidance:
-                                # This would need to be enhanced to extract structured ML techniques
-                                # For now, log basic info
-                                pass
-                            self.trace_exporter.log_stage_end("ml_guidance", success=True)
-                    else:
-                        logger.debug("No ML guidance generated")
-                        if self.enable_tracing and self.trace_exporter:
-                            self.trace_exporter.log_stage_end("ml_guidance", success=False)
-                except Exception as e:
-                    logger.warning("ML guidance generation failed: %s", e)
-                    if self.enable_tracing and self.trace_exporter:
-                        self.trace_exporter.log_error(str(e), "ml_guidance")
-                        self.trace_exporter.log_stage_end(
-                            "ml_guidance", success=False, error=str(e)
-                        )
-                    # Continue without ML guidance - don't fail the entire process
-
-            # Quality control phase - now includes ML guidance validation
+            # Quality control phase
             if self.enable_quality_control:
                 if progress_callback:
                     progress_callback(0.8, "Running quality validation...")
@@ -538,7 +486,7 @@ END ATTESTED SOURCE CATALOG"""
                 if self.enable_tracing and self.trace_exporter:
                     self.trace_exporter.log_stage_start("quality_validation")
 
-                # Validate the complete profile including ML guidance
+                # Validate the complete profile
                 validation_results = self.validator.validate_complete_profile(
                     json_data,
                     progress_callback,
@@ -635,294 +583,6 @@ END ATTESTED SOURCE CATALOG"""
             if progress_callback:
                 progress_callback(1.0, "Analysis failed")
             raise
-
-    def _generate_ml_guidance(self, threat_data: Dict, tool_name: str) -> Optional[Dict]:
-        """
-        Generate comprehensive ML-based anomaly detection guidance leveraging all threat context
-
-        Args:
-            threat_data: Complete threat intelligence profile with all sections
-            tool_name: Name of the threat/tool
-
-        Returns:
-            ML guidance data or None if generation fails
-        """
-        try:
-            guidance_generator = self.ml_guidance_generator
-            if guidance_generator is None:
-                return None
-
-            # Extract enhanced threat characteristics from the COMPLETE profile
-            threat_characteristics = self._extract_enhanced_threat_characteristics(
-                threat_data, tool_name
-            )
-
-            # Generate ML guidance using full context
-            ml_guidance_markdown = guidance_generator.generate_enhanced_ml_guidance_section(
-                threat_characteristics,
-                threat_data,
-                trace_exporter=self.trace_exporter if self.enable_tracing else None,
-            )
-
-            if ml_guidance_markdown:
-                return {
-                    "enabled": True,
-                    "content": ml_guidance_markdown,
-                    "threatCharacteristics": {
-                        "name": threat_characteristics.threat_name,
-                        "type": threat_characteristics.threat_type,
-                        "attackVectors": threat_characteristics.attack_vectors,
-                        "behaviorPatterns": threat_characteristics.behavior_patterns,
-                        "timeCharacteristics": threat_characteristics.time_characteristics,
-                    },
-                    "contextUsed": {
-                        "technicalDetails": bool(threat_data.get("technicalDetails")),
-                        "commandAndControl": bool(threat_data.get("commandAndControl")),
-                        "detectionAndMitigation": bool(threat_data.get("detectionAndMitigation")),
-                        "threatIntelligence": bool(threat_data.get("threatIntelligence")),
-                        "forensicArtifacts": bool(threat_data.get("forensicArtifacts")),
-                    },
-                    "generatedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "generator": "Agentic RAG with Full Context",
-                    "qualityScore": 0.0,  # Will be filled by validator
-                }
-            else:
-                return None
-
-        except Exception as e:
-            logger.exception("ML guidance generation failed: %s", e)
-            return {
-                "enabled": False,
-                "error": "ML guidance unavailable",
-                "fallbackGuidance": "Consider implementing statistical anomaly detection and behavioral analysis for this threat type.",
-                "qualityScore": 0.0,
-            }
-
-    def _extract_enhanced_threat_characteristics(
-        self, threat_data: Dict, tool_name: str
-    ) -> ThreatCharacteristics:
-        """
-        Extract enhanced threat characteristics from the COMPLETE threat intelligence profile
-
-        Args:
-            threat_data: Complete threat intelligence profile with all sections
-            tool_name: Name of the threat/tool
-
-        Returns:
-            Enhanced ThreatCharacteristics with context from all sections
-        """
-
-        # Start with basic extraction
-        characteristics = self._extract_threat_characteristics(threat_data, tool_name)
-
-        # Enhance with additional context from completed sections
-        if threat_data.get("technicalDetails"):
-            tech_details = threat_data["technicalDetails"]
-            # Add technical context to behavior patterns
-            if tech_details.get("capabilities"):
-                for capability in tech_details["capabilities"][:3]:  # Top 3 capabilities
-                    if isinstance(capability, dict) and capability.get("name"):
-                        characteristics.behavior_patterns.append(
-                            capability["name"].lower().replace(" ", "_")
-                        )
-                    elif isinstance(capability, str):
-                        characteristics.behavior_patterns.append(
-                            capability.lower().replace(" ", "_")
-                        )
-
-        if threat_data.get("commandAndControl"):
-            c2_data = threat_data["commandAndControl"]
-            # Add C2 methods to attack vectors
-            if c2_data.get("communicationMethods"):
-                for method in c2_data["communicationMethods"][:2]:  # Top 2 methods
-                    if isinstance(method, dict) and method.get("protocol"):
-                        characteristics.attack_vectors.append(f"c2_{method['protocol'].lower()}")
-                    elif isinstance(method, str):
-                        characteristics.attack_vectors.append(f"c2_{method.lower()}")
-
-        if threat_data.get("detectionAndMitigation"):
-            detection_data = threat_data["detectionAndMitigation"]
-            # Add behavioral indicators to behavior patterns
-            if detection_data.get("behavioralIndicators"):
-                for indicator in detection_data["behavioralIndicators"][:3]:  # Top 3 indicators
-                    if isinstance(indicator, dict) and indicator.get("behavior"):
-                        characteristics.behavior_patterns.append(
-                            indicator["behavior"].lower().replace(" ", "_")
-                        )
-                    elif isinstance(indicator, str):
-                        characteristics.behavior_patterns.append(
-                            indicator.lower().replace(" ", "_")
-                        )
-
-        # Remove duplicates and clean up
-        characteristics.attack_vectors = list(set(characteristics.attack_vectors))
-        characteristics.behavior_patterns = list(set(characteristics.behavior_patterns))
-
-        return characteristics
-
-    def _extract_threat_characteristics(
-        self, threat_data: Dict, tool_name: str
-    ) -> ThreatCharacteristics:
-        """
-        Extract threat characteristics from the threat intelligence profile
-
-        Args:
-            threat_data: Complete threat intelligence profile
-            tool_name: Name of the threat/tool
-
-        Returns:
-            ThreatCharacteristics object for ML guidance generation
-        """
-        # Extract metadata
-        core_metadata = threat_data.get("coreMetadata", {})
-        category = core_metadata.get("category", "malware").lower()
-
-        # Map category to threat type
-        threat_type_mapping = {
-            "rat": "malware",
-            "backdoor": "malware",
-            "trojan": "malware",
-            "ransomware": "malware",
-            "botnet": "malware",
-            "apt": "apt",
-            "framework": "post_exploitation_framework",
-            "tool": "attack_tool",
-        }
-
-        threat_type = threat_type_mapping.get(category, "malware")
-
-        # Extract attack vectors from technical details
-        technical_details = threat_data.get("technicalDetails", {})
-        operating_systems = technical_details.get("operatingSystems", [])
-        capabilities = technical_details.get("capabilities", [])
-
-        attack_vectors = []
-        if any("network" in str(cap).lower() for cap in capabilities):
-            attack_vectors.append("network")
-        if any("email" in str(cap).lower() for cap in capabilities):
-            attack_vectors.append("email")
-        if any("web" in str(cap).lower() for cap in capabilities):
-            attack_vectors.append("web")
-        if any(
-            "memory" in str(cap).lower() or "injection" in str(cap).lower() for cap in capabilities
-        ):
-            attack_vectors.append("memory_injection")
-        if any("lateral" in str(cap).lower() for cap in capabilities):
-            attack_vectors.append("lateral_movement")
-
-        # Add OS-specific attack vectors based on supported operating systems
-        for os_name in operating_systems:
-            os_lower = str(os_name).lower()
-            if "windows" in os_lower:
-                if "windows_specific" not in attack_vectors:
-                    attack_vectors.append("windows_specific")
-            elif "linux" in os_lower or "unix" in os_lower:
-                if "unix_like" not in attack_vectors:
-                    attack_vectors.append("unix_like")
-            elif "mac" in os_lower or "darwin" in os_lower:
-                if "macos_specific" not in attack_vectors:
-                    attack_vectors.append("macos_specific")
-            elif "android" in os_lower:
-                if "mobile" not in attack_vectors:
-                    attack_vectors.append("mobile")
-            elif "ios" in os_lower:
-                if "mobile" not in attack_vectors:
-                    attack_vectors.append("mobile")
-
-        # Default to network if no specific vectors found
-        if not attack_vectors:
-            attack_vectors = ["network"]
-
-        # Extract target assets
-        threat_intel = threat_data.get("threatIntelligence", {})
-        campaigns = threat_intel.get("entities", {}).get("campaigns", [])
-        target_assets = []
-
-        for campaign in campaigns:
-            sectors = campaign.get("targetSectors", [])
-            for sector in sectors:
-                if "financial" in str(sector).lower():
-                    target_assets.append("financial_data")
-                elif "healthcare" in str(sector).lower():
-                    target_assets.append("healthcare_data")
-                elif "government" in str(sector).lower():
-                    target_assets.append("government_systems")
-                elif "corporate" in str(sector).lower():
-                    target_assets.append("corporate_networks")
-
-        # Add OS-specific target assets if not already identified from campaigns
-        if not target_assets:
-            target_assets = ["corporate_networks", "endpoints"]
-
-        # Enhance target assets based on operating systems
-        for os_name in operating_systems:
-            os_lower = str(os_name).lower()
-            if "windows" in os_lower and "windows_endpoints" not in target_assets:
-                target_assets.append("windows_endpoints")
-            elif (
-                "linux" in os_lower or "unix" in os_lower
-            ) and "linux_servers" not in target_assets:
-                target_assets.append("linux_servers")
-            elif (
-                "mac" in os_lower or "darwin" in os_lower
-            ) and "macos_endpoints" not in target_assets:
-                target_assets.append("macos_endpoints")
-            elif (
-                "android" in os_lower or "ios" in os_lower
-            ) and "mobile_devices" not in target_assets:
-                target_assets.append("mobile_devices")
-
-        # Extract behavior patterns from capabilities and C2
-        behavior_patterns = []
-        persistence_mechanisms = technical_details.get("persistence", [])
-        if persistence_mechanisms:
-            behavior_patterns.append("persistence")
-
-        c2_data = threat_data.get("commandAndControl", {})
-        if c2_data.get("communicationMethods"):
-            behavior_patterns.append("command_control")
-
-        # Check for common behaviors in capabilities
-        for cap in capabilities:
-            cap_lower = str(cap).lower()
-            if "exfiltrat" in cap_lower:
-                behavior_patterns.append("data_exfiltration")
-            elif "lateral" in cap_lower:
-                behavior_patterns.append("lateral_movement")
-            elif "credential" in cap_lower:
-                behavior_patterns.append("credential_harvesting")
-
-        if not behavior_patterns:
-            behavior_patterns = ["persistence", "command_control"]
-
-        # Determine time characteristics
-        beaconing_patterns = c2_data.get("beaconingPatterns", [])
-        if beaconing_patterns:
-            # Check beacon frequency
-            frequencies = [pattern.get("frequency", "") for pattern in beaconing_patterns]
-            if any(
-                "continuous" in str(freq).lower() or "persistent" in str(freq).lower()
-                for freq in frequencies
-            ):
-                time_characteristics = "persistent"
-            elif any(
-                "periodic" in str(freq).lower() or "regular" in str(freq).lower()
-                for freq in frequencies
-            ):
-                time_characteristics = "periodic"
-            else:
-                time_characteristics = "burst"
-        else:
-            time_characteristics = "persistent"  # Default assumption
-
-        return ThreatCharacteristics(
-            threat_name=tool_name,
-            threat_type=threat_type,
-            attack_vectors=attack_vectors,
-            target_assets=target_assets,
-            behavior_patterns=behavior_patterns,
-            time_characteristics=time_characteristics,
-        )
 
     def save_to_file(self, data: Dict[str, Any], filename: str | None = None) -> str:
         """Save the threat intelligence data to a JSON file."""

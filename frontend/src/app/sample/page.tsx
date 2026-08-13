@@ -3,13 +3,13 @@ import { ArrowLeftIcon, ArrowRightIcon } from '@heroicons/react/24/outline';
 
 import { ReportNarrative } from '@/components/report/ReportNarrative';
 import { SourceEvidence } from '@/components/report/SourceEvidence';
-import { getQualityLabel } from '@/lib/report-query';
+import { formatTaxonomyLabel, getQualityLabel } from '@/lib/report-query';
 import { SAMPLE_REPORT } from '@/lib/sample-report';
 
 const sampleSignals = [
   { label: 'Confidence', value: `${SAMPLE_REPORT.quality_score?.toFixed(1)} / 5.0`, detail: getQualityLabel(SAMPLE_REPORT.quality_score) },
-  { label: 'Category', value: 'Malware', detail: 'Post-exploitation framework' },
-  { label: 'Threat family', value: 'Dual-use', detail: 'Assessment tool abused in attacks' },
+  { label: 'Category', value: formatTaxonomyLabel(SAMPLE_REPORT.category), detail: 'Canonical report category' },
+  { label: 'Threat family', value: formatTaxonomyLabel(SAMPLE_REPORT.threat_type), detail: 'Canonical report classification' },
   { label: 'Sources', value: `${SAMPLE_REPORT.web_sources.length} cited`, detail: 'Open and inspect each source' },
 ];
 

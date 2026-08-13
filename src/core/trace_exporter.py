@@ -2,7 +2,6 @@
 Trace Exporter for SentrySearch-Annotator Integration
 
 Captures detailed traces of the threat intelligence generation process including:
-- ML guidance generation
 - Quality validation steps
 - Web search sources and metadata
 
@@ -66,7 +65,6 @@ class TraceExporter:
             "stages": {
                 "initialization": {"start_time": timestamp},
                 "web_search": {},
-                "ml_guidance": {},
                 "quality_validation": {},
                 "completion": {},
             },

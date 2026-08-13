@@ -54,7 +54,7 @@ uv sync --locked
 uv run python dev/check_local_setup.py
 ```
 
-This verifies the local environment, documentation and frontend URL contract, backend linting and formatting, type checks, pytest, FastAPI imports, API docs rendering, health endpoint behavior, protected report creation without Supabase credentials, and the Cloudflare Worker request contract. It does not call OpenRouter, Supabase, AWS, Pinecone, Railway, Vercel, Cloudflare, or local PostgreSQL.
+This verifies the local environment, documentation and frontend URL contract, backend linting and formatting, type checks, pytest, FastAPI imports, API docs rendering, health endpoint behavior, and protected report creation without Supabase credentials. It does not call OpenRouter, Supabase, AWS, Railway, Vercel, Cloudflare, or local PostgreSQL.
 
 Frontend validation requires `frontend/node_modules`:
 
@@ -73,7 +73,6 @@ npm run build
 - **Auth:** Supabase JWT authentication.
 - **Data:** PostgreSQL stores report metadata and search indexes; S3 stores markdown reports and artifacts.
 - **Connected search:** PostgreSQL powers the authenticated report-library filters exposed by the product.
-- **Experimental retrieval:** the Pinecone and Cloudflare Worker prototype remains isolated from authenticated product search until it has an explicit user-isolation and indexing contract.
 - **AI:** A direct OpenRouter Chat Completions client executes the configured model and bounded hosted web search, maps typed provider errors, and validates strict Pydantic structured output.
 
 ## Related Projects

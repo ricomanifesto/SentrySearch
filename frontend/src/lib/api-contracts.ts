@@ -37,7 +37,6 @@ export interface ReportSource {
 
 export interface ReportCreateRequest {
   tool_name: string;
-  enable_ml_guidance?: boolean;
   analysis_type?: 'comprehensive' | 'quick' | 'custom';
 }
 

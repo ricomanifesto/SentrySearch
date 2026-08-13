@@ -106,8 +106,6 @@ async def main() -> int:
     run_command(["black", "--check", *PYTHON_VALIDATION_PATHS])
     run_command(["ty", "check", *PYTHON_VALIDATION_PATHS])
     run_command([sys.executable, "-B", "-m", "pytest", "tests"])
-    run_command(["node", "dev/check_worker.mjs"])
-
     sys.path.insert(0, str(REPO_ROOT))
     from dev.smoke_api import run_checks  # pylint: disable=import-outside-toplevel
 

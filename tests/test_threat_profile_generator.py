@@ -315,7 +315,6 @@ def test_generation_separates_web_research_from_structured_synthesis(
     )
     generator = ThreatProfileGenerator(enable_tracing=False, enable_metrics=False)
     generator.enable_quality_control = False
-    generator.enable_ml_guidance = False
 
     result = generator.get_threat_intelligence("Example Threat")
 

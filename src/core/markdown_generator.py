@@ -671,46 +671,6 @@ def generate_markdown(data):
                             md.append(f"- **{name}** ({resource_type}) - {focus}")
                 md.append("")
 
-        # NEW: ML-Based Anomaly Detection Guidance
-        logger.debug("Starting ML guidance section...")
-        ml_guidance = data.get("mlGuidance", {})
-        if isinstance(ml_guidance, dict) and ml_guidance.get("enabled", False):
-            md.append(ml_guidance.get("content", ""))
-            md.append("")
-
-            # Add metadata about ML guidance generation
-            threat_chars = ml_guidance.get("threatCharacteristics", {})
-            if threat_chars:
-                md.append("### ML Guidance Metadata")
-                md.append("")
-                md.append("| Attribute | Value |")
-                md.append("|-----------|-------|")
-                md.append(f"| **Threat Type** | {threat_chars.get('type', 'Unknown')} |")
-                md.append(
-                    f"| **Attack Vectors** | {', '.join(threat_chars.get('attackVectors', []))} |"
-                )
-                md.append(
-                    f"| **Behavior Patterns** | {', '.join(threat_chars.get('behaviorPatterns', []))} |"
-                )
-                md.append(
-                    f"| **Time Characteristics** | {threat_chars.get('timeCharacteristics', 'Unknown')} |"
-                )
-                md.append(f"| **Generated** | {ml_guidance.get('generatedAt', 'Unknown')} |")
-                md.append(f"| **Generator** | {ml_guidance.get('generator', 'Unknown')} |")
-                md.append("")
-        elif isinstance(ml_guidance, dict) and not ml_guidance.get("enabled", True):
-            # Show error information if ML guidance failed
-            md.append("## ML-Based Anomaly Detection Approaches")
-            md.append("")
-            md.append("**ML guidance generation failed**")
-            md.append("")
-            md.append("**Error**: ML guidance could not be generated.")
-            md.append("")
-            fallback = ml_guidance.get("fallbackGuidance", "")
-            if fallback:
-                md.append(f"**Fallback Guidance**: {fallback}")
-                md.append("")
-
         # Quality Assessment Section
         if "_quality_assessment" in data:
             quality = data["_quality_assessment"]

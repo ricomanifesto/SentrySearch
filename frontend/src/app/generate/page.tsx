@@ -14,7 +14,6 @@ import { AuthGuard } from '@/components/AuthGuard';
 
 interface GenerateFormData {
   tool_name: string;
-  enable_ml_guidance: boolean;
   analysis_type: 'comprehensive' | 'quick' | 'custom';
 }
 
@@ -60,9 +59,6 @@ export default function GeneratePage() {
   const router = useRouter();
   const [formData, setFormData] = useState<GenerateFormData>({
     tool_name: '',
-    // ML-powered guidance is disabled platform-wide until its backend service is
-    // restored; the base report still includes a detection and mitigation section.
-    enable_ml_guidance: false,
     analysis_type: 'comprehensive',
   });
 

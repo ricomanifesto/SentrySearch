@@ -100,14 +100,13 @@ def test_select_profile_sections_reports_sections_without_a_rubric():
         "technicalDetails": {"architecture": "client-server"},
         "toolOverview": {"description": "Example tool"},
         "detectionAndMitigation": {"iocs": {}},
-        "mlGuidance": {"enabled": True},
         "_quality_assessment": {"overall_score": 4.0},
     }
 
     selected, skipped = select_profile_sections(profile)
 
     assert list(selected) == ["technicalDetails", "detectionAndMitigation"]
-    assert skipped == ["toolOverview", "mlGuidance"]
+    assert skipped == ["toolOverview"]
 
 
 def test_validate_section_uses_the_structured_evaluation_contract():

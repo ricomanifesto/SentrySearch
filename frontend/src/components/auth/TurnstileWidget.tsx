@@ -7,7 +7,7 @@ type TurnstileOptions = {
   sitekey: string
   action: string
   theme: "light" | "dark" | "auto"
-  language: "en"
+  language: "en-US"
   size: "normal" | "compact" | "flexible"
   callback: (token: string) => void
   "expired-callback": () => void
@@ -50,7 +50,7 @@ export function TurnstileWidget({
       sitekey: siteKey,
       action,
       theme: "auto",
-      language: "en",
+      language: "en-US",
       size: "flexible",
       callback: (token) => onTokenChange(token),
       "expired-callback": () => onTokenChange(null),

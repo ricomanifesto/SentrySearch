@@ -43,6 +43,16 @@ const expectations = [
     pattern: /<SourceEvidence sources=\{SAMPLE_REPORT\.web_sources\}/,
   },
   {
+    name: 'derives the threat family from the canonical sample report',
+    source: sample,
+    pattern: /formatTaxonomyLabel\(SAMPLE_REPORT\.threat_type\)/,
+  },
+  {
+    name: 'does not hardcode a competing threat-family label',
+    source: sample,
+    absentPattern: /value: 'Dual-use'/,
+  },
+  {
     name: 'uses monospace for source and identifier detail',
     source: sample,
     pattern: /font-mono/,

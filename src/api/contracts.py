@@ -20,7 +20,6 @@ class ReportCreate(BaseModel):
         max_length=255,
         description="Target for threat intelligence analysis",
     )
-    enable_ml_guidance: bool = Field(default=True, description="Enable ML-powered guidance")
     analysis_type: Literal["comprehensive", "quick", "custom"] = Field(
         default="comprehensive", description="Analysis depth"
     )
