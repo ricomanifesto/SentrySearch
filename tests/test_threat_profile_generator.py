@@ -79,6 +79,37 @@ def test_attest_profile_sources_accepts_only_hosted_search_evidence(threat_profi
         )
 
 
+def test_source_attestation_prunes_explicit_unavailable_optional_urls(
+    threat_profile_data,
+):
+    unavailable = deepcopy(threat_profile_data)
+    unavailable["operationalGuidance"]["communityResources"][0][
+        "url"
+    ] = "No verified information found in the attested research"
+
+    attest_profile_sources(
+        unavailable,
+        [{"url": "https://example.com/report", "title": "Example report"}],
+    )
+
+    assert unavailable["operationalGuidance"]["communityResources"] == []
+
+
+def test_source_attestation_does_not_prune_required_source_placeholders(
+    threat_profile_data,
+):
+    unavailable = deepcopy(threat_profile_data)
+    unavailable["webSearchSources"]["primarySources"][0][
+        "url"
+    ] = "No verified information found in the attested research"
+
+    with pytest.raises(ValueError, match="requires at least one attested primary source"):
+        attest_profile_sources(
+            unavailable,
+            [{"url": "https://example.com/report", "title": "Example report"}],
+        )
+
+
 def test_source_attestation_accepts_declared_parent_domain(threat_profile_data):
     subdomain_source = deepcopy(threat_profile_data)
     subdomain_source["webSearchSources"]["primarySources"][0][

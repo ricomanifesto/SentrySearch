@@ -243,9 +243,23 @@ def attest_profile_sources(
     if not evidence_urls:
         raise ValueError("OpenRouter web search returned no source evidence")
 
-    claimed_sources = profile["webSearchSources"]["primarySources"]
-    claimed_references = profile["referencesAndIntelligenceSharing"]["sources"]
-    claimed_community_resources = profile["operationalGuidance"]["communityResources"]
+    claimed_sources = _prune_unavailable_source_records(
+        profile["webSearchSources"]["primarySources"]
+    )
+    claimed_references = _prune_unavailable_source_records(
+        profile["referencesAndIntelligenceSharing"]["sources"]
+    )
+    claimed_community_resources = _prune_unavailable_source_records(
+        profile["operationalGuidance"]["communityResources"]
+    )
+    profile["webSearchSources"]["primarySources"] = claimed_sources
+    profile["referencesAndIntelligenceSharing"]["sources"] = claimed_references
+    profile["operationalGuidance"]["communityResources"] = claimed_community_resources
+
+    if not claimed_sources:
+        raise ValueError("Threat profile requires at least one attested primary source")
+    if not claimed_references:
+        raise ValueError("Threat profile requires at least one attested reference source")
     claimed_urls: set[str] = set()
     for source in [
         *claimed_sources,
@@ -274,6 +288,17 @@ def attest_profile_sources(
             "Threat profile included URLs that were not returned by OpenRouter web search: "
             + ", ".join(unattested)
         )
+
+
+def _prune_unavailable_source_records(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Treat the explicit no-evidence sentinel as absence, never as a URL."""
+
+    sentinel = "no verified information found in the attested research"
+    return [
+        source
+        for source in sources
+        if not str(source.get("url", "")).strip().casefold().startswith(sentinel)
+    ]
 
 
 def _normalize_url(value: str) -> str:

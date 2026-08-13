@@ -394,10 +394,12 @@ Based on your comprehensive research findings, create a detailed profile in the 
 CRITICAL INSTRUCTIONS FOR OUTPUT:
 1. Return ONLY the JSON object populated with information from the attested evidence below
 2. NEVER invent, hallucinate, or fabricate URLs, sources, or technical details
-3. If the evidence does not cover a section, explicitly state "No verified information found in the attested research" rather than making up content
+3. If the evidence does not cover a prose field, explicitly state "No verified information found in the attested research" rather than making up content
 4. Every URL in webSearchSources, referencesAndIntelligenceSharing, and operationalGuidance MUST exactly match a URL in the attested source catalog
-5. Cross-reference claims across multiple attested sources when possible
-6. If the attested research is limited, acknowledge this limitation in the relevant sections
+5. NEVER put the no-verified-information text or any other placeholder in a URL field. Use an empty communityResources array when no community resource is attested
+6. primarySources and referencesAndIntelligenceSharing.sources MUST each contain at least one real URL from the attested source catalog
+7. Cross-reference claims across multiple attested sources when possible
+8. If the attested research is limited, acknowledge this limitation in the relevant sections
 
 Remember: Accuracy and source verification are more important than completeness.
 
