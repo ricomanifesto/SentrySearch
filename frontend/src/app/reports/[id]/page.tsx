@@ -16,6 +16,7 @@ import { ArrowLeftIcon, ArrowDownTrayIcon, TrashIcon } from '@heroicons/react/24
 import { api, type ReportDetail } from '@/lib/api';
 import { formatDate, formatRelativeTime, formatProcessingTime, downloadAsFile } from '@/lib/utils';
 import { SAMPLE_REPORT } from '@/lib/sample-report';
+import { getQualityLabel } from '@/lib/report-query';
 import { AuthGuard } from '@/components/AuthGuard';
 import { ReportNarrative } from '@/components/report/ReportNarrative';
 import { SourceEvidence } from '@/components/report/SourceEvidence';
@@ -177,11 +178,7 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
   }
 
   const qualityScore = report.quality_score;
-  const qualityLabel =
-    qualityScore == null ? 'Evaluator unavailable'
-      : qualityScore >= 4.0 ? 'High confidence'
-      : qualityScore >= 3.0 ? 'Reviewable'
-        : qualityScore >= 2.0 ? 'Needs review' : 'Low confidence';
+  const qualityLabel = qualityScore == null ? 'Evaluator unavailable' : getQualityLabel(qualityScore);
 
   const recordSummarySignals = [
     {

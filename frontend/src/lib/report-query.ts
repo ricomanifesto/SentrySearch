@@ -81,10 +81,11 @@ export function countActiveReportFilters(state: ReportQueryState): number {
 
 export function getQualityLabel(score: number | null): string {
   if (score == null) return 'Not scored';
-  if (score >= 4) return 'High confidence';
-  if (score >= 3) return 'Reviewable';
-  if (score >= 2) return 'Needs review';
-  return 'Low confidence';
+  if (score >= 4.5) return 'Excellent';
+  if (score >= 4) return 'Good';
+  if (score >= 3.5) return 'Acceptable';
+  if (score >= 3) return 'Needs Improvement';
+  return 'Poor';
 }
 
 export function formatTaxonomyLabel(value: string): string {

@@ -9,7 +9,7 @@ export const SAMPLE_REPORT: ReportDetail = {
   created_at: '2026-08-13T12:00:00.000Z',
   processing_time_ms: 0,
   status: 'completed',
-  content_preview: 'A reviewable profile of Cobalt Strike capabilities, observed abuse, and detection priorities.',
+  content_preview: 'An acceptable profile of Cobalt Strike capabilities, observed abuse, and detection priorities.',
   markdown_content: [
     '# Cobalt Strike',
     '',
@@ -26,7 +26,7 @@ export const SAMPLE_REPORT: ReportDetail = {
     '| Category | Post-exploitation framework |',
     '| Classification | Dual-use software |',
     '| ATT&CK software ID | S0154 |',
-    '| Review posture | Reviewable |',
+    '| Review posture | Acceptable |',
     '',
     '## Capabilities and Observed Use',
     '',

@@ -5,6 +5,16 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { ReportNarrative } from '../src/components/report/ReportNarrative';
 import { SourceEvidence } from '../src/components/report/SourceEvidence';
 import { GenerationProgress } from '../src/components/report/GenerationProgress';
+import { getQualityLabel } from '../src/lib/report-query';
+
+test('uses the generator quality vocabulary at every score threshold', () => {
+  assert.equal(getQualityLabel(null), 'Not scored');
+  assert.equal(getQualityLabel(4.5), 'Excellent');
+  assert.equal(getQualityLabel(4.0), 'Good');
+  assert.equal(getQualityLabel(3.5), 'Acceptable');
+  assert.equal(getQualityLabel(3.0), 'Needs Improvement');
+  assert.equal(getQualityLabel(2.9), 'Poor');
+});
 
 test('renders report markdown as semantic prose, tables, code, and guarded links', () => {
   const markdown = [
