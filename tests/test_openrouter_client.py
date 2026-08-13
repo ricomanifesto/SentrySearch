@@ -304,6 +304,21 @@ def test_model_client_maps_http_service_unavailable_to_retryable_failure():
     assert captured.value.response.headers["retry-after"] == "5"
 
 
+def test_model_client_maps_http_internal_server_error_to_retryable_failure():
+    client = model_client(
+        [
+            (
+                500,
+                {"error": {"code": 500, "message": "Provider failed"}},
+                {},
+            )
+        ]
+    )
+
+    with pytest.raises(ModelRetryableError, match="HTTP 500"):
+        client.messages.create(messages=[{"role": "user", "content": "hello"}])
+
+
 def test_model_client_rejects_incomplete_length_response():
     client = model_client([(200, chat_response('{"value":', finish_reason="length"), {})])
 

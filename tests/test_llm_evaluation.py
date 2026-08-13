@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from src.core.markdown_generator import render_quality_assessment
 from src.core.parallel_section_validator import ParallelSectionValidator, SectionEnhancement
 from src.core.section_validator import SectionValidator
+from src.core.threat_profile_schema import ForensicArtifacts
 from src.core.validation_criteria import (
     CONSISTENCY_PROMPT,
     ConsistencyEvaluation,
@@ -291,6 +292,118 @@ def test_parallel_enhancement_returns_changes_without_mutating_the_profile():
     assert list(enhancements) == list(profile)
     assert all(isinstance(result, SectionEnhancement) for result in enhancements.values())
     assert all(result.content["enhanced"] is True for result in enhancements.values())
+
+
+def test_attested_evidence_enhancement_uses_structured_output_without_web_tools():
+    enhanced = ForensicArtifacts(
+        fileSystemArtifacts=["C:\\Windows\\Temp\\payload.dll"],
+        registryArtifacts=["HKCU\\Software\\Example"],
+        networkArtifacts=["example.test:443"],
+        memoryArtifacts=["Search for the mutex Global\\Example"],
+        logArtifacts=["Event ID 4688 spawning rundll32.exe"],
+    )
+
+    class Messages:
+        def __init__(self):
+            self.request = None
+
+        def create(self, **kwargs):
+            self.request = kwargs
+            return SimpleNamespace(parsed=enhanced)
+
+    messages = Messages()
+    validator = SectionValidator(SimpleNamespace(messages=messages))
+
+    result = validator._enhance_section_from_attested_evidence(
+        "forensicArtifacts",
+        {
+            "fileSystemArtifacts": [],
+            "registryArtifacts": [],
+            "networkArtifacts": [],
+            "memoryArtifacts": [],
+            "logArtifacts": [],
+        },
+        "Example Threat",
+        "An incident report observed payload.dll and Event ID 4688.",
+    )
+
+    assert result == enhanced.model_dump(mode="json", by_alias=True)
+    assert messages.request is not None
+    assert messages.request["response_format"] is ForensicArtifacts
+    assert "tools" not in messages.request
+    assert "payload.dll" in messages.request["messages"][0]["content"]
+
+
+def test_parallel_enhancement_rejects_a_lower_scoring_change():
+    class RegressiveParallelValidator(ParallelSectionValidator):
+        def _enhance_section_with_web_search(self, section_name, content, tool_name):
+            return {**content, "candidate": "longer but worse"}
+
+        def validate_section(self, section_name, content):
+            result = evaluation_payload(overall_dimensions=1.5, recommendation="RETRY")
+            result["scores"]["overall"] = 1.5
+            result["section_name"] = section_name
+            result["is_critical"] = False
+            return result
+
+    validator = RegressiveParallelValidator(client=None)
+    profile = {"forensicArtifacts": {"value": "original"}}
+    validation_results = {
+        "section_validations": {
+            "forensicArtifacts": {
+                **evaluation_payload(overall_dimensions=2.0, recommendation="RETRY"),
+                "scores": {**evaluation_payload()["scores"], "overall": 2.0},
+            }
+        }
+    }
+
+    enhancements = validator._enhance_sections_parallel(validation_results, profile, "Example")
+
+    assert enhancements == {}
+
+
+def test_parallel_enhancement_limits_work_to_three_weakest_sections():
+    class ImprovingParallelValidator(ParallelSectionValidator):
+        def _enhance_section_with_web_search(self, section_name, content, tool_name):
+            return {**content, "enhanced": True}
+
+        def validate_section(self, section_name, content):
+            result = evaluation_payload(overall_dimensions=4.5)
+            result["scores"]["overall"] = 4.5
+            result["section_name"] = section_name
+            result["is_critical"] = False
+            return result
+
+    validator = ImprovingParallelValidator(client=None)
+    profile = {
+        "commandAndControl": {"value": "original"},
+        "detectionAndMitigation": {"value": "original"},
+        "threatIntelligence": {"value": "original"},
+        "forensicArtifacts": {"value": "original"},
+    }
+    scores = {
+        "commandAndControl": 3.0,
+        "detectionAndMitigation": 2.0,
+        "threatIntelligence": 1.5,
+        "forensicArtifacts": 0.0,
+    }
+    validation_results = {
+        "section_validations": {
+            name: {
+                **evaluation_payload(overall_dimensions=score, recommendation="RETRY"),
+                "scores": {**evaluation_payload()["scores"], "overall": score},
+            }
+            for name, score in scores.items()
+        }
+    }
+
+    enhancements = validator._enhance_sections_parallel(validation_results, profile, "Example")
+
+    assert list(enhancements) == [
+        "forensicArtifacts",
+        "threatIntelligence",
+        "detectionAndMitigation",
+    ]
 
 
 def test_parallel_metrics_report_observations_without_estimated_speedups():

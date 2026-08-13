@@ -225,7 +225,7 @@ class ModelClient:
         error_type = self._response_error_type(response)
         if response.status_code == 429 or error_type == "rate_limit_exceeded":
             raise ModelRateLimitError("OpenRouter rate limit exceeded", response=response)
-        if response.status_code in {502, 503, 504, 529} or error_type in RETRYABLE_ERROR_TYPES:
+        if response.status_code in {500, 502, 503, 504, 529} or error_type in RETRYABLE_ERROR_TYPES:
             detail = error_type or f"HTTP {response.status_code}"
             raise ModelRetryableError(
                 f"OpenRouter retryable provider error: {detail}", response=response

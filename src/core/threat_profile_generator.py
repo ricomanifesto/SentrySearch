@@ -540,7 +540,10 @@ END ATTESTED SOURCE CATALOG"""
 
                 # Validate the complete profile including ML guidance
                 validation_results = self.validator.validate_complete_profile(
-                    json_data, progress_callback, tool_name
+                    json_data,
+                    progress_callback,
+                    tool_name,
+                    evidence_text=(f"{research_text}\n\nATTESTED SOURCE CATALOG\n{source_catalog}"),
                 )
 
                 if self.enable_tracing and self.trace_exporter:

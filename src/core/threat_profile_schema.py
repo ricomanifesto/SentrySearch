@@ -219,6 +219,16 @@ class ThreatProfile(StrictModel):
     operational_guidance: OperationalGuidance = Field(alias="operationalGuidance")
 
 
+EVIDENCE_ENHANCEMENT_MODELS: dict[str, type[StrictModel]] = {
+    "technicalDetails": TechnicalDetails,
+    "commandAndControl": CommandAndControl,
+    "threatIntelligence": ThreatIntelligence,
+    "forensicArtifacts": ForensicArtifacts,
+    "detectionAndMitigation": DetectionAndMitigation,
+    "mitigationAndResponse": MitigationAndResponse,
+}
+
+
 def parse_threat_profile_response(response: Any) -> dict[str, Any]:
     """Return a validated profile from the model client's parsed payload."""
 

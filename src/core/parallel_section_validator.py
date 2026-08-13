@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from src.core.section_validator import SectionValidator
+from src.core.threat_profile_schema import EVIDENCE_ENHANCEMENT_MODELS
 from src.core.validation_criteria import SECTION_CRITERIA, select_profile_sections
 
 ProgressCallback = Callable[[float, str], None]
@@ -45,16 +46,20 @@ class ParallelSectionValidator(SectionValidator):
         profile: dict,
         progress_callback: Optional[ProgressCallback] = None,
         tool_name: str | None = None,
+        evidence_text: str | None = None,
     ) -> dict:
         """Use bounded concurrency through the validator's existing public surface."""
 
-        return self.validate_complete_profile_parallel(profile, progress_callback, tool_name)
+        return self.validate_complete_profile_parallel(
+            profile, progress_callback, tool_name, evidence_text
+        )
 
     def validate_complete_profile_parallel(
         self,
         profile: dict,
         progress_callback: Optional[ProgressCallback] = None,
         tool_name: str | None = None,
+        evidence_text: str | None = None,
     ) -> dict:
         """Evaluate eligible sections concurrently and aggregate their final state."""
 
@@ -89,7 +94,11 @@ class ParallelSectionValidator(SectionValidator):
         if tool_name:
             enhancement_started_at = time.perf_counter()
             enhancements = self._enhance_sections_parallel(
-                results, profile, tool_name, progress_callback
+                results,
+                profile,
+                tool_name,
+                progress_callback,
+                evidence_text=evidence_text,
             )
             enhancement_duration = time.perf_counter() - enhancement_started_at
 
@@ -173,17 +182,22 @@ class ParallelSectionValidator(SectionValidator):
         profile: dict,
         tool_name: str,
         progress_callback: Optional[ProgressCallback] = None,
+        evidence_text: str | None = None,
     ) -> dict[str, SectionEnhancement]:
         """Propose and evaluate section enhancements without mutating shared state."""
 
-        sections_to_enhance = []
-        for section_name, validation in validation_results["section_validations"].items():
+        candidates: list[tuple[float, int, str]] = []
+        for index, (section_name, validation) in enumerate(
+            validation_results["section_validations"].items()
+        ):
             score = validation.get("scores", {}).get("overall")
             if (
                 isinstance(score, (int, float))
-                and 0 < score < SECTION_CRITERIA[section_name].minimum_score
+                and 0 <= score < SECTION_CRITERIA[section_name].minimum_score
+                and (not evidence_text or section_name in EVIDENCE_ENHANCEMENT_MODELS)
             ):
-                sections_to_enhance.append(section_name)
+                candidates.append((float(score), index, section_name))
+        sections_to_enhance = [section_name for _, _, section_name in sorted(candidates)[:3]]
         if not sections_to_enhance:
             return {}
 
@@ -198,13 +212,33 @@ class ParallelSectionValidator(SectionValidator):
         def enhance_section(section_name: str) -> tuple[str, SectionEnhancement | None]:
             try:
                 original_content = profile_snapshot[section_name]
-                enhanced_content = self._enhance_section_with_web_search(
-                    section_name, deepcopy(original_content), tool_name
-                )
+                if evidence_text:
+                    enhanced_content = self._enhance_section_from_attested_evidence(
+                        section_name,
+                        deepcopy(original_content),
+                        tool_name,
+                        evidence_text,
+                    )
+                else:
+                    enhanced_content = self._enhance_section_with_web_search(
+                        section_name, deepcopy(original_content), tool_name
+                    )
                 if not enhanced_content or enhanced_content == original_content:
                     return section_name, None
 
                 validation = self.validate_section(section_name, enhanced_content)
+                previous_score = (
+                    validation_results["section_validations"][section_name]
+                    .get("scores", {})
+                    .get("overall")
+                )
+                enhanced_score = validation.get("scores", {}).get("overall")
+                if (
+                    not isinstance(previous_score, (int, float))
+                    or not isinstance(enhanced_score, (int, float))
+                    or enhanced_score <= previous_score
+                ):
+                    return section_name, None
                 validation["enhanced"] = True
                 return section_name, SectionEnhancement(
                     content=enhanced_content,
