@@ -36,7 +36,7 @@ DEFAULT_WEB_SEARCH_PARAMETERS = {
     "engine": "exa",
     "max_results": 5,
     "max_total_results": 15,
-    "search_context_size": "low",
+    "search_context_size": "medium",
 }
 RETRYABLE_ERROR_TYPES = {
     "provider_overloaded",

@@ -207,7 +207,7 @@ CONSISTENCY_PROMPT = """Evaluate consistency across these threat profile section
 
 {sections}
 
-Check technical claims, timelines, source use, and terminology. Return at most 5 concise inconsistencies and 3 concise recommendations. Return one consistency evaluation that matches the provided response schema."""
+Check technical claims, timelines, source use, and terminology. Score consistency from 0 to 5 using the same five-point scale as the section evaluations; this is not a 0 to 1 probability. Return at most 5 concise inconsistencies and 3 concise recommendations. Return one consistency evaluation that matches the provided response schema."""
 
 
 def build_section_evaluation_prompt(

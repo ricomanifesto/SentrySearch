@@ -8,6 +8,7 @@ from src.core.markdown_generator import render_quality_assessment
 from src.core.parallel_section_validator import ParallelSectionValidator, SectionEnhancement
 from src.core.section_validator import SectionValidator
 from src.core.validation_criteria import (
+    CONSISTENCY_PROMPT,
     ConsistencyEvaluation,
     SectionEvaluation,
     parse_section_evaluation_response,
@@ -55,6 +56,11 @@ def test_section_evaluation_schema_bounds_narrative_output():
         assert field_schema["items"]["maxLength"] == 240
 
     assert schema["properties"]["reasoning"]["maxLength"] == 480
+
+
+def test_consistency_prompt_uses_the_same_five_point_scale_as_section_scores():
+    assert "0 to 5" in CONSISTENCY_PROMPT
+    assert "not a 0 to 1" in CONSISTENCY_PROMPT
 
 
 def test_parsed_section_evaluation_calculates_its_own_overall_score():

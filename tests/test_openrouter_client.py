@@ -137,7 +137,7 @@ def test_model_client_posts_native_openrouter_chat_completion():
                     "engine": "exa",
                     "max_results": 5,
                     "max_total_results": 15,
-                    "search_context_size": "low",
+                    "search_context_size": "medium",
                 },
             }
         ],
