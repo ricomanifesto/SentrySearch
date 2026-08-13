@@ -10,6 +10,8 @@ const resetPasswordPath = resolve(here, '../src/app/auth/reset-password/page.tsx
 const authFramePath = resolve(here, '../src/components/auth/AuthFrame.tsx');
 const authGuardPath = resolve(here, '../src/components/AuthGuard.tsx');
 const authContextPath = resolve(here, '../src/contexts/AuthContext.tsx');
+const turnstilePath = resolve(here, '../src/components/auth/TurnstileWidget.tsx');
+const passwordPolicyPath = resolve(here, '../src/lib/password-policy.ts');
 const settingsPath = resolve(here, '../src/app/settings/page.tsx');
 const globalsPath = resolve(here, '../src/app/globals.css');
 
@@ -20,9 +22,11 @@ const resetPassword = await readFile(resetPasswordPath, 'utf8');
 const authFrame = await readFile(authFramePath, 'utf8');
 const authGuard = await readFile(authGuardPath, 'utf8');
 const authContext = await readFile(authContextPath, 'utf8');
+const turnstile = await readFile(turnstilePath, 'utf8');
+const passwordPolicy = await readFile(passwordPolicyPath, 'utf8');
 const settings = await readFile(settingsPath, 'utf8');
 const globals = await readFile(globalsPath, 'utf8');
-const combined = `${signIn}\n${signUp}\n${forgotPassword}\n${resetPassword}\n${authFrame}\n${authGuard}\n${settings}`;
+const combined = `${signIn}\n${signUp}\n${forgotPassword}\n${resetPassword}\n${authFrame}\n${authGuard}\n${settings}\n${turnstile}\n${passwordPolicy}`;
 
 const expectations = [
   {
@@ -73,12 +77,12 @@ const expectations = [
   {
     name: 'keeps sign-in routed through the auth API boundary',
     source: signIn,
-    pattern: /signIn\(email, password\)/,
+    pattern: /signIn\(email, password, captchaToken\)/,
   },
   {
     name: 'keeps sign-up routed through the auth API boundary',
     source: signUp,
-    pattern: /signUp\(email, password, name\)/,
+    pattern: /signUp\(email, password, name, captchaToken\)/,
   },
   {
     name: 'returns signup confirmations to the current app',
@@ -93,7 +97,7 @@ const expectations = [
   {
     name: 'requests recovery through the auth API boundary',
     source: forgotPassword,
-    pattern: /requestPasswordReset\(email\)/,
+    pattern: /requestPasswordReset\(email, captchaToken\)/,
   },
   {
     name: 'updates recovered passwords through the auth API boundary',
@@ -104,6 +108,31 @@ const expectations = [
     name: 'uses the supported Supabase recovery request',
     source: authContext,
     pattern: /resetPasswordForEmail\(email,[\s\S]*\/auth\/reset-password/,
+  },
+  {
+    name: 'requires a server-verified CAPTCHA token for public auth calls',
+    source: authContext,
+    pattern: /signUp[\s\S]*captchaToken[\s\S]*signInWithPassword[\s\S]*captchaToken[\s\S]*resetPasswordForEmail[\s\S]*captchaToken/,
+  },
+  {
+    name: 'renders Cloudflare Turnstile through the canonical script',
+    source: turnstile,
+    pattern: /https:\/\/challenges\.cloudflare\.com\/turnstile\/v0\/api\.js\?render=explicit/,
+  },
+  {
+    name: 'fails closed when the public Turnstile key is unavailable',
+    source: turnstile,
+    pattern: /if \(!siteKey\)[\s\S]*security check is unavailable/,
+  },
+  {
+    name: 'protects sign-in, sign-up, and password recovery forms',
+    source: `${signIn}\n${signUp}\n${forgotPassword}`,
+    pattern: /action="signin"[\s\S]*action="signup"[\s\S]*action="password_reset"/,
+  },
+  {
+    name: 'matches the production password policy',
+    source: passwordPolicy,
+    pattern: /password\.length >= 12[\s\S]*\/\[a-z\]\/[\s\S]*\/\[A-Z\]\/[\s\S]*\/\[0-9\]\//,
   },
   {
     name: 'uses the supported Supabase password update',

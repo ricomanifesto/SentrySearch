@@ -41,6 +41,7 @@ Update `.env.local` with your API server URL:
 NEXT_PUBLIC_API_URL=http://localhost:8001
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+NEXT_PUBLIC_TURNSTILE_SITE_KEY=your_public_turnstile_site_key
 ```
 
 ## Technology Stack

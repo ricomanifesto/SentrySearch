@@ -4,6 +4,7 @@ import { useState } from "react"
 import Link from "next/link"
 import { useAuth } from "@/contexts/AuthContext"
 import { AuthFrame, AuthNotice } from "@/components/auth/AuthFrame"
+import { TurnstileWidget } from "@/components/auth/TurnstileWidget"
 
 const fieldClass =
   "mt-2 block h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition-colors placeholder:text-zinc-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
@@ -13,15 +14,23 @@ export default function ForgotPassword() {
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
   const [success, setSuccess] = useState(false)
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null)
+  const [captchaResetKey, setCaptchaResetKey] = useState(0)
   const { requestPasswordReset } = useAuth()
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault()
     setError("")
+
+    if (!captchaToken) {
+      setError("Complete the security check before requesting a recovery link.")
+      return
+    }
+
     setLoading(true)
 
     try {
-      const { error } = await requestPasswordReset(email)
+      const { error } = await requestPasswordReset(email, captchaToken)
 
       if (error) {
         setError(error.message)
@@ -32,6 +41,8 @@ export default function ForgotPassword() {
       setError("Something went wrong. Try again.")
     } finally {
       setLoading(false)
+      setCaptchaToken(null)
+      setCaptchaResetKey((current) => current + 1)
     }
   }
 
@@ -88,9 +99,15 @@ export default function ForgotPassword() {
           />
         </div>
 
+        <TurnstileWidget
+          action="password_reset"
+          onTokenChange={setCaptchaToken}
+          resetKey={captchaResetKey}
+        />
+
         <button
           type="submit"
-          disabled={loading}
+          disabled={loading || !captchaToken}
           className="flex h-11 w-full items-center justify-center rounded-lg bg-zinc-950 px-4 text-sm font-medium text-white transition-colors hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-60"
         >
           {loading ? "Sending recovery link…" : "Send recovery link"}

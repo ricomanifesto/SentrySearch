@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { useAuth } from "@/contexts/AuthContext"
 import { AuthFrame } from "@/components/auth/AuthFrame"
+import { TurnstileWidget } from "@/components/auth/TurnstileWidget"
 
 const fieldClass =
   "mt-2 block h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition-colors placeholder:text-zinc-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
@@ -14,6 +15,8 @@ export default function SignIn() {
   const [password, setPassword] = useState("")
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null)
+  const [captchaResetKey, setCaptchaResetKey] = useState(0)
   const { signIn, user } = useAuth()
   const router = useRouter()
 
@@ -26,10 +29,16 @@ export default function SignIn() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError("")
+
+    if (!captchaToken) {
+      setError("Complete the security check before opening your workspace.")
+      return
+    }
+
     setLoading(true)
 
     try {
-      const { error } = await signIn(email, password)
+      const { error } = await signIn(email, password, captchaToken)
 
       if (error) {
         setError(error.message)
@@ -40,6 +49,8 @@ export default function SignIn() {
       setError("Something went wrong. Try again.")
     } finally {
       setLoading(false)
+      setCaptchaToken(null)
+      setCaptchaResetKey((current) => current + 1)
     }
   }
 
@@ -112,9 +123,15 @@ export default function SignIn() {
           />
         </div>
 
+        <TurnstileWidget
+          action="signin"
+          onTokenChange={setCaptchaToken}
+          resetKey={captchaResetKey}
+        />
+
         <button
           type="submit"
-          disabled={loading}
+          disabled={loading || !captchaToken}
           className="flex h-11 w-full items-center justify-center rounded-lg bg-zinc-950 px-4 text-sm font-medium text-white transition-colors hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-60"
         >
           {loading ? "Opening workspace…" : "Open workspace"}

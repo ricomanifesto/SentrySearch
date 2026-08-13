@@ -7,9 +7,21 @@ import { createClient, hasSupabaseConfig } from '@/lib/supabase'
 type AuthContextType = {
   user: User | null
   loading: boolean
-  signUp: (email: string, password: string, name: string) => Promise<{ error: Error | null }>
-  signIn: (email: string, password: string) => Promise<{ error: Error | null }>
-  requestPasswordReset: (email: string) => Promise<{ error: Error | null }>
+  signUp: (
+    email: string,
+    password: string,
+    name: string,
+    captchaToken: string
+  ) => Promise<{ error: Error | null }>
+  signIn: (
+    email: string,
+    password: string,
+    captchaToken: string
+  ) => Promise<{ error: Error | null }>
+  requestPasswordReset: (
+    email: string,
+    captchaToken: string
+  ) => Promise<{ error: Error | null }>
   updatePassword: (password: string) => Promise<{ error: Error | null }>
   signOut: () => Promise<{ error: Error | null }>
 }
@@ -46,7 +58,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => subscription.unsubscribe()
   }, [supabase])
 
-  const signUp = async (email: string, password: string, name: string) => {
+  const signUp = async (
+    email: string,
+    password: string,
+    name: string,
+    captchaToken: string
+  ) => {
     if (!supabase) {
       return { error: new Error('Authentication is not configured') }
     }
@@ -57,6 +74,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         password,
         options: {
           emailRedirectTo: `${window.location.origin}/auth/signin`,
+          captchaToken,
           data: {
             name,
           },
@@ -68,7 +86,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  const signIn = async (email: string, password: string) => {
+  const signIn = async (email: string, password: string, captchaToken: string) => {
     if (!supabase) {
       return { error: new Error('Authentication is not configured') }
     }
@@ -77,6 +95,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const { error } = await supabase.auth.signInWithPassword({
         email,
         password,
+        options: {
+          captchaToken,
+        },
       })
       return { error }
     } catch (error) {
@@ -97,7 +118,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  const requestPasswordReset = async (email: string) => {
+  const requestPasswordReset = async (email: string, captchaToken: string) => {
     if (!supabase) {
       return { error: new Error('Authentication is not configured') }
     }
@@ -105,6 +126,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo: `${window.location.origin}/auth/reset-password`,
+        captchaToken,
       })
       return { error }
     } catch (error) {

@@ -4,6 +4,7 @@ import { useState } from "react"
 import Link from "next/link"
 import { useAuth } from "@/contexts/AuthContext"
 import { AuthFrame, AuthNotice } from "@/components/auth/AuthFrame"
+import { meetsPasswordPolicy, passwordPolicySummary } from "@/lib/password-policy"
 
 const fieldClass =
   "mt-2 block h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition-colors placeholder:text-zinc-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
@@ -25,8 +26,8 @@ export default function ResetPassword() {
       return
     }
 
-    if (password.length < 6) {
-      setError("Use a password of at least 6 characters.")
+    if (!meetsPasswordPolicy(password)) {
+      setError(passwordPolicySummary)
       return
     }
 
@@ -90,7 +91,7 @@ export default function ResetPassword() {
     <AuthFrame
       eyebrow="Account recovery"
       title="Choose a new password"
-      description="Use at least 6 characters. Your new password will replace the previous one for this account."
+      description="Use at least 12 characters with lowercase, uppercase, a number, and a symbol. Your new password will replace the previous one for this account."
       footer={
         <Link
           href="/auth/signin"
@@ -119,9 +120,10 @@ export default function ResetPassword() {
             name="password"
             type="password"
             autoComplete="new-password"
+            minLength={12}
             required
             className={fieldClass}
-            placeholder="Use at least 6 characters"
+            placeholder="12+ characters with upper/lowercase, number, symbol"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
           />
@@ -139,6 +141,7 @@ export default function ResetPassword() {
             name="confirmPassword"
             type="password"
             autoComplete="new-password"
+            minLength={12}
             required
             className={fieldClass}
             placeholder="Repeat the password"
