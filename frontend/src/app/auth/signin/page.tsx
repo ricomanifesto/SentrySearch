@@ -6,9 +6,15 @@ import Link from "next/link"
 import { useAuth } from "@/contexts/AuthContext"
 import { AuthFrame } from "@/components/auth/AuthFrame"
 import { TurnstileWidget } from "@/components/auth/TurnstileWidget"
+import { getSafeNextPath } from "@/lib/auth-next"
 
 const fieldClass =
   "mt-2 block h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition-colors placeholder:text-zinc-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+
+function getSignInDestination() {
+  if (typeof window === "undefined") return "/dashboard"
+  return getSafeNextPath(new URLSearchParams(window.location.search).get("next"))
+}
 
 export default function SignIn() {
   const [email, setEmail] = useState("")
@@ -22,7 +28,7 @@ export default function SignIn() {
 
   useEffect(() => {
     if (user) {
-      router.push("/dashboard")
+      router.replace(getSignInDestination())
     }
   }, [user, router])
 
@@ -43,7 +49,7 @@ export default function SignIn() {
       if (error) {
         setError(error.message)
       } else {
-        router.push("/dashboard")
+        router.replace(getSignInDestination())
       }
     } catch {
       setError("Something went wrong. Try again.")

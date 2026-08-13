@@ -6,7 +6,7 @@ import { Navigation } from "@/components/layout/Navigation";
 export const metadata: Metadata = {
   metadataBase: new URL("https://sentry-search.vercel.app"),
   title: "SentrySearch | Threat Intelligence Research Workspace",
-  description: "SentrySearch turns scattered threat research into searchable security profiles for malware, attack tools, and targeted technologies, with persistent reports, hybrid search, and detection guidance in one workspace.",
+  description: "SentrySearch turns scattered threat research into source-backed security profiles for malware, attack tools, and targeted technologies, with persistent reports, report-library search, and detection guidance in one workspace.",
   keywords: ["threat intelligence", "cybersecurity", "AI", "malware analysis", "security research"],
   authors: [{ name: "Michael Rico", url: "https://ricomanifesto.com/" }],
   creator: "Michael Rico",
@@ -23,7 +23,7 @@ export const metadata: Metadata = {
     locale: "en_US",
     url: "https://sentry-search.vercel.app/",
     title: "SentrySearch | Threat Intelligence Research Workspace",
-    description: "SentrySearch turns scattered threat research into searchable security profiles, persistent reports, hybrid search, and detection guidance.",
+    description: "SentrySearch turns scattered threat research into source-backed security profiles, persistent reports, report-library search, and detection guidance.",
     siteName: "SentrySearch",
     images: [
       {
@@ -37,7 +37,7 @@ export const metadata: Metadata = {
   twitter: {
     card: "summary_large_image",
     title: "SentrySearch | Threat Intelligence Research Workspace",
-    description: "SentrySearch turns scattered threat research into searchable security profiles, persistent reports, hybrid search, and detection guidance.",
+    description: "SentrySearch turns scattered threat research into source-backed security profiles, persistent reports, report-library search, and detection guidance.",
     images: ["/social-preview.png"],
   },
 };
@@ -48,7 +48,7 @@ const structuredData = {
   name: "SentrySearch",
   url: "https://sentry-search.vercel.app/",
   description:
-    "SentrySearch turns scattered threat research into searchable security profiles for malware, attack tools, and targeted technologies, with persistent reports, hybrid search, and detection guidance in one workspace.",
+    "SentrySearch turns scattered threat research into source-backed security profiles for malware, attack tools, and targeted technologies, with persistent reports, report-library search, and detection guidance in one workspace.",
   applicationCategory: "SecurityApplication",
   operatingSystem: "Web",
   author: {

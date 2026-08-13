@@ -189,17 +189,23 @@ function SearchWorkspace() {
           ) : searchData?.reports.length === 0 ? (
             <div className="rounded-xl border border-dashed border-zinc-300 px-6 py-12 text-center">
               <h2 className="text-base font-semibold text-zinc-950">
-                {hasActiveFilters ? 'No saved intelligence matched' : 'Search is ready'}
+                {hasActiveFilters ? 'No saved intelligence matched' : 'Your report library is empty'}
               </h2>
               <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-zinc-500">
                 {hasActiveFilters
                   ? 'Adjust the target, threat type, date, or quality filters to broaden the search.'
-                  : 'Enter a target, category, or threat type to search across saved reports.'}
+                  : 'Generate a report first, then search its saved target, category, threat type, tags, and quality.'}
               </p>
               {hasActiveFilters && (
                 <button type="button" onClick={clearFilters} className={`${secondaryButtonClass} mt-6`}>
                   Clear workbench constraints
                 </button>
+              )}
+              {!hasActiveFilters && (
+                <Link href="/generate" className={`${secondaryButtonClass} mt-6`}>
+                  Generate your first report
+                  <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
+                </Link>
               )}
             </div>
           ) : (

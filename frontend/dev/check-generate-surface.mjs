@@ -52,6 +52,14 @@ const expectations = [
     pattern: /Research and synthesis can take a few minutes/,
   },
   {
+    name: 'maps generation failures through the canonical error policy',
+    pattern: /getGenerationErrorMessage\(error\)/,
+  },
+  {
+    name: 'does not blame every generation failure on target input',
+    absentPattern: /Check the target name and try again/,
+  },
+  {
     name: 'keeps mobile overflow guarded',
     pattern: /overflow-x-hidden/,
   },

@@ -33,6 +33,16 @@ const expectations = [
     pattern: /Sources/,
   },
   {
+    name: 'uses the production markdown renderer',
+    source: sample,
+    pattern: /<ReportNarrative markdown=\{SAMPLE_REPORT\.markdown_content \?\? ''\}/,
+  },
+  {
+    name: 'renders inspectable structured source links',
+    source: sample,
+    pattern: /<SourceEvidence sources=\{SAMPLE_REPORT\.web_sources\}/,
+  },
+  {
     name: 'uses monospace for source and identifier detail',
     source: sample,
     pattern: /font-mono/,

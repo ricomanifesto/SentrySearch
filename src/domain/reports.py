@@ -16,6 +16,18 @@ class ReportStatus(StrEnum):
     FAILED = "failed"
 
 
+class GenerationStage(StrEnum):
+    """Reader-visible stages emitted by the generation pipeline."""
+
+    QUEUED = "queued"
+    RESEARCHING = "researching"
+    SYNTHESIZING = "synthesizing"
+    VALIDATING = "validating"
+    FINALIZING = "finalizing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class ReportSortField(StrEnum):
     """Report fields exposed as stable sort keys."""
 

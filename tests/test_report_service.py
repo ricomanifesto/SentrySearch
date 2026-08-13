@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from contextlib import contextmanager
 from typing import Any, cast
 
 import pytest
@@ -86,3 +87,39 @@ def test_search_filter_expression_has_each_advertised_text_field_once():
     assert compiled.count("reports.tool_name ILIKE") == 1
     assert compiled.count("reports.category ILIKE") == 1
     assert compiled.count("reports.threat_type ILIKE") == 1
+
+
+def test_empty_quality_distribution_has_no_average_score():
+    class FakeQuery:
+        def __init__(self, *, scalar_value=None, rows=None):
+            self.scalar_value = scalar_value
+            self.rows = rows or []
+
+        def filter(self, *args):
+            return self
+
+        def scalar(self):
+            return self.scalar_value
+
+        def all(self):
+            return self.rows
+
+    class FakeSession:
+        def __init__(self):
+            self.queries = [FakeQuery(scalar_value=None), FakeQuery(rows=[])]
+
+        def query(self, *args):
+            return self.queries.pop(0)
+
+    class FakeDatabaseManager:
+        @contextmanager
+        def get_session(self):
+            yield FakeSession()
+
+    service = ReportStorageService()
+    service.db_manager = cast(Any, FakeDatabaseManager())
+
+    result = service.get_quality_score_distribution(user_id="new-workspace")
+
+    assert result["average"] is None
+    assert result["total_scored"] == 0

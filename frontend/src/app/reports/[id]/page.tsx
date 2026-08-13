@@ -15,36 +15,17 @@ import { ArrowLeftIcon, ArrowDownTrayIcon, TrashIcon } from '@heroicons/react/24
 
 import { api, type ReportDetail } from '@/lib/api';
 import { formatDate, formatRelativeTime, formatProcessingTime, downloadAsFile } from '@/lib/utils';
+import { SAMPLE_REPORT } from '@/lib/sample-report';
 import { AuthGuard } from '@/components/AuthGuard';
+import { ReportNarrative } from '@/components/report/ReportNarrative';
+import { SourceEvidence } from '@/components/report/SourceEvidence';
+import { GenerationProgress } from '@/components/report/GenerationProgress';
 
 const LOCAL_REPORT_DETAIL_FIXTURE_ID = 'local-visual-fixture';
 
 const localReportDetailFixture: ReportDetail = {
+  ...SAMPLE_REPORT,
   id: LOCAL_REPORT_DETAIL_FIXTURE_ID,
-  tool_name: 'Acme Remote Access Toolkit',
-  category: 'intrusion_set_tooling',
-  threat_type: 'credential_access',
-  quality_score: 4.3,
-  created_at: '2026-06-14T16:45:00.000Z',
-  processing_time_ms: 18420,
-  status: 'completed',
-  content_preview: 'Analyst-ready profile covering observed abuse paths, source posture, and extraction fields.',
-  markdown_content: [
-    '# Acme Remote Access Toolkit',
-    '',
-    'Acme Remote Access Toolkit is reviewed as a dual-use administration utility with credential access and persistence concerns.',
-    '',
-    '## Analyst Notes',
-    '- Validate vendor provenance before reuse.',
-    '- Compare observed behavior against saved extraction fields.',
-    '- Treat unauthenticated exposure as a follow-up investigation priority.',
-  ].join('\n'),
-  search_tags: ['remote-access', 'credential-access', 'source-review', 'fixture'],
-  threat_data: {
-    observed_capabilities: ['remote shell', 'credential capture', 'scheduled task persistence'],
-    source_posture: 'Representative local fixture for report detail visual QA',
-    review_priority: 'high',
-  },
 };
 
 const secondaryButtonClass =
@@ -82,6 +63,20 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
   const report = fixtureReport ?? fetchedReport;
   const isGenerating = report?.status === 'generating';
   const isFailed = report?.status === 'failed';
+  const [elapsedSeconds, setElapsedSeconds] = React.useState(0);
+
+  React.useEffect(() => {
+    if (!isGenerating || !report?.created_at) {
+      return;
+    }
+
+    const startedAt = Date.parse(report.created_at);
+    const updateElapsed = () => {
+      setElapsedSeconds(Number.isFinite(startedAt) ? (Date.now() - startedAt) / 1000 : 0);
+    };
+    const intervalId = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(intervalId);
+  }, [isGenerating, report?.created_at]);
 
   const deleteMutation = useMutation({
     mutationFn: () => api.deleteReport(reportId),
@@ -149,24 +144,11 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
             <ArrowLeftIcon className="h-4 w-4" aria-hidden="true" />
             Back to review queue
           </Link>
-          <section
-            data-contract="Report.GenerationProgress.v1"
-            className="mt-8 rounded-xl border border-zinc-200 bg-white px-6 py-14 text-center"
-            role="status"
-            aria-live="polite"
-          >
-            <span
-              className="mx-auto block h-6 w-6 animate-spin rounded-full border-2 border-zinc-300 border-t-blue-600"
-              aria-hidden="true"
-            />
-            <h1 className="mt-5 text-2xl font-semibold tracking-tight text-zinc-950">
-              Generating {report.tool_name}
-            </h1>
-            <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-zinc-500">
-              SentrySearch is researching sources and assembling the report. Research and
-              synthesis can take a few minutes; this page updates on its own when the record is ready.
-            </p>
-          </section>
+          <GenerationProgress
+            toolName={report.tool_name}
+            stage={report.generation_stage ?? 'queued'}
+            elapsedSeconds={elapsedSeconds}
+          />
         </div>
       </main>
     );
@@ -227,11 +209,11 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
     },
     {
       label: 'Source transparency',
-      description: report.search_tags && report.search_tags.length > 0
-        ? 'Search tags are attached for provenance and retrieval context.'
-        : 'No search tags are attached to this saved report record.',
-      status: report.search_tags && report.search_tags.length > 0 ? `${report.search_tags.length} tags` : 'No tags',
-      ready: Boolean(report.search_tags && report.search_tags.length > 0),
+      description: report.web_sources.length > 0
+        ? 'Structured source records are attached and can be opened beside the narrative.'
+        : 'No structured source evidence is attached to this saved report record.',
+      status: report.web_sources.length > 0 ? `${report.web_sources.length} sources` : 'No sources',
+      ready: report.web_sources.length > 0,
     },
     {
       label: 'Extraction audit',
@@ -305,11 +287,9 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
 
         <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem]">
           <section className="min-w-0 rounded-xl border border-zinc-200 bg-white p-6">
-            <h2 className="text-base font-semibold text-zinc-950">Intelligence narrative</h2>
+            <p className="text-base font-semibold text-zinc-950">Intelligence narrative</p>
             {report.markdown_content ? (
-              <pre className="mt-4 overflow-x-auto whitespace-pre-wrap break-words rounded-lg border border-zinc-200 bg-[var(--surface-0)] px-5 py-4 font-mono text-sm leading-7 text-zinc-800">
-                {report.markdown_content}
-              </pre>
+              <ReportNarrative markdown={report.markdown_content} />
             ) : (
               <div className="mt-4 rounded-lg border border-dashed border-zinc-300 px-5 py-8 text-center">
                 <p className="text-sm font-medium text-zinc-950">Narrative unavailable</p>
@@ -321,10 +301,13 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
           </section>
 
           <aside className="min-w-0 space-y-4">
+            <section className="rounded-xl border border-zinc-200 bg-white p-5">
+              <SourceEvidence sources={report.web_sources} />
+            </section>
             <section data-contract="Report.SourceReviewChecklist.v1" className="rounded-xl border border-zinc-200 bg-white p-5">
               <h2 className="text-base font-semibold text-zinc-950">Review readiness</h2>
               <p className="mt-1 text-sm leading-6 text-zinc-500">
-                Source context checked against the narrative, tags, and extraction data.
+                Use these signals to review the narrative, sources, and extraction data.
               </p>
               <div className="mt-4 space-y-3">
                 {sourceReviewChecklist.map((item) => (

@@ -240,9 +240,12 @@ def test_report_model_exposes_owner_for_api_authorization():
         threat_type="trojan",
         created_at=datetime.now(timezone.utc),
         user_id="owner-user",
+        status="generating",
+        generation_stage="researching",
     )
 
     assert report.to_dict()["user_id"] == "owner-user"
+    assert report.to_dict()["generation_stage"] == "researching"
 
 
 def test_create_report_starts_background_job_without_synchronous_generation(monkeypatch):
@@ -251,7 +254,7 @@ def test_create_report_starts_background_job_without_synchronous_generation(monk
     class Generator:
         enable_ml_guidance = True
 
-        def get_threat_intelligence(self, tool_name: str):
+        def get_threat_intelligence(self, tool_name: str, progress_callback=None):
             nonlocal generation_called
             generation_called = True
             return {"tool_name": tool_name}
@@ -343,7 +346,7 @@ def test_background_generation_marks_failed_without_leaking_detail(monkeypatch):
     class FailingGenerator:
         enable_ml_guidance = True
 
-        def get_threat_intelligence(self, tool_name: str):
+        def get_threat_intelligence(self, tool_name: str, progress_callback=None):
             return {"error": f"provider key leaked for {tool_name}"}
 
     monkeypatch.setattr(api_main, "ThreatProfileGenerator", FailingGenerator)
@@ -371,6 +374,19 @@ def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
         "coreMetadata": {"name": "Cobalt Strike"},
         "category": "malware",
         "threatType": "post_exploitation_framework",
+        "webSearchSources": {
+            "primarySources": [
+                {
+                    "title": "MITRE ATT&CK: Cobalt Strike",
+                    "url": "https://attack.mitre.org/software/S0154/",
+                    "domain": "attack.mitre.org",
+                    "accessDate": "2026-08-13",
+                    "relevanceScore": "0.96",
+                    "contentType": "Knowledge base",
+                    "keyFindings": "Maps observed behavior to ATT&CK techniques.",
+                }
+            ]
+        },
         "_quality_assessment": {"overall_score": 4.1},
         "_processing_time_ms": 965000,
     }
@@ -378,18 +394,32 @@ def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
     class Generator:
         enable_ml_guidance = True
 
-        def get_threat_intelligence(self, tool_name: str):
+        def get_threat_intelligence(self, tool_name: str, progress_callback=None):
+            if progress_callback:
+                progress_callback(0.2, "Researching three evidence areas in parallel...")
+                progress_callback(0.7, "Processing response...")
+                progress_callback(0.75, "Validating structured response...")
+                progress_callback(0.75, "Generating ML detection guidance...")
+                progress_callback(0.8, "Running quality validation...")
+                progress_callback(1.0, "Analysis complete!")
             return profile
 
     monkeypatch.setattr(api_main, "ThreatProfileGenerator", Generator)
 
     captured = {}
+    captured_stages = []
 
     def finalize_report(report_id, report_data, user_id=None):
         captured.update(report_id=report_id, report_data=report_data, user_id=user_id)
         return report_id
 
     monkeypatch.setattr(api_main.report_service, "finalize_report", finalize_report)
+    monkeypatch.setattr(
+        api_main.report_service,
+        "update_generation_stage",
+        lambda report_id, stage: captured_stages.append((report_id, stage)),
+        raising=False,
+    )
 
     api_main.run_report_generation("report-9", "Cobalt Strike", False, "analyst-user")
 
@@ -401,8 +431,24 @@ def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
     assert data["quality_score"] == 4.1
     assert data["processing_time_ms"] == 965000
     assert data["threat_type"] == "post_exploitation_framework"
+    assert data["web_sources"] == profile["webSearchSources"]["primarySources"]
     assert "cobalt strike" in data["search_tags"]
     assert isinstance(data["markdown_content"], str) and data["markdown_content"]
+    assert captured_stages == [
+        ("report-9", "researching"),
+        ("report-9", "synthesizing"),
+        ("report-9", "validating"),
+        ("report-9", "finalizing"),
+    ]
+
+
+def test_unknown_stored_generation_stage_falls_back_to_report_status():
+    assert (
+        api_main.get_generation_stage(
+            {"status": "generating", "generation_stage": "legacy-unknown-stage"}
+        )
+        == api_main.GenerationStage.QUEUED
+    )
 
 
 def test_markdown_generation_redacts_internal_exception_detail():
@@ -627,6 +673,55 @@ def test_report_detail_defaults_null_quality_score(monkeypatch):
     assert response.processing_time_ms == 0
     assert response.category == "unknown"
     assert response.threat_type == "unknown"
+    assert response.web_sources == []
+
+
+def test_report_detail_derives_structured_sources_from_legacy_profile(monkeypatch):
+    stored_report = {
+        "id": "report-legacy",
+        "tool_name": "Cobalt Strike",
+        "category": "malware",
+        "threat_type": "post_exploitation_framework",
+        "created_at": datetime.now(timezone.utc),
+        "quality_score": 4.1,
+        "processing_time_ms": 1200,
+        "generation_stage": "validating",
+        "user_id": "analyst-user",
+        "threat_data": {
+            "webSearchSources": {
+                "primarySources": [
+                    {
+                        "title": "MITRE ATT&CK: Cobalt Strike",
+                        "url": "https://attack.mitre.org/software/S0154/",
+                        "domain": "attack.mitre.org",
+                        "accessDate": "2026-08-13",
+                        "relevanceScore": "0.96",
+                        "contentType": "Knowledge base",
+                        "keyFindings": "Maps observed behavior to ATT&CK techniques.",
+                    }
+                ]
+            }
+        },
+    }
+    user = supabase_auth.AuthenticatedUser(
+        user_id="analyst-user",
+        email="analyst@example.com",
+        metadata={"role": "analyst"},
+    )
+
+    monkeypatch.setattr(
+        api_main.report_service, "get_report", lambda *args, **kwargs: stored_report
+    )
+
+    response = asyncio.run(api_main.get_report("report-legacy", True, user))
+
+    assert len(response.web_sources) == 1
+    source = response.web_sources[0]
+    assert source.title == "MITRE ATT&CK: Cobalt Strike"
+    assert source.url == "https://attack.mitre.org/software/S0154/"
+    assert source.access_date == "2026-08-13"
+    assert source.key_findings.startswith("Maps observed behavior")
+    assert response.generation_stage == "validating"
 
 
 def test_search_results_default_null_quality_score(monkeypatch):
@@ -791,7 +886,7 @@ def test_dashboard_analytics_filters_report_reads_by_authenticated_non_admin(mon
 
     def get_quality_score_distribution(**kwargs):
         captured_quality_kwargs.update(kwargs)
-        return {"average": 0.0, "distribution": [], "total_scored": 0}
+        return {"average": None, "distribution": [], "total_scored": 0}
 
     def get_threat_type_stats(**kwargs):
         captured_threat_kwargs.update(kwargs)
@@ -819,6 +914,7 @@ def test_dashboard_analytics_filters_report_reads_by_authenticated_non_admin(mon
     response = asyncio.run(api_main.get_dashboard_analytics(user))
 
     assert response["summary"]["total_reports"] == 0
+    assert response["summary"]["avg_quality_score"] is None
     assert all(kwargs["user_id"] == "analyst-user" for kwargs in captured_count_kwargs)
     assert captured_quality_kwargs["user_id"] == "analyst-user"
     assert captured_threat_kwargs["user_id"] == "analyst-user"

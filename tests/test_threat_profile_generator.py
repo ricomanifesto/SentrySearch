@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from src.core.section_validator import SectionValidator
 from src.core.parallel_section_validator import ParallelSectionValidator
+from src.core.markdown_generator import generate_markdown
 from src.core.threat_profile_generator import ThreatProfileGenerator
 from src.core.threat_profile_schema import (
     ThreatProfile,
@@ -24,6 +25,15 @@ def test_threat_profile_schema_preserves_public_field_names(threat_profile_data)
     assert dumped == threat_profile_data
     assert "coreMetadata" in dumped
     assert "core_metadata" not in dumped
+
+
+def test_generated_markdown_contains_each_primary_source_as_a_link(threat_profile_data):
+    markdown = generate_markdown(threat_profile_data)
+
+    assert "## Web Search Sources & Research Methodology" in markdown
+    for source in threat_profile_data["webSearchSources"]["primarySources"]:
+        url = source["url"]
+        assert f"[{url}]({url})" in markdown
 
 
 def test_threat_profile_schema_requires_source_backed_sections(threat_profile_data):

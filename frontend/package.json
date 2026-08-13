@@ -19,6 +19,8 @@
     "check:search-surface": "node dev/check-search-surface.mjs",
     "check:settings-surface": "node dev/check-settings-surface.mjs",
     "check:surface-coverage": "node dev/run-surface-checks.mjs",
+    "test:experience": "node --import tsx --test dev/auth-next.test.ts dev/generation-errors.test.ts dev/report-render.test.tsx",
+    "test:render": "node --import tsx --test dev/report-render.test.tsx",
     "start": "next start",
     "lint": "eslint ."
   },
@@ -34,6 +36,8 @@
     "next": "16.3.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.3.1"
   },
   "devDependencies": {
@@ -44,6 +48,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
     "tailwindcss": "^4",
+    "tsx": "^4.20.6",
     "typescript": "^5"
   }
 }

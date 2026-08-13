@@ -1,6 +1,7 @@
 /** Stable wire contracts shared by the SentrySearch frontend. */
 
 export type ReportStatus = 'generating' | 'completed' | 'failed';
+export type GenerationStage = 'queued' | 'researching' | 'synthesizing' | 'validating' | 'finalizing' | 'completed' | 'failed';
 export type ReportSortField = 'created_at' | 'quality_score' | 'tool_name' | 'processing_time_ms';
 export type SortOrder = 'asc' | 'desc';
 
@@ -13,13 +14,25 @@ export interface Report {
   created_at: string;
   processing_time_ms: number;
   status?: ReportStatus;
+  generation_stage?: GenerationStage;
   content_preview?: string;
 }
 
 export interface ReportDetail extends Report {
   markdown_content?: string;
   threat_data?: Record<string, unknown>;
+  web_sources: ReportSource[];
   search_tags: string[];
+}
+
+export interface ReportSource {
+  title: string;
+  url: string;
+  domain: string;
+  access_date: string;
+  relevance_score: string;
+  content_type: string;
+  key_findings: string;
 }
 
 export interface ReportCreateRequest {
@@ -63,7 +76,7 @@ export interface AnalyticsDashboard {
   summary: {
     total_reports: number;
     reports_this_week: number;
-    avg_quality_score: number;
+    avg_quality_score: number | null;
   };
   threat_distribution: Record<string, number>;
   quality_distribution: Record<string, number>;

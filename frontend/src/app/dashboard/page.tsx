@@ -54,7 +54,12 @@ export default function Dashboard() {
     queryFn: () => api.getDashboardAnalytics(),
   });
 
-  const { data: recentReports, isLoading: reportsLoading } = useQuery({
+  const {
+    data: recentReports,
+    isLoading: reportsLoading,
+    error: reportsError,
+    refetch: refetchReports,
+  } = useQuery({
     queryKey: ['reports', 'recent'],
     queryFn: () => api.listReports(1, 5),
   });
@@ -74,8 +79,12 @@ export default function Dashboard() {
     },
     {
       label: 'Analyst confidence',
-      value: analytics?.summary.avg_quality_score?.toFixed(1) ?? '0.0',
-      detail: 'Average report quality score',
+      value: analytics?.summary.avg_quality_score == null
+        ? '—'
+        : analytics.summary.avg_quality_score.toFixed(1),
+      detail: analytics?.summary.avg_quality_score == null
+        ? 'No scored reports yet'
+        : 'Average report quality score',
     },
   ];
 
@@ -149,6 +158,20 @@ export default function Dashboard() {
                     {[...Array(3)].map((_, i) => (
                       <div key={i} className="h-10 animate-pulse rounded-lg bg-zinc-100" />
                     ))}
+                  </div>
+                ) : reportsError ? (
+                  <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-5" role="alert">
+                    <p className="text-sm font-medium text-red-900">Couldn&apos;t load your reports</p>
+                    <p className="mt-1 text-sm leading-6 text-red-700">
+                      The review queue is unavailable right now. Your saved records have not been removed.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => refetchReports()}
+                      className="mt-3 text-sm font-medium text-red-800 underline underline-offset-4 hover:text-red-900"
+                    >
+                      Retry loading reports
+                    </button>
                   </div>
                 ) : recentReports?.reports.length ? (
                   <ul className="divide-y divide-zinc-100">

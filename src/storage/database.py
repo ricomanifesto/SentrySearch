@@ -68,6 +68,7 @@ class DatabaseManager:
         """
         statements = [
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'completed'",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_stage VARCHAR(20) DEFAULT 'completed'",
         ]
         try:
             with self.engine.begin() as connection:

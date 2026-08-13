@@ -139,7 +139,14 @@ class SentrySearchAPI {
 
   async getReport(reportId: string, includeContent: boolean = true): Promise<ReportDetail> {
     const response = await this.client.get(`/api/reports/${reportId}?include_content=${includeContent}`);
-    return response.data;
+    const report = response.data as ReportDetail;
+    return {
+      ...report,
+      generation_stage: report.generation_stage
+        ?? (report.status === 'generating' ? 'queued' : report.status ?? 'completed'),
+      web_sources: report.web_sources ?? [],
+      search_tags: report.search_tags ?? [],
+    };
   }
 
   async createReport(request: ReportCreateRequest): Promise<{ report_id: string; status: string; message: string }> {
@@ -228,7 +235,7 @@ class SentrySearchAPI {
             8,
             (report) => this.getReport(report.id, config.include_content),
           )
-        : summaries.map((report) => ({ ...report, search_tags: [] }));
+        : summaries.map((report) => ({ ...report, web_sources: [], search_tags: [] }));
     }
 
     return buildReportExport(reports, config);

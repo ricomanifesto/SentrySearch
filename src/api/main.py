@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import logging
 import time
 import uuid
+from urllib.parse import urlsplit
 from fastapi import FastAPI, HTTPException, Query, Depends, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -25,11 +26,12 @@ from src.api.contracts import (
     ReportCreate,
     ReportDetail,
     ReportResponse,
+    ReportSource,
     ReportSortKey,
     SearchFilters,
     SortDirection,
 )
-from src.domain.reports import ReportAnalyticsRecord, ReportStatus
+from src.domain.reports import GenerationStage, ReportAnalyticsRecord, ReportStatus
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +109,80 @@ def get_report_label(report: Dict[str, Any], field: str) -> str:
 
 def get_report_status(report: Dict[str, Any]) -> ReportStatus:
     return ReportStatus(report.get("status") or ReportStatus.COMPLETED.value)
+
+
+def get_generation_stage(report: Dict[str, Any]) -> GenerationStage:
+    raw_stage = report.get("generation_stage")
+    if raw_stage:
+        try:
+            return GenerationStage(raw_stage)
+        except ValueError:
+            logger.warning("Unknown stored generation stage: %s", raw_stage)
+    status = get_report_status(report)
+    return (
+        GenerationStage.QUEUED
+        if status is ReportStatus.GENERATING
+        else GenerationStage(status.value)
+    )
+
+
+def generation_stage_from_progress(message: str) -> GenerationStage | None:
+    """Map generator-owned progress messages onto the stable report lifecycle."""
+
+    normalized = message.casefold()
+    if "complete" in normalized:
+        return GenerationStage.FINALIZING
+    if "validat" in normalized or "quality" in normalized or "guidance" in normalized:
+        return GenerationStage.VALIDATING
+    if "processing" in normalized:
+        return GenerationStage.SYNTHESIZING
+    if "research" in normalized:
+        return GenerationStage.RESEARCHING
+    return None
+
+
+def get_report_sources(report: Dict[str, Any]) -> List[ReportSource]:
+    """Return a stable source-evidence contract, including for older report rows."""
+
+    raw_sources = report.get("web_sources")
+    if not isinstance(raw_sources, list) or not raw_sources:
+        threat_data = report.get("threat_data")
+        if isinstance(threat_data, dict):
+            web_search_sources = threat_data.get("webSearchSources")
+            if isinstance(web_search_sources, dict):
+                raw_sources = web_search_sources.get("primarySources")
+
+    if not isinstance(raw_sources, list):
+        return []
+
+    normalized: List[ReportSource] = []
+    for source in raw_sources:
+        if not isinstance(source, dict):
+            continue
+        url = str(source.get("url") or "").strip()
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            continue
+        normalized.append(
+            ReportSource(
+                title=str(source.get("title") or parsed.netloc),
+                url=url,
+                domain=str(source.get("domain") or parsed.netloc),
+                access_date=str(source.get("access_date") or source.get("accessDate") or "Unknown"),
+                relevance_score=str(
+                    source.get("relevance_score") or source.get("relevanceScore") or "Unknown"
+                ),
+                content_type=str(
+                    source.get("content_type") or source.get("contentType") or "Unknown"
+                ),
+                key_findings=str(
+                    source.get("key_findings")
+                    or source.get("keyFindings")
+                    or "No findings recorded"
+                ),
+            )
+        )
+    return normalized
 
 
 def build_analytics_trends(
@@ -283,6 +359,7 @@ async def list_reports(
                     created_at=report["created_at"],
                     processing_time_ms=report.get("processing_time_ms") or 0,
                     status=get_report_status(report),
+                    generation_stage=get_generation_stage(report),
                     content_preview=(
                         report.get("markdown_content", "")[:200] + "..."
                         if report.get("markdown_content")
@@ -336,8 +413,10 @@ async def get_report(
             created_at=report["created_at"],
             processing_time_ms=report.get("processing_time_ms") or 0,
             status=get_report_status(report),
+            generation_stage=get_generation_stage(report),
             markdown_content=report.get("markdown_content") if include_content else None,
             threat_data=report.get("threat_data"),
+            web_sources=get_report_sources(report),
             search_tags=report.get("search_tags", []),
         )
 
@@ -365,7 +444,27 @@ def run_report_generation(
     try:
         generator = ThreatProfileGenerator()
         generator.enable_ml_guidance = enable_ml_guidance
-        profile = generator.get_threat_intelligence(tool_name=tool_name)
+        last_stage: GenerationStage | None = None
+        stage_order = {
+            GenerationStage.RESEARCHING: 1,
+            GenerationStage.SYNTHESIZING: 2,
+            GenerationStage.VALIDATING: 3,
+            GenerationStage.FINALIZING: 4,
+        }
+
+        def persist_progress(_progress: float, message: str) -> None:
+            nonlocal last_stage
+            stage = generation_stage_from_progress(message)
+            if stage is not None and (
+                last_stage is None or stage_order[stage] > stage_order[last_stage]
+            ):
+                report_service.update_generation_stage(report_id, stage.value)
+                last_stage = stage
+
+        profile = generator.get_threat_intelligence(
+            tool_name=tool_name,
+            progress_callback=persist_progress,
+        )
 
         if not profile or "error" in profile:
             logger.error("Generation returned no usable result for report %s", report_id)
@@ -387,6 +486,7 @@ def run_report_generation(
             "processing_time_ms": elapsed_ms,
             "threat_data": profile,
             "quality_assessment": quality_data or None,
+            "web_sources": profile.get("webSearchSources", {}).get("primarySources", []),
             "markdown_content": generate_markdown(profile),
             "trace_data": profile.get("_trace_data"),
             "search_tags": [tag for tag in [tool_name.lower(), category.lower()] if tag],
@@ -523,6 +623,7 @@ async def search_reports(
                     created_at=report["created_at"],
                     processing_time_ms=report.get("processing_time_ms") or 0,
                     status=get_report_status(report),
+                    generation_stage=get_generation_stage(report),
                     content_preview=(
                         report.get("markdown_content", "")[:200] + "..."
                         if report.get("markdown_content")
@@ -722,7 +823,7 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
             "summary": {
                 "total_reports": total_reports,
                 "reports_this_week": recent_reports,
-                "avg_quality_score": quality_stats.get("average", 0.0),
+                "avg_quality_score": quality_stats.get("average"),
             },
             "threat_distribution": threat_stats,
             "quality_distribution": quality_stats.get("distribution", []),
@@ -731,7 +832,7 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
                     "id": r["id"],
                     "tool_name": r["tool_name"],
                     "created_at": r["created_at"],
-                    "quality_score": r.get("quality_score", 0.0),
+                    "quality_score": r.get("quality_score"),
                 }
                 for r in recent_activity
             ],

@@ -6,6 +6,8 @@ import { useRouter } from 'next/navigation';
 import { ArrowRightIcon } from '@heroicons/react/24/outline';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { getQualityLabel } from '@/lib/report-query';
+import { SAMPLE_REPORT, SAMPLE_REPORT_CARD } from '@/lib/sample-report';
 
 const steps = [
   {
@@ -16,23 +18,12 @@ const steps = [
   {
     n: '02',
     title: 'Research and synthesis',
-    body: 'Sources are gathered and analyzed into a structured profile, with the evidence kept alongside each section.',
+    body: 'Sources are gathered and analyzed into a structured profile, with inspectable evidence retained for review.',
   },
   {
     n: '03',
     title: 'Review the report',
     body: 'Read the narrative, detection guidance, and mitigations, then save it to your review queue.',
-  },
-];
-
-const sampleFindings = [
-  {
-    body: 'Modular backdoor linked to state-aligned espionage, typically delivered through DLL side-loading.',
-    cite: 'source · vendor threat report',
-  },
-  {
-    body: 'Detection: signed but anomalous DLLs loaded by otherwise trusted host processes.',
-    cite: 'guidance · detection',
   },
 ];
 
@@ -58,7 +49,7 @@ export default function Landing() {
             <p className="mt-5 max-w-md text-lg leading-8 text-zinc-600">
               SentrySearch researches malware, attack tools, and exposed
               technologies, then assembles a structured report with detection
-              guidance and the evidence behind every claim.
+              guidance and inspectable source evidence alongside the report.
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <Link
@@ -93,18 +84,20 @@ export default function Landing() {
           >
             <div className="flex items-center justify-between gap-3 border-b border-zinc-200 px-5 py-4">
               <div className="flex items-center gap-3">
-                <span className="font-mono text-base font-medium text-zinc-950">ShadowPad</span>
+                <span className="font-mono text-base font-medium text-zinc-950">{SAMPLE_REPORT.tool_name}</span>
                 <span className="rounded-md bg-blue-50 px-2 py-1 text-sm font-medium text-blue-700">
-                  High confidence
+                  {getQualityLabel(SAMPLE_REPORT.quality_score)}
                 </span>
               </div>
               <span className="text-sm text-zinc-400">Example report</span>
             </div>
             <div className="divide-y divide-zinc-100">
-              {sampleFindings.map((f) => (
-                <div key={f.cite} className="px-5 py-4">
-                  <p className="text-base leading-7 text-zinc-800">{f.body}</p>
-                  <p className="mt-2 font-mono text-sm text-zinc-500">{f.cite}</p>
+              {SAMPLE_REPORT_CARD.findings.map((finding, index) => (
+                <div key={finding} className="px-5 py-4">
+                  <p className="text-base leading-7 text-zinc-800">{finding}</p>
+                  <p className="mt-2 font-mono text-sm text-zinc-500">
+                    source · {SAMPLE_REPORT.web_sources[index]?.domain}
+                  </p>
                 </div>
               ))}
             </div>

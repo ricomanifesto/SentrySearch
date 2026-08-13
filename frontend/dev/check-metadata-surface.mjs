@@ -36,7 +36,7 @@ const expectations = [
   {
     name: 'uses the evidence-backed public project description',
     source: layout,
-    pattern: /description:\s*"SentrySearch turns scattered threat research into searchable security profiles for malware, attack tools, and targeted technologies, with persistent reports, hybrid search, and detection guidance in one workspace\."/,
+    pattern: /description:\s*"SentrySearch turns scattered threat research into source-backed security profiles for malware, attack tools, and targeted technologies, with persistent reports, report-library search, and detection guidance in one workspace\."/,
   },
   {
     name: 'removes the incorrect unhyphenated hostname',

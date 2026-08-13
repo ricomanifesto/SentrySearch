@@ -9,6 +9,7 @@ import {
 } from '@heroicons/react/24/outline';
 
 import { api } from '@/lib/api';
+import { getGenerationErrorMessage } from '@/lib/generation-errors';
 import { AuthGuard } from '@/components/AuthGuard';
 
 interface GenerateFormData {
@@ -80,6 +81,7 @@ export default function GeneratePage() {
 
   const isLoading = generateMutation.isPending;
   const error = generateMutation.error;
+  const errorMessage = error ? getGenerationErrorMessage(error) : null;
   const targetName = formData.tool_name.trim();
   const fieldClass =
     'mt-2 block h-12 w-full rounded-lg border border-zinc-300 bg-white px-3 text-base text-zinc-950 outline-none transition-colors placeholder:text-zinc-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:opacity-60';
@@ -119,15 +121,13 @@ export default function GeneratePage() {
                 Use the exact name analysts or asset owners use in tickets and reports.
               </p>
 
-              {error && (
+              {errorMessage && (
                 <div role="alert" className="mt-6 rounded-lg border border-red-200 bg-red-50 p-4">
                   <div className="flex gap-3">
                     <ExclamationTriangleIcon className="mt-0.5 h-5 w-5 shrink-0 text-red-600" aria-hidden="true" />
                     <div>
                       <p className="text-sm font-medium text-red-900">Couldn&apos;t generate the report</p>
-                      <p className="mt-1 text-sm leading-6 text-red-700">
-                        Check the target name and try again.
-                      </p>
+                      <p className="mt-1 text-sm leading-6 text-red-700">{errorMessage}</p>
                     </div>
                   </div>
                 </div>

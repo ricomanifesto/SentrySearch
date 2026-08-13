@@ -10,6 +10,7 @@ import json
 from sqlalchemy import asc, desc, or_
 
 from src.domain.reports import (
+    GenerationStage,
     ReportAnalyticsRecord,
     ReportFilters,
     ReportSortField,
@@ -486,6 +487,10 @@ class ReportStorageService:
                     trace_s3_key=trace_s3_key,
                     api_key_hash=api_key_hash,
                     user_id=user_id,
+                    status=report_data.get("status", ReportStatus.COMPLETED.value),
+                    generation_stage=report_data.get(
+                        "generation_stage", GenerationStage.COMPLETED.value
+                    ),
                     is_flagged=report_data.get("is_flagged", False),
                     version=report_data.get("version", "1.0"),
                     search_tags=report_data.get("search_tags", []),
@@ -519,6 +524,7 @@ class ReportStorageService:
                     category=category,
                     threat_type=threat_type,
                     status=ReportStatus.GENERATING.value,
+                    generation_stage=GenerationStage.QUEUED.value,
                     user_id=user_id,
                     version="1.0",
                     search_tags=[],
@@ -581,6 +587,7 @@ class ReportStorageService:
                     )
                     report_data["id"] = report_id
                     report_data["status"] = ReportStatus.COMPLETED.value
+                    report_data["generation_stage"] = GenerationStage.COMPLETED.value
                     return self.store_report(report_data, user_id=user_id)
 
                 if report_data.get("tool_name"):
@@ -604,6 +611,7 @@ class ReportStorageService:
                 if user_id and not report.user_id:
                     report.user_id = user_id
                 report.status = ReportStatus.COMPLETED.value
+                report.generation_stage = GenerationStage.COMPLETED.value
 
                 session.commit()
                 logger.info(f"Report finalized successfully: {report_id}")
@@ -613,6 +621,26 @@ class ReportStorageService:
             logger.error(f"Error finalizing report: {e}")
             raise
 
+    def update_generation_stage(self, report_id: str, stage: GenerationStage | str) -> bool:
+        """Persist an observable background-generation stage without changing status."""
+
+        try:
+            normalized_stage = GenerationStage(stage)
+            with self.db_manager.get_session() as session:
+                report = session.query(Report).filter(Report.id == report_id).first()
+                if report is None:
+                    return False
+                report.generation_stage = normalized_stage.value
+                session.commit()
+                logger.info("Report %s generation stage: %s", report_id, normalized_stage.value)
+                return True
+        except (ValueError, TypeError):
+            logger.warning("Ignored unknown generation stage for report %s: %s", report_id, stage)
+            return False
+        except Exception as e:
+            logger.error(f"Error updating report generation stage: {e}")
+            return False
+
     def mark_report_failed(self, report_id: str) -> bool:
         """Mark a pending report as failed so the UI can surface a retry state."""
         try:
@@ -621,6 +649,7 @@ class ReportStorageService:
                 if report is None:
                     return False
                 report.status = ReportStatus.FAILED.value
+                report.generation_stage = GenerationStage.FAILED.value
                 session.commit()
                 logger.info(f"Report marked failed: {report_id}")
                 return True
@@ -642,6 +671,7 @@ class ReportStorageService:
                 # fetch (the record view), not the list, so they're added here rather
                 # than in the shared, list-facing to_dict().
                 report_dict["threat_data"] = report.threat_data
+                report_dict["web_sources"] = report.web_sources or []
                 report_dict["search_tags"] = report.search_tags or []
 
                 # Load content from S3 if requested
@@ -989,7 +1019,7 @@ class ReportStorageService:
                 }
 
                 return {
-                    "average": float(avg_quality) if avg_quality else 0.0,
+                    "average": float(avg_quality) if avg_quality is not None else None,
                     "distribution": buckets,
                     "total_scored": len(scores),
                 }

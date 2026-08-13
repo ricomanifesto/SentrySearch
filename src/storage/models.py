@@ -57,6 +57,7 @@ class Report(Base):
     # "completed" or "failed". Defaults to "completed" so rows created before this
     # column existed are treated as finished.
     status = Column(String(20), default="completed", index=True)
+    generation_stage = Column(String(20), default="completed")
 
     # Flags and metadata
     is_flagged = Column(Boolean, default=False)
@@ -78,6 +79,7 @@ class Report(Base):
             "confidence_score": _optional_float(self.confidence_score),
             "processing_time_ms": self.processing_time_ms or 0,
             "status": self.status or "completed",
+            "generation_stage": self.generation_stage or self.status or "completed",
             "ml_techniques": self.ml_techniques,
             "user_id": self.user_id,
             "is_flagged": self.is_flagged,

@@ -27,6 +27,7 @@ jobs:
       - run: npm ci
       - run: node ../dev/check_worker.mjs
       - run: npm run check:surface-coverage
+      - run: npm run test:experience
       - run: npm run lint
       - run: npm run build
 

@@ -34,6 +34,8 @@ const expectations = [
   { name: 'shows confidence as analyst confidence', source: searchPage, pattern: /Analyst confidence/ },
   { name: 'keeps search copy aligned with supported fields', source: searchPage, pattern: /Search by target, category, or threat type/ },
   { name: 'does not advertise unsupported full-text search', source: searchPage, absentPattern: /full report text|report body search/ },
+  { name: 'explains the empty library before asking for a query', source: searchPage, pattern: /Your report library is empty/ },
+  { name: 'routes an empty library to first report generation', source: searchPage, pattern: /Generate your first report/ },
   { name: 'uses a non-leaky search error state', source: searchPage, pattern: /Saved intelligence search could not be completed/ },
   { name: 'keeps accessible search loading semantics', source: searchPage, pattern: /role="status" aria-label="Searching saved intelligence"/ },
   { name: 'keeps accessible search error semantics', source: searchPage, pattern: /role="alert"/ },

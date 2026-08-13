@@ -7,7 +7,7 @@
   </picture>
 </div>
 
-SentrySearch turns scattered threat research into searchable security profiles for malware, attack tools, and targeted technologies, with persistent reports, hybrid search, and detection guidance in one workspace.
+SentrySearch turns scattered threat research into source-backed security profiles for malware, attack tools, and targeted technologies, with persistent reports, report-library search, and detection guidance in one workspace.
 
 **Live app:** [sentry-search.vercel.app](https://sentry-search.vercel.app)
 
@@ -18,7 +18,7 @@ SentrySearch generates structured threat intelligence profiles from a user-suppl
 ## Core Capabilities
 
 - **Threat analysis:** generates technical profiles with threat landscape context and detection guidance.
-- **Hybrid search:** combines vector similarity search with keyword retrieval across threat intelligence data.
+- **Report-library search:** filters each authenticated workspace by saved target, category, threat type, date, tags, and quality.
 - **Report management:** stores generated reports with filtering, search, quality scores, and processing metadata.
 - **User isolation:** supports authenticated, multi-tenant report access with admin controls.
 
@@ -60,6 +60,8 @@ Frontend validation requires `frontend/node_modules`:
 
 ```bash
 cd frontend
+npm run test:experience
+npm run check:surface-coverage
 npm run lint
 npm run build
 ```
@@ -70,7 +72,8 @@ npm run build
 - **Backend:** FastAPI, SQLAlchemy, Pydantic, deployed on Railway.
 - **Auth:** Supabase JWT authentication.
 - **Data:** PostgreSQL stores report metadata and search indexes; S3 stores markdown reports and artifacts.
-- **Search:** Pinecone provides vector similarity search; Cloudflare Workers orchestrate hybrid search.
+- **Connected search:** PostgreSQL powers the authenticated report-library filters exposed by the product.
+- **Experimental retrieval:** the Pinecone and Cloudflare Worker prototype remains isolated from authenticated product search until it has an explicit user-isolation and indexing contract.
 - **AI:** A direct OpenRouter Chat Completions client executes the configured model and bounded hosted web search, maps typed provider errors, and validates strict Pydantic structured output.
 
 ## Related Projects

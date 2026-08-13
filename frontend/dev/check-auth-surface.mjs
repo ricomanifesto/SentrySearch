@@ -12,6 +12,7 @@ const authGuardPath = resolve(here, '../src/components/AuthGuard.tsx');
 const authContextPath = resolve(here, '../src/contexts/AuthContext.tsx');
 const turnstilePath = resolve(here, '../src/components/auth/TurnstileWidget.tsx');
 const passwordPolicyPath = resolve(here, '../src/lib/password-policy.ts');
+const authNextPath = resolve(here, '../src/lib/auth-next.ts');
 const settingsPath = resolve(here, '../src/app/settings/page.tsx');
 const globalsPath = resolve(here, '../src/app/globals.css');
 
@@ -24,6 +25,7 @@ const authGuard = await readFile(authGuardPath, 'utf8');
 const authContext = await readFile(authContextPath, 'utf8');
 const turnstile = await readFile(turnstilePath, 'utf8');
 const passwordPolicy = await readFile(passwordPolicyPath, 'utf8');
+const authNext = await readFile(authNextPath, 'utf8');
 const settings = await readFile(settingsPath, 'utf8');
 const globals = await readFile(globalsPath, 'utf8');
 const combined = `${signIn}\n${signUp}\n${forgotPassword}\n${resetPassword}\n${authFrame}\n${authGuard}\n${settings}\n${turnstile}\n${passwordPolicy}`;
@@ -148,6 +150,36 @@ const expectations = [
     name: 'uses product-specific protected-route boundary copy',
     source: authGuard,
     pattern: /Sign in to review saved intelligence/,
+  },
+  {
+    name: 'preserves protected-route intent through sign-in',
+    source: authGuard,
+    pattern: /\/auth\/signin\?next=\$\{encodeURIComponent\(nextPath\)\}/,
+  },
+  {
+    name: 'returns sign-in to a validated internal destination',
+    source: signIn,
+    pattern: /getSafeNextPath/,
+  },
+  {
+    name: 'rejects external auth return destinations',
+    source: authNext,
+    pattern: /url\.origin !== origin/,
+  },
+  {
+    name: 'lets Turnstile follow the active color scheme',
+    source: turnstile,
+    pattern: /theme: "auto"/,
+  },
+  {
+    name: 'pins Turnstile to the page language',
+    source: turnstile,
+    pattern: /language: "en"/,
+  },
+  {
+    name: 'keeps the guarded loading boundary on shared theme tokens',
+    source: authGuard,
+    absentPattern: /#f7f7f3|#171915|#d8d9ce|#c8c9bd|#20231f|#5d6458/,
   },
   {
     name: 'uses accessible workspace access loading semantics',

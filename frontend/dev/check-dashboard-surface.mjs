@@ -82,6 +82,26 @@ const expectations = [
     pattern: /Generate your first report to start the review queue/,
   },
   {
+    name: 'keeps report-load failures distinct from an empty review queue',
+    source: dashboard,
+    pattern: /Couldn&apos;t load your reports/,
+  },
+  {
+    name: 'offers a retry for a report-load failure',
+    source: dashboard,
+    pattern: /refetchReports/,
+  },
+  {
+    name: 'does not grade an unscored workspace as zero',
+    source: dashboard,
+    pattern: /No scored reports yet/,
+  },
+  {
+    name: 'does not fall back to a zero confidence score',
+    source: dashboard,
+    absentPattern: /avg_quality_score\?\.toFixed\(1\) \?\? '0\.0'/,
+  },
+  {
     name: 'frames threat distribution as a coverage map',
     source: dashboard,
     pattern: /Coverage map/,
