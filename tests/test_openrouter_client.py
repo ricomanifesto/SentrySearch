@@ -510,14 +510,53 @@ def test_model_client_maps_http_internal_server_error_to_retryable_failure():
         client.messages.create(messages=[{"role": "user", "content": "hello"}])
 
 
-def test_model_client_rejects_incomplete_length_response():
-    client = model_client([(200, chat_response('{"value":', finish_reason="length"), {})])
+def test_model_client_retries_length_response_with_a_larger_bounded_budget(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda *_args: None)
+    requests = []
+    client = model_client(
+        [
+            (200, chat_response('{"value":', finish_reason="length"), {}),
+            (200, chat_response('{"value":"recovered"}'), {}),
+        ],
+        requests,
+    )
+
+    result = client.messages.create(
+        messages=[{"role": "user", "content": "hello"}],
+        response_format=StructuredResult,
+        max_tokens=2_000,
+    )
+
+    assert result.parsed.value == "recovered"
+    assert [json.loads(request.content)["max_tokens"] for request in requests] == [2_000, 4_000]
+    assert "session_id" not in json.loads(requests[0].content)
+    assert json.loads(requests[1].content)["session_id"].startswith("sentrysearch-empty-retry-")
+
+
+def test_model_client_rejects_repeated_incomplete_length_responses(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda *_args: None)
+    requests = []
+    client = model_client(
+        [
+            (200, chat_response('{"value":', finish_reason="length"), {}),
+            (200, chat_response('{"value":', finish_reason="length"), {}),
+            (200, chat_response('{"value":', finish_reason="length"), {}),
+        ],
+        requests,
+    )
 
     with pytest.raises(ModelClientError, match="incomplete"):
         client.messages.create(
             messages=[{"role": "user", "content": "hello"}],
             response_format=StructuredResult,
+            max_tokens=16_384,
         )
+
+    assert [json.loads(request.content)["max_tokens"] for request in requests] == [
+        16_384,
+        32_768,
+        32_768,
+    ]
 
 
 def test_model_client_marks_invalid_structured_output_retryable():

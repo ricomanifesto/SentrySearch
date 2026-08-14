@@ -28,6 +28,7 @@ from src.domain.model_routes import (
 
 EMPTY_RESPONSE_RETRIES = 3
 EMPTY_RESPONSE_RETRY_DELAY = 1.5
+MAX_COMPLETION_TOKENS = 32_768
 
 DEFAULT_MODEL = "google/gemma-4-26b-a4b-it:free"
 DEFAULT_GENERATION_FALLBACK_MODEL = "google/gemma-4-26b-a4b-it"
@@ -217,9 +218,17 @@ class ModelClient:
                     response=response,
                 )
             if finish_reason == "length":
-                raise ModelClientError(
+                last_empty_error = ModelClientError(
                     f"OpenRouter response was incomplete: {finish_reason or 'unknown'}"
                 )
+                if attempt + 1 < EMPTY_RESPONSE_RETRIES:
+                    request["max_tokens"] = min(
+                        int(request["max_tokens"]) * 2,
+                        MAX_COMPLETION_TOKENS,
+                    )
+                    time.sleep(EMPTY_RESPONSE_RETRY_DELAY * (attempt + 1))
+                    continue
+                raise last_empty_error
 
             text = self._extract_text(choice)
             if not text:
