@@ -24,7 +24,8 @@ EMPTY_RESPONSE_RETRY_DELAY = 1.5
 
 DEFAULT_MODEL = "google/gemma-4-26b-a4b-it:free"
 MODEL_ENV_VAR = "SENTRYSEARCH_MODEL"
-DEFAULT_EVALUATION_MODEL = "anthropic/claude-haiku-4.5"
+DEFAULT_EVALUATION_MODEL = "google/gemma-4-31b-it:free"
+DEFAULT_EVALUATION_PROVIDER = "google-ai-studio"
 EVALUATION_MODEL_ENV_VAR = "SENTRYSEARCH_EVALUATION_MODEL"
 OPENROUTER_API_KEY_ENV_VAR = "OPENROUTER_API_KEY"
 OPENROUTER_BASE_URL_ENV_VAR = "OPENROUTER_BASE_URL"
@@ -72,6 +73,19 @@ def resolve_evaluation_model_name(model_name: str | None = None) -> str:
     """Return the independently configurable OpenRouter judge model ID."""
 
     return (model_name or os.getenv(EVALUATION_MODEL_ENV_VAR, DEFAULT_EVALUATION_MODEL)).strip()
+
+
+def evaluation_request_options(model_name: str | None = None) -> dict[str, Any]:
+    """Return evaluator routing that preserves custom-model overrides."""
+
+    resolved_model = resolve_evaluation_model_name(model_name)
+    options: dict[str, Any] = {"model": resolved_model}
+    if resolved_model == DEFAULT_EVALUATION_MODEL:
+        options["provider"] = {
+            "only": [DEFAULT_EVALUATION_PROVIDER],
+            "allow_fallbacks": False,
+        }
+    return options
 
 
 def create_model_client() -> "ModelClient":

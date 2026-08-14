@@ -124,7 +124,11 @@ def test_validate_section_uses_the_structured_evaluation_contract():
     result = validator.validate_section("technicalDetails", {"architecture": "client-server"})
 
     assert messages.request is not None
-    assert messages.request["model"] == "anthropic/claude-haiku-4.5"
+    assert messages.request["model"] == "google/gemma-4-31b-it:free"
+    assert messages.request["provider"] == {
+        "only": ["google-ai-studio"],
+        "allow_fallbacks": False,
+    }
     assert messages.request["response_format"] is SectionEvaluation
     assert result["scores"]["overall"] == 4.0
     assert result["section_name"] == "technicalDetails"
@@ -214,7 +218,11 @@ def test_consistency_check_uses_structured_output_and_section_content():
     result = validator._check_consistency({"technicalDetails": {"architecture": "client-server"}})
 
     assert messages.request is not None
-    assert messages.request["model"] == "anthropic/claude-haiku-4.5"
+    assert messages.request["model"] == "google/gemma-4-31b-it:free"
+    assert messages.request["provider"] == {
+        "only": ["google-ai-studio"],
+        "allow_fallbacks": False,
+    }
     assert messages.request["response_format"] is ConsistencyEvaluation
     assert "client-server" in messages.request["messages"][0]["content"]
     assert result == {

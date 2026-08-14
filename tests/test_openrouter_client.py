@@ -12,6 +12,7 @@ from src.core.openrouter_client import (
     ModelClientError,
     ModelRateLimitError,
     ModelRetryableError,
+    evaluation_request_options,
     resolve_evaluation_model_name,
     resolve_model_name,
 )
@@ -80,15 +81,15 @@ def model_client(outcomes, requests=None):
     )
 
 
-def test_defaults_use_free_gemma_generation_model(monkeypatch):
+def test_defaults_use_free_gemma_models(monkeypatch):
     monkeypatch.delenv("SENTRYSEARCH_MODEL", raising=False)
     monkeypatch.delenv("SENTRYSEARCH_EVALUATION_MODEL", raising=False)
 
     assert DEFAULT_MODEL == "google/gemma-4-26b-a4b-it:free"
-    assert DEFAULT_EVALUATION_MODEL == "anthropic/claude-haiku-4.5"
+    assert DEFAULT_EVALUATION_MODEL == "google/gemma-4-31b-it:free"
     assert DEFAULT_OPENROUTER_BASE_URL == "https://openrouter.ai/api/v1"
     assert resolve_model_name() == "google/gemma-4-26b-a4b-it:free"
-    assert resolve_evaluation_model_name() == "anthropic/claude-haiku-4.5"
+    assert resolve_evaluation_model_name() == "google/gemma-4-31b-it:free"
 
 
 def test_evaluation_model_can_be_overridden_independently(monkeypatch):
@@ -97,6 +98,19 @@ def test_evaluation_model_can_be_overridden_independently(monkeypatch):
 
     assert resolve_model_name() == "example/generator"
     assert resolve_evaluation_model_name() == "example/evaluator"
+    assert evaluation_request_options() == {"model": "example/evaluator"}
+
+
+def test_default_evaluation_model_is_pinned_to_google_ai_studio(monkeypatch):
+    monkeypatch.delenv("SENTRYSEARCH_EVALUATION_MODEL", raising=False)
+
+    assert evaluation_request_options() == {
+        "model": "google/gemma-4-31b-it:free",
+        "provider": {
+            "only": ["google-ai-studio"],
+            "allow_fallbacks": False,
+        },
+    }
 
 
 def test_model_client_posts_native_openrouter_chat_completion():
@@ -156,6 +170,7 @@ def test_model_client_sends_strict_schema_and_parses_chat_completion():
     result = client.messages.create(
         messages=[{"role": "user", "content": "Return a value"}],
         response_format=StructuredResult,
+        provider={"only": ["google-ai-studio"], "allow_fallbacks": False},
     )
 
     assert result.parsed == StructuredResult(value="ok")
@@ -167,6 +182,8 @@ def test_model_client_sends_strict_schema_and_parses_chat_completion():
         StructuredResult.model_json_schema()
     )
     assert request_body["provider"] == {
+        "only": ["google-ai-studio"],
+        "allow_fallbacks": False,
         "require_parameters": True,
         "sort": "throughput",
     }

@@ -11,7 +11,7 @@ from threading import Lock
 from typing import Any, Callable, List, Optional
 
 from src.core.model_retry import RetryingModelRequests
-from src.core.openrouter_client import resolve_evaluation_model_name, resolve_model_name
+from src.core.openrouter_client import evaluation_request_options, resolve_model_name
 from src.core.threat_profile_schema import EVIDENCE_ENHANCEMENT_MODELS
 from src.core.validation_criteria import (
     CONSISTENCY_PROMPT,
@@ -289,7 +289,7 @@ class SectionValidator(RetryingModelRequests):
         try:
             # Call LLM for validation with retry logic
             response = self._request_model(
-                model=resolve_evaluation_model_name(),
+                **evaluation_request_options(),
                 max_tokens=2000,
                 temperature=0.3,
                 messages=[{"role": "user", "content": prompt}],
@@ -491,7 +491,7 @@ class SectionValidator(RetryingModelRequests):
 
         try:
             response = self._request_model(
-                model=resolve_evaluation_model_name(),
+                **evaluation_request_options(),
                 max_tokens=1000,
                 temperature=0.3,
                 messages=[{"role": "user", "content": prompt}],
