@@ -273,7 +273,7 @@ def test_generation_separates_web_research_from_structured_synthesis(
                         }
                     ],
                     response_id="research-response",
-                    model="meta-llama/llama-3.3-70b-instruct",
+                    model="google/gemma-4-26b-a4b-it:free",
                     provider="TestProvider",
                     usage=SimpleNamespace(
                         input_tokens=10,
@@ -293,7 +293,7 @@ def test_generation_separates_web_research_from_structured_synthesis(
                     web_search_sources=[],
                     tool_events=[],
                     response_id="synthesis-response",
-                    model="meta-llama/llama-3.3-70b-instruct",
+                    model="google/gemma-4-26b-a4b-it:free",
                     provider="TestProvider",
                     usage=SimpleNamespace(
                         input_tokens=30,

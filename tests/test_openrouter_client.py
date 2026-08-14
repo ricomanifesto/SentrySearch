@@ -37,7 +37,7 @@ def chat_response(
     return {
         "id": "gen-test",
         "object": "chat.completion",
-        "model": "meta-llama/llama-3.3-70b-instruct",
+        "model": "google/gemma-4-26b-a4b-it:free",
         "provider": "TestProvider",
         "choices": [
             {
@@ -80,14 +80,14 @@ def model_client(outcomes, requests=None):
     )
 
 
-def test_defaults_restore_previous_openrouter_model(monkeypatch):
+def test_defaults_use_free_gemma_generation_model(monkeypatch):
     monkeypatch.delenv("SENTRYSEARCH_MODEL", raising=False)
     monkeypatch.delenv("SENTRYSEARCH_EVALUATION_MODEL", raising=False)
 
-    assert DEFAULT_MODEL == "meta-llama/llama-3.3-70b-instruct"
+    assert DEFAULT_MODEL == "google/gemma-4-26b-a4b-it:free"
     assert DEFAULT_EVALUATION_MODEL == "anthropic/claude-haiku-4.5"
     assert DEFAULT_OPENROUTER_BASE_URL == "https://openrouter.ai/api/v1"
-    assert resolve_model_name() == "meta-llama/llama-3.3-70b-instruct"
+    assert resolve_model_name() == "google/gemma-4-26b-a4b-it:free"
     assert resolve_evaluation_model_name() == "anthropic/claude-haiku-4.5"
 
 
@@ -106,7 +106,7 @@ def test_model_client_posts_native_openrouter_chat_completion():
     client = model_client([(200, body, {})], requests)
 
     result = client.messages.create(
-        model="meta-llama/llama-3.3-70b-instruct",
+        model="google/gemma-4-26b-a4b-it:free",
         system="You are a threat analyst.",
         messages=[{"role": "user", "content": "Analyze Cobalt Strike"}],
         max_tokens=16_384,
@@ -122,7 +122,7 @@ def test_model_client_posts_native_openrouter_chat_completion():
     assert requests[0].headers["x-openrouter-metadata"] == "enabled"
     request_body = json.loads(requests[0].content)
     assert request_body == {
-        "model": "meta-llama/llama-3.3-70b-instruct",
+        "model": "google/gemma-4-26b-a4b-it:free",
         "messages": [
             {"role": "system", "content": "You are a threat analyst."},
             {"role": "user", "content": "Analyze Cobalt Strike"},

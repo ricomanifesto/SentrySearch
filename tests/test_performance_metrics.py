@@ -9,7 +9,10 @@ from src.core.trace_exporter import get_trace_exporter
 
 def test_performance_tracker_measures_contract_tools_usage_and_cost(tmp_path):
     tracker = PerformanceTracker(str(tmp_path / "metrics.jsonl"))
-    tracker.start_request("Example Threat")
+    tracker.start_request(
+        "Example Threat",
+        model="google/gemma-4-26b-a4b-it:free",
+    )
     response = SimpleNamespace(
         usage=SimpleNamespace(
             input_tokens=1_000,
@@ -38,7 +41,7 @@ def test_performance_tracker_measures_contract_tools_usage_and_cost(tmp_path):
     assert metrics.schema_valid is True
     assert metrics.source_attested is True
     assert metrics.web_search_cost == pytest.approx(0.014)
-    assert metrics.total_cost == pytest.approx(0.014132)
+    assert metrics.total_cost == pytest.approx(0.014)
 
     summary = tracker.generate_evaluation_summary([metrics])
     assert summary["response_success_rate"] == 1.0

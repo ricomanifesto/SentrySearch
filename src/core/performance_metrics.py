@@ -14,6 +14,8 @@ from typing import Dict, Any, Optional
 from dataclasses import dataclass, asdict
 import uuid
 
+from src.core.openrouter_client import DEFAULT_MODEL
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,6 +65,17 @@ class PerformanceTracker:
     # Current OpenRouter list pricing per 1M tokens and per 1K Exa tool calls.
     LONG_CONTEXT_THRESHOLD = 272_000
     PRICING = {
+        "google/gemma-4-26b-a4b-it:free": {
+            "input": 0.0,
+            "output": 0.0,
+            "cache_write": 0.0,
+            "cache_read": 0.0,
+            "long_input": 0.0,
+            "long_output": 0.0,
+            "long_cache_write": 0.0,
+            "long_cache_read": 0.0,
+            "web_search_per_1k_calls": 7.0,
+        },
         "meta-llama/llama-3.3-70b-instruct": {
             "input": 0.10,
             "output": 0.32,
@@ -73,7 +86,7 @@ class PerformanceTracker:
             "long_cache_write": 0.10,
             "long_cache_read": 0.10,
             "web_search_per_1k_calls": 7.0,
-        }
+        },
     }
 
     def __init__(self, log_file: str = "performance_metrics.jsonl"):
@@ -115,7 +128,7 @@ class PerformanceTracker:
     def start_request(
         self,
         query: str,
-        model: str = "meta-llama/llama-3.3-70b-instruct",
+        model: str = DEFAULT_MODEL,
         prompt_type: str = "threat_intel",
         cache_enabled: bool = False,
     ) -> str:
@@ -338,7 +351,7 @@ class PerformanceTracker:
         model = self.current_metrics.model
         pricing = self.PRICING.get(
             model,
-            self.PRICING["meta-llama/llama-3.3-70b-instruct"],
+            self.PRICING[DEFAULT_MODEL],
         )
 
         long_context = self.current_metrics.input_tokens > self.LONG_CONTEXT_THRESHOLD

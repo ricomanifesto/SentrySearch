@@ -22,7 +22,7 @@ from pydantic import ValidationError
 EMPTY_RESPONSE_RETRIES = 3
 EMPTY_RESPONSE_RETRY_DELAY = 1.5
 
-DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct"
+DEFAULT_MODEL = "google/gemma-4-26b-a4b-it:free"
 MODEL_ENV_VAR = "SENTRYSEARCH_MODEL"
 DEFAULT_EVALUATION_MODEL = "anthropic/claude-haiku-4.5"
 EVALUATION_MODEL_ENV_VAR = "SENTRYSEARCH_EVALUATION_MODEL"

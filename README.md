@@ -24,7 +24,7 @@ SentrySearch generates structured threat intelligence profiles from a user-suppl
 
 ## Usage
 
-Visit [sentry-search.vercel.app](https://sentry-search.vercel.app), create an account, and generate a threat intelligence report for any malware, attack tool, or technology. Report generation routes `meta-llama/llama-3.3-70b-instruct` through OpenRouter's native Chat Completions API with hosted web search and strict Pydantic validation.
+Visit [sentry-search.vercel.app](https://sentry-search.vercel.app), create an account, and generate a threat intelligence report for any malware, attack tool, or technology. Report generation routes `google/gemma-4-26b-a4b-it:free` through OpenRouter's native Chat Completions API with hosted web search and strict Pydantic validation.
 
 ## Local Setup
 
