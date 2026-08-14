@@ -108,6 +108,7 @@ def test_default_generation_model_is_pinned_to_google_ai_studio(monkeypatch):
 
     assert generation_request_options() == {
         "model": "google/gemma-4-26b-a4b-it:free",
+        "models": ["google/gemma-4-26b-a4b-it"],
         "provider": {
             "only": ["google-ai-studio"],
             "allow_fallbacks": False,
@@ -120,6 +121,7 @@ def test_default_evaluation_model_is_pinned_to_google_ai_studio(monkeypatch):
 
     assert evaluation_request_options() == {
         "model": "google/gemma-4-31b-it:free",
+        "models": ["google/gemma-4-31b-it"],
         "provider": {
             "only": ["google-ai-studio"],
             "allow_fallbacks": False,
@@ -139,6 +141,7 @@ def test_model_client_posts_native_openrouter_chat_completion():
         messages=[{"role": "user", "content": "Analyze Cobalt Strike"}],
         max_tokens=16_384,
         temperature=0.3,
+        models=["google/gemma-4-26b-a4b-it"],
         tools=[{"type": "web_search"}],
     )
 
@@ -151,6 +154,7 @@ def test_model_client_posts_native_openrouter_chat_completion():
     request_body = json.loads(requests[0].content)
     assert request_body == {
         "model": "google/gemma-4-26b-a4b-it:free",
+        "models": ["google/gemma-4-26b-a4b-it"],
         "messages": [
             {"role": "system", "content": "You are a threat analyst."},
             {"role": "user", "content": "Analyze Cobalt Strike"},

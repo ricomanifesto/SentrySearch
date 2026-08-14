@@ -23,9 +23,11 @@ EMPTY_RESPONSE_RETRIES = 3
 EMPTY_RESPONSE_RETRY_DELAY = 1.5
 
 DEFAULT_MODEL = "google/gemma-4-26b-a4b-it:free"
+DEFAULT_GENERATION_FALLBACK_MODEL = "google/gemma-4-26b-a4b-it"
 DEFAULT_GENERATION_PROVIDER = "google-ai-studio"
 MODEL_ENV_VAR = "SENTRYSEARCH_MODEL"
 DEFAULT_EVALUATION_MODEL = "google/gemma-4-31b-it:free"
+DEFAULT_EVALUATION_FALLBACK_MODEL = "google/gemma-4-31b-it"
 DEFAULT_EVALUATION_PROVIDER = "google-ai-studio"
 EVALUATION_MODEL_ENV_VAR = "SENTRYSEARCH_EVALUATION_MODEL"
 OPENROUTER_API_KEY_ENV_VAR = "OPENROUTER_API_KEY"
@@ -76,6 +78,7 @@ def generation_request_options(model_name: str | None = None) -> dict[str, Any]:
     resolved_model = resolve_model_name(model_name)
     options: dict[str, Any] = {"model": resolved_model}
     if resolved_model == DEFAULT_MODEL:
+        options["models"] = [DEFAULT_GENERATION_FALLBACK_MODEL]
         options["provider"] = {
             "only": [DEFAULT_GENERATION_PROVIDER],
             "allow_fallbacks": False,
@@ -95,6 +98,7 @@ def evaluation_request_options(model_name: str | None = None) -> dict[str, Any]:
     resolved_model = resolve_evaluation_model_name(model_name)
     options: dict[str, Any] = {"model": resolved_model}
     if resolved_model == DEFAULT_EVALUATION_MODEL:
+        options["models"] = [DEFAULT_EVALUATION_FALLBACK_MODEL]
         options["provider"] = {
             "only": [DEFAULT_EVALUATION_PROVIDER],
             "allow_fallbacks": False,
@@ -147,6 +151,7 @@ class ModelClient:
             "stream": False,
         }
         for optional_key in (
+            "models",
             "temperature",
             "parallel_tool_calls",
             "tool_choice",
