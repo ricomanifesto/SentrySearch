@@ -167,10 +167,11 @@ class ModelClient:
             request["tools"] = tools
         if response_format is not None:
             request["response_format"] = self._structured_output_config(response_format)
+        provider = dict(kwargs.get("provider") or {})
         if tools or response_format is not None:
-            provider = dict(kwargs.get("provider") or {})
             provider["require_parameters"] = True
             provider.setdefault("sort", "throughput")
+        if provider:
             request["provider"] = provider
 
         last_empty_error: ModelClientError | None = None
@@ -259,7 +260,10 @@ class ModelClient:
                 fallback_provider = dict(request["provider"])
                 fallback_provider.pop("only", None)
                 fallback_provider.pop("allow_fallbacks", None)
-                candidate_request["provider"] = fallback_provider
+                if fallback_provider:
+                    candidate_request["provider"] = fallback_provider
+                else:
+                    candidate_request.pop("provider", None)
             try:
                 return self._post(candidate_request)
             except ModelRetryableError as error:

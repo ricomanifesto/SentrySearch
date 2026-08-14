@@ -226,6 +226,42 @@ def test_model_client_uses_same_model_paid_fallback_after_rate_limit():
     }
 
 
+def test_model_client_keeps_primary_provider_pin_for_plain_synthesis():
+    requests = []
+    client = model_client(
+        [
+            (
+                429,
+                {
+                    "error": {
+                        "code": 429,
+                        "message": "Free quota exhausted",
+                        "metadata": {"error_type": "rate_limit_exceeded"},
+                    }
+                },
+                {},
+            ),
+            (200, chat_response("fallback synthesis"), {}),
+        ],
+        requests,
+    )
+
+    result = client.messages.create(
+        model="google/gemma-4-26b-a4b-it:free",
+        fallback_models=["google/gemma-4-26b-a4b-it"],
+        provider={"only": ["google-ai-studio"], "allow_fallbacks": False},
+        messages=[{"role": "user", "content": "Synthesize the report"}],
+    )
+
+    assert result.content[0].text == "fallback synthesis"
+    request_bodies = [json.loads(request.content) for request in requests]
+    assert request_bodies[0]["provider"] == {
+        "only": ["google-ai-studio"],
+        "allow_fallbacks": False,
+    }
+    assert "provider" not in request_bodies[1]
+
+
 def test_model_client_sends_strict_schema_and_parses_chat_completion():
     requests = []
     client = model_client([(200, chat_response('{"value":"ok"}'), {})], requests)
