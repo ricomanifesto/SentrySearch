@@ -226,17 +226,17 @@ def test_model_client_uses_same_model_paid_fallback_after_rate_limit():
     }
 
 
-def test_model_client_keeps_primary_provider_pin_for_plain_synthesis():
+def test_model_client_falls_back_when_pinned_primary_cannot_serve_synthesis():
     requests = []
     client = model_client(
         [
             (
-                429,
+                404,
                 {
                     "error": {
-                        "code": 429,
-                        "message": "Free quota exhausted",
-                        "metadata": {"error_type": "rate_limit_exceeded"},
+                        "code": 404,
+                        "message": "No endpoint can serve this request",
+                        "metadata": {"error_type": "not_found"},
                     }
                 },
                 {},

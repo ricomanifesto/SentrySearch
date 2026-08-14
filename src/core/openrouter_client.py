@@ -67,6 +67,10 @@ class ModelRateLimitError(ModelRetryableError):
     """Raised when OpenRouter reports a rate limit response."""
 
 
+class ModelUnavailableError(ModelClientError):
+    """Raised when the requested model route cannot serve the request."""
+
+
 def resolve_model_name(model_name: str | None = None) -> str:
     """Return the configured OpenRouter model ID."""
     return (model_name or os.getenv(MODEL_ENV_VAR, DEFAULT_MODEL)).strip()
@@ -252,7 +256,7 @@ class ModelClient:
 
         candidates = [str(request["model"]), *fallback_models]
         primary_model = candidates[0]
-        last_error: ModelRetryableError | None = None
+        last_error: ModelClientError | None = None
         for model in dict.fromkeys(candidates):
             candidate_request = dict(request)
             candidate_request["model"] = model
@@ -266,7 +270,7 @@ class ModelClient:
                     candidate_request.pop("provider", None)
             try:
                 return self._post(candidate_request)
-            except ModelRetryableError as error:
+            except (ModelRetryableError, ModelUnavailableError) as error:
                 last_error = error
 
         if last_error is not None:
@@ -298,6 +302,8 @@ class ModelClient:
             raise ModelRetryableError(
                 f"OpenRouter retryable provider error: {detail}", response=response
             )
+        if response.status_code == 404 or error_type == "not_found":
+            raise ModelUnavailableError("OpenRouter model route unavailable")
         if not response.is_success:
             detail = error_type or f"HTTP {response.status_code}"
             raise ModelClientError(f"OpenRouter request failed: {detail}")
