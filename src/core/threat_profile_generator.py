@@ -462,10 +462,10 @@ END ATTESTED SOURCE CATALOG"""
 
             response = self._request_model(
                 **generation_request_options(),
-                # The full profile is returned as a single JSON object; cap output at
-                # the model's ceiling so a large profile isn't truncated mid-JSON
-                # (which leaves the object unparseable and fails the whole report).
-                max_tokens=16384,
+                # The full profile is returned as a single JSON object. Gemma's
+                # free route supports 32,768 completion tokens; using that ceiling
+                # keeps evidence-dense profiles from being truncated mid-JSON.
+                max_tokens=32768,
                 temperature=0.3,
                 messages=[{"role": "user", "content": prompt}],
                 response_format=ThreatProfile,

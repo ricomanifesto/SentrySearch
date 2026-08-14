@@ -363,6 +363,7 @@ def test_generation_separates_web_research_from_structured_synthesis(
     }
     assert synthesis_request["fallback_models"] == ["google/gemma-4-26b-a4b-it"]
     assert synthesis_request["route_purpose"] == "generation"
+    assert synthesis_request["max_tokens"] == 32768
     assert "tools" not in synthesis_request
     assert "https://example.com/report" in synthesis_request["messages"][0]["content"]
     assert "Example Threat uses remote access capabilities" in (
