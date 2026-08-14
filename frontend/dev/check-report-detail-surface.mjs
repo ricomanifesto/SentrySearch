@@ -9,13 +9,21 @@ const routeSource = await readFile(
   resolve(here, '../src/components/report/RouteProvenance.tsx'),
   'utf8',
 );
+const reviewStatusSource = await readFile(
+  resolve(here, '../src/components/report/ReviewStatusBanner.tsx'),
+  'utf8',
+);
+const reportStatusSource = await readFile(
+  resolve(here, '../src/lib/report-status.ts'),
+  'utf8',
+);
 
 const expectations = [
   { name: 'keeps report detail behind the auth boundary', pattern: /<AuthGuard>\s*<ReportDetailContent \/>/ },
   { name: 'keeps report fetching inside the guarded detail component', pattern: /api\.getReport\(reportId, true\)/ },
   { name: 'anchors the surface as an intelligence record', pattern: /Intelligence record/ },
   { name: 'uses product-specific narrative framing', pattern: /Intelligence narrative/ },
-  { name: 'renders the saved narrative through the shared markdown component', pattern: /<ReportNarrative markdown=\{report\.markdown_content\}/ },
+  { name: 'renders the saved narrative through the shared markdown component', pattern: /<ReportNarrative markdown=\{contentParts\.narrative\}/ },
   { name: 'does not render the saved markdown as a raw preformatted block', absentPattern: /<pre[^>]*>\s*\{report\.markdown_content\}/ },
   { name: 'declares the report detail surface contract', pattern: /data-surface="report-detail-record"/ },
   { name: 'declares the local report detail fixture id', pattern: /const LOCAL_REPORT_DETAIL_FIXTURE_ID = 'local-visual-fixture'/ },
@@ -44,12 +52,17 @@ const expectations = [
   { name: 'uses the shared quality vocabulary for null scores', pattern: /const qualityLabel = getQualityLabel\(qualityScore\)/ },
   { name: 'renders unavailable confidence without fabricating zero', pattern: /qualityScore == null \? qualityLabel/ },
   { name: 'does not override the shared null quality label', absentPattern: /Evaluator unavailable/ },
-  { name: 'polls the report while a background generation runs', pattern: /'generating' \? 4000/ },
+  { name: 'polls while generation or evaluation work is active', pattern: /status === 'generating'[\s\S]*evaluation_status === 'pending'[\s\S]*\? 4000/ },
   { name: 'declares the generation progress component', pattern: /<GenerationProgress/ },
   { name: 'renders backend-owned generation stages', pattern: /generation_stage/ },
   { name: 'shows elapsed generation time', pattern: /elapsedSeconds/ },
   { name: 'declares the generation failed contract', pattern: /data-contract="Report\.GenerationFailed\.v1"/ },
   { name: 'offers a retry path from a failed generation', pattern: /Start a new report/ },
+  { name: 'offers evaluator-only recovery for a saved unscored narrative', pattern: /api\.retryReportEvaluation[\s\S]*<ReviewStatusBanner/ },
+  { name: 'names the preserved narrative in evaluation recovery copy', source: reportStatusSource, pattern: /narrative is preserved/ },
+  { name: 'announces evaluation progress politely', source: reviewStatusSource, pattern: /role=\{active \? 'status'[\s\S]*aria-live=\{active \? 'polite'/ },
+  { name: 'puts source evidence before the narrative on narrow screens', pattern: /id="intelligence-narrative" className="order-last[\s\S]*id="source-evidence" className="order-first/ },
+  { name: 'separates evaluation appendix from the operational narrative', pattern: /splitReportContent[\s\S]*Evaluation details/ },
   { name: 'keeps accessible report loading semantics', pattern: /role="status"[\s\S]*aria-label="Loading report record"/ },
   { name: 'keeps accessible report error semantics', pattern: /role="alert"/ },
   { name: 'uses non-leaky report detail error copy', pattern: /This saved record could not be opened/ },
@@ -59,6 +72,9 @@ const expectations = [
   { name: 'removes generic report detail heading', absentPattern: />Report Details</ },
   { name: 'does not keep one-off report detail shell colors', absentPattern: /#f7f7f3|#6f755f|#d8d9ce|bg-slate-50/ },
   { name: 'uses product-specific destructive action copy', pattern: /Delete record/ },
+  { name: 'uses an accessible in-product delete confirmation', pattern: /<Dialog[\s\S]*<DialogTitle[\s\S]*Delete this report\?[\s\S]*Delete permanently/ },
+  { name: 'does not rely on a blocking browser confirmation', absentPattern: /\bconfirm\(/ },
+  { name: 'keeps delete failures distinct from successful removal', pattern: /The report could not be deleted\. The saved record is still available/ },
   { name: 'uses product-specific download action copy', pattern: /Download markdown/ },
   { name: 'does not use fonts below the legible minimum', absentPattern: /text-xs|text-\[11px\]/ },
   { name: 'does not use gradient backgrounds', absentPattern: /bg-gradient/ },

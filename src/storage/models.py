@@ -17,6 +17,19 @@ def _optional_float(value: Any) -> float | None:
     return float(value) if value is not None else None
 
 
+def _content_preview(value: Any, threat_data: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if not isinstance(threat_data, dict):
+        return None
+    overview = threat_data.get("toolOverview")
+    description = overview.get("description") if isinstance(overview, dict) else None
+    if not isinstance(description, str) or not description.strip():
+        return None
+    compact = " ".join(description.split())
+    return compact if len(compact) <= 240 else f"{compact[:237].rstrip()}..."
+
+
 class Report(Base):
     __tablename__ = "reports"
 
@@ -46,6 +59,10 @@ class Report(Base):
     web_sources = Column(JSONB)
     generation_route = Column(JSONB)
     evaluation_route = Column(JSONB)
+    evaluation_status = Column(String(20))
+    evaluation_error_code = Column(String(50))
+    evaluation_attempts = Column(Integer, default=0)
+    evaluated_at = Column(DateTime(timezone=True))
 
     # Cloud storage references
     markdown_s3_key = Column(String(500))  # S3 object key for markdown content
@@ -68,6 +85,7 @@ class Report(Base):
 
     # Search optimization
     search_tags = Column(JSONB)  # Array of searchable tags
+    content_preview = Column(Text)
 
     def to_dict(self):
         """Convert model to dictionary for API responses"""
@@ -84,6 +102,14 @@ class Report(Base):
             "generation_stage": self.generation_stage or self.status or "completed",
             "generation_route": self.generation_route,
             "evaluation_route": self.evaluation_route,
+            "evaluation_status": self.evaluation_status,
+            "evaluation_error_code": self.evaluation_error_code,
+            "evaluation_attempts": self.evaluation_attempts or 0,
+            "evaluated_at": self.evaluated_at.isoformat() if self.evaluated_at else None,
+            "quality_assessment": self.quality_assessment,
+            "web_sources": self.web_sources or [],
+            "threat_data": self.threat_data,
+            "content_preview": _content_preview(self.content_preview, self.threat_data),
             "ml_techniques": self.ml_techniques,
             "user_id": self.user_id,
             "is_flagged": self.is_flagged,

@@ -6,9 +6,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 const dashboardPath = resolve(here, '../src/app/dashboard/page.tsx');
 const activityFeedPath = resolve(here, '../src/components/ActivityFeed.tsx');
 const navigationPath = resolve(here, '../src/components/layout/Navigation.tsx');
+const briefingSignalsPath = resolve(here, '../src/components/DashboardBriefingSignals.tsx');
 const dashboard = await readFile(dashboardPath, 'utf8');
 const activityFeed = await readFile(activityFeedPath, 'utf8');
 const navigation = await readFile(navigationPath, 'utf8');
+const briefingSignals = await readFile(briefingSignalsPath, 'utf8');
 
 const expectations = [
   {
@@ -49,7 +51,7 @@ const expectations = [
   {
     name: 'uses product-specific search action copy',
     source: dashboard,
-    pattern: /Search intelligence/,
+    pattern: /Search and filter reports/,
   },
   {
     name: 'uses product-specific saved report review action copy',
@@ -58,18 +60,18 @@ const expectations = [
   },
   {
     name: 'declares the dashboard briefing signal strip contract',
-    source: dashboard,
+    source: briefingSignals,
     pattern: /data-contract="Dashboard\.BriefingSignalStrip\.v1"/,
   },
   {
     name: 'uses a canonical briefing signals collection',
-    source: dashboard,
-    pattern: /const briefingSignals = \[[\s\S]*label: 'Intelligence library'[\s\S]*label: 'Briefed this week'[\s\S]*label: 'Analyst confidence'/,
+    source: briefingSignals,
+    pattern: /const signals = \[[\s\S]*label: 'Intelligence library'[\s\S]*label: 'Briefed this week'[\s\S]*label: 'Report quality'/,
   },
   {
     name: 'renders briefing signals from the canonical collection',
-    source: dashboard,
-    pattern: /briefingSignals\.map\(\(signal\)[\s\S]*signal\.label[\s\S]*signal\.value[\s\S]*signal\.detail/,
+    source: briefingSignals,
+    pattern: /signals\.map\(\(signal\)[\s\S]*signal\.label[\s\S]*signal\.value[\s\S]*signal\.detail/,
   },
   {
     name: 'frames recent reports as an intelligence review queue',
@@ -93,13 +95,33 @@ const expectations = [
   },
   {
     name: 'does not grade an unscored workspace as zero',
-    source: dashboard,
+    source: briefingSignals,
     pattern: /No scored reports yet/,
   },
   {
     name: 'does not fall back to a zero confidence score',
     source: dashboard,
     absentPattern: /avg_quality_score\?\.toFixed\(1\) \?\? '0\.0'/,
+  },
+  {
+    name: 'renders loading separately from zero-valued briefing signals',
+    source: briefingSignals,
+    pattern: /if \(isLoading\)[\s\S]*Loading workspace briefing[\s\S]*const signals/,
+  },
+  {
+    name: 'does not restore the unused admin navigation',
+    source: navigation,
+    absentPattern: /\/admin|adminNavigation|name: 'Admin'/,
+  },
+  {
+    name: 'gives icon-only account actions accessible names',
+    source: navigation,
+    pattern: /aria-label="Workspace access"[\s\S]*aria-label="Sign out"/,
+  },
+  {
+    name: 'keeps workspace access and sign out available in the mobile menu',
+    source: navigation,
+    pattern: /id="mobile-navigation"[\s\S]*Workspace access[\s\S]*Sign out/,
   },
   {
     name: 'frames threat distribution as a coverage map',

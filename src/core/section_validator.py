@@ -287,6 +287,7 @@ class SectionValidator(RetryingModelRequests):
             content,
             criteria,
             source_context=self.profile_source_context,
+            current_date=datetime.now(timezone.utc).date().isoformat(),
         )
 
         try:
@@ -472,14 +473,6 @@ class SectionValidator(RetryingModelRequests):
         results["summary"] = self._generate_summary(results)
         results["recommendations"] = self._generate_recommendations(results)
 
-        # Add comprehensive sources section if we captured web search sources
-        if self.web_search_sources:
-            comprehensive_sources = self.generate_comprehensive_sources_section()
-            results["comprehensiveWebSearchSources"] = comprehensive_sources
-            logger.debug(
-                f"Added comprehensive sources section with {len(self.web_search_sources)} total sources"
-            )
-
         return results
 
     def _check_consistency(self, profile: dict) -> dict:
@@ -490,7 +483,10 @@ class SectionValidator(RetryingModelRequests):
             if name not in {"coreMetadata", "_quality_assessment"}
         }
 
-        prompt = CONSISTENCY_PROMPT.format(sections=json.dumps(sections, indent=2))
+        prompt = CONSISTENCY_PROMPT.format(
+            sections=json.dumps(sections, indent=2),
+            current_date=datetime.now(timezone.utc).date().isoformat(),
+        )
 
         try:
             response = self._request_model(

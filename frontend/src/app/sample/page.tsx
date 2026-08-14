@@ -7,7 +7,7 @@ import { formatTaxonomyLabel, getQualityLabel } from '@/lib/report-query';
 import { SAMPLE_REPORT } from '@/lib/sample-report';
 
 const sampleSignals = [
-  { label: 'Confidence', value: `${SAMPLE_REPORT.quality_score?.toFixed(1)} / 5.0`, detail: getQualityLabel(SAMPLE_REPORT.quality_score) },
+  { label: 'Report quality', value: `${SAMPLE_REPORT.quality_score?.toFixed(2)} / 5.00`, detail: getQualityLabel(SAMPLE_REPORT.quality_score) },
   { label: 'Category', value: formatTaxonomyLabel(SAMPLE_REPORT.category), detail: 'Canonical report category' },
   { label: 'Threat family', value: formatTaxonomyLabel(SAMPLE_REPORT.threat_type), detail: 'Canonical report classification' },
   { label: 'Sources', value: `${SAMPLE_REPORT.web_sources.length} cited`, detail: 'Open and inspect each source' },
@@ -63,11 +63,11 @@ export default function SampleReport() {
         </dl>
 
         <div className="fade-up fade-up-2 mt-10 grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start">
-          <section className="min-w-0 rounded-xl border border-zinc-200 bg-white p-6 sm:p-8">
+          <section className="order-last min-w-0 rounded-xl border border-zinc-200 bg-white p-6 sm:p-8 lg:order-first">
             <p className="text-base font-semibold text-zinc-950">Intelligence narrative</p>
             <ReportNarrative markdown={SAMPLE_REPORT.markdown_content ?? ''} />
           </section>
-          <aside className="rounded-xl border border-zinc-200 bg-white p-5 lg:sticky lg:top-24">
+          <aside className="order-first rounded-xl border border-zinc-200 bg-white p-5 lg:order-last lg:sticky lg:top-24">
             <SourceEvidence
               sources={SAMPLE_REPORT.web_sources}
               dateLabel="Captured"

@@ -54,6 +54,16 @@ const expectations = [
     pattern: /formatTaxonomyLabel\(SAMPLE_REPORT\.threat_type\)/,
   },
   {
+    name: 'uses report quality rather than confidence for the evaluator score',
+    source: sample,
+    pattern: /label: 'Report quality'/,
+  },
+  {
+    name: 'puts source evidence first on narrow screens',
+    source: sample,
+    pattern: /<section className="order-last[\s\S]*<aside className="order-first/,
+  },
+  {
     name: 'does not hardcode a competing threat-family label',
     source: sample,
     absentPattern: /value: 'Dual-use'/,

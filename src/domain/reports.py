@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Iterable
+from typing import Any, Iterable, Mapping
 
 
 class ReportStatus(StrEnum):
@@ -14,6 +14,26 @@ class ReportStatus(StrEnum):
     GENERATING = "generating"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class EvaluationStatus(StrEnum):
+    """Lifecycle states for the independently recoverable quality evaluation."""
+
+    UNRECORDED = "unrecorded"
+    PENDING = "pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class ReviewStatus(StrEnum):
+    """Reader-facing readiness derived from generation, evaluation, and evidence."""
+
+    GENERATING = "generating"
+    GENERATION_FAILED = "generation_failed"
+    EVALUATION_PENDING = "evaluation_pending"
+    NEEDS_EVALUATION = "needs_evaluation"
+    NEEDS_ATTENTION = "needs_attention"
+    REVIEWABLE = "reviewable"
 
 
 class GenerationStage(StrEnum):
@@ -96,3 +116,63 @@ class ReportAnalyticsRecord:
     status: ReportStatus
     threat_type: str | None
     generation_used_fallback: bool | None = None
+    evaluation_status: EvaluationStatus = EvaluationStatus.UNRECORDED
+    quality_assessment: Mapping[str, Any] | None = None
+    source_count: int = 0
+
+
+def coerce_evaluation_status(
+    value: str | EvaluationStatus | None,
+    *,
+    quality_score: float | None = None,
+) -> EvaluationStatus:
+    """Keep legacy scored reports useful while leaving unknown history explicit."""
+
+    if value:
+        try:
+            return EvaluationStatus(value)
+        except ValueError:
+            pass
+    return EvaluationStatus.COMPLETED if quality_score is not None else EvaluationStatus.UNRECORDED
+
+
+def derive_review_status(
+    *,
+    report_status: ReportStatus | str,
+    evaluation_status: EvaluationStatus | str | None,
+    quality_score: float | None,
+    quality_assessment: Mapping[str, Any] | None,
+    source_count: int,
+) -> ReviewStatus:
+    """Derive one honest review state without overloading generation completion."""
+
+    status = ReportStatus(report_status)
+    if status is ReportStatus.GENERATING:
+        return ReviewStatus.GENERATING
+    if status is ReportStatus.FAILED:
+        return ReviewStatus.GENERATION_FAILED
+
+    evaluator = coerce_evaluation_status(evaluation_status, quality_score=quality_score)
+    if evaluator is EvaluationStatus.PENDING:
+        return ReviewStatus.EVALUATION_PENDING
+    if evaluator is not EvaluationStatus.COMPLETED or quality_score is None:
+        return ReviewStatus.NEEDS_EVALUATION
+    if source_count < 1:
+        return ReviewStatus.NEEDS_ATTENTION
+
+    assessment = quality_assessment or {}
+    summary = assessment.get("summary")
+    summary = summary if isinstance(summary, Mapping) else {}
+    if assessment.get("critical_issues") or assessment.get("needs_improvement") is True:
+        return ReviewStatus.NEEDS_ATTENTION
+    if int(summary.get("passed_sections") or 0) == 0:
+        return ReviewStatus.NEEDS_ATTENTION
+    if int(summary.get("failed_sections") or 0) > 0:
+        return ReviewStatus.NEEDS_ATTENTION
+    if int(summary.get("unavailable_sections") or 0) > 0:
+        return ReviewStatus.NEEDS_ATTENTION
+
+    consistency = assessment.get("consistency")
+    if isinstance(consistency, Mapping) and consistency.get("inconsistencies"):
+        return ReviewStatus.NEEDS_ATTENTION
+    return ReviewStatus.REVIEWABLE

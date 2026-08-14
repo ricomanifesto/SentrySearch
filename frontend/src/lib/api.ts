@@ -144,6 +144,9 @@ class SentrySearchAPI {
       ...report,
       generation_stage: report.generation_stage
         ?? (report.status === 'generating' ? 'queued' : report.status ?? 'completed'),
+      evaluation_status: report.evaluation_status ?? (report.quality_score == null ? 'unrecorded' : 'completed'),
+      evaluation_attempts: report.evaluation_attempts ?? 0,
+      review_status: report.review_status ?? (report.quality_score == null ? 'needs_evaluation' : 'needs_attention'),
       web_sources: report.web_sources ?? [],
       search_tags: report.search_tags ?? [],
     };
@@ -158,6 +161,11 @@ class SentrySearchAPI {
 
   async deleteReport(reportId: string): Promise<{ message: string }> {
     const response = await this.client.delete(`/api/reports/${reportId}`);
+    return response.data;
+  }
+
+  async retryReportEvaluation(reportId: string): Promise<{ report_id: string; evaluation_status: string; message: string }> {
+    const response = await this.client.post(`/api/reports/${reportId}/evaluation`);
     return response.data;
   }
 
@@ -228,7 +236,7 @@ class SentrySearchAPI {
         if (page >= response.pagination.pages || response.reports.length === 0) break;
         page += 1;
       }
-      const needsDetails = config.include_content || config.include_tags;
+      const needsDetails = config.include_content || config.include_tags || config.include_sources || config.include_metadata;
       reports = needsDetails
         ? await mapWithConcurrency(
             summaries,
@@ -250,9 +258,14 @@ class SentrySearchAPI {
       metadata: {
         tool_name: report.tool_name,
         quality_score: report.quality_score,
+        review_status: report.review_status,
       },
       created_at: report.created_at,
-      severity: 'success',
+      severity: report.review_status === 'reviewable'
+        ? 'success'
+        : report.review_status === 'generating' || report.review_status === 'evaluation_pending'
+          ? 'info'
+          : 'warning',
     }));
   }
 }

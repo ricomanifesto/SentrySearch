@@ -19,8 +19,10 @@ SentrySearch generates structured threat intelligence profiles from a user-suppl
 
 - **Threat analysis:** generates technical profiles with threat landscape context and detection guidance.
 - **Report-library search:** filters each authenticated workspace by saved target, category, threat type, date, tags, and quality.
-- **Report management:** stores generated reports with filtering, search, quality scores, and processing metadata.
-- **User isolation:** supports authenticated, multi-tenant report access with admin controls.
+- **Report management:** stores generated reports with review readiness, source evidence, quality scores, and processing metadata.
+- **Evaluation recovery:** retries an unavailable quality evaluator against the saved profile without repeating research or synthesis.
+- **Evidence export:** packages narratives, canonical source records, lifecycle state, and route attestation for handoff.
+- **User isolation:** scopes report access and analytics to the authenticated workspace.
 
 ## Usage
 
@@ -71,7 +73,7 @@ npm run build
 - **Frontend:** Next.js, TypeScript, Tailwind CSS, deployed on Vercel.
 - **Backend:** FastAPI, SQLAlchemy, Pydantic, deployed on Railway.
 - **Auth:** Supabase JWT authentication.
-- **Data:** PostgreSQL stores report metadata and search indexes; S3 stores markdown reports and artifacts.
+- **Data:** PostgreSQL stores report metadata, one canonical source ledger, and search indexes; S3 stores markdown reports and artifacts.
 - **Connected search:** PostgreSQL powers the authenticated report-library filters exposed by the product.
 - **AI:** A direct OpenRouter Chat Completions client executes the configured model and bounded hosted web search, maps typed provider errors, records successful model/provider routes, and validates strict Pydantic structured output.
 

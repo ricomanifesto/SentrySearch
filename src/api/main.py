@@ -19,7 +19,9 @@ load_dotenv()
 from src.storage.report_service import report_service
 from src.storage.database import db_manager
 from src.core.threat_profile_generator import ThreatProfileGenerator
+from src.core.report_evaluator import evaluate_saved_report
 from src.core.markdown_generator import generate_markdown
+from src.core.source_ledger import canonicalize_profile_sources
 from src.auth.supabase_auth import AuthenticatedUser, verify_jwt_token
 from src.api.contracts import (
     PaginationParams,
@@ -33,10 +35,14 @@ from src.api.contracts import (
 )
 from src.domain.model_routes import generation_fallback_state
 from src.domain.reports import (
+    EvaluationStatus,
     GenerationProgress,
     GenerationStage,
     ReportAnalyticsRecord,
     ReportStatus,
+    ReviewStatus,
+    coerce_evaluation_status,
+    derive_review_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -130,6 +136,68 @@ def get_generation_stage(report: Dict[str, Any]) -> GenerationStage:
         if status is ReportStatus.GENERATING
         else GenerationStage(status.value)
     )
+
+
+def get_evaluation_status(report: Dict[str, Any]) -> EvaluationStatus:
+    return coerce_evaluation_status(
+        report.get("evaluation_status"),
+        quality_score=get_quality_score(report),
+    )
+
+
+def get_quality_assessment(report: Dict[str, Any]) -> Dict[str, Any] | None:
+    assessment = report.get("quality_assessment")
+    if isinstance(assessment, dict):
+        return assessment
+    threat_data = report.get("threat_data")
+    if isinstance(threat_data, dict) and isinstance(threat_data.get("_quality_assessment"), dict):
+        return threat_data["_quality_assessment"]
+    return None
+
+
+def reader_safe_threat_data(report: Dict[str, Any]) -> Dict[str, Any] | None:
+    """Expose analyst fields without internal trace or duplicate source-analysis metadata."""
+
+    threat_data = report.get("threat_data")
+    if not isinstance(threat_data, dict):
+        return None
+    return {
+        key: value
+        for key, value in threat_data.items()
+        if not key.startswith("_") and key != "comprehensiveWebSearchSources"
+    }
+
+
+def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Project one stored row through the same lifecycle contract on every surface."""
+
+    quality_score = get_quality_score(report)
+    sources = get_report_sources(report)
+    evaluation_status = get_evaluation_status(report)
+    assessment = get_quality_assessment(report)
+    return {
+        "id": report["id"],
+        "tool_name": report["tool_name"],
+        "category": get_report_label(report, "category"),
+        "threat_type": get_report_label(report, "threat_type"),
+        "quality_score": quality_score,
+        "created_at": report["created_at"],
+        "processing_time_ms": report.get("processing_time_ms") or 0,
+        "status": get_report_status(report),
+        "generation_stage": get_generation_stage(report),
+        "evaluation_status": evaluation_status,
+        "evaluation_error_code": report.get("evaluation_error_code"),
+        "evaluation_attempts": report.get("evaluation_attempts") or 0,
+        "evaluated_at": report.get("evaluated_at"),
+        "review_status": derive_review_status(
+            report_status=get_report_status(report),
+            evaluation_status=evaluation_status,
+            quality_score=quality_score,
+            quality_assessment=assessment,
+            source_count=len(sources),
+        ),
+        "content_preview": report.get("content_preview"),
+    }
 
 
 def get_report_sources(report: Dict[str, Any]) -> List[ReportSource]:
@@ -284,6 +352,8 @@ def build_route_performance(records: List[ReportAnalyticsRecord]) -> List[Dict[s
             {
                 "route": route,
                 "report_count": len(route_records),
+                "scored_report_count": len(quality_scores),
+                "runtime_recorded_count": len(processing_times),
                 "avg_quality_score": (
                     sum(quality_scores) / len(quality_scores) if quality_scores else None
                 ),
@@ -381,26 +451,7 @@ async def list_reports(
         )
 
         # Convert to response models
-        report_responses = []
-        for report in reports:
-            report_responses.append(
-                ReportResponse(
-                    id=report["id"],
-                    tool_name=report["tool_name"],
-                    category=get_report_label(report, "category"),
-                    threat_type=get_report_label(report, "threat_type"),
-                    quality_score=get_quality_score(report),
-                    created_at=report["created_at"],
-                    processing_time_ms=report.get("processing_time_ms") or 0,
-                    status=get_report_status(report),
-                    generation_stage=get_generation_stage(report),
-                    content_preview=(
-                        report.get("markdown_content", "")[:200] + "..."
-                        if report.get("markdown_content")
-                        else None
-                    ),
-                )
-            )
+        report_responses = [ReportResponse(**report_response_fields(report)) for report in reports]
 
         return {
             "reports": report_responses,
@@ -439,27 +490,52 @@ async def get_report(
             raise HTTPException(status_code=404, detail="Report not found")
 
         return ReportDetail(
-            id=report["id"],
-            tool_name=report["tool_name"],
-            category=get_report_label(report, "category"),
-            threat_type=get_report_label(report, "threat_type"),
-            quality_score=get_quality_score(report),
-            created_at=report["created_at"],
-            processing_time_ms=report.get("processing_time_ms") or 0,
-            status=get_report_status(report),
-            generation_stage=get_generation_stage(report),
+            **report_response_fields(report),
             markdown_content=report.get("markdown_content") if include_content else None,
-            threat_data=report.get("threat_data"),
+            threat_data=reader_safe_threat_data(report),
             web_sources=get_report_sources(report),
             search_tags=report.get("search_tags", []),
             generation_route=report.get("generation_route"),
             evaluation_route=report.get("evaluation_route"),
+            quality_assessment=get_quality_assessment(report),
         )
 
     except HTTPException:
         raise
     except Exception as e:
         raise internal_server_error("Failed to get report", e)
+
+
+@app.post("/api/reports/{report_id}/evaluation", response_model=Dict[str, str])
+async def retry_report_evaluation(
+    report_id: str,
+    background_tasks: BackgroundTasks,
+    user: AuthenticatedUser = Depends(verify_jwt_token),
+):
+    """Retry a failed or unrecorded evaluator without repeating report generation."""
+
+    try:
+        report = report_service.get_report(report_id, include_content=False)
+        if report is None:
+            raise HTTPException(status_code=404, detail="Report not found")
+        if get_report_user_id(user) and report.get("user_id") != user.id:
+            raise HTTPException(status_code=404, detail="Report not found")
+        owner_id = str(report.get("user_id") or user.id)
+        if not report_service.begin_report_evaluation(report_id, user_id=owner_id):
+            raise HTTPException(
+                status_code=409,
+                detail="This report is not available for evaluation retry",
+            )
+        background_tasks.add_task(run_report_evaluation, report_id, owner_id)
+        return {
+            "report_id": report_id,
+            "evaluation_status": EvaluationStatus.PENDING.value,
+            "message": "Evaluation retry started",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise internal_server_error("Failed to retry report evaluation", e)
 
 
 def run_report_generation(
@@ -496,41 +572,59 @@ def run_report_generation(
                 report_service.update_generation_stage(report_id, stage.value)
                 last_stage = stage
 
-        profile = generator.get_threat_intelligence(
+        raw_profile = generator.get_threat_intelligence(
             tool_name=tool_name,
             progress_callback=persist_progress,
         )
 
-        if not profile or "error" in profile:
+        if not raw_profile or "error" in raw_profile:
             logger.error("Generation returned no usable result for report %s", report_id)
             report_service.mark_report_failed(report_id)
             return
+
+        profile, web_sources = canonicalize_profile_sources(raw_profile)
 
         # get_threat_intelligence returns the raw profile; map it onto the storage
         # schema (narrative, structured extraction, quality, tags) the way the record
         # view expects, rather than persisting the bare profile.
         quality_data = profile.get("_quality_assessment") or {}
         elapsed_ms = profile.get("_processing_time_ms") or int((time.monotonic() - start) * 1000)
-        category = profile.get("category") or ""
+        category, threat_type = report_service.categorize_tool(tool_name, profile)
         threat_data = {
             key: value
             for key, value in profile.items()
-            if key not in {"_generation_route", "_evaluation_route"}
+            if not key.startswith("_") and key != "comprehensiveWebSearchSources"
         }
+        preview = str(threat_data.get("toolOverview", {}).get("description") or "").strip()
+        preview = " ".join(preview.split())
+        if len(preview) > 240:
+            preview = f"{preview[:237].rstrip()}..."
+        rendered_profile = dict(threat_data)
+        rendered_profile["_quality_assessment"] = quality_data
+        evaluation_succeeded = isinstance(quality_data.get("overall_score"), (int, float))
         report_data = {
             "id": report_id,
             "tool_name": tool_name,
             "category": category,
-            "threat_type": profile.get("threatType") or "",
+            "threat_type": threat_type,
             "quality_score": quality_data.get("overall_score"),
             "processing_time_ms": elapsed_ms,
             "threat_data": threat_data,
             "quality_assessment": quality_data or None,
             "generation_route": profile.get("_generation_route"),
             "evaluation_route": profile.get("_evaluation_route"),
-            "web_sources": profile.get("webSearchSources", {}).get("primarySources", []),
-            "markdown_content": generate_markdown(profile),
+            "evaluation_status": (
+                EvaluationStatus.COMPLETED.value
+                if evaluation_succeeded
+                else EvaluationStatus.FAILED.value
+            ),
+            "evaluation_error_code": None if evaluation_succeeded else "evaluator_unavailable",
+            "evaluation_attempts": 1,
+            "evaluated_at": datetime.now(timezone.utc),
+            "web_sources": web_sources,
+            "markdown_content": generate_markdown(rendered_profile),
             "trace_data": profile.get("_trace_data"),
+            "content_preview": preview or None,
             "search_tags": [tag for tag in [tool_name.lower(), category.lower()] if tag],
         }
         report_service.finalize_report(report_id, report_data, user_id=user_id)
@@ -541,6 +635,65 @@ def run_report_generation(
             report_service.mark_report_failed(report_id)
         except Exception as mark_error:
             logger.exception("Could not mark report %s failed: %s", report_id, mark_error)
+
+
+def run_report_evaluation(report_id: str, user_id: str) -> None:
+    """Retry only the quality judge for an existing synthesized report."""
+
+    evaluation_route: Dict[str, Any] | None = None
+    assessment: Dict[str, Any] | None = None
+    try:
+        report = report_service.get_report(report_id, include_content=False)
+        if report is None or report.get("user_id") != user_id:
+            return
+        threat_data = report.get("threat_data")
+        if not isinstance(threat_data, dict):
+            report_service.fail_report_evaluation(
+                report_id,
+                error_code="missing_report_evidence",
+            )
+            return
+
+        profile, web_sources = canonicalize_profile_sources(threat_data)
+        result = evaluate_saved_report(profile)
+        evaluation_route = result.evaluation_route
+        assessment = result.quality_assessment
+        if not result.succeeded:
+            report_service.fail_report_evaluation(
+                report_id,
+                error_code="evaluator_unavailable",
+                quality_assessment=assessment,
+                evaluation_route=evaluation_route,
+            )
+            return
+
+        persisted_profile = {
+            key: value
+            for key, value in result.profile.items()
+            if not key.startswith("_") and key != "comprehensiveWebSearchSources"
+        }
+        persisted_profile, persisted_sources = canonicalize_profile_sources(persisted_profile)
+        if [source.get("url") for source in persisted_sources] != [
+            source.get("url") for source in web_sources
+        ]:
+            raise ValueError("Evaluator retry changed the source ledger")
+        rendered_profile = dict(persisted_profile)
+        rendered_profile["_quality_assessment"] = assessment
+        report_service.complete_report_evaluation(
+            report_id,
+            quality_assessment=assessment,
+            evaluation_route=evaluation_route,
+            threat_data=persisted_profile,
+            markdown_content=generate_markdown(rendered_profile),
+        )
+    except Exception as exc:
+        logger.exception("Evaluator retry failed for report %s: %s", report_id, exc)
+        report_service.fail_report_evaluation(
+            report_id,
+            error_code="evaluator_unavailable",
+            quality_assessment=assessment,
+            evaluation_route=evaluation_route,
+        )
 
 
 @app.post("/api/reports", response_model=Dict[str, str])
@@ -652,26 +805,7 @@ async def search_reports(
         total_count = report_service.count_search_results(**search_params)
 
         # Convert to response models
-        report_responses = []
-        for report in reports:
-            report_responses.append(
-                ReportResponse(
-                    id=report["id"],
-                    tool_name=report["tool_name"],
-                    category=get_report_label(report, "category"),
-                    threat_type=get_report_label(report, "threat_type"),
-                    quality_score=get_quality_score(report),
-                    created_at=report["created_at"],
-                    processing_time_ms=report.get("processing_time_ms") or 0,
-                    status=get_report_status(report),
-                    generation_stage=get_generation_stage(report),
-                    content_preview=(
-                        report.get("markdown_content", "")[:200] + "..."
-                        if report.get("markdown_content")
-                        else None
-                    ),
-                )
-            )
+        report_responses = [ReportResponse(**report_response_fields(report)) for report in reports]
 
         return {
             "reports": report_responses,
@@ -775,9 +909,9 @@ async def get_analytics(
         processing_times = [
             record.processing_time_ms for record in records if record.processing_time_ms is not None
         ]
-        avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else 0.0
+        avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else None
         avg_processing_time = (
-            sum(processing_times) / len(processing_times) if processing_times else 0.0
+            sum(processing_times) / len(processing_times) if processing_times else None
         )
         trends = build_analytics_trends(records, start_date=start_date, days=days)
         threat_distribution = trends["threat_type_distribution"]
@@ -789,12 +923,22 @@ async def get_analytics(
             for record in records
             if record.status in (ReportStatus.COMPLETED, ReportStatus.FAILED)
         ]
-        success_rate = (
+        generation_completion_rate = (
             sum(record.status is ReportStatus.COMPLETED for record in terminal_records)
             / len(terminal_records)
             if terminal_records
-            else 0.0
+            else None
         )
+        review_states = [
+            derive_review_status(
+                report_status=record.status,
+                evaluation_status=record.evaluation_status,
+                quality_score=record.quality_score,
+                quality_assessment=record.quality_assessment,
+                source_count=record.source_count,
+            )
+            for record in records
+        ]
 
         # Recent activity
         recent_reports = report_service.list_reports(
@@ -806,13 +950,15 @@ async def get_analytics(
                 {
                     "id": report["id"],
                     "tool_name": report["tool_name"],
-                    "quality_score": report.get("quality_score", 0.0),
-                    "processing_time_ms": report.get("processing_time_ms") or 0,
+                    "quality_score": report.get("quality_score"),
+                    "processing_time_ms": report.get("processing_time_ms"),
                     "created_at": report["created_at"],
                     "threat_type": report.get("threat_type"),
                     "generation_used_fallback": generation_fallback_state(
                         report.get("generation_route")
                     ),
+                    "evaluation_status": get_evaluation_status(report),
+                    "review_status": report_response_fields(report)["review_status"],
                 }
             )
 
@@ -821,11 +967,24 @@ async def get_analytics(
                 "total_reports": total_reports,
                 "reports_last_24h": reports_24h,
                 "reports_last_7d": reports_7d,
-                "reports_last_30d": reports_period,
+                "reports_in_period": reports_period,
                 "avg_quality_score": avg_quality,
                 "avg_processing_time_ms": avg_processing_time,
                 "most_common_threat_type": most_common_threat,
-                "success_rate": success_rate,
+                "generation_completion_rate": generation_completion_rate,
+                "terminal_reports": len(terminal_records),
+                "scored_reports": len(quality_scores),
+                "unscored_reports": len(records) - len(quality_scores),
+                "evaluation_failed_reports": sum(
+                    record.evaluation_status is EvaluationStatus.FAILED for record in records
+                ),
+                "reviewable_reports": sum(
+                    state is ReviewStatus.REVIEWABLE for state in review_states
+                ),
+                "needs_attention_reports": sum(
+                    state in (ReviewStatus.NEEDS_ATTENTION, ReviewStatus.NEEDS_EVALUATION)
+                    for state in review_states
+                ),
             },
             "trends": {
                 "daily_reports": trends["daily_reports"],
@@ -859,6 +1018,22 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
         # Get quality score distribution
         quality_stats = report_service.get_quality_score_distribution(user_id=user_id)
 
+        records = report_service.list_analytics_records(
+            created_after=datetime(1970, 1, 1, tzinfo=timezone.utc),
+            user_id=user_id,
+        )
+        scored_reports = sum(record.quality_score is not None for record in records)
+        review_states = [
+            derive_review_status(
+                report_status=record.status,
+                evaluation_status=record.evaluation_status,
+                quality_score=record.quality_score,
+                quality_assessment=record.quality_assessment,
+                source_count=record.source_count,
+            )
+            for record in records
+        ]
+
         # Get recent activity
         recent_activity = report_service.list_reports(
             limit=5, sort_by="created_at", sort_order="desc", user_id=user_id
@@ -869,6 +1044,11 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
                 "total_reports": total_reports,
                 "reports_this_week": recent_reports,
                 "avg_quality_score": quality_stats.get("average"),
+                "scored_reports": scored_reports,
+                "needs_attention_reports": sum(
+                    state in (ReviewStatus.NEEDS_ATTENTION, ReviewStatus.NEEDS_EVALUATION)
+                    for state in review_states
+                ),
             },
             "threat_distribution": threat_stats,
             "quality_distribution": quality_stats.get("distribution", []),
@@ -878,6 +1058,8 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
                     "tool_name": r["tool_name"],
                     "created_at": r["created_at"],
                     "quality_score": r.get("quality_score"),
+                    "evaluation_status": get_evaluation_status(r),
+                    "review_status": report_response_fields(r)["review_status"],
                 }
                 for r in recent_activity
             ],

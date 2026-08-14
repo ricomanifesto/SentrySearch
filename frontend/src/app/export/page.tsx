@@ -16,7 +16,7 @@ import { AuthGuard } from '@/components/AuthGuard';
 type ExportEvidenceRecord = {
   id: string;
   title: string;
-  confidence: string;
+  quality: string;
   date: string;
   threatType?: string;
 };
@@ -41,17 +41,18 @@ const formatOptions = [
 
 const packageContentOptions = [
   { key: 'include_content' as const, label: 'Full narrative', description: 'Report markdown and analyst-readable context.' },
-  { key: 'include_metadata' as const, label: 'Processing metadata', description: 'Timestamps, confidence scores, and pipeline details.' },
-  { key: 'include_tags' as const, label: 'Source tags', description: 'Search tags and categorization markers.' },
+  { key: 'include_metadata' as const, label: 'Processing metadata', description: 'Timestamps, report-quality scores, lifecycle states, and route details.' },
+  { key: 'include_sources' as const, label: 'Source evidence', description: 'Canonical source records with URLs, access dates, and key findings.' },
+  { key: 'include_tags' as const, label: 'Search context', description: 'Search tags and categorization markers.' },
 ];
 
 function buildExportEvidenceRecord(report: Report): ExportEvidenceRecord {
   return {
     id: report.id,
     title: report.tool_name,
-    confidence: report.quality_score == null
-      ? 'Confidence not scored'
-      : `Confidence ${report.quality_score.toFixed(1)}`,
+    quality: report.quality_score == null
+      ? 'Quality not scored'
+      : `Quality ${report.quality_score.toFixed(2)}`,
     date: formatDate(report.created_at),
     threatType: report.threat_type ? formatTaxonomyLabel(report.threat_type) : undefined,
   };
@@ -66,6 +67,7 @@ export default function ExportPage() {
     include_content: true,
     include_metadata: true,
     include_tags: true,
+    include_sources: true,
     max_reports: 1000,
   });
   const [selectedReports, setSelectedReports] = useState<string[]>([]);
@@ -148,7 +150,7 @@ export default function ExportPage() {
     },
     {
       key: 'min_quality_score',
-      label: 'Minimum confidence',
+      label: 'Minimum report quality',
       options: qualityFilterOptions,
       value: config.min_quality_score?.toString() || '',
       onChange: (value) => handleConfigChange('min_quality_score', value ? parseFloat(value) : undefined),
@@ -177,7 +179,7 @@ export default function ExportPage() {
     {
       label: 'Scope constraints',
       status: config.max_reports ? `${config.max_reports} record cap` : 'No record cap',
-      description: 'Review window, threat family, and confidence constraints apply before packaging.',
+      description: 'Review window, threat family, and report-quality constraints apply before packaging.',
     },
   ];
 
@@ -253,7 +255,7 @@ export default function ExportPage() {
               <section data-contract="Export.PackageScopeControls.v1" className="rounded-xl border border-zinc-200 bg-white p-5">
                 <h2 className="text-base font-semibold text-zinc-950">Handoff constraints</h2>
                 <p className="mt-1 text-sm leading-6 text-zinc-500">
-                  Constrain the package to the evidence window, threat family, and confidence floor needed for review.
+                  Constrain the package to the evidence window, threat family, and report-quality floor needed for review.
                 </p>
                 <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
                   {packageScopeControls.map((control) => (
@@ -284,7 +286,7 @@ export default function ExportPage() {
                   <div className="min-w-0">
                     <h2 className="text-base font-semibold text-zinc-950">Report selection</h2>
                     <p className="mt-1 text-sm leading-6 text-zinc-500">
-                      Visible reports ready for handoff review, with confidence and threat markers.
+                      Visible reports ready for handoff review, with report-quality and threat markers.
                     </p>
                   </div>
                   <button type="button" onClick={handleSelectAll} className="inline-flex h-9 shrink-0 items-center justify-center rounded-lg border border-zinc-300 bg-white px-3 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50">
@@ -397,7 +399,7 @@ function ExportEvidenceQueueRecord({
       <span className="min-w-0 flex-1">
         <span className="flex items-start justify-between gap-3">
           <span className="truncate text-sm font-medium text-zinc-950">{record.title}</span>
-          <span className="shrink-0 rounded-md bg-blue-50 px-2 py-0.5 text-sm font-medium text-blue-700">{record.confidence}</span>
+          <span className="shrink-0 rounded-md bg-blue-50 px-2 py-0.5 text-sm font-medium text-blue-700">{record.quality}</span>
         </span>
         <span className="mt-2 flex flex-wrap items-center gap-2">
           <span className="text-sm text-zinc-500">{record.date}</span>

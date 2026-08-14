@@ -1,6 +1,8 @@
 /** Stable wire contracts shared by the SentrySearch frontend. */
 
 export type ReportStatus = 'generating' | 'completed' | 'failed';
+export type EvaluationStatus = 'unrecorded' | 'pending' | 'completed' | 'failed';
+export type ReviewStatus = 'generating' | 'generation_failed' | 'evaluation_pending' | 'needs_evaluation' | 'needs_attention' | 'reviewable';
 export type GenerationStage = 'queued' | 'researching' | 'synthesizing' | 'validating' | 'finalizing' | 'completed' | 'failed';
 export type ReportSortField = 'created_at' | 'quality_score' | 'tool_name' | 'processing_time_ms';
 export type SortOrder = 'asc' | 'desc';
@@ -15,7 +17,12 @@ export interface Report {
   processing_time_ms: number;
   status?: ReportStatus;
   generation_stage?: GenerationStage;
-  content_preview?: string;
+  evaluation_status: EvaluationStatus;
+  evaluation_error_code?: string | null;
+  evaluation_attempts: number;
+  evaluated_at?: string | null;
+  review_status: ReviewStatus;
+  content_preview?: string | null;
 }
 
 export interface ReportDetail extends Report {
@@ -25,6 +32,7 @@ export interface ReportDetail extends Report {
   search_tags: string[];
   generation_route?: ModelRouteProvenance | null;
   evaluation_route?: ModelRouteProvenance | null;
+  quality_assessment?: Record<string, unknown> | null;
 }
 
 export interface ModelRouteProvenance {
@@ -88,14 +96,18 @@ export interface AnalyticsDashboard {
     total_reports: number;
     reports_this_week: number;
     avg_quality_score: number | null;
+    scored_reports: number;
+    needs_attention_reports: number;
   };
   threat_distribution: Record<string, number>;
-  quality_distribution: Record<string, number>;
+  quality_distribution: Array<{ range: string; count: number }>;
   recent_activity: Array<{
     id: string;
     tool_name: string;
     created_at: string;
     quality_score: number | null;
+    evaluation_status: EvaluationStatus;
+    review_status: ReviewStatus;
   }>;
 }
 
@@ -104,11 +116,17 @@ export interface AnalyticsData {
     total_reports: number;
     reports_last_24h: number;
     reports_last_7d: number;
-    reports_last_30d: number;
-    avg_quality_score: number;
-    avg_processing_time_ms: number;
+    reports_in_period: number;
+    avg_quality_score: number | null;
+    avg_processing_time_ms: number | null;
     most_common_threat_type: string;
-    success_rate: number;
+    generation_completion_rate: number | null;
+    terminal_reports: number;
+    scored_reports: number;
+    unscored_reports: number;
+    evaluation_failed_reports: number;
+    reviewable_reports: number;
+    needs_attention_reports: number;
   };
   trends: {
     daily_reports: Array<{ date: string; count: number }>;
@@ -119,6 +137,8 @@ export interface AnalyticsData {
   route_performance: Array<{
     route: 'primary' | 'fallback' | 'unrecorded';
     report_count: number;
+    scored_report_count: number;
+    runtime_recorded_count: number;
     avg_quality_score: number | null;
     avg_processing_time_ms: number | null;
   }>;
@@ -126,10 +146,12 @@ export interface AnalyticsData {
     id: string;
     tool_name: string;
     quality_score: number | null;
-    processing_time_ms: number;
+    processing_time_ms: number | null;
     created_at: string;
     threat_type?: string;
     generation_used_fallback: boolean | null;
+    evaluation_status: EvaluationStatus;
+    review_status: ReviewStatus;
   }>;
 }
 
@@ -148,6 +170,7 @@ export interface ExportConfig extends Record<string, unknown> {
   include_content: boolean;
   include_metadata: boolean;
   include_tags: boolean;
+  include_sources: boolean;
   date_range_days?: number;
   threat_types?: string[];
   min_quality_score?: number;
@@ -161,5 +184,5 @@ export interface ActivityEvent {
   description: string;
   metadata: Record<string, unknown>;
   created_at: string;
-  severity: 'success';
+  severity: 'success' | 'warning' | 'info';
 }

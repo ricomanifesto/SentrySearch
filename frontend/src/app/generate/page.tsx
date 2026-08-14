@@ -46,8 +46,8 @@ const reportIncludes = [
     description: 'Defender-oriented guidance when the source material supports it.',
   },
   {
-    label: 'Risk and confidence framing',
-    description: 'Confidence and risk posture, surfaced before you save or share.',
+    label: 'Quality and risk framing',
+    description: 'Evaluation results are recorded with the saved report for review.',
   },
   {
     label: 'A saved review record',

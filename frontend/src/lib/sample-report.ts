@@ -9,6 +9,18 @@ export const SAMPLE_REPORT: ReportDetail = {
   created_at: '2026-08-13T12:00:00.000Z',
   processing_time_ms: 0,
   status: 'completed',
+  generation_stage: 'completed',
+  evaluation_status: 'completed',
+  evaluation_attempts: 1,
+  evaluated_at: '2026-08-13T12:03:00.000Z',
+  review_status: 'reviewable',
+  quality_assessment: {
+    overall_score: 3.5,
+    needs_improvement: false,
+    critical_issues: [],
+    summary: { passed_sections: 7, failed_sections: 0, unavailable_sections: 0 },
+    consistency: { consistency_score: 4.0, inconsistencies: [], recommendations: [] },
+  },
   content_preview: 'An acceptable profile of Cobalt Strike capabilities, observed abuse, and detection priorities.',
   markdown_content: [
     '# Cobalt Strike',

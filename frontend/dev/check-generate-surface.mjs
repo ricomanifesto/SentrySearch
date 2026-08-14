@@ -56,6 +56,10 @@ const expectations = [
     absentPattern: /Check the target name and try again/,
   },
   {
+    name: 'does not imply the automatically saved record needs a manual save',
+    absentPattern: /before you save or share/,
+  },
+  {
     name: 'keeps mobile overflow guarded',
     pattern: /overflow-x-hidden/,
   },

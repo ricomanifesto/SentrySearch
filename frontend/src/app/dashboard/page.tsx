@@ -11,9 +11,12 @@ import {
 } from '@heroicons/react/24/outline';
 
 import { api } from '@/lib/api';
-import { formatRelativeTime, formatQualityScore } from '@/lib/utils';
+import { formatRelativeTime } from '@/lib/utils';
 import { ActivityFeed } from '@/components/ActivityFeed';
 import { AuthGuard } from '@/components/AuthGuard';
+import { DashboardBriefingSignals } from '@/components/DashboardBriefingSignals';
+import { getQualityLabel } from '@/lib/report-query';
+import { getReviewStatusClasses, getReviewStatusLabel } from '@/lib/report-status';
 
 const THREAT_COVERAGE_ROW_LIMIT = 5;
 
@@ -66,28 +69,6 @@ export default function Dashboard() {
 
   const threatCoverageRows = buildThreatCoverageRows(analytics?.threat_distribution);
 
-  const briefingSignals = [
-    {
-      label: 'Intelligence library',
-      value: analytics?.summary.total_reports ?? 0,
-      detail: 'Saved reports ready for review',
-    },
-    {
-      label: 'Briefed this week',
-      value: analytics?.summary.reports_this_week ?? 0,
-      detail: 'New intelligence generated',
-    },
-    {
-      label: 'Analyst confidence',
-      value: analytics?.summary.avg_quality_score == null
-        ? '—'
-        : analytics.summary.avg_quality_score.toFixed(1),
-      detail: analytics?.summary.avg_quality_score == null
-        ? 'No scored reports yet'
-        : 'Average report quality score',
-    },
-  ];
-
   return (
     <AuthGuard>
       <main data-surface="dashboard-workspace" className="overflow-x-hidden bg-[var(--surface-0)]">
@@ -98,7 +79,7 @@ export default function Dashboard() {
               Your intelligence workspace
             </h1>
             <p className="mt-4 text-lg leading-8 text-zinc-600">
-              Track generated reports, source coverage, and confidence before opening
+              Track generated reports, source coverage, and review readiness before opening
               the next investigation.
             </p>
           </header>
@@ -115,11 +96,11 @@ export default function Dashboard() {
               Generate intelligence
             </Link>
             <Link
-              href="/search"
+              href="/reports"
               className="inline-flex h-11 items-center justify-center gap-2 rounded-lg border border-zinc-300 bg-white px-5 text-base font-medium text-zinc-800 transition-colors hover:bg-zinc-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-2"
             >
               <MagnifyingGlassIcon className="h-5 w-5" aria-hidden="true" />
-              Search intelligence
+              Search and filter reports
             </Link>
             <Link
               href="/reports"
@@ -130,18 +111,7 @@ export default function Dashboard() {
             </Link>
           </section>
 
-          <dl
-            data-contract="Dashboard.BriefingSignalStrip.v1"
-            className="mt-8 grid gap-px overflow-hidden rounded-xl border border-zinc-200 bg-zinc-200 sm:grid-cols-3"
-          >
-            {briefingSignals.map((signal) => (
-              <div key={signal.label} className="bg-white px-5 py-5">
-                <dt className="text-sm text-zinc-500">{signal.label}</dt>
-                <dd className="mt-1 text-2xl font-semibold text-zinc-950">{signal.value}</dd>
-                <dd className="mt-0.5 text-sm text-zinc-500">{signal.detail}</dd>
-              </div>
-            ))}
-          </dl>
+          <DashboardBriefingSignals analytics={analytics} isLoading={analyticsLoading} />
 
           <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.85fr)_minmax(0,0.85fr)]">
             <section className="rounded-xl border border-zinc-200 bg-white p-5">
@@ -151,7 +121,7 @@ export default function Dashboard() {
                   All reports
                 </Link>
               </div>
-              <p className="mt-1 text-sm text-zinc-500">Reopen reports for source context and confidence review.</p>
+              <p className="mt-1 text-sm text-zinc-500">Reopen reports for source context and readiness review.</p>
               <div className="mt-4">
                 {reportsLoading ? (
                   <div className="space-y-3" role="status" aria-label="Loading recent reports">
@@ -176,7 +146,7 @@ export default function Dashboard() {
                 ) : recentReports?.reports.length ? (
                   <ul className="divide-y divide-zinc-100">
                     {recentReports.reports.map((report) => {
-                      const qualityScore = formatQualityScore(report.quality_score);
+                      const qualityLabel = getQualityLabel(report.quality_score);
                       return (
                         <li key={report.id} className="flex items-center justify-between gap-3 py-3 first:pt-0">
                           <div className="min-w-0">
@@ -188,9 +158,14 @@ export default function Dashboard() {
                             </Link>
                             <p className="text-sm text-zinc-500">{formatRelativeTime(report.created_at)}</p>
                           </div>
-                          <span className="shrink-0 rounded-md bg-zinc-100 px-2 py-1 font-mono text-sm text-zinc-700">
-                            {qualityScore.formatted}
-                          </span>
+                          <div className="flex shrink-0 flex-col items-end gap-1">
+                            <span className="rounded-md bg-zinc-100 px-2 py-1 text-sm text-zinc-700">
+                              {qualityLabel}{report.quality_score == null ? '' : ` · ${Number(report.quality_score).toFixed(2)}`}
+                            </span>
+                            <span className={`rounded-md px-2 py-1 text-sm font-medium ${getReviewStatusClasses(report.review_status)}`}>
+                              {getReviewStatusLabel(report.review_status)}
+                            </span>
+                          </div>
                         </li>
                       );
                     })}

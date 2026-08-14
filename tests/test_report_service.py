@@ -100,6 +100,19 @@ def test_additive_migration_creates_model_route_columns():
 
     assert "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_route JSONB" in statements
     assert "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_route JSONB" in statements
+    assert (
+        "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_status VARCHAR(20)" in statements
+    )
+    assert (
+        "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_error_code VARCHAR(50)"
+        in statements
+    )
+    assert (
+        "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_attempts INTEGER DEFAULT 0"
+        in statements
+    )
+    assert "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluated_at TIMESTAMPTZ" in statements
+    assert "ALTER TABLE reports ADD COLUMN IF NOT EXISTS content_preview TEXT" in statements
 
 
 def test_report_filters_are_immutable_and_normalize_collections():

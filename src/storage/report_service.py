@@ -4,18 +4,24 @@ Report storage service combining PostgreSQL and S3 for SentrySearch
 
 import logging
 from typing import Dict, Any, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 from sqlalchemy import asc, desc, or_
 
 from src.domain.reports import (
+    EvaluationStatus,
     GenerationStage,
     ReportAnalyticsRecord,
     ReportFilters,
     ReportSortField,
     ReportStatus,
     SortOrder,
+    coerce_evaluation_status,
+)
+from src.core.source_ledger import (
+    assert_markdown_source_ledger_consistent,
+    assert_source_ledger_consistent,
 )
 from src.domain.model_routes import generation_fallback_state
 
@@ -340,24 +346,36 @@ class ReportStorageService:
 
         # If we have threat data, use it for better categorization
         if threat_data:
-            core_metadata = threat_data.get("coreMetadata", {})
-            category_from_data = core_metadata.get("category", "").lower()
+            core_metadata = threat_data.get("coreMetadata")
+            if not isinstance(core_metadata, dict):
+                core_metadata = {}
+            raw_category = core_metadata.get("category")
+            category_from_data = raw_category.lower() if isinstance(raw_category, str) else ""
 
             if category_from_data:
-                category_mapping = {
-                    "rat": ("malware", "remote_access_trojan"),
-                    "backdoor": ("malware", "backdoor"),
-                    "trojan": ("malware", "trojan"),
-                    "ransomware": ("malware", "ransomware"),
-                    "botnet": ("malware", "botnet"),
-                    "apt": ("malware", "apt_malware"),
-                    "framework": ("malware", "post_exploitation_framework"),
-                    "tool": ("legitimate_software", "security_tool"),
-                    "software": ("legitimate_software", "legitimate_software"),
-                }
-
-                if category_from_data in category_mapping:
-                    return category_mapping[category_from_data]
+                category_patterns = (
+                    (("remote access", " rat"), ("malware", "remote_access_trojan")),
+                    (
+                        ("post-exploitation", "post exploitation", "framework"),
+                        ("malware", "post_exploitation_framework"),
+                    ),
+                    (("ransomware",), ("malware", "ransomware")),
+                    (("backdoor",), ("malware", "backdoor")),
+                    (("trojan",), ("malware", "trojan")),
+                    (("botnet",), ("malware", "botnet")),
+                    (("downloader", "loader"), ("malware", "loader")),
+                    (("apt",), ("malware", "apt_malware")),
+                    (("malware",), ("malware", "malware")),
+                    (("threat actor", "threat group"), ("threat_group", "threat_actor")),
+                    (("security tool",), ("legitimate_software", "security_tool")),
+                    (
+                        ("software", "technology", "platform"),
+                        ("legitimate_software", "legitimate_software"),
+                    ),
+                )
+                for markers, classification in category_patterns:
+                    if any(marker in f" {category_from_data}" for marker in markers):
+                        return classification
 
         # Default to unknown if no clear categorization
         return ("unknown", "unknown")
@@ -439,20 +457,18 @@ class ReportStorageService:
             if not report_id:
                 raise ValueError("Report ID is required")
 
-            # Auto-categorize if category/threat_type are missing or 'unknown'
             tool_name = report_data.get("tool_name", "")
-            current_category = report_data.get("category", "").strip()
-            current_threat_type = report_data.get("threat_type", "").strip()
-
-            if not current_category or current_category.lower() in ["", "unknown"]:
-                category, threat_type = self.categorize_tool(
-                    tool_name, report_data.get("threat_data")
-                )
-                report_data["category"] = category
-                report_data["threat_type"] = threat_type
-                logger.info(
-                    f"Auto-categorized '{tool_name}' as category='{category}', threat_type='{threat_type}'"
-                )
+            category, threat_type = self.categorize_tool(tool_name, report_data.get("threat_data"))
+            report_data["category"] = category
+            report_data["threat_type"] = threat_type
+            assert_source_ledger_consistent(
+                report_data.get("threat_data") or {},
+                report_data.get("web_sources") or [],
+            )
+            assert_markdown_source_ledger_consistent(
+                report_data.get("markdown_content") or "",
+                report_data.get("web_sources") or [],
+            )
 
             # Upload markdown content to S3
             markdown_s3_key = None
@@ -486,6 +502,10 @@ class ReportStorageService:
                     web_sources=report_data.get("web_sources"),
                     generation_route=report_data.get("generation_route"),
                     evaluation_route=report_data.get("evaluation_route"),
+                    evaluation_status=report_data.get("evaluation_status"),
+                    evaluation_error_code=report_data.get("evaluation_error_code"),
+                    evaluation_attempts=report_data.get("evaluation_attempts", 1),
+                    evaluated_at=report_data.get("evaluated_at"),
                     markdown_s3_key=markdown_s3_key,
                     trace_s3_key=trace_s3_key,
                     api_key_hash=api_key_hash,
@@ -497,6 +517,7 @@ class ReportStorageService:
                     is_flagged=report_data.get("is_flagged", False),
                     version=report_data.get("version", "1.0"),
                     search_tags=report_data.get("search_tags", []),
+                    content_preview=report_data.get("content_preview"),
                 )
 
                 session.add(report)
@@ -552,13 +573,17 @@ class ReportStorageService:
         """
         try:
             tool_name = report_data.get("tool_name", "")
-            current_category = (report_data.get("category") or "").strip()
-            if not current_category or current_category.lower() in ["", "unknown"]:
-                category, threat_type = self.categorize_tool(
-                    tool_name, report_data.get("threat_data")
-                )
-                report_data["category"] = category
-                report_data["threat_type"] = threat_type
+            category, threat_type = self.categorize_tool(tool_name, report_data.get("threat_data"))
+            report_data["category"] = category
+            report_data["threat_type"] = threat_type
+            assert_source_ledger_consistent(
+                report_data.get("threat_data") or {},
+                report_data.get("web_sources") or [],
+            )
+            assert_markdown_source_ledger_consistent(
+                report_data.get("markdown_content") or "",
+                report_data.get("web_sources") or [],
+            )
 
             # Content upload is best-effort: the structured profile and metadata are
             # persisted in Postgres regardless, so a storage hiccup degrades to a
@@ -608,6 +633,11 @@ class ReportStorageService:
                 report.web_sources = report_data.get("web_sources")
                 report.generation_route = report_data.get("generation_route")
                 report.evaluation_route = report_data.get("evaluation_route")
+                report.evaluation_status = report_data.get("evaluation_status")
+                report.evaluation_error_code = report_data.get("evaluation_error_code")
+                report.evaluation_attempts = report_data.get("evaluation_attempts", 1)
+                report.evaluated_at = report_data.get("evaluated_at")
+                report.content_preview = report_data.get("content_preview")
                 if markdown_s3_key:
                     report.markdown_s3_key = markdown_s3_key
                 if trace_s3_key:
@@ -625,6 +655,85 @@ class ReportStorageService:
         except Exception as e:
             logger.error(f"Error finalizing report: {e}")
             raise
+
+    def begin_report_evaluation(self, report_id: str, *, user_id: str) -> bool:
+        """Atomically claim one evaluator-only retry for a completed owned report."""
+
+        with self.db_manager.get_session() as session:
+            report = (
+                session.query(Report)
+                .filter(Report.id == report_id, Report.user_id == user_id)
+                .with_for_update()
+                .first()
+            )
+            if report is None or report.status != ReportStatus.COMPLETED.value:
+                return False
+            if report.evaluation_status == EvaluationStatus.PENDING.value:
+                return False
+            if (
+                report.evaluation_status == EvaluationStatus.COMPLETED.value
+                and report.quality_score is not None
+            ):
+                return False
+            report.evaluation_status = EvaluationStatus.PENDING.value
+            report.evaluation_error_code = None
+            report.evaluation_attempts = int(report.evaluation_attempts or 0) + 1
+            session.commit()
+            return True
+
+    def complete_report_evaluation(
+        self,
+        report_id: str,
+        *,
+        quality_assessment: Dict[str, Any],
+        evaluation_route: Dict[str, Any],
+        threat_data: Dict[str, Any],
+        markdown_content: str,
+    ) -> bool:
+        """Persist a successful evaluator retry without repeating research or synthesis."""
+
+        sources = (threat_data.get("webSearchSources") or {}).get("primarySources") or []
+        assert_source_ledger_consistent(threat_data, sources)
+        assert_markdown_source_ledger_consistent(markdown_content, sources)
+        markdown_s3_key = self.s3_manager.upload_markdown_report(report_id, markdown_content)
+        with self.db_manager.get_session() as session:
+            report = session.query(Report).filter(Report.id == report_id).first()
+            if report is None:
+                return False
+            report.quality_assessment = quality_assessment
+            report.quality_score = quality_assessment.get("overall_score")
+            report.evaluation_route = evaluation_route
+            report.evaluation_status = EvaluationStatus.COMPLETED.value
+            report.evaluation_error_code = None
+            report.evaluated_at = datetime.now(timezone.utc)
+            report.threat_data = threat_data
+            report.markdown_s3_key = markdown_s3_key
+            session.commit()
+            return True
+
+    def fail_report_evaluation(
+        self,
+        report_id: str,
+        *,
+        error_code: str,
+        quality_assessment: Optional[Dict[str, Any]] = None,
+        evaluation_route: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Keep the narrative and record a blame-free, retryable evaluator failure."""
+
+        with self.db_manager.get_session() as session:
+            report = session.query(Report).filter(Report.id == report_id).first()
+            if report is None:
+                return False
+            report.evaluation_status = EvaluationStatus.FAILED.value
+            report.evaluation_error_code = error_code
+            report.evaluated_at = datetime.now(timezone.utc)
+            if quality_assessment is not None:
+                report.quality_assessment = quality_assessment
+            if evaluation_route is not None:
+                report.evaluation_route = evaluation_route
+            session.commit()
+            return True
 
     def update_generation_stage(self, report_id: str, stage: GenerationStage | str) -> bool:
         """Persist an observable background-generation stage without changing status."""
@@ -883,6 +992,9 @@ class ReportStorageService:
                         Report.status,
                         Report.threat_type,
                         Report.generation_route,
+                        Report.evaluation_status,
+                        Report.quality_assessment,
+                        Report.web_sources,
                     )
                     .filter(*self._report_filter_expressions(filters))
                     .all()
@@ -897,6 +1009,16 @@ class ReportStorageService:
                         status=ReportStatus(row.status or ReportStatus.COMPLETED.value),
                         threat_type=row.threat_type,
                         generation_used_fallback=generation_fallback_state(row.generation_route),
+                        evaluation_status=coerce_evaluation_status(
+                            row.evaluation_status,
+                            quality_score=(
+                                float(row.quality_score) if row.quality_score is not None else None
+                            ),
+                        ),
+                        quality_assessment=row.quality_assessment,
+                        source_count=(
+                            len(row.web_sources) if isinstance(row.web_sources, list) else 0
+                        ),
                     )
                     for row in rows
                 ]

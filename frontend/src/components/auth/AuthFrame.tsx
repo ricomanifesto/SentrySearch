@@ -18,7 +18,7 @@ const trustSignals = [
   },
   {
     label: "Saved review queue",
-    description: "Return to prior reports, confidence notes, and investigation context.",
+    description: "Return to prior reports, quality notes, and investigation context.",
   },
   {
     label: "Private workspace",

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const pagePath = resolve(here, '../src/app/export/page.tsx');
 const source = await readFile(pagePath, 'utf8');
+const exportBuilder = await readFile(resolve(here, '../src/lib/report-export.ts'), 'utf8');
 
 const expectations = [
   { name: 'keeps the export route behind the auth boundary', pattern: /<AuthGuard>/ },
@@ -12,6 +13,11 @@ const expectations = [
   { name: 'frames the surface as an intelligence handoff package', pattern: /Intelligence handoff package/ },
   { name: 'runs export through the report export contract', pattern: /api\.exportReports/ },
   { name: 'downloads the prepared package', pattern: /downloadAsFile\(data, filename, mimeType\)/ },
+  { name: 'offers the canonical source ledger as an export layer', pattern: /label: 'Source evidence'[\s\S]*include_sources/ },
+  { name: 'uses report quality vocabulary for export constraints', pattern: /Minimum report quality/ },
+  { name: 'exports source evidence rather than only search tags', source: exportBuilder, pattern: /include_sources \? \{ web_sources: report\.web_sources \}/ },
+  { name: 'exports evaluation lifecycle and review readiness', source: exportBuilder, pattern: /evaluation_status[\s\S]*review_status/ },
+  { name: 'exports generation and evaluation route attestation', source: exportBuilder, pattern: /generation_route[\s\S]*evaluation_route/ },
   { name: 'uses a canonical format options collection', pattern: /const formatOptions = \[/ },
   { name: 'renders package formats from the canonical collection', pattern: /formatOptions\.map/ },
   { name: 'uses a canonical package content options collection', pattern: /const packageContentOptions = \[/ },
@@ -40,7 +46,7 @@ const expectations = [
 ];
 
 const failures = expectations
-  .filter(({ pattern, absentPattern }) => (pattern ? !pattern.test(source) : absentPattern.test(source)))
+  .filter(({ pattern, absentPattern, source: expectationSource = source }) => (pattern ? !pattern.test(expectationSource) : absentPattern.test(expectationSource)))
   .map(({ name }) => `- ${name}`);
 
 if (failures.length > 0) {

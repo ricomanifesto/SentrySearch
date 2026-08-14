@@ -26,10 +26,10 @@ export const defaultReportQuery: Readonly<ReportQueryState> = Object.freeze({
 
 export const qualityFilterOptions = [
   { value: '', label: 'Any quality' },
-  { value: '4.0', label: '4.0+ high confidence' },
-  { value: '3.0', label: '3.0+ reviewable' },
-  { value: '2.0', label: '2.0+ needs review' },
-  { value: '1.0', label: '1.0+ low confidence' },
+  { value: '4.5', label: '4.50+ Excellent' },
+  { value: '4.0', label: '4.00+ Good' },
+  { value: '3.5', label: '3.50+ Acceptable' },
+  { value: '3.0', label: '3.00+ Needs Improvement' },
 ];
 
 export const dateRangeFilterOptions = [
@@ -77,6 +77,35 @@ export function toReportSort(state: ReportQueryState): ReportSort {
 
 export function countActiveReportFilters(state: ReportQueryState): number {
   return [state.query, state.threatType, state.minQuality, state.dateRangeDays].filter(Boolean).length;
+}
+
+export function reportQueryFromSearchParams(params: URLSearchParams): ReportQueryState {
+  const sortBy = params.get('sort_by');
+  const sortOrder = params.get('sort_order');
+  return {
+    query: params.get('query') || '',
+    threatType: params.get('threat_type') || '',
+    minQuality: params.get('min_quality') || '',
+    dateRangeDays: params.get('date_range') || '',
+    sortBy: reportSortOptions.some((option) => option.value === sortBy)
+      ? sortBy as ReportSortField
+      : defaultReportQuery.sortBy,
+    sortOrder: sortOrder === 'asc' || sortOrder === 'desc'
+      ? sortOrder
+      : defaultReportQuery.sortOrder,
+  };
+}
+
+export function reportQuerySearchParams(state: ReportQueryState, page = 1): URLSearchParams {
+  const params = new URLSearchParams();
+  if (state.query) params.set('query', state.query);
+  if (state.threatType) params.set('threat_type', state.threatType);
+  if (state.minQuality) params.set('min_quality', state.minQuality);
+  if (state.dateRangeDays) params.set('date_range', state.dateRangeDays);
+  if (state.sortBy !== defaultReportQuery.sortBy) params.set('sort_by', state.sortBy);
+  if (state.sortOrder !== defaultReportQuery.sortOrder) params.set('sort_order', state.sortOrder);
+  if (page > 1) params.set('page', String(page));
+  return params;
 }
 
 export function getQualityLabel(score: number | null): string {

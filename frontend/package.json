@@ -5,7 +5,6 @@
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build --webpack",
-    "check:admin-surface": "node dev/check-admin-surface.mjs",
     "check:analytics-surface": "node dev/check-analytics-surface.mjs",
     "check:auth-surface": "node dev/check-auth-surface.mjs",
     "check:dashboard-surface": "node dev/check-dashboard-surface.mjs",
@@ -19,7 +18,7 @@
     "check:search-surface": "node dev/check-search-surface.mjs",
     "check:settings-surface": "node dev/check-settings-surface.mjs",
     "check:surface-coverage": "node dev/run-surface-checks.mjs",
-    "test:experience": "node --import tsx --test dev/auth-next.test.ts dev/generation-errors.test.ts dev/report-render.test.tsx",
+    "test:experience": "node --import tsx --test dev/auth-next.test.ts dev/generation-errors.test.ts dev/report-render.test.tsx dev/workspace-experience.test.tsx",
     "test:render": "node --import tsx --test dev/report-render.test.tsx",
     "start": "next start",
     "lint": "eslint ."

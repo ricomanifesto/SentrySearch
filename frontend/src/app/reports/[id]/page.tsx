@@ -12,22 +12,31 @@ import Link from 'next/link';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useParams, useRouter } from 'next/navigation';
 import { ArrowLeftIcon, ArrowDownTrayIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { Dialog, DialogPanel, DialogTitle } from '@headlessui/react';
 
 import { api, type ReportDetail } from '@/lib/api';
 import { formatDate, formatRelativeTime, formatProcessingTime, downloadAsFile } from '@/lib/utils';
 import { SAMPLE_REPORT } from '@/lib/sample-report';
 import { getQualityLabel } from '@/lib/report-query';
+import { splitReportContent } from '@/lib/report-content';
 import { AuthGuard } from '@/components/AuthGuard';
 import { ReportNarrative } from '@/components/report/ReportNarrative';
 import { SourceEvidence } from '@/components/report/SourceEvidence';
 import { GenerationProgress } from '@/components/report/GenerationProgress';
 import { RouteProvenance } from '@/components/report/RouteProvenance';
+import { ReviewStatusBanner } from '@/components/report/ReviewStatusBanner';
 
 const LOCAL_REPORT_DETAIL_FIXTURE_ID = 'local-visual-fixture';
 
 const localReportDetailFixture: ReportDetail = {
   ...SAMPLE_REPORT,
   id: LOCAL_REPORT_DETAIL_FIXTURE_ID,
+  quality_score: null,
+  evaluation_status: 'failed',
+  evaluation_error_code: 'evaluator_unavailable',
+  evaluation_attempts: 1,
+  review_status: 'needs_evaluation',
+  quality_assessment: null,
   generation_route: {
     requested_models: ['google/gemma-4-26b-a4b-it:free'],
     requested_providers: ['google-ai-studio'],
@@ -78,12 +87,18 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
     queryFn: () => api.getReport(reportId, true),
     enabled: !!reportId && !fixtureReport,
     // Poll while a background generation is still running.
-    refetchInterval: (query) => (query.state.data?.status === 'generating' ? 4000 : false),
+    refetchInterval: (query) => (
+      query.state.data?.status === 'generating'
+      || query.state.data?.evaluation_status === 'pending'
+        ? 4000
+        : false
+    ),
   });
   const report = fixtureReport ?? fetchedReport;
   const isGenerating = report?.status === 'generating';
   const isFailed = report?.status === 'failed';
   const [elapsedSeconds, setElapsedSeconds] = React.useState(0);
+  const [deleteConfirmationOpen, setDeleteConfirmationOpen] = React.useState(false);
 
   React.useEffect(() => {
     if (!isGenerating || !report?.created_at) {
@@ -105,6 +120,14 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
       router.push('/reports');
     },
   });
+  const evaluationMutation = useMutation({
+    mutationFn: () => api.retryReportEvaluation(reportId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['report', reportId] });
+      await queryClient.invalidateQueries({ queryKey: ['reports'] });
+      await queryClient.invalidateQueries({ queryKey: ['analytics'] });
+    },
+  });
 
   const handleDownload = () => {
     if (!report?.markdown_content) return;
@@ -114,9 +137,7 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
 
   const handleDelete = () => {
     if (isFixtureRecord) return;
-    if (confirm('Are you sure you want to delete this report? This action cannot be undone.')) {
-      deleteMutation.mutate();
-    }
+    setDeleteConfirmationOpen(true);
   };
 
   if (isLoading) {
@@ -185,7 +206,7 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
           >
             <h1 className="text-2xl font-semibold text-red-900">Generation didn&apos;t finish</h1>
             <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-red-700">
-              This report couldn&apos;t be completed. Start a new run from the generate console and try the target again.
+              This report couldn&apos;t be completed. Your target was not the cause; start a new run when the service is ready.
             </p>
             <button type="button" onClick={() => router.push('/generate')} className={`${secondaryButtonClass} mt-6`}>
               Start a new report
@@ -198,11 +219,12 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
 
   const qualityScore = report.quality_score;
   const qualityLabel = getQualityLabel(qualityScore);
+  const contentParts = splitReportContent(report.markdown_content || '');
 
   const recordSummarySignals = [
     {
-      label: 'Confidence',
-      value: qualityScore == null ? qualityLabel : `${qualityScore.toFixed(1)} / 5.0`,
+      label: 'Report quality',
+      value: qualityScore == null ? qualityLabel : `${qualityScore.toFixed(2)} / 5.00`,
       detail: qualityLabel,
     },
     { label: 'Category', value: report.category || 'Unclassified', detail: 'Report classification' },
@@ -220,7 +242,7 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
       description: report.markdown_content
         ? 'Review the saved narrative against the metadata signals before reuse.'
         : 'Narrative content is absent; use structured extraction data for review context.',
-      status: report.markdown_content ? 'Ready' : 'Missing narrative',
+      status: report.markdown_content ? 'Available' : 'Missing narrative',
       ready: Boolean(report.markdown_content),
     },
     {
@@ -242,6 +264,7 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
   ];
 
   return (
+    <>
     <main data-surface="report-detail-record" className="overflow-x-hidden bg-[var(--surface-0)]">
       <div className="mx-auto max-w-5xl px-6 py-12 lg:px-8">
         {isFixtureRecord ? (
@@ -298,6 +321,14 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
           evaluationRoute={report.evaluation_route}
         />
 
+        <ReviewStatusBanner
+          status={report.review_status}
+          retryPending={evaluationMutation.isPending}
+          retryDisabled={isFixtureRecord}
+          retryError={evaluationMutation.isError}
+          onRetry={() => evaluationMutation.mutate()}
+        />
+
         {report.search_tags && report.search_tags.length > 0 && (
           <div className="mt-6 flex flex-wrap gap-2">
             {report.search_tags.map((tag, index) => (
@@ -306,11 +337,17 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
           </div>
         )}
 
+        <nav aria-label="Report sections" className="mt-6 flex flex-wrap gap-3 text-sm">
+          <a href="#source-evidence" className="font-medium text-blue-700 hover:underline">Review sources</a>
+          <a href="#intelligence-narrative" className="font-medium text-blue-700 hover:underline">Read narrative</a>
+          {contentParts.appendices ? <a href="#evaluation-appendix" className="font-medium text-blue-700 hover:underline">Inspect evaluation</a> : null}
+        </nav>
+
         <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem]">
-          <section className="min-w-0 rounded-xl border border-zinc-200 bg-white p-6">
+          <section id="intelligence-narrative" className="order-last min-w-0 scroll-mt-6 rounded-xl border border-zinc-200 bg-white p-6 lg:order-first">
             <p className="text-base font-semibold text-zinc-950">Intelligence narrative</p>
             {report.markdown_content ? (
-              <ReportNarrative markdown={report.markdown_content} />
+              <ReportNarrative markdown={contentParts.narrative} />
             ) : (
               <div className="mt-4 rounded-lg border border-dashed border-zinc-300 px-5 py-8 text-center">
                 <p className="text-sm font-medium text-zinc-950">Narrative unavailable</p>
@@ -321,7 +358,7 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
             )}
           </section>
 
-          <aside className="min-w-0 space-y-4">
+          <aside id="source-evidence" className="order-first min-w-0 scroll-mt-6 space-y-4 lg:order-last">
             <section className="rounded-xl border border-zinc-200 bg-white p-5">
               <SourceEvidence sources={report.web_sources} />
             </section>
@@ -347,15 +384,71 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
           </aside>
         </div>
 
+        {contentParts.appendices ? (
+          <details id="evaluation-appendix" className="mt-8 scroll-mt-6 rounded-xl border border-zinc-200 bg-white p-6">
+            <summary className="cursor-pointer text-base font-semibold text-zinc-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+              Evaluation details
+            </summary>
+            <p className="mt-2 text-sm leading-6 text-zinc-500">
+              Inspect section scores and recommendations separately from the operational narrative.
+            </p>
+            <ReportNarrative markdown={contentParts.appendices} />
+          </details>
+        ) : null}
+
         {report.threat_data && (
-          <section className="mt-8 rounded-xl border border-zinc-200 bg-white p-6">
-            <h2 className="text-base font-semibold text-zinc-950">Structured extraction data</h2>
+          <details className="mt-8 rounded-xl border border-zinc-200 bg-white p-6">
+            <summary className="cursor-pointer text-base font-semibold text-zinc-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+              Structured extraction data
+            </summary>
+            <p className="mt-2 text-sm leading-6 text-zinc-500">Reader-safe fields used to build the saved narrative.</p>
             <pre className="mt-4 max-h-[32rem] overflow-auto rounded-lg border border-zinc-200 bg-[var(--surface-0)] p-4 font-mono text-sm leading-6 text-zinc-800">
               {JSON.stringify(report.threat_data, null, 2)}
             </pre>
-          </section>
+          </details>
         )}
       </div>
     </main>
+    <Dialog
+      open={deleteConfirmationOpen}
+      onClose={() => {
+        if (!deleteMutation.isPending) setDeleteConfirmationOpen(false);
+      }}
+      className="relative z-50"
+    >
+      <div className="fixed inset-0 bg-zinc-950/40" aria-hidden="true" />
+      <div className="fixed inset-0 flex items-center justify-center overflow-y-auto p-4">
+        <DialogPanel className="w-full max-w-md rounded-xl border border-zinc-200 bg-white p-6 shadow-xl">
+          <DialogTitle className="text-xl font-semibold text-zinc-950">Delete this report?</DialogTitle>
+          <p className="mt-3 text-sm leading-6 text-zinc-600">
+            The saved narrative, source evidence, and review history for {report.tool_name} will be permanently removed.
+          </p>
+          {deleteMutation.isError ? (
+            <p className="mt-3 text-sm text-red-700" role="alert">
+              The report could not be deleted. The saved record is still available.
+            </p>
+          ) : null}
+          <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+            <button
+              type="button"
+              disabled={deleteMutation.isPending}
+              onClick={() => setDeleteConfirmationOpen(false)}
+              className={secondaryButtonClass}
+            >
+              Keep report
+            </button>
+            <button
+              type="button"
+              disabled={deleteMutation.isPending}
+              onClick={() => deleteMutation.mutate()}
+              className="inline-flex h-10 items-center justify-center rounded-lg bg-red-700 px-4 text-sm font-medium text-white transition-colors hover:bg-red-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:pointer-events-none disabled:opacity-50"
+            >
+              {deleteMutation.isPending ? 'Deleting report…' : 'Delete permanently'}
+            </button>
+          </div>
+        </DialogPanel>
+      </div>
+    </Dialog>
+    </>
   );
 }

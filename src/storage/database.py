@@ -71,6 +71,11 @@ class DatabaseManager:
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_stage VARCHAR(20) DEFAULT 'completed'",
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_route JSONB",
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_route JSONB",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_status VARCHAR(20)",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_error_code VARCHAR(50)",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_attempts INTEGER DEFAULT 0",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluated_at TIMESTAMPTZ",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS content_preview TEXT",
         ]
         try:
             with self.engine.begin() as connection:

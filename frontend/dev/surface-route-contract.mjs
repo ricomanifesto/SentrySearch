@@ -30,12 +30,6 @@ export const routeSurfaces = [
     guard: 'dev/check-sample-surface.mjs',
   },
   {
-    route: '/admin',
-    page: 'src/app/admin/page.tsx',
-    script: 'check:admin-surface',
-    guard: 'dev/check-admin-surface.mjs',
-  },
-  {
     route: '/analytics',
     page: 'src/app/analytics/page.tsx',
     script: 'check:analytics-surface',

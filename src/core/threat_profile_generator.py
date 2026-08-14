@@ -569,17 +569,6 @@ END ATTESTED SOURCE CATALOG"""
                     f"Quality control complete. Overall score: {validation_results['overall_score']}"
                 )
 
-                # Add comprehensive web search sources section to the main profile if available
-                if (
-                    hasattr(self.validator, "web_search_sources")
-                    and self.validator.web_search_sources
-                ):
-                    comprehensive_sources = self.validator.generate_comprehensive_sources_section()
-                    json_data["comprehensiveWebSearchSources"] = comprehensive_sources
-                    logger.debug(
-                        f"Added comprehensive sources section to main profile with {len(self.validator.web_search_sources)} sources"
-                    )
-
             emit_progress(1.0, GenerationStage.FINALIZING, "Analysis complete!")
 
             # Complete performance tracking

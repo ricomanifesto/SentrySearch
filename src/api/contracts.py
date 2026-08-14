@@ -7,7 +7,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from src.domain.reports import GenerationStage, ReportStatus
+from src.domain.reports import (
+    EvaluationStatus,
+    GenerationStage,
+    ReportStatus,
+    ReviewStatus,
+)
 
 ReportSortKey = Literal["created_at", "quality_score", "tool_name", "processing_time_ms"]
 SortDirection = Literal["asc", "desc"]
@@ -40,6 +45,11 @@ class ReportResponse(BaseModel):
     processing_time_ms: int = 0
     status: ReportStatus = ReportStatus.COMPLETED
     generation_stage: GenerationStage = GenerationStage.COMPLETED
+    evaluation_status: EvaluationStatus = EvaluationStatus.UNRECORDED
+    evaluation_error_code: str | None = None
+    evaluation_attempts: int = 0
+    evaluated_at: datetime | None = None
+    review_status: ReviewStatus = ReviewStatus.NEEDS_EVALUATION
     content_preview: str | None = None
 
 
@@ -70,6 +80,7 @@ class ReportDetail(ReportResponse):
     search_tags: list[str] = Field(default_factory=list)
     generation_route: ModelRouteProvenance | None = None
     evaluation_route: ModelRouteProvenance | None = None
+    quality_assessment: dict[str, Any] | None = None
 
 
 class SearchFilters(BaseModel):

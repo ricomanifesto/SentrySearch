@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { Suspense, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
   FunnelIcon,
   MagnifyingGlassIcon,
@@ -13,19 +14,24 @@ import {
 import { api, type Report } from '@/lib/api';
 import {
   countActiveReportFilters,
+  dateRangeFilterOptions,
   defaultReportQuery,
   formatTaxonomyLabel,
   getQualityLabel,
   qualityFilterOptions,
   reportSortOptions,
+  reportQueryFromSearchParams,
+  reportQuerySearchParams,
   sortOrderOptions,
-  toListReportFilters,
+  toReportSort,
+  toSearchFilters,
   type ReportQueryState,
 } from '@/lib/report-query';
-import { debounce, formatDate, formatProcessingTime, formatRelativeTime } from '@/lib/utils';
+import { formatDate, formatProcessingTime, formatRelativeTime } from '@/lib/utils';
 import { AuthGuard } from '@/components/AuthGuard';
+import { getReviewStatusClasses, getReviewStatusLabel } from '@/lib/report-status';
 
-type ReviewQueueControlKey = 'threatType' | 'minQuality' | 'sortBy' | 'sortOrder';
+type ReviewQueueControlKey = 'threatType' | 'minQuality' | 'dateRangeDays' | 'sortBy' | 'sortOrder';
 
 type ReviewQueueControl = {
   key: ReviewQueueControlKey;
@@ -49,21 +55,50 @@ const primaryButtonClass =
   'inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-zinc-950 px-5 text-sm font-medium text-white transition-colors hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 focus-visible:ring-offset-2';
 
 export default function ReportsPage() {
-  const [currentPage, setCurrentPage] = useState(1);
-  const [filters, setFilters] = useState<ReportQueryState>({ ...defaultReportQuery });
+  return (
+    <AuthGuard>
+      <Suspense fallback={<ReportsLoadingState />}>
+        <ReportsWorkspace />
+      </Suspense>
+    </AuthGuard>
+  );
+}
+
+function ReportsLoadingState() {
+  return (
+    <main className="min-h-[60vh] bg-[var(--surface-0)] px-6 py-16" role="status" aria-label="Loading review queue">
+      <div className="mx-auto max-w-6xl space-y-4">
+        <div className="h-10 w-64 animate-pulse rounded bg-zinc-200" />
+        {[...Array(4)].map((_, index) => <div key={index} className="h-32 animate-pulse rounded-xl bg-zinc-100" />)}
+      </div>
+    </main>
+  );
+}
+
+function ReportsWorkspace() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const filters = useMemo(
+    () => reportQueryFromSearchParams(new URLSearchParams(searchParams.toString())),
+    [searchParams],
+  );
+  const currentPage = Math.max(1, Number.parseInt(searchParams.get('page') || '1', 10) || 1);
   const [showFilters, setShowFilters] = useState(false);
 
-  const debouncedSearch = useMemo(
-    () => debounce((query: unknown) => {
-      setFilters((prev) => ({ ...prev, query: query as string }));
-      setCurrentPage(1);
-    }, 300),
-    [],
-  );
+  const replaceQuery = React.useCallback((nextFilters: ReportQueryState, page = 1) => {
+    const params = reportQuerySearchParams(nextFilters, page).toString();
+    router.replace(params ? `${pathname}?${params}` : pathname, { scroll: false });
+  }, [pathname, router]);
 
   const { data: reportsData, isLoading, error } = useQuery({
     queryKey: ['reports', 'list', currentPage, filters],
-    queryFn: () => api.listReports(currentPage, 20, toListReportFilters(filters)),
+    queryFn: () => api.searchReports(
+      toSearchFilters(filters),
+      currentPage,
+      20,
+      toReportSort(filters),
+    ),
   });
 
   const { data: filterOptions } = useQuery({
@@ -82,22 +117,21 @@ export default function ReportsPage() {
   const reviewQueueControls: ReviewQueueControl[] = useMemo(() => [
     { key: 'threatType', label: 'Threat type', options: threatTypeOptions },
     { key: 'minQuality', label: 'Minimum quality', options: qualityFilterOptions },
+    { key: 'dateRangeDays', label: 'Date range', options: dateRangeFilterOptions },
     { key: 'sortBy', label: 'Sort by', options: reportSortOptions },
     { key: 'sortOrder', label: 'Order', options: sortOrderOptions },
   ], [threatTypeOptions]);
 
   const handleFilterChange = (key: ReviewQueueControlKey, value: string) => {
-    setFilters((prev) => ({ ...prev, [key]: value } as ReportQueryState));
-    setCurrentPage(1);
+    replaceQuery({ ...filters, [key]: value } as ReportQueryState, 1);
   };
 
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    debouncedSearch(e.target.value);
+    replaceQuery({ ...filters, query: e.target.value }, 1);
   };
 
   const clearFilters = () => {
-    setFilters({ ...defaultReportQuery });
-    setCurrentPage(1);
+    replaceQuery({ ...defaultReportQuery }, 1);
   };
 
   const activeFilterCount = countActiveReportFilters(filters);
@@ -107,7 +141,6 @@ export default function ReportsPage() {
   const pageEnd = reportsData ? Math.min(reportsData.pagination.page * reportsData.pagination.limit, reportsData.pagination.total) : 0;
 
   return (
-    <AuthGuard>
       <main data-surface="report-review-queue" className="overflow-x-hidden bg-[var(--surface-0)]">
         <div className="mx-auto max-w-6xl px-6 py-12 lg:px-8">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -115,7 +148,7 @@ export default function ReportsPage() {
               <p className="text-sm font-medium text-blue-700">Saved intelligence</p>
               <h1 className="mt-3 text-3xl font-semibold tracking-tight text-zinc-950">Review queue</h1>
               <p className="mt-4 text-lg leading-8 text-zinc-600">
-                Search saved threat profiles, compare confidence, and reopen each
+                Search saved threat profiles, compare report quality, and reopen each
                 record with its source-backed context.
               </p>
             </div>
@@ -133,7 +166,7 @@ export default function ReportsPage() {
                 <input
                   type="search"
                   placeholder="Search by target, category, or threat type"
-                  defaultValue={filters.query}
+                  value={filters.query}
                   onChange={handleSearchChange}
                   className="h-11 w-full rounded-lg border border-zinc-300 bg-white pl-10 pr-4 text-sm text-zinc-950 outline-none transition-colors placeholder:text-zinc-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                 />
@@ -154,7 +187,7 @@ export default function ReportsPage() {
 
             {showFilters && (
               <div className="mt-4 border-t border-zinc-100 pt-4">
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
                   {reviewQueueControls.map((control) => (
                     <label key={control.key} className="block">
                       <span className="block text-sm font-medium text-zinc-800">{control.label}</span>
@@ -237,7 +270,7 @@ export default function ReportsPage() {
                       <button
                         type="button"
                         disabled={currentPage <= 1}
-                        onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                        onClick={() => replaceQuery(filters, Math.max(1, currentPage - 1))}
                         className={`${secondaryButtonClass} disabled:pointer-events-none disabled:opacity-50`}
                       >
                         Previous
@@ -245,7 +278,7 @@ export default function ReportsPage() {
                       <button
                         type="button"
                         disabled={currentPage >= reportsData.pagination.pages}
-                        onClick={() => setCurrentPage((prev) => Math.min(reportsData.pagination.pages, prev + 1))}
+                        onClick={() => replaceQuery(filters, Math.min(reportsData.pagination.pages, currentPage + 1))}
                         className={`${secondaryButtonClass} disabled:pointer-events-none disabled:opacity-50`}
                       >
                         Next
@@ -258,7 +291,6 @@ export default function ReportsPage() {
           </div>
         </div>
       </main>
-    </AuthGuard>
   );
 }
 
@@ -266,10 +298,10 @@ function ReportReviewRecord({ report }: { report: Report }) {
   const qualityLabel = getQualityLabel(report.quality_score);
   const qualityValue = report.quality_score == null
     ? qualityLabel
-    : `${qualityLabel} · ${report.quality_score.toFixed(1)}`;
+    : `${qualityLabel} · ${report.quality_score.toFixed(2)}`;
   const reportRecordSignals: ReportRecordSignal[] = [
     {
-      label: 'Analyst confidence',
+      label: 'Report quality',
       value: qualityValue,
       detail: 'Quality score carried from the saved report',
     },
@@ -298,6 +330,9 @@ function ReportReviewRecord({ report }: { report: Report }) {
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <span className="rounded-md bg-blue-50 px-2 py-1 text-sm font-medium text-blue-700">
               {qualityValue}
+            </span>
+            <span className={`rounded-md px-2 py-1 text-sm font-medium ${getReviewStatusClasses(report.review_status)}`}>
+              {getReviewStatusLabel(report.review_status)}
             </span>
             {report.category ? (
               <span className="rounded-md bg-zinc-100 px-2 py-1 text-sm text-zinc-700">{formatTaxonomyLabel(report.category)}</span>

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import uuid
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -296,6 +297,101 @@ def test_create_report_starts_background_job_without_synchronous_generation(monk
     assert len(background_tasks.tasks) == 1
 
 
+def test_evaluation_retry_claims_saved_report_without_restarting_generation(monkeypatch):
+    user = supabase_auth.AuthenticatedUser(
+        user_id="analyst-user",
+        email="analyst@example.com",
+        metadata={"role": "analyst"},
+    )
+    monkeypatch.setattr(
+        api_main.report_service,
+        "get_report",
+        lambda report_id, include_content=False: {
+            "id": report_id,
+            "user_id": "analyst-user",
+        },
+    )
+    claims = []
+    monkeypatch.setattr(
+        api_main.report_service,
+        "begin_report_evaluation",
+        lambda report_id, user_id: claims.append((report_id, user_id)) or True,
+    )
+    monkeypatch.setattr(
+        api_main,
+        "ThreatProfileGenerator",
+        lambda: (_ for _ in ()).throw(AssertionError("generation must not restart")),
+    )
+    background_tasks = BackgroundTasks()
+
+    response = asyncio.run(api_main.retry_report_evaluation("report-1", background_tasks, user))
+
+    assert response["evaluation_status"] == "pending"
+    assert claims == [("report-1", "analyst-user")]
+    assert len(background_tasks.tasks) == 1
+
+
+def test_evaluator_only_job_preserves_sources_and_persists_new_score(monkeypatch):
+    profile = {
+        "coreMetadata": {"name": "Example", "category": "Backdoor"},
+        "webSearchSources": {
+            "primarySources": [
+                {
+                    "title": "Primary report",
+                    "url": "https://example.com/report",
+                    "accessDate": "2026-08-14",
+                    "relevanceScore": "High",
+                    "contentType": "Report",
+                    "keyFindings": "Observed behavior.",
+                }
+            ]
+        },
+    }
+    monkeypatch.setattr(
+        api_main.report_service,
+        "get_report",
+        lambda report_id, include_content=False: {
+            "id": report_id,
+            "user_id": "analyst-user",
+            "threat_data": profile,
+        },
+    )
+    monkeypatch.setattr(
+        api_main,
+        "evaluate_saved_report",
+        lambda saved: SimpleNamespace(
+            succeeded=True,
+            profile=saved,
+            quality_assessment={"overall_score": 4.25},
+            evaluation_route={"used_fallback": False},
+        ),
+    )
+    completed = {}
+    monkeypatch.setattr(
+        api_main.report_service,
+        "complete_report_evaluation",
+        lambda report_id, **kwargs: completed.update(report_id=report_id, **kwargs) or True,
+    )
+    monkeypatch.setattr(
+        api_main.report_service,
+        "fail_report_evaluation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("successful evaluation must not enter failure state")
+        ),
+    )
+
+    api_main.run_report_evaluation("report-1", "analyst-user")
+
+    assert completed["quality_assessment"]["overall_score"] == 4.25
+    assert completed["threat_data"]["webSearchSources"]["primarySources"][0]["url"] == (
+        "https://example.com/report"
+    )
+    assert (
+        completed["threat_data"]["referencesAndIntelligenceSharing"]["sources"][0]["url"]
+        == "https://example.com/report"
+    )
+
+
 @pytest.mark.parametrize("tool_name", ["   ", "x" * 256])
 def test_create_report_rejects_invalid_targets_before_storage(monkeypatch, tool_name):
     storage_called = False
@@ -372,9 +468,10 @@ def test_background_generation_marks_failed_without_leaking_detail(monkeypatch):
 
 def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
     profile = {
-        "coreMetadata": {"name": "Cobalt Strike"},
-        "category": "malware",
-        "threatType": "post_exploitation_framework",
+        "coreMetadata": {"name": "Cobalt Strike", "category": "Post-exploitation framework"},
+        "toolOverview": {
+            "description": "A dual-use post-exploitation framework used in adversary operations."
+        },
         "webSearchSources": {
             "primarySources": [
                 {
@@ -472,9 +569,17 @@ def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
     assert data["generation_route"] == profile["_generation_route"]
     assert data["evaluation_route"] == profile["_evaluation_route"]
     assert data["quality_score"] == 4.1
+    assert data["evaluation_status"] == "completed"
+    assert data["evaluation_attempts"] == 1
     assert data["processing_time_ms"] == 965000
+    assert data["category"] == "malware"
     assert data["threat_type"] == "post_exploitation_framework"
     assert data["web_sources"] == profile["webSearchSources"]["primarySources"]
+    assert (
+        data["threat_data"]["referencesAndIntelligenceSharing"]["sources"][0]["url"]
+        == data["web_sources"][0]["url"]
+    )
+    assert data["content_preview"].startswith("A dual-use post-exploitation framework")
     assert "cobalt strike" in data["search_tags"]
     assert isinstance(data["markdown_content"], str) and data["markdown_content"]
     assert captured_stages == [
@@ -988,18 +1093,24 @@ def test_route_performance_separates_primary_fallback_and_legacy_reports():
         {
             "route": "primary",
             "report_count": 1,
+            "scored_report_count": 1,
+            "runtime_recorded_count": 1,
             "avg_quality_score": 4.0,
             "avg_processing_time_ms": 1000.0,
         },
         {
             "route": "fallback",
             "report_count": 1,
+            "scored_report_count": 1,
+            "runtime_recorded_count": 1,
             "avg_quality_score": 3.0,
             "avg_processing_time_ms": 3000.0,
         },
         {
             "route": "unrecorded",
             "report_count": 1,
+            "scored_report_count": 0,
+            "runtime_recorded_count": 1,
             "avg_quality_score": None,
             "avg_processing_time_ms": 5000.0,
         },
@@ -1011,6 +1122,7 @@ def test_dashboard_analytics_filters_report_reads_by_authenticated_non_admin(mon
     captured_quality_kwargs = {}
     captured_threat_kwargs = {}
     captured_list_kwargs = {}
+    captured_analytics_kwargs = {}
 
     def count_reports(**kwargs):
         captured_count_kwargs.append(kwargs)
@@ -1037,6 +1149,12 @@ def test_dashboard_analytics_filters_report_reads_by_authenticated_non_admin(mon
     monkeypatch.setattr(api_main.report_service, "get_threat_type_stats", get_threat_type_stats)
     monkeypatch.setattr(api_main.report_service, "list_reports", list_reports)
 
+    def list_analytics_records(**kwargs):
+        captured_analytics_kwargs.update(kwargs)
+        return []
+
+    monkeypatch.setattr(api_main.report_service, "list_analytics_records", list_analytics_records)
+
     user = supabase_auth.AuthenticatedUser(
         user_id="analyst-user",
         email="analyst@example.com",
@@ -1051,6 +1169,7 @@ def test_dashboard_analytics_filters_report_reads_by_authenticated_non_admin(mon
     assert captured_quality_kwargs["user_id"] == "analyst-user"
     assert captured_threat_kwargs["user_id"] == "analyst-user"
     assert captured_list_kwargs["user_id"] == "analyst-user"
+    assert captured_analytics_kwargs["user_id"] == "analyst-user"
 
 
 def test_python_tooling_is_uv_managed():

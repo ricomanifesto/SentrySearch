@@ -15,7 +15,6 @@ import {
   PlusIcon,
   Bars3Icon,
   XMarkIcon,
-  ShieldCheckIcon,
   ArrowDownTrayIcon,
   UserIcon,
   ArrowRightOnRectangleIcon,
@@ -32,17 +31,13 @@ const navigation = [
   { name: 'Generate', href: '/generate', icon: PlusIcon },
 ];
 
-const adminNavigation = [
-  { name: 'Admin', href: '/admin', icon: ShieldCheckIcon },
-];
-
 export function Navigation() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const pathname = usePathname();
   const { user, signOut } = useAuth();
 
   // App navigation is only meaningful once signed in.
-  const allNavigation = user ? [...navigation, ...adminNavigation] : [];
+  const allNavigation = user ? navigation : [];
   const homeHref = user ? '/dashboard' : '/';
 
   return (
@@ -97,6 +92,8 @@ export function Navigation() {
             <ThemeToggle />
             <button
               type="button"
+              aria-expanded={mobileMenuOpen}
+              aria-controls="mobile-navigation"
               className="inline-flex items-center justify-center rounded-md p-2 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
             >
@@ -116,8 +113,9 @@ export function Navigation() {
               <>
                 <Link
                   href="/settings"
+                  aria-label="Workspace access"
                   className="rounded-md p-2 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700"
-                  title="Settings"
+                  title="Workspace access"
                 >
                   <Cog6ToothIcon className="h-5 w-5" />
                 </Link>
@@ -130,6 +128,7 @@ export function Navigation() {
                   </div>
                   <button
                     onClick={() => signOut()}
+                    aria-label="Sign out"
                     className="rounded-md p-2 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700"
                     title="Sign out"
                   >
@@ -159,7 +158,7 @@ export function Navigation() {
 
       {/* Mobile menu */}
       {mobileMenuOpen && (
-        <div className="border-t border-zinc-200 sm:hidden">
+        <div id="mobile-navigation" className="border-t border-zinc-200 sm:hidden">
           <div className="space-y-1 pb-3 pt-2">
             {allNavigation.map((item) => {
               const Icon = item.icon;
@@ -182,6 +181,30 @@ export function Navigation() {
                 </Link>
               );
             })}
+
+            {user && (
+              <div className="mt-2 space-y-1 border-t border-zinc-200 px-3 pt-3">
+                <Link
+                  href="/settings"
+                  className="flex h-11 items-center gap-3 rounded-lg px-3 text-base font-medium text-zinc-700 hover:bg-zinc-50"
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  <Cog6ToothIcon className="h-5 w-5" aria-hidden="true" />
+                  Workspace access
+                </Link>
+                <button
+                  type="button"
+                  className="flex h-11 w-full items-center gap-3 rounded-lg px-3 text-left text-base font-medium text-zinc-700 hover:bg-zinc-50"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    signOut();
+                  }}
+                >
+                  <ArrowRightOnRectangleIcon className="h-5 w-5" aria-hidden="true" />
+                  Sign out
+                </button>
+              </div>
+            )}
 
             {!user && (
               <div className="flex flex-col gap-2 px-3 pt-2">

@@ -176,6 +176,9 @@ PROFILE_METADATA_FIELDS = frozenset({"coreMetadata", "_quality_assessment"})
 
 SECTION_EVALUATION_PROMPT = """You are a cybersecurity expert evaluating one section of a threat intelligence profile.
 
+Current UTC date: {current_date}
+Treat dates on or before this date as historical or current, never as future dates.
+
 Section name: {section_name}
 Section content:
 {content}
@@ -208,7 +211,10 @@ Choose one recommendation:
 Return one evaluation object that matches the provided response schema. Do not calculate an overall score; the application calculates it from the five dimensions."""
 
 
-CONSISTENCY_PROMPT = """Evaluate consistency across these threat profile sections:
+CONSISTENCY_PROMPT = """Evaluate consistency across these threat profile sections.
+
+Current UTC date: {current_date}
+Treat dates on or before this date as historical or current, never as future dates.
 
 {sections}
 
@@ -220,6 +226,7 @@ def build_section_evaluation_prompt(
     content: Mapping[str, Any],
     criteria: SectionCriteria,
     source_context: Mapping[str, Any] | None = None,
+    current_date: str | None = None,
 ) -> str:
     """Render the model prompt from one explicit rubric."""
 
@@ -230,6 +237,7 @@ def build_section_evaluation_prompt(
         quality_checks="\n- ".join(criteria.quality_checks),
         source_context=json.dumps(source_context or {}, indent=2),
         minimum_score=criteria.minimum_score,
+        current_date=current_date or "Unknown",
     )
 
 

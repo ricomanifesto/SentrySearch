@@ -14,16 +14,24 @@ function projectReport(report: ReportDetail, config: ExportConfig): ExportRecord
           created_at: report.created_at,
           processing_time_ms: report.processing_time_ms,
           status: report.status,
+          evaluation_status: report.evaluation_status,
+          evaluation_error_code: report.evaluation_error_code ?? null,
+          evaluation_attempts: report.evaluation_attempts,
+          evaluated_at: report.evaluated_at ?? null,
+          review_status: report.review_status,
+          generation_route: report.generation_route ?? null,
+          evaluation_route: report.evaluation_route ?? null,
         }
       : {}),
     ...(config.include_tags ? { search_tags: report.search_tags } : {}),
+    ...(config.include_sources ? { web_sources: report.web_sources } : {}),
     ...(config.include_content ? { markdown_content: report.markdown_content ?? null } : {}),
   };
 }
 
 function csvCell(value: unknown): string {
-  const serialized = Array.isArray(value)
-    ? value.join('; ')
+  const serialized = typeof value === 'object' && value !== null
+    ? JSON.stringify(value)
     : value === null || value === undefined
       ? ''
       : String(value);
@@ -45,7 +53,7 @@ function asMarkdown(records: ExportRecord[], generatedAt: string): string {
   const sections = records.map((record) => {
     const metadata = Object.entries(record)
       .filter(([key]) => !['tool_name', 'markdown_content'].includes(key))
-      .map(([key, value]) => `- **${key.replaceAll('_', ' ')}:** ${Array.isArray(value) ? value.join(', ') : value ?? ''}`)
+      .map(([key, value]) => `- **${key.replaceAll('_', ' ')}:** ${typeof value === 'object' && value !== null ? JSON.stringify(value) : value ?? ''}`)
       .join('\n');
     const content = typeof record.markdown_content === 'string' ? `\n\n${record.markdown_content}` : '';
     return `## ${record.tool_name}\n\n${metadata}${content}`;
@@ -66,7 +74,7 @@ function asXml(records: ExportRecord[], generatedAt: string): string {
   const reports = records.map((record) => {
     const fields = Object.entries(record)
       .map(([key, value]) => {
-        const text = Array.isArray(value) ? value.join('; ') : value;
+        const text = typeof value === 'object' && value !== null ? JSON.stringify(value) : value;
         return `    <${key}>${xmlText(text)}</${key}>`;
       })
       .join('\n');

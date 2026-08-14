@@ -27,11 +27,6 @@ export default function AnalyticsPage() {
     queryFn: () => api.getAnalytics(timeRange),
   });
 
-  const { data: dashboard } = useQuery({
-    queryKey: ['analytics', 'dashboard'],
-    queryFn: () => api.getDashboardAnalytics(),
-  });
-
   if (isLoading) {
     return (
       <AuthGuard>
@@ -69,51 +64,39 @@ export default function AnalyticsPage() {
     );
   }
 
-  const data: Record<string, unknown> = (analytics as unknown as Record<string, unknown>) || (dashboard as unknown as Record<string, unknown>) || {};
-  const overview: Record<string, unknown> = (data.overview as Record<string, unknown>) || (data.summary as Record<string, unknown>) || {};
-
-  const stats = {
-    total_reports: Number(overview.total_reports || 0),
-    reports_period: Number(
-      analytics
-        ? overview.reports_last_30d || overview.reports_last_7d || overview.reports_last_24h || 0
-        : overview.reports_this_week || 0,
-    ),
-    avg_quality: Number(overview.avg_quality_score || overview.average_quality_score || 0),
-    success_rate: Number(overview.success_rate || 0),
-  };
-  const recentActivity = Array.isArray(data.recent_activity)
-    ? (data.recent_activity as Record<string, unknown>[])
-    : [];
-  const threatDistribution = typeof data.threat_distribution === 'object' && data.threat_distribution !== null
-    ? (data.threat_distribution as Record<string, unknown>)
-    : {};
-  const threatEntries = Object.entries(threatDistribution).slice(0, 5);
-  const maxThreatCount = Math.max(1, ...Object.values(threatDistribution).map((v) => Number(v || 0)));
+  const overview = analytics?.overview;
+  const reportsPeriod = overview?.reports_in_period ?? 0;
+  const recentActivity = analytics?.recent_activity ?? [];
+  const threatEntries = analytics?.trends.threat_type_distribution.slice(0, 5) ?? [];
+  const maxThreatCount = Math.max(1, ...threatEntries.map((entry) => entry.count));
   const shownRecentActivity = recentActivity.slice(0, 5);
   const routePerformance = analytics?.route_performance ?? [];
   const metricSignals = [
     {
-      label: 'Saved intelligence',
-      value: stats.total_reports,
-      detail: `${stats.reports_period} in the selected window`,
+      label: 'Reports in window',
+      value: reportsPeriod,
+      detail: `${overview?.total_reports ?? 0} saved across the workspace`,
     },
     {
-      label: 'Average confidence',
-      value: stats.avg_quality.toFixed(1),
-      detail: stats.total_reports > 0
-        ? `${Math.round(stats.success_rate * 100)}% completed without retry`
-        : 'No completed reports yet',
+      label: 'Report quality',
+      value: overview?.avg_quality_score == null ? '—' : overview.avg_quality_score.toFixed(2),
+      detail: overview?.scored_reports
+        ? `${overview.scored_reports} of ${reportsPeriod} reports scored`
+        : 'No scored reports in this window',
     },
     {
-      label: 'Activity cadence',
-      value: shownRecentActivity.length,
-      detail: 'recent report events shown',
+      label: 'Needs attention',
+      value: overview?.needs_attention_reports ?? 0,
+      detail: `${overview?.evaluation_failed_reports ?? 0} evaluator failures`,
     },
     {
-      label: 'Metric readiness',
-      value: analytics ? 'Primary' : 'Fallback',
-      detail: 'source for this review',
+      label: 'Generation completion',
+      value: overview?.generation_completion_rate == null
+        ? '—'
+        : `${Math.round(overview.generation_completion_rate * 100)}%`,
+      detail: overview?.terminal_reports
+        ? `${overview.terminal_reports} terminal generation records`
+        : 'No terminal generation records',
     },
   ];
 
@@ -175,11 +158,13 @@ export default function AnalyticsPage() {
                   <dd className="mt-2 text-sm leading-6 text-zinc-500">
                     {route.avg_quality_score == null
                       ? 'Quality not scored'
-                      : `${route.avg_quality_score.toFixed(1)} average confidence`}
+                      : `${route.avg_quality_score.toFixed(2)} average report quality`}
+                    {` · ${route.scored_report_count}/${route.report_count} scored`}
                     <br />
                     {route.avg_processing_time_ms == null
                       ? 'Runtime not recorded'
                       : `${formatProcessingTime(route.avg_processing_time_ms)} average runtime`}
+                    {` · ${route.runtime_recorded_count}/${route.report_count} recorded`}
                   </dd>
                 </dl>
               ))}
@@ -193,26 +178,31 @@ export default function AnalyticsPage() {
               <div className="mt-4">
                 {shownRecentActivity.length > 0 ? (
                   <ul className="divide-y divide-zinc-100">
-                    {shownRecentActivity.map((activity: Record<string, unknown>, index: number) => (
-                      <li key={index} className="flex min-w-0 items-center justify-between gap-3 py-3 first:pt-0">
+                    {shownRecentActivity.map((activity, index) => (
+                      <li key={activity.id} className="flex min-w-0 items-center justify-between gap-3 py-3 first:pt-0">
                         <div className="min-w-0">
                           <p className="truncate text-sm font-medium text-zinc-950">
-                            {(activity?.tool_name as string) || `Report ${index + 1}`}
+                            {activity.tool_name || `Report ${index + 1}`}
                           </p>
                           <p className="text-sm text-zinc-500">
-                            {activity?.created_at ? formatRelativeTime(activity.created_at as string) : 'Recently'}
-                            {activity?.generation_used_fallback === true ? (
+                            {activity.created_at ? formatRelativeTime(activity.created_at) : 'Recently'}
+                            {activity.generation_used_fallback === true ? (
                               <span className="ml-2 rounded-md bg-amber-50 px-2 py-0.5 font-medium text-amber-700">
                                 Fallback route
                               </span>
                             ) : null}
                           </p>
                         </div>
-                        <span className="shrink-0 font-mono text-sm text-zinc-700">
-                          {activity?.quality_score != null
-                            ? `Confidence: ${Number(activity.quality_score).toFixed(1)}`
-                            : 'Confidence: —'}
-                        </span>
+                        <div className="flex shrink-0 flex-col items-end gap-1 text-sm">
+                          <span className="text-zinc-700">
+                            {activity.quality_score != null
+                              ? `Quality: ${activity.quality_score.toFixed(2)}`
+                              : 'Quality: Not scored'}
+                          </span>
+                          <span className="capitalize text-zinc-500">
+                            {activity.review_status.replace(/_/g, ' ')}
+                          </span>
+                        </div>
                       </li>
                     ))}
                   </ul>
@@ -230,9 +220,8 @@ export default function AnalyticsPage() {
               <div className="mt-4">
                 {threatEntries.length > 0 ? (
                   <div className="space-y-3">
-                    {threatEntries.map(([type, count]: [string, unknown]) => {
-                      const countNum = Number(count || 0);
-                      const percentage = Math.min((countNum / maxThreatCount) * 100, 100);
+                    {threatEntries.map(({ threat_type: type, count }) => {
+                      const percentage = Math.min((count / maxThreatCount) * 100, 100);
                       return (
                         <div key={type} className="flex min-w-0 items-center justify-between gap-3">
                           <span className="min-w-0 flex-1 truncate text-sm capitalize text-zinc-700">
@@ -242,7 +231,7 @@ export default function AnalyticsPage() {
                             <div className="h-2 w-24 rounded-full bg-zinc-200">
                               <div className="h-2 rounded-full bg-blue-600" style={{ width: `${percentage}%` }} />
                             </div>
-                            <span className="w-8 text-right font-mono text-sm text-zinc-950">{countNum}</span>
+                            <span className="w-8 text-right font-mono text-sm text-zinc-950">{count}</span>
                           </div>
                         </div>
                       );

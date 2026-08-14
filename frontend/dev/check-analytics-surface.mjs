@@ -23,10 +23,6 @@ const expectations = [
     pattern: /api\.getAnalytics\(timeRange\)/,
   },
   {
-    name: 'preserves the dashboard fallback query',
-    pattern: /api\.getDashboardAnalytics\(\)/,
-  },
-  {
     name: 'frames the page as an operations review surface',
     pattern: /Intelligence operations review/,
   },
@@ -55,8 +51,8 @@ const expectations = [
     pattern: /Review window/,
   },
   {
-    name: 'shows readiness language for the metric set',
-    pattern: /Metric readiness/,
+    name: 'shows evaluation health in the metric set',
+    pattern: /Needs attention[\s\S]*evaluator failures/,
   },
   {
     name: 'declares the analytics metric signal strip contract',
@@ -64,7 +60,7 @@ const expectations = [
   },
   {
     name: 'uses a canonical analytics metric signals collection',
-    pattern: /const metricSignals = \[[\s\S]*label: 'Saved intelligence'[\s\S]*label: 'Average confidence'[\s\S]*label: 'Activity cadence'[\s\S]*label: 'Metric readiness'/,
+    pattern: /const metricSignals = \[[\s\S]*label: 'Reports in window'[\s\S]*label: 'Report quality'[\s\S]*label: 'Needs attention'[\s\S]*label: 'Generation completion'/,
   },
   {
     name: 'renders analytics metric signals from the canonical collection',
@@ -75,8 +71,8 @@ const expectations = [
     absentPattern: /success_rate[^\n]*\|\|\s*0\.95/,
   },
   {
-    name: 'only reports a completion rate when reports exist',
-    pattern: /stats\.total_reports > 0[\s\S]*completed without retry/,
+    name: 'keeps generation completion separate from report quality',
+    pattern: /generation_completion_rate == null[\s\S]*terminal generation records/,
   },
   {
     name: 'does not fabricate a default activity confidence score',
@@ -91,8 +87,8 @@ const expectations = [
     pattern: /Review timeline/,
   },
   {
-    name: 'uses confidence language for activity scores',
-    pattern: /Confidence:/,
+    name: 'uses report quality language for activity scores',
+    pattern: /Quality:/,
   },
   {
     name: 'frames threat distribution as a coverage map',
@@ -119,12 +115,20 @@ const expectations = [
     pattern: /Coverage appears after reports classify threat patterns/,
   },
   {
-    name: 'uses the selected analytics period for the report-window count',
-    pattern: /reports_period:[\s\S]*overview\.reports_last_30d[\s\S]*overview\.reports_last_7d[\s\S]*selected window/,
+    name: 'uses the backend-selected analytics period for the report-window count',
+    pattern: /const reportsPeriod = overview\?\.reports_in_period/,
   },
   {
-    name: 'counts only the recent activity rows rendered on the page',
-    pattern: /const shownRecentActivity = recentActivity\.slice\(0, 5\);[\s\S]*value: shownRecentActivity\.length[\s\S]*\{shownRecentActivity\.map/,
+    name: 'renders only the bounded recent activity rows',
+    pattern: /const shownRecentActivity = recentActivity\.slice\(0, 5\);[\s\S]*\{shownRecentActivity\.map/,
+  },
+  {
+    name: 'shows route metric denominators and exclusions explicitly',
+    pattern: /scored_report_count[\s\S]*runtime_recorded_count/,
+  },
+  {
+    name: 'does not restore the meaningless metric readiness card',
+    absentPattern: /Metric readiness|source for this review/,
   },
   {
     name: 'avoids unverifiable healthy system claims',
