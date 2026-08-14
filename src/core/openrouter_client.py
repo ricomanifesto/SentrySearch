@@ -78,7 +78,7 @@ def generation_request_options(model_name: str | None = None) -> dict[str, Any]:
     resolved_model = resolve_model_name(model_name)
     options: dict[str, Any] = {"model": resolved_model}
     if resolved_model == DEFAULT_MODEL:
-        options["models"] = [DEFAULT_GENERATION_FALLBACK_MODEL]
+        options["fallback_models"] = [DEFAULT_GENERATION_FALLBACK_MODEL]
         options["provider"] = {
             "only": [DEFAULT_GENERATION_PROVIDER],
             "allow_fallbacks": False,
@@ -98,7 +98,7 @@ def evaluation_request_options(model_name: str | None = None) -> dict[str, Any]:
     resolved_model = resolve_evaluation_model_name(model_name)
     options: dict[str, Any] = {"model": resolved_model}
     if resolved_model == DEFAULT_EVALUATION_MODEL:
-        options["models"] = [DEFAULT_EVALUATION_FALLBACK_MODEL]
+        options["fallback_models"] = [DEFAULT_EVALUATION_FALLBACK_MODEL]
         options["provider"] = {
             "only": [DEFAULT_EVALUATION_PROVIDER],
             "allow_fallbacks": False,
@@ -140,6 +140,11 @@ class ModelClient:
         """Generate a message through OpenRouter's Chat Completions API."""
         tools = self._normalize_tools(kwargs.get("tools"))
         response_format = kwargs.get("response_format")
+        fallback_models = [
+            str(model).strip()
+            for model in kwargs.get("fallback_models") or []
+            if str(model).strip()
+        ]
         if tools and response_format is not None:
             raise ModelClientError(
                 "Tool use and structured output must use separate OpenRouter requests"
@@ -151,7 +156,6 @@ class ModelClient:
             "stream": False,
         }
         for optional_key in (
-            "models",
             "temperature",
             "parallel_tool_calls",
             "tool_choice",
@@ -174,7 +178,7 @@ class ModelClient:
             attempt_request = dict(request)
             if attempt:
                 attempt_request["session_id"] = f"sentrysearch-empty-retry-{uuid4().hex}"
-            response = self._post(attempt_request)
+            response = self._post_with_model_fallbacks(attempt_request, fallback_models)
             body = self._response_body(response)
             self._raise_payload_error(body, response)
 
@@ -237,6 +241,27 @@ class ModelClient:
         raise last_empty_error or ModelClientError(
             "OpenRouter response did not include text output"
         )
+
+    def _post_with_model_fallbacks(
+        self,
+        request: dict[str, Any],
+        fallback_models: list[str],
+    ) -> httpx.Response:
+        """Retry typed provider failures with explicitly configured model fallbacks."""
+
+        candidates = [str(request["model"]), *fallback_models]
+        last_error: ModelRetryableError | None = None
+        for model in dict.fromkeys(candidates):
+            candidate_request = dict(request)
+            candidate_request["model"] = model
+            try:
+                return self._post(candidate_request)
+            except ModelRetryableError as error:
+                last_error = error
+
+        if last_error is not None:
+            raise last_error
+        raise AssertionError("model fallback loop exited without a request")
 
     def _post(self, request: dict[str, Any]) -> httpx.Response:
         try:

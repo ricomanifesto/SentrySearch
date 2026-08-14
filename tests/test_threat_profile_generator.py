@@ -334,7 +334,9 @@ def test_generation_separates_web_research_from_structured_synthesis(
         request["provider"] == {"only": ["google-ai-studio"], "allow_fallbacks": False}
         for request in research_requests
     )
-    assert all(request["models"] == ["google/gemma-4-26b-a4b-it"] for request in research_requests)
+    assert all(
+        request["fallback_models"] == ["google/gemma-4-26b-a4b-it"] for request in research_requests
+    )
     assert all("response_format" not in request for request in research_requests)
     research_prompts = "\n".join(request["messages"][0]["content"] for request in research_requests)
     assert "architecture" in research_prompts
@@ -345,7 +347,7 @@ def test_generation_separates_web_research_from_structured_synthesis(
         "only": ["google-ai-studio"],
         "allow_fallbacks": False,
     }
-    assert synthesis_request["models"] == ["google/gemma-4-26b-a4b-it"]
+    assert synthesis_request["fallback_models"] == ["google/gemma-4-26b-a4b-it"]
     assert "tools" not in synthesis_request
     assert "https://example.com/report" in synthesis_request["messages"][0]["content"]
     assert "Example Threat uses remote access capabilities" in (
