@@ -5,6 +5,10 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const detailPath = resolve(here, '../src/app/reports/[id]/page.tsx');
 const source = await readFile(detailPath, 'utf8');
+const routeSource = await readFile(
+  resolve(here, '../src/components/report/RouteProvenance.tsx'),
+  'utf8',
+);
 
 const expectations = [
   { name: 'keeps report detail behind the auth boundary', pattern: /<AuthGuard>\s*<ReportDetailContent \/>/ },
@@ -30,6 +34,10 @@ const expectations = [
   { name: 'uses a canonical record summary signals collection', pattern: /const recordSummarySignals/ },
   { name: 'renders report summary signals from the canonical collection', pattern: /recordSummarySignals\.map\(\(signal\)[\s\S]*signal\.label[\s\S]*signal\.value[\s\S]*signal\.detail/ },
   { name: 'declares the report record summary signals contract', pattern: /data-contract="Report\.RecordSummarySignals\.v1"/ },
+  { name: 'passes persisted generation and evaluation routes to the shared disclosure', pattern: /<RouteProvenance[\s\S]*generationRoute=\{report\.generation_route\}[\s\S]*evaluationRoute=\{report\.evaluation_route\}/ },
+  { name: 'declares the conditional route provenance contract', source: routeSource, pattern: /data-contract="Report\.RouteProvenance\.v1"/ },
+  { name: 'discloses only application-owned fallback routes', source: routeSource, pattern: /generationRoute\?\.used_fallback[\s\S]*evaluationRoute\?\.used_fallback[\s\S]*if \(divergentRoutes\.length === 0\)[\s\S]*return null/ },
+  { name: 'names the requested selected actual and provider route values', source: routeSource, pattern: /Requested[\s\S]*selected[\s\S]*resolved as[\s\S]*via/ },
   { name: 'frames the side rail as review readiness', pattern: /Review readiness/ },
   { name: 'uses the shared quality vocabulary for null scores', pattern: /const qualityLabel = getQualityLabel\(qualityScore\)/ },
   { name: 'renders unavailable confidence without fabricating zero', pattern: /qualityScore == null \? qualityLabel/ },
@@ -55,7 +63,9 @@ const expectations = [
 ];
 
 const failures = expectations
-  .filter(({ pattern, absentPattern }) => (pattern ? !pattern.test(source) : absentPattern.test(source)))
+  .filter(({ pattern, absentPattern, source: expectationSource = source }) => (
+    pattern ? !pattern.test(expectationSource) : absentPattern.test(expectationSource)
+  ))
   .map(({ name }) => `- ${name}`);
 
 if (failures.length > 0) {

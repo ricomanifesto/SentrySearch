@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from threading import Lock
 from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlsplit
@@ -18,6 +19,12 @@ from uuid import uuid4
 
 import httpx
 from pydantic import ValidationError
+
+from src.domain.model_routes import (
+    ModelRouteObservation,
+    ModelRouteProvenance,
+    ModelRoutePurpose,
+)
 
 EMPTY_RESPONSE_RETRIES = 3
 EMPTY_RESPONSE_RETRY_DELAY = 1.5
@@ -80,7 +87,10 @@ def generation_request_options(model_name: str | None = None) -> dict[str, Any]:
     """Return generation routing that preserves custom-model overrides."""
 
     resolved_model = resolve_model_name(model_name)
-    options: dict[str, Any] = {"model": resolved_model}
+    options: dict[str, Any] = {
+        "model": resolved_model,
+        "route_purpose": ModelRoutePurpose.GENERATION.value,
+    }
     if resolved_model == DEFAULT_MODEL:
         options["fallback_models"] = [DEFAULT_GENERATION_FALLBACK_MODEL]
         options["provider"] = {
@@ -100,7 +110,10 @@ def evaluation_request_options(model_name: str | None = None) -> dict[str, Any]:
     """Return evaluator routing that preserves custom-model overrides."""
 
     resolved_model = resolve_evaluation_model_name(model_name)
-    options: dict[str, Any] = {"model": resolved_model}
+    options: dict[str, Any] = {
+        "model": resolved_model,
+        "route_purpose": ModelRoutePurpose.EVALUATION.value,
+    }
     if resolved_model == DEFAULT_EVALUATION_MODEL:
         options["fallback_models"] = [DEFAULT_EVALUATION_FALLBACK_MODEL]
         options["provider"] = {
@@ -138,12 +151,19 @@ class ModelClient:
         self.timeout = timeout
         self.transport = transport
         self._api_key = key
+        self._route_lock = Lock()
+        self._route_observations: list[ModelRouteObservation] = []
         self.messages = _Messages(self)
 
     def create_message(self, **kwargs: Any) -> SimpleNamespace:
         """Generate a message through OpenRouter's Chat Completions API."""
         tools = self._normalize_tools(kwargs.get("tools"))
         response_format = kwargs.get("response_format")
+        route_purpose = (
+            ModelRoutePurpose(kwargs["route_purpose"])
+            if kwargs.get("route_purpose") is not None
+            else None
+        )
         fallback_models = [
             str(model).strip()
             for model in kwargs.get("fallback_models") or []
@@ -183,7 +203,9 @@ class ModelClient:
             attempt_request = dict(request)
             if attempt:
                 attempt_request["session_id"] = f"sentrysearch-empty-retry-{uuid4().hex}"
-            response = self._post_with_model_fallbacks(attempt_request, fallback_models)
+            response, selected_model = self._post_with_model_fallbacks(
+                attempt_request, fallback_models
+            )
             body = self._response_body(response)
             self._raise_payload_error(body, response)
 
@@ -227,14 +249,36 @@ class ModelClient:
                 )
             content.append(SimpleNamespace(type="text", text=text))
 
+            actual_model = str(body.get("model") or selected_model)
+            provider_name = str(body.get("provider") or "")
+            if route_purpose is not None:
+                requested_providers = tuple(
+                    str(provider_name)
+                    for provider_name in (provider.get("only") or [])
+                    if str(provider_name).strip()
+                )
+                self._record_route(
+                    ModelRouteObservation(
+                        purpose=route_purpose,
+                        requested_model=str(request["model"]),
+                        selected_model=selected_model,
+                        actual_model=actual_model,
+                        provider=provider_name,
+                        requested_providers=requested_providers,
+                    )
+                )
+
             return SimpleNamespace(
                 content=content,
                 parsed=parsed,
                 web_search_sources=web_search_sources,
                 tool_events=tool_events,
                 response_id=str(body.get("id") or ""),
-                model=str(body.get("model") or request["model"]),
-                provider=str(body.get("provider") or ""),
+                model=actual_model,
+                provider=provider_name,
+                requested_model=str(request["model"]),
+                selected_model=selected_model,
+                used_fallback=selected_model != str(request["model"]),
                 router_metadata=(
                     dict(body["openrouter_metadata"])
                     if isinstance(body.get("openrouter_metadata"), dict)
@@ -251,7 +295,7 @@ class ModelClient:
         self,
         request: dict[str, Any],
         fallback_models: list[str],
-    ) -> httpx.Response:
+    ) -> tuple[httpx.Response, str]:
         """Retry typed provider failures with explicitly configured model fallbacks."""
 
         candidates = [str(request["model"]), *fallback_models]
@@ -269,13 +313,39 @@ class ModelClient:
                 else:
                     candidate_request.pop("provider", None)
             try:
-                return self._post(candidate_request)
+                return self._post(candidate_request), model
             except (ModelRetryableError, ModelUnavailableError) as error:
                 last_error = error
 
         if last_error is not None:
             raise last_error
         raise AssertionError("model fallback loop exited without a request")
+
+    def _record_route(self, observation: ModelRouteObservation) -> None:
+        with self._route_lock:
+            self._route_observations.append(observation)
+
+    def route_provenance(
+        self,
+        purpose: ModelRoutePurpose | str,
+        *,
+        requested_model: str,
+        requested_providers: tuple[str, ...] = (),
+    ) -> ModelRouteProvenance:
+        """Summarize successful calls for one report pipeline role."""
+
+        normalized_purpose = ModelRoutePurpose(purpose)
+        with self._route_lock:
+            observations = tuple(
+                observation
+                for observation in self._route_observations
+                if observation.purpose is normalized_purpose
+            )
+        return ModelRouteProvenance.summarize(
+            observations,
+            requested_model=requested_model,
+            requested_providers=requested_providers,
+        )
 
     def _post(self, request: dict[str, Any]) -> httpx.Response:
         try:

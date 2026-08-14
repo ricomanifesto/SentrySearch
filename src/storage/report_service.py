@@ -17,6 +17,7 @@ from src.domain.reports import (
     ReportStatus,
     SortOrder,
 )
+from src.domain.model_routes import generation_fallback_state
 
 from .database import db_manager
 from .models import Report
@@ -483,6 +484,8 @@ class ReportStorageService:
                     ml_techniques=report_data.get("ml_techniques"),
                     quality_assessment=report_data.get("quality_assessment"),
                     web_sources=report_data.get("web_sources"),
+                    generation_route=report_data.get("generation_route"),
+                    evaluation_route=report_data.get("evaluation_route"),
                     markdown_s3_key=markdown_s3_key,
                     trace_s3_key=trace_s3_key,
                     api_key_hash=api_key_hash,
@@ -603,6 +606,8 @@ class ReportStorageService:
                 report.ml_techniques = report_data.get("ml_techniques")
                 report.quality_assessment = report_data.get("quality_assessment")
                 report.web_sources = report_data.get("web_sources")
+                report.generation_route = report_data.get("generation_route")
+                report.evaluation_route = report_data.get("evaluation_route")
                 if markdown_s3_key:
                     report.markdown_s3_key = markdown_s3_key
                 if trace_s3_key:
@@ -877,6 +882,7 @@ class ReportStorageService:
                         Report.processing_time_ms,
                         Report.status,
                         Report.threat_type,
+                        Report.generation_route,
                     )
                     .filter(*self._report_filter_expressions(filters))
                     .all()
@@ -890,6 +896,7 @@ class ReportStorageService:
                         processing_time_ms=row.processing_time_ms,
                         status=ReportStatus(row.status or ReportStatus.COMPLETED.value),
                         threat_type=row.threat_type,
+                        generation_used_fallback=generation_fallback_state(row.generation_route),
                     )
                     for row in rows
                 ]

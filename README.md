@@ -24,7 +24,7 @@ SentrySearch generates structured threat intelligence profiles from a user-suppl
 
 ## Usage
 
-Visit [sentry-search.vercel.app](https://sentry-search.vercel.app), create an account, and generate a threat intelligence report for any malware, attack tool, or technology. Report generation routes `google/gemma-4-26b-a4b-it:free` through OpenRouter's native Chat Completions API with hosted web search and strict Pydantic validation.
+Visit [sentry-search.vercel.app](https://sentry-search.vercel.app), create an account, and generate a threat intelligence report for any malware, attack tool, or technology. Report generation requests `google/gemma-4-26b-a4b-it:free` through OpenRouter's native Chat Completions API with hosted web search and strict Pydantic validation. When that pinned route is unavailable, the application retries the paid variant of the same Gemma model in a deterministic order. Completed records persist the requested, selected, and actual generation and evaluation routes; the report page discloses deviations and analytics separates fallback-built reports from primary-route reports.
 
 ## Local Setup
 
@@ -73,7 +73,7 @@ npm run build
 - **Auth:** Supabase JWT authentication.
 - **Data:** PostgreSQL stores report metadata and search indexes; S3 stores markdown reports and artifacts.
 - **Connected search:** PostgreSQL powers the authenticated report-library filters exposed by the product.
-- **AI:** A direct OpenRouter Chat Completions client executes the configured model and bounded hosted web search, maps typed provider errors, and validates strict Pydantic structured output.
+- **AI:** A direct OpenRouter Chat Completions client executes the configured model and bounded hosted web search, maps typed provider errors, records successful model/provider routes, and validates strict Pydantic structured output.
 
 ## Related Projects
 

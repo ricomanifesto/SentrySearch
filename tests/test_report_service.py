@@ -6,9 +6,12 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy.dialects import postgresql
 
-from src.api.contracts import PaginationParams, ReportDetail, SearchFilters
+from src.api.contracts import ModelRouteProvenance, PaginationParams, ReportDetail, SearchFilters
+from src.domain.model_routes import generation_fallback_state
 from src.domain.reports import ReportFilters, ReportSortField, SortOrder
 from src.storage.report_service import ReportStorageService
+from src.storage.models import Report
+from src.storage.database import DatabaseManager
 
 
 def compile_sort(sort_by: str, sort_order: str) -> str:
@@ -57,6 +60,46 @@ def test_report_contract_collection_defaults_are_isolated():
 
     assert second_filters.tags == []
     assert second_report.search_tags == []
+
+
+def test_report_schema_and_contract_preserve_route_provenance():
+    assert "generation_route" in Report.__table__.c
+    assert "evaluation_route" in Report.__table__.c
+
+    route = ModelRouteProvenance(
+        requested_models=["google/gemma-4-26b-a4b-it:free"],
+        requested_providers=["google-ai-studio"],
+        selected_models=["google/gemma-4-26b-a4b-it"],
+        actual_models=["google/gemma-4-26b-a4b-it"],
+        providers=["Google AI Studio"],
+        used_fallback=True,
+        request_count=4,
+    )
+
+    assert route.used_fallback is True
+    assert generation_fallback_state(route.model_dump()) is True
+    assert generation_fallback_state(None) is None
+
+
+def test_additive_migration_creates_model_route_columns():
+    statements: list[str] = []
+
+    class FakeConnection:
+        def execute(self, statement):
+            statements.append(str(statement))
+
+    class FakeEngine:
+        @contextmanager
+        def begin(self):
+            yield FakeConnection()
+
+    manager = DatabaseManager.__new__(DatabaseManager)
+    manager.engine = cast(Any, FakeEngine())
+
+    manager.migrate_schema()
+
+    assert "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_route JSONB" in statements
+    assert "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_route JSONB" in statements
 
 
 def test_report_filters_are_immutable_and_normalize_collections():

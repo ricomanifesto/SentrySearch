@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { ReportNarrative } from '../src/components/report/ReportNarrative';
 import { SourceEvidence } from '../src/components/report/SourceEvidence';
 import { GenerationProgress } from '../src/components/report/GenerationProgress';
+import { RouteProvenance } from '../src/components/report/RouteProvenance';
 import { getQualityLabel } from '../src/lib/report-query';
 
 test('uses the generator quality vocabulary at every score threshold', () => {
@@ -110,4 +111,45 @@ test('gives background generation a stage and elapsed-time shape', () => {
   assert.match(html, /Researching sources/);
   assert.match(html, /Saving review record/);
   assert.match(html, /first run can take longer/i);
+});
+
+test('keeps healthy default model routing silent', () => {
+  const html = renderToStaticMarkup(
+    <RouteProvenance
+      generationRoute={{
+        requested_models: ['google/gemma-4-26b-a4b-it:free'],
+        requested_providers: ['google-ai-studio'],
+        selected_models: ['google/gemma-4-26b-a4b-it:free'],
+        actual_models: ['google/gemma-4-26b-a4b-it:free'],
+        providers: ['Google AI Studio'],
+        used_fallback: false,
+        request_count: 4,
+      }}
+    />,
+  );
+
+  assert.equal(html, '');
+});
+
+test('discloses the actual route when report generation uses fallback', () => {
+  const html = renderToStaticMarkup(
+    <RouteProvenance
+      generationRoute={{
+        requested_models: ['google/gemma-4-26b-a4b-it:free'],
+        requested_providers: ['google-ai-studio'],
+        selected_models: ['google/gemma-4-26b-a4b-it'],
+        actual_models: ['google/gemma-4-26b-a4b-it'],
+        providers: ['Google AI Studio'],
+        used_fallback: true,
+        request_count: 4,
+      }}
+    />,
+  );
+
+  assert.match(html, /Routing provenance/);
+  assert.match(html, /application-owned fallback route/);
+  assert.match(html, /google\/gemma-4-26b-a4b-it:free/);
+  assert.match(html, /google-ai-studio/);
+  assert.match(html, /google\/gemma-4-26b-a4b-it/);
+  assert.match(html, /Google AI Studio/);
 });

@@ -21,6 +21,7 @@ import { AuthGuard } from '@/components/AuthGuard';
 import { ReportNarrative } from '@/components/report/ReportNarrative';
 import { SourceEvidence } from '@/components/report/SourceEvidence';
 import { GenerationProgress } from '@/components/report/GenerationProgress';
+import { RouteProvenance } from '@/components/report/RouteProvenance';
 
 const LOCAL_REPORT_DETAIL_FIXTURE_ID = 'local-visual-fixture';
 
@@ -273,6 +274,11 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
             </div>
           ))}
         </dl>
+
+        <RouteProvenance
+          generationRoute={report.generation_route}
+          evaluationRoute={report.evaluation_route}
+        />
 
         {report.search_tags && report.search_tags.length > 0 && (
           <div className="mt-6 flex flex-wrap gap-2">

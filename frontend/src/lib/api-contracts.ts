@@ -23,6 +23,18 @@ export interface ReportDetail extends Report {
   threat_data?: Record<string, unknown>;
   web_sources: ReportSource[];
   search_tags: string[];
+  generation_route?: ModelRouteProvenance | null;
+  evaluation_route?: ModelRouteProvenance | null;
+}
+
+export interface ModelRouteProvenance {
+  requested_models: string[];
+  requested_providers: string[];
+  selected_models: string[];
+  actual_models: string[];
+  providers: string[];
+  used_fallback: boolean;
+  request_count: number;
 }
 
 export interface ReportSource {
@@ -104,6 +116,12 @@ export interface AnalyticsData {
     quality_score_distribution: Array<{ range: string; count: number; percentage: number }>;
     processing_time_trends: Array<{ date: string; avg_time_ms: number }>;
   };
+  route_performance: Array<{
+    route: 'primary' | 'fallback' | 'unrecorded';
+    report_count: number;
+    avg_quality_score: number | null;
+    avg_processing_time_ms: number | null;
+  }>;
   recent_activity: Array<{
     id: string;
     tool_name: string;
@@ -111,6 +129,7 @@ export interface AnalyticsData {
     processing_time_ms: number;
     created_at: string;
     threat_type?: string;
+    generation_used_fallback: boolean | null;
   }>;
 }
 

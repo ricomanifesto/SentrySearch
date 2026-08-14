@@ -4,7 +4,7 @@ import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import { api } from '@/lib/api';
-import { formatRelativeTime } from '@/lib/utils';
+import { formatProcessingTime, formatRelativeTime } from '@/lib/utils';
 import { AuthGuard } from '@/components/AuthGuard';
 
 const timeRangeOptions = [
@@ -12,6 +12,12 @@ const timeRangeOptions = [
   { value: '30d', label: 'Last 30 days' },
   { value: '90d', label: 'Last 90 days' },
 ];
+
+const routeLabels = {
+  primary: 'Requested route',
+  fallback: 'Fallback route',
+  unrecorded: 'Legacy / unrecorded',
+} as const;
 
 export default function AnalyticsPage() {
   const [timeRange, setTimeRange] = useState('30d');
@@ -85,6 +91,7 @@ export default function AnalyticsPage() {
   const threatEntries = Object.entries(threatDistribution).slice(0, 5);
   const maxThreatCount = Math.max(1, ...Object.values(threatDistribution).map((v) => Number(v || 0)));
   const shownRecentActivity = recentActivity.slice(0, 5);
+  const routePerformance = analytics?.route_performance ?? [];
   const metricSignals = [
     {
       label: 'Saved intelligence',
@@ -152,6 +159,33 @@ export default function AnalyticsPage() {
             ))}
           </dl>
 
+          <section
+            data-contract="Analytics.GenerationRouteComparison.v1"
+            className="mt-8 min-w-0 rounded-xl border border-zinc-200 bg-white p-5"
+          >
+            <h2 className="text-base font-semibold text-zinc-950">Generation route comparison</h2>
+            <p className="mt-1 text-sm leading-6 text-zinc-500">
+              Compare completed reports by the route that actually produced them. Older records stay visibly unrecorded.
+            </p>
+            <div className="mt-4 grid gap-px overflow-hidden rounded-lg border border-zinc-200 bg-zinc-200 md:grid-cols-3">
+              {routePerformance.map((route) => (
+                <dl key={route.route} className="min-w-0 bg-white p-4">
+                  <dt className="text-sm font-medium text-zinc-700">{routeLabels[route.route]}</dt>
+                  <dd className="mt-1 text-2xl font-semibold text-zinc-950">{route.report_count}</dd>
+                  <dd className="mt-2 text-sm leading-6 text-zinc-500">
+                    {route.avg_quality_score == null
+                      ? 'Quality not scored'
+                      : `${route.avg_quality_score.toFixed(1)} average confidence`}
+                    <br />
+                    {route.avg_processing_time_ms == null
+                      ? 'Runtime not recorded'
+                      : `${formatProcessingTime(route.avg_processing_time_ms)} average runtime`}
+                  </dd>
+                </dl>
+              ))}
+            </div>
+          </section>
+
           <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-2">
             <section className="min-w-0 rounded-xl border border-zinc-200 bg-white p-5">
               <h2 className="text-base font-semibold text-zinc-950">Review timeline</h2>
@@ -167,6 +201,11 @@ export default function AnalyticsPage() {
                           </p>
                           <p className="text-sm text-zinc-500">
                             {activity?.created_at ? formatRelativeTime(activity.created_at as string) : 'Recently'}
+                            {activity?.generation_used_fallback === true ? (
+                              <span className="ml-2 rounded-md bg-amber-50 px-2 py-0.5 font-medium text-amber-700">
+                                Fallback route
+                              </span>
+                            ) : null}
                           </p>
                         </div>
                         <span className="shrink-0 font-mono text-sm text-zinc-700">

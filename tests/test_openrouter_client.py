@@ -18,6 +18,7 @@ from src.core.openrouter_client import (
     resolve_model_name,
 )
 from src.core.threat_profile_schema import ThreatProfile
+from src.domain.model_routes import ModelRoutePurpose
 
 
 class StructuredResult(BaseModel):
@@ -35,11 +36,12 @@ def chat_response(
     cache_write_tokens: int = 0,
     reasoning_tokens: int = 0,
     web_search_requests: int = 0,
+    model: str = "google/gemma-4-26b-a4b-it:free",
 ):
     return {
         "id": "gen-test",
         "object": "chat.completion",
-        "model": "google/gemma-4-26b-a4b-it:free",
+        "model": model,
         "provider": "TestProvider",
         "choices": [
             {
@@ -99,8 +101,14 @@ def test_evaluation_model_can_be_overridden_independently(monkeypatch):
 
     assert resolve_model_name() == "example/generator"
     assert resolve_evaluation_model_name() == "example/evaluator"
-    assert generation_request_options() == {"model": "example/generator"}
-    assert evaluation_request_options() == {"model": "example/evaluator"}
+    assert generation_request_options() == {
+        "model": "example/generator",
+        "route_purpose": "generation",
+    }
+    assert evaluation_request_options() == {
+        "model": "example/evaluator",
+        "route_purpose": "evaluation",
+    }
 
 
 def test_default_generation_model_is_pinned_to_google_ai_studio(monkeypatch):
@@ -108,6 +116,7 @@ def test_default_generation_model_is_pinned_to_google_ai_studio(monkeypatch):
 
     assert generation_request_options() == {
         "model": "google/gemma-4-26b-a4b-it:free",
+        "route_purpose": "generation",
         "fallback_models": ["google/gemma-4-26b-a4b-it"],
         "provider": {
             "only": ["google-ai-studio"],
@@ -121,6 +130,7 @@ def test_default_evaluation_model_is_pinned_to_google_ai_studio(monkeypatch):
 
     assert evaluation_request_options() == {
         "model": "google/gemma-4-31b-it:free",
+        "route_purpose": "evaluation",
         "fallback_models": ["google/gemma-4-31b-it"],
         "provider": {
             "only": ["google-ai-studio"],
@@ -194,7 +204,14 @@ def test_model_client_uses_same_model_paid_fallback_after_rate_limit():
                 },
                 {},
             ),
-            (200, chat_response("fallback report"), {}),
+            (
+                200,
+                chat_response(
+                    "fallback report",
+                    model="google/gemma-4-26b-a4b-it",
+                ),
+                {},
+            ),
         ],
         requests,
     )
@@ -205,6 +222,7 @@ def test_model_client_uses_same_model_paid_fallback_after_rate_limit():
         provider={"only": ["google-ai-studio"], "allow_fallbacks": False},
         messages=[{"role": "user", "content": "Analyze Sliver"}],
         tools=[{"type": "web_search"}],
+        route_purpose="generation",
     )
 
     assert result.content[0].text == "fallback report"
@@ -223,6 +241,24 @@ def test_model_client_uses_same_model_paid_fallback_after_rate_limit():
     assert request_bodies[1]["provider"] == {
         "require_parameters": True,
         "sort": "throughput",
+    }
+    assert result.requested_model == "google/gemma-4-26b-a4b-it:free"
+    assert result.selected_model == "google/gemma-4-26b-a4b-it"
+    assert result.model == "google/gemma-4-26b-a4b-it"
+    assert result.provider == "TestProvider"
+    assert result.used_fallback is True
+    assert client.route_provenance(
+        ModelRoutePurpose.GENERATION,
+        requested_model="google/gemma-4-26b-a4b-it:free",
+        requested_providers=("google-ai-studio",),
+    ).to_dict() == {
+        "requested_models": ["google/gemma-4-26b-a4b-it:free"],
+        "requested_providers": ["google-ai-studio"],
+        "selected_models": ["google/gemma-4-26b-a4b-it"],
+        "actual_models": ["google/gemma-4-26b-a4b-it"],
+        "providers": ["TestProvider"],
+        "used_fallback": True,
+        "request_count": 1,
     }
 
 
@@ -260,6 +296,45 @@ def test_model_client_falls_back_when_pinned_primary_cannot_serve_synthesis():
         "allow_fallbacks": False,
     }
     assert "provider" not in request_bodies[1]
+
+
+def test_model_client_keeps_generation_and_evaluation_provenance_separate():
+    generation_body = chat_response("generated report")
+    evaluation_body = chat_response(
+        "evaluation",
+        model="google/gemma-4-31b-it:free",
+    )
+    client = model_client(
+        [
+            (200, generation_body, {}),
+            (200, evaluation_body, {}),
+        ]
+    )
+
+    client.messages.create(
+        model="google/gemma-4-26b-a4b-it:free",
+        route_purpose="generation",
+        messages=[{"role": "user", "content": "Generate"}],
+    )
+    client.messages.create(
+        model="google/gemma-4-31b-it:free",
+        route_purpose="evaluation",
+        messages=[{"role": "user", "content": "Evaluate"}],
+    )
+
+    generation = client.route_provenance(
+        ModelRoutePurpose.GENERATION,
+        requested_model="google/gemma-4-26b-a4b-it:free",
+    )
+    evaluation = client.route_provenance(
+        ModelRoutePurpose.EVALUATION,
+        requested_model="google/gemma-4-31b-it:free",
+    )
+
+    assert generation.actual_models == ("google/gemma-4-26b-a4b-it:free",)
+    assert generation.request_count == 1
+    assert evaluation.actual_models == ("google/gemma-4-31b-it:free",)
+    assert evaluation.request_count == 1
 
 
 def test_model_client_sends_strict_schema_and_parses_chat_completion():

@@ -53,11 +53,23 @@ class ReportSource(BaseModel):
     key_findings: str
 
 
+class ModelRouteProvenance(BaseModel):
+    requested_models: list[str] = Field(default_factory=list)
+    requested_providers: list[str] = Field(default_factory=list)
+    selected_models: list[str] = Field(default_factory=list)
+    actual_models: list[str] = Field(default_factory=list)
+    providers: list[str] = Field(default_factory=list)
+    used_fallback: bool = False
+    request_count: int = Field(default=0, ge=0)
+
+
 class ReportDetail(ReportResponse):
     markdown_content: str | None = None
     threat_data: dict[str, Any] | None = None
     web_sources: list[ReportSource] = Field(default_factory=list)
     search_tags: list[str] = Field(default_factory=list)
+    generation_route: ModelRouteProvenance | None = None
+    evaluation_route: ModelRouteProvenance | None = None
 
 
 class SearchFilters(BaseModel):

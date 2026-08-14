@@ -44,6 +44,8 @@ class Report(Base):
     ml_techniques = Column(JSONB)
     quality_assessment = Column(JSONB)
     web_sources = Column(JSONB)
+    generation_route = Column(JSONB)
+    evaluation_route = Column(JSONB)
 
     # Cloud storage references
     markdown_s3_key = Column(String(500))  # S3 object key for markdown content
@@ -80,6 +82,8 @@ class Report(Base):
             "processing_time_ms": self.processing_time_ms or 0,
             "status": self.status or "completed",
             "generation_stage": self.generation_stage or self.status or "completed",
+            "generation_route": self.generation_route,
+            "evaluation_route": self.evaluation_route,
             "ml_techniques": self.ml_techniques,
             "user_id": self.user_id,
             "is_flagged": self.is_flagged,

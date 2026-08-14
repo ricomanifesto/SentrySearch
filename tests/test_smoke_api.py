@@ -390,6 +390,24 @@ def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
         },
         "_quality_assessment": {"overall_score": 4.1},
         "_processing_time_ms": 965000,
+        "_generation_route": {
+            "requested_models": ["google/gemma-4-26b-a4b-it:free"],
+            "requested_providers": ["google-ai-studio"],
+            "selected_models": ["google/gemma-4-26b-a4b-it"],
+            "actual_models": ["google/gemma-4-26b-a4b-it"],
+            "providers": ["Google AI Studio"],
+            "used_fallback": True,
+            "request_count": 4,
+        },
+        "_evaluation_route": {
+            "requested_models": ["google/gemma-4-31b-it:free"],
+            "requested_providers": ["google-ai-studio"],
+            "selected_models": ["google/gemma-4-31b-it:free"],
+            "actual_models": ["google/gemma-4-31b-it:free"],
+            "providers": ["Google AI Studio"],
+            "used_fallback": False,
+            "request_count": 12,
+        },
     }
 
     class Generator:
@@ -448,7 +466,11 @@ def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
     assert captured["user_id"] == "analyst-user"
     # The raw profile is persisted as structured extraction data, plus a rendered
     # narrative, the quality score, real timing, and search tags.
-    assert data["threat_data"] is profile
+    assert data["threat_data"] is not profile
+    assert "_generation_route" not in data["threat_data"]
+    assert "_evaluation_route" not in data["threat_data"]
+    assert data["generation_route"] == profile["_generation_route"]
+    assert data["evaluation_route"] == profile["_evaluation_route"]
     assert data["quality_score"] == 4.1
     assert data["processing_time_ms"] == 965000
     assert data["threat_type"] == "post_exploitation_framework"
@@ -683,6 +705,46 @@ def test_report_detail_defaults_null_quality_score(monkeypatch):
     assert response.category == "unknown"
     assert response.threat_type == "unknown"
     assert response.web_sources == []
+    assert response.generation_route is None
+    assert response.evaluation_route is None
+
+
+def test_report_detail_returns_persisted_model_route_provenance(monkeypatch):
+    route = {
+        "requested_models": ["google/gemma-4-26b-a4b-it:free"],
+        "requested_providers": ["google-ai-studio"],
+        "selected_models": ["google/gemma-4-26b-a4b-it"],
+        "actual_models": ["google/gemma-4-26b-a4b-it"],
+        "providers": ["Google AI Studio"],
+        "used_fallback": True,
+        "request_count": 4,
+    }
+    stored_report = {
+        "id": "report-fallback",
+        "tool_name": "Sliver",
+        "category": "malware",
+        "threat_type": "post_exploitation_framework",
+        "created_at": datetime.now(timezone.utc),
+        "quality_score": 4.0,
+        "processing_time_ms": 1200,
+        "user_id": "analyst-user",
+        "generation_route": route,
+        "evaluation_route": None,
+    }
+    user = supabase_auth.AuthenticatedUser(
+        user_id="analyst-user",
+        email="analyst@example.com",
+        metadata={"role": "analyst"},
+    )
+    monkeypatch.setattr(
+        api_main.report_service, "get_report", lambda *args, **kwargs: stored_report
+    )
+
+    response = asyncio.run(api_main.get_report("report-fallback", True, user))
+
+    assert response.generation_route is not None
+    assert response.generation_route.used_fallback is True
+    assert response.generation_route.actual_models == ["google/gemma-4-26b-a4b-it"]
 
 
 def test_report_detail_derives_structured_sources_from_legacy_profile(monkeypatch):
@@ -880,6 +942,67 @@ def test_analytics_trends_are_derived_from_persisted_records():
         1,
         0,
         0,
+    ]
+
+
+def test_route_performance_separates_primary_fallback_and_legacy_reports():
+    start = datetime(2026, 8, 14, tzinfo=timezone.utc)
+    records = [
+        ReportAnalyticsRecord(
+            created_at=start,
+            quality_score=4.0,
+            processing_time_ms=1000,
+            status=ReportStatus.COMPLETED,
+            threat_type="malware",
+            generation_used_fallback=False,
+        ),
+        ReportAnalyticsRecord(
+            created_at=start,
+            quality_score=3.0,
+            processing_time_ms=3000,
+            status=ReportStatus.COMPLETED,
+            threat_type="malware",
+            generation_used_fallback=True,
+        ),
+        ReportAnalyticsRecord(
+            created_at=start,
+            quality_score=None,
+            processing_time_ms=5000,
+            status=ReportStatus.COMPLETED,
+            threat_type="malware",
+            generation_used_fallback=None,
+        ),
+        ReportAnalyticsRecord(
+            created_at=start,
+            quality_score=None,
+            processing_time_ms=None,
+            status=ReportStatus.FAILED,
+            threat_type="malware",
+            generation_used_fallback=None,
+        ),
+    ]
+
+    comparison = api_main.build_route_performance(records)
+
+    assert comparison == [
+        {
+            "route": "primary",
+            "report_count": 1,
+            "avg_quality_score": 4.0,
+            "avg_processing_time_ms": 1000.0,
+        },
+        {
+            "route": "fallback",
+            "report_count": 1,
+            "avg_quality_score": 3.0,
+            "avg_processing_time_ms": 3000.0,
+        },
+        {
+            "route": "unrecorded",
+            "report_count": 1,
+            "avg_quality_score": None,
+            "avg_processing_time_ms": 5000.0,
+        },
     ]
 
 

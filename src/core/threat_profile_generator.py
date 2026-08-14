@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
 from src.core.openrouter_client import (
     create_model_client,
+    evaluation_request_options,
     generation_request_options,
     resolve_model_name,
 )
@@ -22,6 +23,7 @@ from src.core.threat_profile_schema import (
     attest_profile_sources,
     parse_threat_profile_response,
 )
+from src.domain.model_routes import ModelRouteProvenance, ModelRoutePurpose
 from src.domain.reports import GenerationProgress, GenerationStage
 
 logger = logging.getLogger(__name__)
@@ -63,6 +65,34 @@ class ThreatProfileGenerator(RetryingModelRequests):
             logger.debug(f"Trace exporter initialized, export directory: {trace_export_dir}")
         else:
             self.trace_exporter = None
+
+    def _route_provenance(
+        self,
+        purpose: ModelRoutePurpose,
+        request_options: dict[str, object],
+    ) -> dict[str, object]:
+        """Return a stable route record, including honest no-response evaluator state."""
+
+        requested_model = str(request_options["model"])
+        provider = request_options.get("provider")
+        requested_provider_values = provider.get("only") if isinstance(provider, dict) else ()
+        if not isinstance(requested_provider_values, (list, tuple)):
+            requested_provider_values = ()
+        requested_providers = tuple(
+            str(provider_name) for provider_name in requested_provider_values
+        )
+        summarize = getattr(self.client, "route_provenance", None)
+        if callable(summarize):
+            return summarize(
+                purpose,
+                requested_model=requested_model,
+                requested_providers=requested_providers,
+            ).to_dict()
+        return ModelRouteProvenance.summarize(
+            (),
+            requested_model=requested_model,
+            requested_providers=requested_providers,
+        ).to_dict()
 
     def _research_evidence(self, tool_name: str) -> SimpleNamespace:
         """Collect independent evidence areas concurrently through OpenRouter web search."""
@@ -591,6 +621,15 @@ END ATTESTED SOURCE CATALOG"""
                 except Exception as trace_error:
                     logger.warning("Trace export failed: %s", trace_error)
                     # Don't fail the main process for trace export errors
+
+            json_data["_generation_route"] = self._route_provenance(
+                ModelRoutePurpose.GENERATION,
+                generation_request_options(),
+            )
+            json_data["_evaluation_route"] = self._route_provenance(
+                ModelRoutePurpose.EVALUATION,
+                evaluation_request_options(),
+            )
 
             return json_data
 

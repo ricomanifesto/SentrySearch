@@ -31,6 +31,7 @@ from src.api.contracts import (
     SearchFilters,
     SortDirection,
 )
+from src.domain.model_routes import generation_fallback_state
 from src.domain.reports import (
     GenerationProgress,
     GenerationStage,
@@ -251,6 +252,49 @@ def build_analytics_trends(
     }
 
 
+def build_route_performance(records: List[ReportAnalyticsRecord]) -> List[Dict[str, Any]]:
+    """Compare reader-visible quality and latency by recorded generation route."""
+
+    grouped: Dict[str, List[ReportAnalyticsRecord]] = {
+        "primary": [],
+        "fallback": [],
+        "unrecorded": [],
+    }
+    for record in records:
+        if record.status is not ReportStatus.COMPLETED:
+            continue
+        route = (
+            "fallback"
+            if record.generation_used_fallback is True
+            else "primary" if record.generation_used_fallback is False else "unrecorded"
+        )
+        grouped[route].append(record)
+
+    results = []
+    for route, route_records in grouped.items():
+        quality_scores = [
+            record.quality_score for record in route_records if record.quality_score is not None
+        ]
+        processing_times = [
+            record.processing_time_ms
+            for record in route_records
+            if record.processing_time_ms is not None
+        ]
+        results.append(
+            {
+                "route": route,
+                "report_count": len(route_records),
+                "avg_quality_score": (
+                    sum(quality_scores) / len(quality_scores) if quality_scores else None
+                ),
+                "avg_processing_time_ms": (
+                    sum(processing_times) / len(processing_times) if processing_times else None
+                ),
+            }
+        )
+    return results
+
+
 # API Routes
 
 
@@ -408,6 +452,8 @@ async def get_report(
             threat_data=report.get("threat_data"),
             web_sources=get_report_sources(report),
             search_tags=report.get("search_tags", []),
+            generation_route=report.get("generation_route"),
+            evaluation_route=report.get("evaluation_route"),
         )
 
     except HTTPException:
@@ -466,6 +512,11 @@ def run_report_generation(
         quality_data = profile.get("_quality_assessment") or {}
         elapsed_ms = profile.get("_processing_time_ms") or int((time.monotonic() - start) * 1000)
         category = profile.get("category") or ""
+        threat_data = {
+            key: value
+            for key, value in profile.items()
+            if key not in {"_generation_route", "_evaluation_route"}
+        }
         report_data = {
             "id": report_id,
             "tool_name": tool_name,
@@ -473,8 +524,10 @@ def run_report_generation(
             "threat_type": profile.get("threatType") or "",
             "quality_score": quality_data.get("overall_score"),
             "processing_time_ms": elapsed_ms,
-            "threat_data": profile,
+            "threat_data": threat_data,
             "quality_assessment": quality_data or None,
+            "generation_route": profile.get("_generation_route"),
+            "evaluation_route": profile.get("_evaluation_route"),
             "web_sources": profile.get("webSearchSources", {}).get("primarySources", []),
             "markdown_content": generate_markdown(profile),
             "trace_data": profile.get("_trace_data"),
@@ -757,6 +810,9 @@ async def get_analytics(
                     "processing_time_ms": report.get("processing_time_ms") or 0,
                     "created_at": report["created_at"],
                     "threat_type": report.get("threat_type"),
+                    "generation_used_fallback": generation_fallback_state(
+                        report.get("generation_route")
+                    ),
                 }
             )
 
@@ -777,6 +833,7 @@ async def get_analytics(
                 "quality_score_distribution": trends["quality_score_distribution"],
                 "processing_time_trends": trends["processing_time_trends"],
             },
+            "route_performance": build_route_performance(records),
             "recent_activity": recent_activity,
         }
 

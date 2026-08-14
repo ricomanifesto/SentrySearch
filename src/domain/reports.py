@@ -95,3 +95,4 @@ class ReportAnalyticsRecord:
     processing_time_ms: int | None
     status: ReportStatus
     threat_type: str | None
+    generation_used_fallback: bool | None = None

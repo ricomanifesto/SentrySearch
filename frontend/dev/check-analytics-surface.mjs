@@ -99,6 +99,22 @@ const expectations = [
     pattern: /Threat coverage map/,
   },
   {
+    name: 'declares the generation route comparison contract',
+    pattern: /data-contract="Analytics\.GenerationRouteComparison\.v1"/,
+  },
+  {
+    name: 'separates requested fallback and legacy routes',
+    pattern: /primary: 'Requested route'[\s\S]*fallback: 'Fallback route'[\s\S]*unrecorded: 'Legacy \/ unrecorded'/,
+  },
+  {
+    name: 'compares quality and runtime without fabricating missing values',
+    pattern: /avg_quality_score == null[\s\S]*Quality not scored[\s\S]*avg_processing_time_ms == null[\s\S]*Runtime not recorded/,
+  },
+  {
+    name: 'marks fallback-built reports in recent activity',
+    pattern: /generation_used_fallback === true[\s\S]*Fallback route/,
+  },
+  {
     name: 'uses triage language for empty threat coverage',
     pattern: /Coverage appears after reports classify threat patterns/,
   },

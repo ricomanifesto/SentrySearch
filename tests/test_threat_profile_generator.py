@@ -322,7 +322,20 @@ def test_generation_separates_web_research_from_structured_synthesis(
         "Example Threat", progress_callback=progress_updates.append
     )
 
-    assert result == threat_profile_data
+    assert {
+        key: value for key, value in result.items() if not key.startswith("_")
+    } == threat_profile_data
+    assert result["_generation_route"] == {
+        "requested_models": ["google/gemma-4-26b-a4b-it:free"],
+        "requested_providers": ["google-ai-studio"],
+        "selected_models": [],
+        "actual_models": [],
+        "providers": [],
+        "used_fallback": False,
+        "request_count": 0,
+    }
+    assert result["_evaluation_route"]["requested_models"] == ["google/gemma-4-31b-it:free"]
+    assert result["_evaluation_route"]["requested_providers"] == ["google-ai-studio"]
     assert len(messages.requests) == 4
     research_requests = [request for request in messages.requests if request.get("tools")]
     synthesis_request = next(
@@ -337,6 +350,7 @@ def test_generation_separates_web_research_from_structured_synthesis(
     assert all(
         request["fallback_models"] == ["google/gemma-4-26b-a4b-it"] for request in research_requests
     )
+    assert all(request["route_purpose"] == "generation" for request in research_requests)
     assert all("response_format" not in request for request in research_requests)
     research_prompts = "\n".join(request["messages"][0]["content"] for request in research_requests)
     assert "architecture" in research_prompts
@@ -348,6 +362,7 @@ def test_generation_separates_web_research_from_structured_synthesis(
         "allow_fallbacks": False,
     }
     assert synthesis_request["fallback_models"] == ["google/gemma-4-26b-a4b-it"]
+    assert synthesis_request["route_purpose"] == "generation"
     assert "tools" not in synthesis_request
     assert "https://example.com/report" in synthesis_request["messages"][0]["content"]
     assert "Example Threat uses remote access capabilities" in (
