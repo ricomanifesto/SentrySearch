@@ -23,6 +23,7 @@ EMPTY_RESPONSE_RETRIES = 3
 EMPTY_RESPONSE_RETRY_DELAY = 1.5
 
 DEFAULT_MODEL = "google/gemma-4-26b-a4b-it:free"
+DEFAULT_GENERATION_PROVIDER = "google-ai-studio"
 MODEL_ENV_VAR = "SENTRYSEARCH_MODEL"
 DEFAULT_EVALUATION_MODEL = "google/gemma-4-31b-it:free"
 DEFAULT_EVALUATION_PROVIDER = "google-ai-studio"
@@ -67,6 +68,19 @@ class ModelRateLimitError(ModelRetryableError):
 def resolve_model_name(model_name: str | None = None) -> str:
     """Return the configured OpenRouter model ID."""
     return (model_name or os.getenv(MODEL_ENV_VAR, DEFAULT_MODEL)).strip()
+
+
+def generation_request_options(model_name: str | None = None) -> dict[str, Any]:
+    """Return generation routing that preserves custom-model overrides."""
+
+    resolved_model = resolve_model_name(model_name)
+    options: dict[str, Any] = {"model": resolved_model}
+    if resolved_model == DEFAULT_MODEL:
+        options["provider"] = {
+            "only": [DEFAULT_GENERATION_PROVIDER],
+            "allow_fallbacks": False,
+        }
+    return options
 
 
 def resolve_evaluation_model_name(model_name: str | None = None) -> str:

@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
 from src.core.openrouter_client import (
     create_model_client,
+    generation_request_options,
     resolve_model_name,
 )
 from src.core.model_retry import RetryingModelRequests
@@ -86,7 +87,7 @@ Return a compact but technically dense evidence dossier. Include concrete findin
             futures = {
                 executor.submit(
                     self._request_model,
-                    model=resolve_model_name(),
+                    **generation_request_options(),
                     max_tokens=4096,
                     temperature=0.3,
                     messages=[{"role": "user", "content": prompt}],
@@ -430,7 +431,7 @@ END ATTESTED SOURCE CATALOG"""
             logger.debug(f"Prompt size: {len(prompt)} characters")
 
             response = self._request_model(
-                model=resolve_model_name(),
+                **generation_request_options(),
                 # The full profile is returned as a single JSON object; cap output at
                 # the model's ceiling so a large profile isn't truncated mid-JSON
                 # (which leaves the object unparseable and fails the whole report).

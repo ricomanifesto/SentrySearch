@@ -330,12 +330,20 @@ def test_generation_separates_web_research_from_structured_synthesis(
     )
     assert len(research_requests) == 3
     assert all(request["tools"] == [{"type": "web_search"}] for request in research_requests)
+    assert all(
+        request["provider"] == {"only": ["google-ai-studio"], "allow_fallbacks": False}
+        for request in research_requests
+    )
     assert all("response_format" not in request for request in research_requests)
     research_prompts = "\n".join(request["messages"][0]["content"] for request in research_requests)
     assert "architecture" in research_prompts
     assert "detection" in research_prompts
     assert "threat actor" in research_prompts
     assert synthesis_request["response_format"] is ThreatProfile
+    assert synthesis_request["provider"] == {
+        "only": ["google-ai-studio"],
+        "allow_fallbacks": False,
+    }
     assert "tools" not in synthesis_request
     assert "https://example.com/report" in synthesis_request["messages"][0]["content"]
     assert "Example Threat uses remote access capabilities" in (

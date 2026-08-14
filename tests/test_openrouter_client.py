@@ -13,6 +13,7 @@ from src.core.openrouter_client import (
     ModelRateLimitError,
     ModelRetryableError,
     evaluation_request_options,
+    generation_request_options,
     resolve_evaluation_model_name,
     resolve_model_name,
 )
@@ -98,7 +99,20 @@ def test_evaluation_model_can_be_overridden_independently(monkeypatch):
 
     assert resolve_model_name() == "example/generator"
     assert resolve_evaluation_model_name() == "example/evaluator"
+    assert generation_request_options() == {"model": "example/generator"}
     assert evaluation_request_options() == {"model": "example/evaluator"}
+
+
+def test_default_generation_model_is_pinned_to_google_ai_studio(monkeypatch):
+    monkeypatch.delenv("SENTRYSEARCH_MODEL", raising=False)
+
+    assert generation_request_options() == {
+        "model": "google/gemma-4-26b-a4b-it:free",
+        "provider": {
+            "only": ["google-ai-studio"],
+            "allow_fallbacks": False,
+        },
+    }
 
 
 def test_default_evaluation_model_is_pinned_to_google_ai_studio(monkeypatch):
