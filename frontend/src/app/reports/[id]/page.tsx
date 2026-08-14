@@ -178,12 +178,12 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
   }
 
   const qualityScore = report.quality_score;
-  const qualityLabel = qualityScore == null ? 'Evaluator unavailable' : getQualityLabel(qualityScore);
+  const qualityLabel = getQualityLabel(qualityScore);
 
   const recordSummarySignals = [
     {
       label: 'Confidence',
-      value: qualityScore == null ? 'Not scored' : `${qualityScore.toFixed(1)} / 5.0`,
+      value: qualityScore == null ? qualityLabel : `${qualityScore.toFixed(1)} / 5.0`,
       detail: qualityLabel,
     },
     { label: 'Category', value: report.category || 'Unclassified', detail: 'Report classification' },

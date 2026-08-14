@@ -68,7 +68,11 @@ export default function SampleReport() {
             <ReportNarrative markdown={SAMPLE_REPORT.markdown_content ?? ''} />
           </section>
           <aside className="rounded-xl border border-zinc-200 bg-white p-5 lg:sticky lg:top-24">
-            <SourceEvidence sources={SAMPLE_REPORT.web_sources} heading="Sources" />
+            <SourceEvidence
+              sources={SAMPLE_REPORT.web_sources}
+              dateLabel="Captured"
+              heading="Sources"
+            />
           </aside>
         </div>
 

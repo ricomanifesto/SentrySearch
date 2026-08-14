@@ -10,7 +10,7 @@ from src.core.openrouter_client import (
     resolve_model_name,
 )
 from src.core.model_retry import RetryingModelRequests
-from typing import Dict, Any
+from typing import Dict, Any, Callable
 from datetime import datetime
 import time
 from src.core.parallel_section_validator import ParallelSectionValidator
@@ -21,8 +21,11 @@ from src.core.threat_profile_schema import (
     attest_profile_sources,
     parse_threat_profile_response,
 )
+from src.domain.reports import GenerationProgress, GenerationStage
 
 logger = logging.getLogger(__name__)
+
+ProgressCallback = Callable[[GenerationProgress], None]
 
 RESEARCH_FOCUSES = (
     """Technical architecture and command-and-control. Find authoritative product documentation and technical analyses covering architecture, supported operating systems, dependencies, versions, Beacon or implant behavior, protocols, ports, encryption and encoding, command syntax, sleep or jitter patterns, and network detection opportunities. Use focused searches such as \"{tool_name} architecture protocol ports\", \"{tool_name} command and control Beacon commands\", and \"{tool_name} technical analysis encryption encoding\".""",
@@ -144,17 +147,39 @@ Return a compact but technically dense evidence dossier. Include concrete findin
             usage=SimpleNamespace(**usage_totals),
         )
 
-    def get_threat_intelligence(self, tool_name: str, progress_callback=None):
+    def get_threat_intelligence(
+        self,
+        tool_name: str,
+        progress_callback: ProgressCallback | None = None,
+    ):
         """
         Generate comprehensive threat intelligence profile using the configured model.
 
         Args:
             tool_name: Name of the tool/threat to analyze
-            progress_callback: Optional callback for progress updates
+            progress_callback: Optional callback for typed progress updates
 
         Returns:
             dict: Threat intelligence data with quality assessment
         """
+
+        def emit_progress(
+            progress: float,
+            stage: GenerationStage,
+            message: str,
+        ) -> None:
+            if progress_callback:
+                progress_callback(
+                    GenerationProgress(
+                        progress=progress,
+                        stage=stage,
+                        message=message,
+                    )
+                )
+
+        def emit_validation_progress(progress: float, message: str) -> None:
+            emit_progress(progress, GenerationStage.VALIDATING, message)
+
         # Start trace
         trace_id = None
         if self.enable_tracing and self.trace_exporter:
@@ -162,8 +187,7 @@ Return a compact but technically dense evidence dossier. Include concrete findin
             self.trace_exporter.log_stage_start("initialization")
 
         try:
-            if progress_callback:
-                progress_callback(0.1, "Initializing research...")
+            emit_progress(0.1, GenerationStage.QUEUED, "Initializing research...")
 
             logger.debug(f"Starting threat intelligence generation for: {tool_name}")
 
@@ -179,8 +203,11 @@ Return a compact but technically dense evidence dossier. Include concrete findin
                     cache_enabled=False,  # Baseline measurement
                 )
 
-            if progress_callback:
-                progress_callback(0.2, "Researching three evidence areas in parallel...")
+            emit_progress(
+                0.2,
+                GenerationStage.RESEARCHING,
+                "Researching three evidence areas in parallel...",
+            )
 
             logger.debug("Sending isolated web research request to OpenRouter...")
 
@@ -448,10 +475,12 @@ END ATTESTED SOURCE CATALOG"""
             self.validator.web_search_sources.extend(initial_sources)
             logger.debug(f"Captured {len(initial_sources)} initial web search sources")
 
-            if progress_callback:
-                progress_callback(0.7, "Processing response...")
-            if progress_callback:
-                progress_callback(0.75, "Validating structured response...")
+            emit_progress(0.7, GenerationStage.SYNTHESIZING, "Processing response...")
+            emit_progress(
+                0.75,
+                GenerationStage.VALIDATING,
+                "Validating structured response...",
+            )
 
             json_data = parse_threat_profile_response(response)
             attest_profile_sources(json_data, response.web_search_sources)
@@ -480,8 +509,11 @@ END ATTESTED SOURCE CATALOG"""
 
             # Quality control phase
             if self.enable_quality_control:
-                if progress_callback:
-                    progress_callback(0.8, "Running quality validation...")
+                emit_progress(
+                    0.8,
+                    GenerationStage.VALIDATING,
+                    "Running quality validation...",
+                )
 
                 if self.enable_tracing and self.trace_exporter:
                     self.trace_exporter.log_stage_start("quality_validation")
@@ -489,7 +521,7 @@ END ATTESTED SOURCE CATALOG"""
                 # Validate the complete profile
                 validation_results = self.validator.validate_complete_profile(
                     json_data,
-                    progress_callback,
+                    emit_validation_progress if progress_callback else None,
                     tool_name,
                     evidence_text=(f"{research_text}\n\nATTESTED SOURCE CATALOG\n{source_catalog}"),
                 )
@@ -517,8 +549,7 @@ END ATTESTED SOURCE CATALOG"""
                         f"Added comprehensive sources section to main profile with {len(self.validator.web_search_sources)} sources"
                     )
 
-            if progress_callback:
-                progress_callback(1.0, "Analysis complete!")
+            emit_progress(1.0, GenerationStage.FINALIZING, "Analysis complete!")
 
             # Complete performance tracking
             if self.enable_metrics and self.performance_tracker:
@@ -580,8 +611,7 @@ END ATTESTED SOURCE CATALOG"""
                 except Exception as trace_error:
                     logger.warning("Failed to export error trace: %s", trace_error)
 
-            if progress_callback:
-                progress_callback(1.0, "Analysis failed")
+            emit_progress(1.0, GenerationStage.FAILED, "Analysis failed")
             raise
 
     def save_to_file(self, data: Dict[str, Any], filename: str | None = None) -> str:

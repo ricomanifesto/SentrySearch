@@ -74,6 +74,28 @@ test('renders structured source evidence as inspectable links', () => {
   );
 });
 
+test('labels canonical sample evidence as a captured snapshot', () => {
+  const html = renderToStaticMarkup(
+    <SourceEvidence
+      dateLabel="Captured"
+      sources={[
+        {
+          title: 'MITRE ATT&CK: Cobalt Strike',
+          url: 'https://attack.mitre.org/software/S0154/',
+          domain: 'attack.mitre.org',
+          access_date: '2026-08-13',
+          relevance_score: '0.96',
+          content_type: 'Knowledge base',
+          key_findings: 'Maps observed behavior to ATT&CK techniques.',
+        },
+      ]}
+    />,
+  );
+
+  assert.match(html, /Captured 2026-08-13/);
+  assert.doesNotMatch(html, /Accessed 2026-08-13/);
+});
+
 test('gives background generation a stage and elapsed-time shape', () => {
   const html = renderToStaticMarkup(
     <GenerationProgress

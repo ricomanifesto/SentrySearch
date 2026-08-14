@@ -12,7 +12,12 @@ from fastapi import HTTPException, BackgroundTasks
 from src.auth import supabase_auth
 from src.api import main as api_main
 from src.core.markdown_generator import generate_markdown
-from src.domain.reports import ReportAnalyticsRecord, ReportStatus
+from src.domain.reports import (
+    GenerationProgress,
+    GenerationStage,
+    ReportAnalyticsRecord,
+    ReportStatus,
+)
 from src.storage.models import Report
 from dev.smoke_api import configure_local_environment, run_checks
 
@@ -390,11 +395,34 @@ def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
     class Generator:
         def get_threat_intelligence(self, tool_name: str, progress_callback=None):
             if progress_callback:
-                progress_callback(0.2, "Researching three evidence areas in parallel...")
-                progress_callback(0.7, "Processing response...")
-                progress_callback(0.75, "Validating structured response...")
-                progress_callback(0.8, "Running quality validation...")
-                progress_callback(1.0, "Analysis complete!")
+                progress_callback(
+                    GenerationProgress(
+                        progress=0.2,
+                        stage=GenerationStage.RESEARCHING,
+                        message="Processing can be reworded without changing this stage.",
+                    )
+                )
+                progress_callback(
+                    GenerationProgress(
+                        progress=0.7,
+                        stage=GenerationStage.SYNTHESIZING,
+                        message="Research wording cannot pull this stage backward.",
+                    )
+                )
+                progress_callback(
+                    GenerationProgress(
+                        progress=0.75,
+                        stage=GenerationStage.VALIDATING,
+                        message="Checking the structured response.",
+                    )
+                )
+                progress_callback(
+                    GenerationProgress(
+                        progress=1.0,
+                        stage=GenerationStage.FINALIZING,
+                        message="Saving the review record.",
+                    )
+                )
             return profile
 
     monkeypatch.setattr(api_main, "ThreatProfileGenerator", Generator)
@@ -433,6 +461,13 @@ def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
         ("report-9", "validating"),
         ("report-9", "finalizing"),
     ]
+
+
+def test_background_generation_does_not_infer_stage_from_progress_copy():
+    source = read_text("src/api/main.py")
+
+    assert "generation_stage_from_progress" not in source
+    assert ".message.casefold()" not in source
 
 
 def test_unknown_stored_generation_stage_falls_back_to_report_status():

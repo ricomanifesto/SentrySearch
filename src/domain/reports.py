@@ -28,6 +28,22 @@ class GenerationStage(StrEnum):
     FAILED = "failed"
 
 
+@dataclass(frozen=True, slots=True)
+class GenerationProgress:
+    """Typed progress emitted by the report-generation pipeline."""
+
+    progress: float
+    stage: GenerationStage
+    message: str
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.progress <= 1:
+            raise ValueError("Generation progress must be between 0 and 1")
+        object.__setattr__(self, "stage", GenerationStage(self.stage))
+        if not self.message.strip():
+            raise ValueError("Generation progress must include reader-facing detail")
+
+
 class ReportSortField(StrEnum):
     """Report fields exposed as stable sort keys."""
 

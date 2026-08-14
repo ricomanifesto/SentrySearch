@@ -31,7 +31,12 @@ from src.api.contracts import (
     SearchFilters,
     SortDirection,
 )
-from src.domain.reports import GenerationStage, ReportAnalyticsRecord, ReportStatus
+from src.domain.reports import (
+    GenerationProgress,
+    GenerationStage,
+    ReportAnalyticsRecord,
+    ReportStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,21 +129,6 @@ def get_generation_stage(report: Dict[str, Any]) -> GenerationStage:
         if status is ReportStatus.GENERATING
         else GenerationStage(status.value)
     )
-
-
-def generation_stage_from_progress(message: str) -> GenerationStage | None:
-    """Map generator-owned progress messages onto the stable report lifecycle."""
-
-    normalized = message.casefold()
-    if "complete" in normalized:
-        return GenerationStage.FINALIZING
-    if "validat" in normalized or "quality" in normalized or "guidance" in normalized:
-        return GenerationStage.VALIDATING
-    if "processing" in normalized:
-        return GenerationStage.SYNTHESIZING
-    if "research" in normalized:
-        return GenerationStage.RESEARCHING
-    return None
 
 
 def get_report_sources(report: Dict[str, Any]) -> List[ReportSource]:
@@ -444,18 +434,19 @@ def run_report_generation(
         generator = ThreatProfileGenerator()
         last_stage: GenerationStage | None = None
         stage_order = {
+            GenerationStage.QUEUED: 0,
             GenerationStage.RESEARCHING: 1,
             GenerationStage.SYNTHESIZING: 2,
             GenerationStage.VALIDATING: 3,
             GenerationStage.FINALIZING: 4,
         }
 
-        def persist_progress(_progress: float, message: str) -> None:
+        def persist_progress(update: GenerationProgress) -> None:
             nonlocal last_stage
-            stage = generation_stage_from_progress(message)
-            if stage is not None and (
-                last_stage is None or stage_order[stage] > stage_order[last_stage]
-            ):
+            stage = update.stage
+            stage_rank = stage_order.get(stage)
+            previous_rank = stage_order.get(last_stage) if last_stage is not None else None
+            if stage_rank is not None and (previous_rank is None or stage_rank > previous_rank):
                 report_service.update_generation_stage(report_id, stage.value)
                 last_stage = stage
 

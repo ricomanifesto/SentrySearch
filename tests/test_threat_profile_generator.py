@@ -10,6 +10,7 @@ from src.core.section_validator import SectionValidator
 from src.core.parallel_section_validator import ParallelSectionValidator
 from src.core.markdown_generator import generate_markdown
 from src.core.threat_profile_generator import ThreatProfileGenerator
+from src.domain.reports import GenerationProgress, GenerationStage
 from src.core.threat_profile_schema import (
     ThreatProfile,
     attest_profile_sources,
@@ -316,7 +317,10 @@ def test_generation_separates_web_research_from_structured_synthesis(
     generator = ThreatProfileGenerator(enable_tracing=False, enable_metrics=False)
     generator.enable_quality_control = False
 
-    result = generator.get_threat_intelligence("Example Threat")
+    progress_updates: list[GenerationProgress] = []
+    result = generator.get_threat_intelligence(
+        "Example Threat", progress_callback=progress_updates.append
+    )
 
     assert result == threat_profile_data
     assert len(messages.requests) == 4
@@ -342,3 +346,11 @@ def test_generation_separates_web_research_from_structured_synthesis(
     assert synthesis_response.usage.output_tokens == 100
     assert synthesis_response.usage.web_search_calls == 3
     assert synthesis_response.usage.total_tokens == 160
+    assert all(isinstance(update, GenerationProgress) for update in progress_updates)
+    assert [update.stage for update in progress_updates] == [
+        GenerationStage.QUEUED,
+        GenerationStage.RESEARCHING,
+        GenerationStage.SYNTHESIZING,
+        GenerationStage.VALIDATING,
+        GenerationStage.FINALIZING,
+    ]

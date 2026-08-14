@@ -40,7 +40,12 @@ const expectations = [
   {
     name: 'renders inspectable structured source links',
     source: sample,
-    pattern: /<SourceEvidence sources=\{SAMPLE_REPORT\.web_sources\}/,
+    pattern: /<SourceEvidence[\s\S]*sources=\{SAMPLE_REPORT\.web_sources\}[\s\S]*dateLabel="Captured"/,
+  },
+  {
+    name: 'labels fixed source dates as historical capture dates',
+    source: sample,
+    pattern: /dateLabel="Captured"/,
   },
   {
     name: 'derives the threat family from the canonical sample report',

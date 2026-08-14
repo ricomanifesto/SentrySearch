@@ -5,9 +5,14 @@ import { getSafeExternalUrl } from './report-links';
 type SourceEvidenceProps = {
   sources: ReportSource[];
   heading?: string;
+  dateLabel?: 'Accessed' | 'Captured';
 };
 
-export function SourceEvidence({ sources, heading = 'Source evidence' }: SourceEvidenceProps) {
+export function SourceEvidence({
+  sources,
+  heading = 'Source evidence',
+  dateLabel = 'Accessed',
+}: SourceEvidenceProps) {
   return (
     <section data-contract="Report.SourceEvidence.v1" aria-labelledby="source-evidence-heading">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -47,7 +52,7 @@ export function SourceEvidence({ sources, heading = 'Source evidence' }: SourceE
                     <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-sm text-zinc-500">
                       <span>{source.content_type}</span>
                       <span>Relevance {source.relevance_score}</span>
-                      <span>Accessed {source.access_date}</span>
+                      <span>{dateLabel} {source.access_date}</span>
                     </p>
                   </div>
                 </div>
