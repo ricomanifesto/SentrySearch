@@ -202,7 +202,9 @@ def test_model_client_uses_same_model_paid_fallback_after_rate_limit():
     result = client.messages.create(
         model="google/gemma-4-26b-a4b-it:free",
         fallback_models=["google/gemma-4-26b-a4b-it"],
+        provider={"only": ["google-ai-studio"], "allow_fallbacks": False},
         messages=[{"role": "user", "content": "Analyze Sliver"}],
+        tools=[{"type": "web_search"}],
     )
 
     assert result.content[0].text == "fallback report"
@@ -212,6 +214,16 @@ def test_model_client_uses_same_model_paid_fallback_after_rate_limit():
         "google/gemma-4-26b-a4b-it",
     ]
     assert all("fallback_models" not in body for body in request_bodies)
+    assert request_bodies[0]["provider"] == {
+        "only": ["google-ai-studio"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+        "sort": "throughput",
+    }
+    assert request_bodies[1]["provider"] == {
+        "require_parameters": True,
+        "sort": "throughput",
+    }
 
 
 def test_model_client_sends_strict_schema_and_parses_chat_completion():

@@ -250,10 +250,16 @@ class ModelClient:
         """Retry typed provider failures with explicitly configured model fallbacks."""
 
         candidates = [str(request["model"]), *fallback_models]
+        primary_model = candidates[0]
         last_error: ModelRetryableError | None = None
         for model in dict.fromkeys(candidates):
             candidate_request = dict(request)
             candidate_request["model"] = model
+            if model != primary_model and isinstance(request.get("provider"), dict):
+                fallback_provider = dict(request["provider"])
+                fallback_provider.pop("only", None)
+                fallback_provider.pop("allow_fallbacks", None)
+                candidate_request["provider"] = fallback_provider
             try:
                 return self._post(candidate_request)
             except ModelRetryableError as error:
