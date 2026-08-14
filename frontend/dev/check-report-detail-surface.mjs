@@ -19,6 +19,8 @@ const expectations = [
   { name: 'does not render the saved markdown as a raw preformatted block', absentPattern: /<pre[^>]*>\s*\{report\.markdown_content\}/ },
   { name: 'declares the report detail surface contract', pattern: /data-surface="report-detail-record"/ },
   { name: 'declares the local report detail fixture id', pattern: /const LOCAL_REPORT_DETAIL_FIXTURE_ID = 'local-visual-fixture'/ },
+  { name: 'exercises generation fallback disclosure in the local fixture', pattern: /const localReportDetailFixture[\s\S]*generation_route:[\s\S]*used_fallback: true/ },
+  { name: 'exercises evaluation fallback disclosure in the local fixture', pattern: /const localReportDetailFixture[\s\S]*evaluation_route:[\s\S]*used_fallback: true/ },
   { name: 'guards the report detail fixture to development only', pattern: /process\.env\.NODE_ENV === 'development' && reportId === LOCAL_REPORT_DETAIL_FIXTURE_ID/ },
   { name: 'disables report fetching when fixture data is present', pattern: /enabled: !!reportId && !fixtureReport/ },
   { name: 'prevents fixture delete actions from mutating the backend', pattern: /if \(isFixtureRecord\) return;/ },

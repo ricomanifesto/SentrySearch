@@ -28,6 +28,24 @@ const LOCAL_REPORT_DETAIL_FIXTURE_ID = 'local-visual-fixture';
 const localReportDetailFixture: ReportDetail = {
   ...SAMPLE_REPORT,
   id: LOCAL_REPORT_DETAIL_FIXTURE_ID,
+  generation_route: {
+    requested_models: ['google/gemma-4-26b-a4b-it:free'],
+    requested_providers: ['google-ai-studio'],
+    selected_models: ['google/gemma-4-26b-a4b-it'],
+    actual_models: ['google/gemma-4-26b-a4b-it'],
+    providers: ['OpenAI'],
+    used_fallback: true,
+    request_count: 4,
+  },
+  evaluation_route: {
+    requested_models: ['google/gemma-4-31b-it:free'],
+    requested_providers: ['google-ai-studio'],
+    selected_models: ['google/gemma-4-31b-it'],
+    actual_models: ['google/gemma-4-31b-it'],
+    providers: ['Friendli'],
+    used_fallback: true,
+    request_count: 12,
+  },
 };
 
 const secondaryButtonClass =

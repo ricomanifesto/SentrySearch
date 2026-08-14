@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const samplePath = resolve(here, '../src/app/sample/page.tsx');
 const sample = await readFile(samplePath, 'utf8');
+const sampleReport = await readFile(resolve(here, '../src/lib/sample-report.ts'), 'utf8');
 
 const expectations = [
   {
@@ -76,6 +77,11 @@ const expectations = [
     name: 'does not gate the public sample behind the auth boundary',
     source: sample,
     absentPattern: /AuthGuard/,
+  },
+  {
+    name: 'keeps the public sample silent when there is no route divergence',
+    source: sampleReport,
+    absentPattern: /generation_route|evaluation_route/,
   },
   {
     name: 'does not use fonts below the legible minimum',
