@@ -34,26 +34,34 @@ def build_threat_profile_data(source_url: str = "https://example.com/report") ->
             "sourceReliability": "Primary source.",
         },
         "claimAttribution": {
-            "schemaVersion": "2",
+            "schemaVersion": "3",
             "claims": [
                 {
                     "claimClass": "threat_activity",
                     "claim": "Remote access",
+                    "claimField": "riskFactors",
+                    "claimIndex": 0,
                     "sourceIds": ["S1"],
                 },
                 {
                     "claimClass": "forensic_artifact",
                     "claim": "example.exe",
+                    "claimField": "fileSystemArtifacts",
+                    "claimIndex": 0,
                     "sourceIds": ["S1"],
                 },
                 {
                     "claimClass": "detection_indicator",
                     "claim": "Unexpected service creation",
+                    "claimField": "behavioralIndicators",
+                    "claimIndex": 0,
                     "sourceIds": ["S1"],
                 },
                 {
                     "claimClass": "mitigation_action",
                     "claim": "Isolate affected host",
+                    "claimField": "responseActions",
+                    "claimIndex": 0,
                     "sourceIds": ["S1"],
                 },
             ],

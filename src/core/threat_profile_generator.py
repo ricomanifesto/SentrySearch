@@ -33,6 +33,7 @@ from src.core.source_ledger import (
     SourceLedgerError,
     assert_claim_attribution_consistent,
     attach_source_ids,
+    materialize_claim_attribution,
 )
 from src.domain.model_routes import ModelRouteProvenance, ModelRoutePurpose
 from src.domain.reports import GenerationProgress, GenerationStage
@@ -48,9 +49,8 @@ RESEARCH_FOCUSES = (
 )
 
 UNKNOWN_CLAIM_SOURCE_ERROR = "Threat profile claim attribution references an unknown source ID"
-INCONSISTENT_CLAIM_ATTRIBUTION_ERROR = (
-    "Current reports require claim attribution schema v2 for all high-risk claim classes"
-)
+INVALID_CLAIM_SELECTOR_ERROR = "Current claim attribution selector is invalid"
+INCONSISTENT_CLAIM_ATTRIBUTION_ERROR = "Report claim attribution is inconsistent"
 ATTRIBUTION_CORRECTION_ATTEMPTS = 1
 
 
@@ -60,13 +60,14 @@ def _claim_attribution_correction_prompt(prompt: str) -> str:
     return f"""{prompt}
 
 CORRECTION ATTEMPT AFTER A FAILED EVIDENCE CONTRACT:
-The previous structured response cited a sourceId that was absent from its own
-webSearchSources.primarySources ledger. Return a complete corrected JSON object.
+The previous structured response used an invalid claim selector or cited a
+sourceId absent from its own webSearchSources.primarySources ledger. Return a
+complete corrected JSON object.
 
 - Every claimAttribution sourceId MUST appear in webSearchSources.primarySources.
 - Every primary sourceId and URL MUST be copied exactly from the attested source catalog.
 - If a catalog source supports a claim, include that source in primarySources before citing it.
-- Every attributed claim MUST be copied exactly from its named structured section.
+- claimField and claimIndex MUST select a real non-empty value from the named claim class.
 - Do not invent, renumber, infer, or silently remove evidence.
 """
 
@@ -363,26 +364,30 @@ Based on your comprehensive research findings, create a detailed profile in the 
     "sourceReliability": "REQUIRED: Assessment based on attested domain authority and content quality"
   }},
   "claimAttribution": {{
-    "schemaVersion": "2",
+    "schemaVersion": "3",
     "claims": [
       {{
         "claimClass": "threat_activity",
-        "claim": "REQUIRED: One exact high-risk claim stated in threatIntelligence",
+        "claimField": "riskFactors",
+        "claimIndex": 0,
         "sourceIds": ["REQUIRED: One or more exact sourceId values supporting this claim"]
       }},
       {{
         "claimClass": "forensic_artifact",
-        "claim": "REQUIRED: One exact artifact stated in forensicArtifacts",
+        "claimField": "fileSystemArtifacts OR registryArtifacts OR networkArtifacts OR memoryArtifacts OR logArtifacts",
+        "claimIndex": 0,
         "sourceIds": ["REQUIRED: One or more exact sourceId values supporting this claim"]
       }},
       {{
         "claimClass": "detection_indicator",
-        "claim": "REQUIRED: One exact IOC or behavior stated in detectionAndMitigation",
+        "claimField": "hashes OR domains OR ips OR urls OR filenames OR behavioralIndicators",
+        "claimIndex": 0,
         "sourceIds": ["REQUIRED: One or more exact sourceId values supporting this claim"]
       }},
       {{
         "claimClass": "mitigation_action",
-        "claim": "REQUIRED: One exact action stated in mitigationAndResponse",
+        "claimField": "preventiveMeasures OR detectionMethods OR responseActions OR recoveryGuidance",
+        "claimIndex": 0,
         "sourceIds": ["REQUIRED: One or more exact sourceId values supporting this claim"]
       }}
     ]
@@ -530,8 +535,9 @@ CRITICAL INSTRUCTIONS FOR OUTPUT:
 7. Cross-reference claims across multiple attested sources when possible
 8. If the attested research is limited, acknowledge this limitation in the relevant sections
 9. Preserve each sourceId exactly as supplied and use only those IDs in claimAttribution
-10. claimAttribution schemaVersion 2 MUST include at least one supported claim in each of the four named high-risk claim classes
-11. Each attributed claim MUST be copied exactly from the corresponding structured section; sourceIds identify evidence, never a substitute source list
+10. claimAttribution schemaVersion 3 MUST include at least one supported claim in each of the four named high-risk claim classes
+11. claimField MUST use one allowed field shown for its class, and claimIndex MUST select one real non-empty item from that field's array
+12. The application copies the selected item into the stored claim text; sourceIds identify its evidence, never a substitute source list
 
 Remember: Accuracy and source verification are more important than completeness.
 
@@ -584,11 +590,13 @@ END ATTESTED SOURCE CATALOG"""
                 except (ValueError, TypeError) as error:
                     raise ProfileOutputError("Structured profile output was invalid") from error
                 try:
+                    materialize_claim_attribution(json_data)
                     attest_profile_sources(json_data, response.web_search_sources)
                     assert_claim_attribution_consistent(json_data)
                 except ValueError as error:
                     can_correct = attempt < ATTRIBUTION_CORRECTION_ATTEMPTS and str(error) in {
                         UNKNOWN_CLAIM_SOURCE_ERROR,
+                        INVALID_CLAIM_SELECTOR_ERROR,
                         INCONSISTENT_CLAIM_ATTRIBUTION_ERROR,
                     }
                     if not can_correct:
@@ -596,8 +604,8 @@ END ATTESTED SOURCE CATALOG"""
                             "Profile evidence attestation failed"
                         ) from error
                     logger.warning(
-                        "Structured synthesis cited a source outside its primary ledger; "
-                        "requesting one bounded correction"
+                        "Structured synthesis produced an invalid claim map; requesting one "
+                        "bounded correction"
                     )
                     emit_progress(
                         0.76,

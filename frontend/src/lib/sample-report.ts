@@ -7,7 +7,7 @@ export const SAMPLE_REPORT: ReportDetail = {
   threat_type: 'post_exploitation_framework',
   classification_status: 'recorded',
   claim_attribution_status: 'attributed',
-  claim_attribution_version: '2',
+  claim_attribution_version: '3',
   quality_score: 3.5,
   created_at: '2026-08-13T12:00:00.000Z',
   processing_time_ms: 0,
@@ -172,13 +172,27 @@ export const SAMPLE_REPORT: ReportDetail = {
     profileId: 'sample-cobalt-strike',
     tlpClassification: 'TLP:CLEAR',
     attckSoftwareId: 'S0154',
+    threatIntelligence: {
+      riskAssessment: {
+        riskFactors: ['documents threat actors using Cobalt Strike Beacons for persistence, credential access, lateral movement, and data exfiltration in a wider intrusion chain.'],
+      },
+    },
+    forensicArtifacts: {
+      memoryArtifacts: ['A memory-resident Beacon payload inside an injected process is a forensic artifact analysts can preserve and investigate.'],
+    },
+    detectionAndMitigation: {
+      behavioralIndicators: ['Hunt for periodic callbacks to low-reputation infrastructure, accounting for sleep and jitter.'],
+    },
+    mitigationAndResponse: {
+      preventiveMeasures: ['Enforce least privilege and application control to limit payload execution and lateral movement.'],
+    },
     claimAttribution: {
-      schemaVersion: '2',
+      schemaVersion: '3',
       claims: [
-        { claimClass: 'threat_activity', claim: 'documents threat actors using Cobalt Strike Beacons for persistence, credential access, lateral movement, and data exfiltration in a wider intrusion chain.', sourceIds: ['S3'] },
-        { claimClass: 'forensic_artifact', claim: 'A memory-resident Beacon payload inside an injected process is a forensic artifact analysts can preserve and investigate.', sourceIds: ['S2'] },
-        { claimClass: 'detection_indicator', claim: 'Hunt for periodic callbacks to low-reputation infrastructure, accounting for sleep and jitter.', sourceIds: ['S1', 'S2'] },
-        { claimClass: 'mitigation_action', claim: 'Enforce least privilege and application control to limit payload execution and lateral movement.', sourceIds: ['S2', 'S3'] },
+        { claimClass: 'threat_activity', claimField: 'riskFactors', claimIndex: 0, claim: 'documents threat actors using Cobalt Strike Beacons for persistence, credential access, lateral movement, and data exfiltration in a wider intrusion chain.', sourceIds: ['S3'] },
+        { claimClass: 'forensic_artifact', claimField: 'memoryArtifacts', claimIndex: 0, claim: 'A memory-resident Beacon payload inside an injected process is a forensic artifact analysts can preserve and investigate.', sourceIds: ['S2'] },
+        { claimClass: 'detection_indicator', claimField: 'behavioralIndicators', claimIndex: 0, claim: 'Hunt for periodic callbacks to low-reputation infrastructure, accounting for sleep and jitter.', sourceIds: ['S1', 'S2'] },
+        { claimClass: 'mitigation_action', claimField: 'preventiveMeasures', claimIndex: 0, claim: 'Enforce least privilege and application control to limit payload execution and lateral movement.', sourceIds: ['S2', 'S3'] },
       ],
     },
   },

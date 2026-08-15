@@ -119,6 +119,16 @@ const expectations = [
     pattern: /claim_class: 'threat_activity'[\s\S]*claim_class: 'forensic_artifact'[\s\S]*claim_class: 'detection_indicator'[\s\S]*claim_class: 'mitigation_action'/,
   },
   {
+    name: 'teaches current claim attribution schema 3',
+    source: sampleReport,
+    pattern: /claim_attribution_version: '3'[\s\S]*schemaVersion: '3'/,
+  },
+  {
+    name: 'teaches explicit claim selectors instead of duplicated model prose',
+    source: sampleReport,
+    pattern: /claimField: 'riskFactors'[\s\S]*claimField: 'memoryArtifacts'[\s\S]*claimField: 'behavioralIndicators'[\s\S]*claimField: 'preventiveMeasures'/,
+  },
+  {
     name: 'uses an artifact observation for the forensic-artifact class',
     source: sampleReport,
     pattern: /A memory-resident Beacon payload inside an injected process is a forensic artifact/,

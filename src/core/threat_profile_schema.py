@@ -45,12 +45,31 @@ class ClaimAttributionEntry(StrictModel):
         "detection_indicator",
         "mitigation_action",
     ] = Field(alias="claimClass")
-    claim: str = Field(min_length=1)
+    claim: str = ""
+    claim_field: Literal[
+        "riskFactors",
+        "fileSystemArtifacts",
+        "registryArtifacts",
+        "networkArtifacts",
+        "memoryArtifacts",
+        "logArtifacts",
+        "hashes",
+        "domains",
+        "ips",
+        "urls",
+        "filenames",
+        "behavioralIndicators",
+        "preventiveMeasures",
+        "detectionMethods",
+        "responseActions",
+        "recoveryGuidance",
+    ] = Field(alias="claimField")
+    claim_index: int = Field(alias="claimIndex", ge=0)
     source_ids: list[str] = Field(alias="sourceIds", min_length=1)
 
 
 class ClaimAttribution(StrictModel):
-    schema_version: Literal["2"] = Field(alias="schemaVersion")
+    schema_version: Literal["3"] = Field(alias="schemaVersion")
     claims: list[ClaimAttributionEntry] = Field(min_length=4)
 
 
@@ -338,8 +357,8 @@ def attest_profile_sources(
 
     attribution = profile.get("claimAttribution")
     claims = attribution.get("claims") if isinstance(attribution, dict) else None
-    if not isinstance(attribution, dict) or attribution.get("schemaVersion") != "2":
-        raise ValueError("Threat profile claim attribution must use schema version 2")
+    if not isinstance(attribution, dict) or attribution.get("schemaVersion") != "3":
+        raise ValueError("Threat profile claim attribution must use schema version 3")
     if not isinstance(claims, list):
         raise ValueError("Threat profile claim attribution is incomplete")
     required_classes = {

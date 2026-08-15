@@ -92,7 +92,7 @@ test('links explicit claim attribution to source identity without duplicating th
   const sources = renderToStaticMarkup(
     <SourceEvidence
       attributionStatus="attributed"
-      attributionVersion="2"
+      attributionVersion="3"
       sources={[
         {
           source_id: 'S1',
@@ -110,7 +110,7 @@ test('links explicit claim attribution to source identity without duplicating th
 
   assert.match(narrative, /href="#source-S1"/);
   assert.match(sources, /id="source-S1"/);
-  assert.match(sources, /attribution schema 2/);
+  assert.match(sources, /attribution schema 3/);
   assert.equal((sources.match(/Example analysis/g) ?? []).length, 1);
 });
 

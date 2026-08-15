@@ -397,7 +397,7 @@ def test_generation_separates_web_research_from_structured_synthesis(
     ]
 
 
-@pytest.mark.parametrize("invalid_attribution", ["unknown_source", "claim_text"])
+@pytest.mark.parametrize("invalid_attribution", ["unknown_source", "claim_selector"])
 def test_generation_retries_one_invalid_claim_map_without_weakening_attestation(
     monkeypatch, threat_profile_data, invalid_attribution
 ):
@@ -439,9 +439,7 @@ def test_generation_retries_one_invalid_claim_map_without_weakening_attestation(
     if invalid_attribution == "unknown_source":
         invalid_profile["claimAttribution"]["claims"][0]["sourceIds"] = ["S99"]
     else:
-        invalid_profile["claimAttribution"]["claims"][0][
-            "claim"
-        ] = "A claim absent from the signed threat-intelligence section"
+        invalid_profile["claimAttribution"]["claims"][0]["claimField"] = "behavioralIndicators"
     profiles = [invalid_profile, threat_profile_data]
     requests: list[dict] = []
     synthesis_responses: list[SimpleNamespace] = []
@@ -485,9 +483,7 @@ def test_generation_retries_one_invalid_claim_map_without_weakening_attestation(
         requests[1]["messages"][0]["content"]
     )
     assert "Every claimAttribution sourceId MUST appear" in (requests[1]["messages"][0]["content"])
-    assert "Every attributed claim MUST be copied exactly" in (
-        requests[1]["messages"][0]["content"]
-    )
+    assert "claimField and claimIndex MUST select" in (requests[1]["messages"][0]["content"])
     assert requests[1]["provider"] == requests[0]["provider"]
     assert requests[1]["fallback_models"] == requests[0]["fallback_models"]
     assert progress_updates[-3].message == ("Reconciling claim evidence with the source ledger...")

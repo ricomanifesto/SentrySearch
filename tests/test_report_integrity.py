@@ -10,6 +10,7 @@ from src.core.source_ledger import (
     assert_source_ledger_consistent,
     canonicalize_profile_sources,
     claim_attribution_status,
+    materialize_claim_attribution,
 )
 from src.core.validation_criteria import SECTION_CRITERIA, build_section_evaluation_prompt
 from src.core.validation_criteria import ConsistencyEvaluation
@@ -115,8 +116,68 @@ def test_claim_attribution_v2_is_explicit_and_legacy_claims_are_never_inferred()
 
     attributed["claimAttribution"]["claims"][0]["sourceIds"] = ["S99"]
     assert claim_attribution_status(attributed) == (ClaimAttributionStatus.UNATTRIBUTED, "2")
-    with pytest.raises(SourceLedgerError, match="schema v2"):
+    with pytest.raises(SourceLedgerError, match="inconsistent"):
         assert_claim_attribution_consistent(attributed)
+
+
+def test_claim_attribution_v3_materializes_explicit_structured_selectors():
+    profile = source_profile()
+    profile["webSearchSources"]["primarySources"][0]["sourceId"] = "S1"
+    profile.update(
+        {
+            "threatIntelligence": {"riskAssessment": {"riskFactors": ["Remote access"]}},
+            "forensicArtifacts": {"memoryArtifacts": ["Injected Beacon payload"]},
+            "detectionAndMitigation": {
+                "iocs": {"hashes": [], "domains": [], "ips": [], "urls": [], "filenames": []},
+                "behavioralIndicators": ["Periodic callbacks"],
+            },
+            "mitigationAndResponse": {"responseActions": ["Isolate affected hosts"]},
+            "claimAttribution": {
+                "schemaVersion": "3",
+                "claims": [
+                    {
+                        "claimClass": "threat_activity",
+                        "claimField": "riskFactors",
+                        "claimIndex": 0,
+                        "sourceIds": ["S1"],
+                    },
+                    {
+                        "claimClass": "forensic_artifact",
+                        "claimField": "memoryArtifacts",
+                        "claimIndex": 0,
+                        "sourceIds": ["S1"],
+                    },
+                    {
+                        "claimClass": "detection_indicator",
+                        "claimField": "behavioralIndicators",
+                        "claimIndex": 0,
+                        "sourceIds": ["S1"],
+                    },
+                    {
+                        "claimClass": "mitigation_action",
+                        "claimField": "responseActions",
+                        "claimIndex": 0,
+                        "sourceIds": ["S1"],
+                    },
+                ],
+            },
+        }
+    )
+
+    materialize_claim_attribution(profile)
+
+    assert [claim["claim"] for claim in profile["claimAttribution"]["claims"]] == [
+        "Remote access",
+        "Injected Beacon payload",
+        "Periodic callbacks",
+        "Isolate affected hosts",
+    ]
+    assert claim_attribution_status(profile) == (ClaimAttributionStatus.ATTRIBUTED, "3")
+    assert_claim_attribution_consistent(profile)
+
+    profile["claimAttribution"]["claims"][0]["claimField"] = "behavioralIndicators"
+    with pytest.raises(SourceLedgerError, match="selector is invalid"):
+        materialize_claim_attribution(profile)
 
 
 def test_source_ledger_refuses_to_finalize_a_divergent_reference_list():

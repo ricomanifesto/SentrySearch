@@ -18,7 +18,8 @@ class SourceLedgerError(ValueError):
     retryable = False
 
 
-CLAIM_ATTRIBUTION_SCHEMA_VERSION = "2"
+CLAIM_ATTRIBUTION_SCHEMA_VERSION = "3"
+SUPPORTED_CLAIM_ATTRIBUTION_VERSIONS = frozenset({"2", CLAIM_ATTRIBUTION_SCHEMA_VERSION})
 HIGH_RISK_CLAIM_CLASSES = frozenset(
     {
         "threat_activity",
@@ -32,6 +33,32 @@ CLAIM_CLASS_SECTIONS = {
     "forensic_artifact": "forensicArtifacts",
     "detection_indicator": "detectionAndMitigation",
     "mitigation_action": "mitigationAndResponse",
+}
+CLAIM_CLASS_SELECTORS = {
+    "threat_activity": {
+        "riskFactors": ("threatIntelligence", "riskAssessment", "riskFactors"),
+    },
+    "forensic_artifact": {
+        "fileSystemArtifacts": ("forensicArtifacts", "fileSystemArtifacts"),
+        "registryArtifacts": ("forensicArtifacts", "registryArtifacts"),
+        "networkArtifacts": ("forensicArtifacts", "networkArtifacts"),
+        "memoryArtifacts": ("forensicArtifacts", "memoryArtifacts"),
+        "logArtifacts": ("forensicArtifacts", "logArtifacts"),
+    },
+    "detection_indicator": {
+        "hashes": ("detectionAndMitigation", "iocs", "hashes"),
+        "domains": ("detectionAndMitigation", "iocs", "domains"),
+        "ips": ("detectionAndMitigation", "iocs", "ips"),
+        "urls": ("detectionAndMitigation", "iocs", "urls"),
+        "filenames": ("detectionAndMitigation", "iocs", "filenames"),
+        "behavioralIndicators": ("detectionAndMitigation", "behavioralIndicators"),
+    },
+    "mitigation_action": {
+        "preventiveMeasures": ("mitigationAndResponse", "preventiveMeasures"),
+        "detectionMethods": ("mitigationAndResponse", "detectionMethods"),
+        "responseActions": ("mitigationAndResponse", "responseActions"),
+        "recoveryGuidance": ("mitigationAndResponse", "recoveryGuidance"),
+    },
 }
 
 
@@ -79,6 +106,42 @@ def attach_source_ids(sources: Iterable[Mapping[str, Any]]) -> list[dict[str, An
     return identified
 
 
+def _selected_claim_value(profile: Mapping[str, Any], claim: Mapping[str, Any]) -> str:
+    claim_class = str(claim.get("claimClass") or "")
+    claim_field = str(claim.get("claimField") or "")
+    claim_index = claim.get("claimIndex")
+    field_path = CLAIM_CLASS_SELECTORS.get(claim_class, {}).get(claim_field)
+    if field_path is None or isinstance(claim_index, bool) or not isinstance(claim_index, int):
+        raise SourceLedgerError("Current claim attribution selector is invalid")
+
+    selected: Any = profile
+    for field_name in field_path:
+        if not isinstance(selected, Mapping):
+            raise SourceLedgerError("Current claim attribution selector is invalid")
+        selected = selected.get(field_name)
+    if not isinstance(selected, list) or claim_index < 0 or claim_index >= len(selected):
+        raise SourceLedgerError("Current claim attribution selector is invalid")
+    claim_text = str(selected[claim_index] or "").strip()
+    if not claim_text:
+        raise SourceLedgerError("Current claim attribution selector is invalid")
+    return claim_text
+
+
+def materialize_claim_attribution(profile: dict[str, Any]) -> None:
+    """Copy model-selected structured values into the reader-visible v3 claim map."""
+
+    attribution = profile.get("claimAttribution")
+    if not isinstance(attribution, dict) or attribution.get("schemaVersion") != "3":
+        return
+    claims = attribution.get("claims")
+    if not isinstance(claims, list):
+        raise SourceLedgerError("Current claim attribution selector is invalid")
+    for claim in claims:
+        if not isinstance(claim, dict):
+            raise SourceLedgerError("Current claim attribution selector is invalid")
+        claim["claim"] = _selected_claim_value(profile, claim)
+
+
 def claim_attribution_status(
     profile: Mapping[str, Any] | None,
 ) -> tuple[ClaimAttributionStatus, str | None]:
@@ -93,7 +156,7 @@ def claim_attribution_status(
     sources = profile.get("webSearchSources")
     primary_sources = sources.get("primarySources") if isinstance(sources, Mapping) else None
     claims = attribution.get("claims")
-    if version != CLAIM_ATTRIBUTION_SCHEMA_VERSION:
+    if version not in SUPPORTED_CLAIM_ATTRIBUTION_VERSIONS:
         return ClaimAttributionStatus.UNATTRIBUTED, version
     if not isinstance(primary_sources, list) or not isinstance(claims, list):
         return ClaimAttributionStatus.UNATTRIBUTED, version
@@ -113,13 +176,21 @@ def claim_attribution_status(
         if any(str(source_id) not in known_ids for source_id in source_ids):
             return ClaimAttributionStatus.UNATTRIBUTED, version
         claim_class = str(claim.get("claimClass") or "")
-        section_name = CLAIM_CLASS_SECTIONS.get(claim_class)
-        section = profile.get(section_name) if section_name else None
-        if not isinstance(section, Mapping):
-            return ClaimAttributionStatus.UNATTRIBUTED, version
-        section_text = json.dumps(section, sort_keys=True).casefold()
-        if claim_text.casefold() not in section_text:
-            return ClaimAttributionStatus.UNATTRIBUTED, version
+        if version == CLAIM_ATTRIBUTION_SCHEMA_VERSION:
+            try:
+                selected_claim = _selected_claim_value(profile, claim)
+            except SourceLedgerError:
+                return ClaimAttributionStatus.UNATTRIBUTED, version
+            if claim_text != selected_claim:
+                return ClaimAttributionStatus.UNATTRIBUTED, version
+        else:
+            section_name = CLAIM_CLASS_SECTIONS.get(claim_class)
+            section = profile.get(section_name) if section_name else None
+            if not isinstance(section, Mapping):
+                return ClaimAttributionStatus.UNATTRIBUTED, version
+            section_text = json.dumps(section, sort_keys=True).casefold()
+            if claim_text.casefold() not in section_text:
+                return ClaimAttributionStatus.UNATTRIBUTED, version
         observed_classes.add(claim_class)
     if not HIGH_RISK_CLAIM_CLASSES.issubset(observed_classes):
         return ClaimAttributionStatus.UNATTRIBUTED, version
@@ -131,9 +202,7 @@ def assert_claim_attribution_consistent(profile: Mapping[str, Any]) -> None:
 
     status, _ = claim_attribution_status(profile)
     if status is not ClaimAttributionStatus.ATTRIBUTED:
-        raise SourceLedgerError(
-            "Current reports require claim attribution schema v2 for all high-risk claim classes"
-        )
+        raise SourceLedgerError("Report claim attribution is inconsistent")
 
 
 def canonicalize_profile_sources(profile: Mapping[str, Any]) -> tuple[dict[str, Any], list[dict]]:

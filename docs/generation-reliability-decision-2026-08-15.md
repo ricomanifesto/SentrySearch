@@ -31,7 +31,7 @@ Use post-telemetry production witnesses as the next evidence boundary:
 
 1. Generate one common, one medium-specificity, and one deliberately obscure target.
 2. Require each terminal record to persist cause, stage, and route evidence when it fails.
-3. For successful records, verify separate research and synthesis provenance, claim-attribution schema 2, evaluation state, and runtime.
+3. For successful records, verify separate research and synthesis provenance, claim-attribution schema 3, evaluation state, and runtime.
 4. Treat these witnesses as a release oracle, not as a statistically sufficient reliability baseline.
 
 A future retry or routing change requires typed evidence showing a repeatable route, stage, hour-rate, or target-class cluster.
@@ -52,8 +52,13 @@ Provider routing and the existing truncation retry are unchanged.
 
 The repeat witness passed the source-ID boundary and later failed the persist
 gate because an attributed claim no longer appeared verbatim in its named
-section. The evaluator may propose improvements, but it must not rewrite a
-section after claim attribution has signed that section's evidence. Current
-claim-bearing sections are therefore evaluation-only, and the same single
-correction attempt now covers an initially inconsistent claim map. The final
-persist gate remains authoritative.
+section. A further run moved that check before evaluation, used its one bounded
+correction, and still failed the same claim-map invariant after more than eight
+minutes. More retries would add latency without changing the contract's odds.
+
+Claim attribution schema 3 therefore removes duplicated model-authored claim
+text. Synthesis selects a class-specific structured field and index plus the
+supporting source IDs; the application copies that exact stored value into the
+reader-visible claim map. This preserves model-selected evidence without fuzzy
+matching or inferred backfill. The evaluator may score signed sections but may
+not rewrite them, and the final persist gate remains authoritative.

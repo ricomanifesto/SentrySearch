@@ -284,7 +284,7 @@ def get_report_sources(report: Dict[str, Any]) -> List[ReportSource]:
 
 
 def get_claim_attributions(report: Dict[str, Any]) -> List[ClaimAttributionEntry]:
-    """Return only explicit v2 claim links; never infer them for legacy records."""
+    """Return only explicit versioned claim links; never infer them for legacy records."""
 
     if report.get("claim_attribution_status") != ClaimAttributionStatus.ATTRIBUTED.value:
         return []
