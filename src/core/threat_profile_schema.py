@@ -89,6 +89,25 @@ def _unwrap_evidence_objects_from_plain_lists(profile: dict[str, Any]) -> int:
     return unwrapped
 
 
+def _drop_incomplete_campaigns(profile: dict[str, Any]) -> int:
+    """Discard incomplete descriptive campaign records without inventing fields."""
+
+    entities = profile.get("threatIntelligence")
+    entities = entities.get("entities") if isinstance(entities, dict) else None
+    campaigns = entities.get("campaigns") if isinstance(entities, dict) else None
+    if not isinstance(campaigns, list):
+        return 0
+    required = {"name", "timeframe", "targetSectors", "geographicFocus"}
+    retained = [
+        campaign
+        for campaign in campaigns
+        if isinstance(campaign, dict) and required.issubset(campaign)
+    ]
+    dropped = len(campaigns) - len(retained)
+    campaigns[:] = retained
+    return dropped
+
+
 def _load_model_json(text: str) -> dict[str, Any]:
     """Parse model JSON, repairing only backslashes illegal in JSON strings."""
 
@@ -494,6 +513,12 @@ def parse_threat_profile_response(response: Any) -> dict[str, Any]:
     if not text_parts:
         raise ValueError("Model response did not include threat profile JSON")
     payload = _load_model_json("\n".join(text_parts))
+    dropped_campaigns = _drop_incomplete_campaigns(payload)
+    if dropped_campaigns:
+        logger.warning(
+            "Discarded %d incomplete descriptive campaign record(s)",
+            dropped_campaigns,
+        )
     unwrapped = _unwrap_evidence_objects_from_plain_lists(payload)
     if unwrapped:
         logger.warning(

@@ -193,6 +193,21 @@ def test_parse_threat_profile_response_accepts_parsed_or_deferred_json(threat_pr
     )
     assert repaired["technicalDetails"]["persistence"] == [r"C:\Windows"]
 
+    incomplete_campaign = deepcopy(threat_profile_data)
+    incomplete_campaign["threatIntelligence"]["entities"]["campaigns"].append(
+        {"name": "Unfinished model record", "timeframe": "Unknown"}
+    )
+    without_incomplete_campaign = parse_threat_profile_response(
+        SimpleNamespace(
+            parsed=None,
+            content=[SimpleNamespace(type="text", text=json.dumps(incomplete_campaign))],
+        )
+    )
+    assert all(
+        campaign["name"] != "Unfinished model record"
+        for campaign in without_incomplete_campaign["threatIntelligence"]["entities"]["campaigns"]
+    )
+
     with pytest.raises(ValueError, match="threat profile JSON"):
         parse_threat_profile_response(SimpleNamespace(parsed=None, content=[]))
 
