@@ -33,7 +33,7 @@ Supabase provides sign-in and session handling. Cloudflare Turnstile protects ac
 - `/reports` and `/reports/[id]`: search, filter, inspect, retry evaluation, and delete saved reports.
 - `/export`: prepare report evidence packages.
 - `/analytics`: review volume, quality, threat mix, activity, and model-route performance.
-- `/settings`: manage workspace preferences.
+- `/settings`: view workspace identity, access posture, and generation policy.
 
 ## Checks
 
@@ -57,4 +57,4 @@ npm run build
 
 ## Vercel
 
-Deploy this directory as the Vercel project root and add the four public environment variables shown above. Production builds run `npm run build` and write the Next.js output to `.next`.
+Deploy this directory as the Vercel project root and add the four public environment variables shown above. Set `NEXT_PUBLIC_API_URL` to the deployed FastAPI origin, such as `https://your-api-domain.com`, instead of the local value. Production builds run `npm run build` and write the Next.js output to `.next`.

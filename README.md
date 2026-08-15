@@ -14,7 +14,7 @@ SentrySearch researches a malware family, attack tool, or exposed technology and
 ## What You Can Do
 
 - Generate a report with threat context, detection guidance, mitigations, and source evidence.
-- Search saved reports by target, category, threat type, date, tags, review state, and quality score.
+- Search saved reports by target, category, threat type, date, tags, and quality score.
 - Re-run a failed quality evaluation without repeating the research step.
 - Review report volume, quality, threat distribution, and model-route performance.
 - Export selected reports as evidence packages.
@@ -23,7 +23,7 @@ Reports and analytics are private to the signed-in workspace.
 
 ## How Generation Works
 
-The default generator is `google/gemma-4-26b-a4b-it:free`; the default evaluator is `google/gemma-4-31b-it:free`. SentrySearch calls both through OpenRouter's Chat Completions API and pins routing to Google AI Studio. If a free route is unavailable, it retries the paid route for the same model.
+The default generator is `google/gemma-4-26b-a4b-it:free`; the default evaluator is `google/gemma-4-31b-it:free`. SentrySearch calls both through OpenRouter's Chat Completions API. Primary requests are pinned to Google AI Studio with provider fallback disabled. If a free route is unavailable, SentrySearch retries the paid version of the same model without that provider pin, so OpenRouter may select another provider.
 
 The generator can use OpenRouter's hosted web search. Its output must contain the required threat-profile fields defined with Pydantic before it is saved. Each report records the model requested by the app, the route selected for the request, and the model reported by the provider. The report page shows when a fallback route was used.
 
