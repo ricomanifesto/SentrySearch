@@ -917,6 +917,10 @@ END ATTESTED OPERATIONAL SOURCE CATALOG"""
                     try:
                         correction = parse_embedded_evidence_correction(correction_response)
                     except (ValidationError, ValueError, TypeError) as correction_error:
+                        logger.warning(
+                            "Structured evidence correction failed local validation: %s",
+                            _profile_output_issue_text(correction_error),
+                        )
                         raise ProfileOutputError(
                             "Structured evidence correction was invalid"
                         ) from correction_error
