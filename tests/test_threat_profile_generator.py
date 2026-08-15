@@ -182,6 +182,17 @@ def test_parse_threat_profile_response_accepts_parsed_or_deferred_json(threat_pr
         "Repeated outbound HTTPS"
     ]
 
+    invalid_escape = json.dumps(threat_profile_data).replace(
+        '"Service"', '"C:' + chr(92) + 'Windows"', 1
+    )
+    repaired = parse_threat_profile_response(
+        SimpleNamespace(
+            parsed=None,
+            content=[SimpleNamespace(type="text", text=invalid_escape)],
+        )
+    )
+    assert repaired["technicalDetails"]["persistence"] == [r"C:\Windows"]
+
     with pytest.raises(ValueError, match="threat profile JSON"):
         parse_threat_profile_response(SimpleNamespace(parsed=None, content=[]))
 

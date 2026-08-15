@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 logger = logging.getLogger(__name__)
+
+_INVALID_JSON_ESCAPE = re.compile(r'\\(?!["\\/bfnrt]|u[0-9a-fA-F]{4})')
 
 _EMBEDDED_EVIDENCE_PATHS = (
     ("threatIntelligence", "riskAssessment", "riskFactors"),
@@ -84,6 +87,24 @@ def _unwrap_evidence_objects_from_plain_lists(profile: dict[str, Any]) -> int:
                     values[index] = item["value"]
                     unwrapped += 1
     return unwrapped
+
+
+def _load_model_json(text: str) -> dict[str, Any]:
+    """Parse model JSON, repairing only backslashes illegal in JSON strings."""
+
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as error:
+        if "Invalid \\escape" not in error.msg:
+            raise
+        repaired, repair_count = _INVALID_JSON_ESCAPE.subn(lambda _: r"\\", text)
+        if not repair_count:
+            raise
+        logger.warning("Escaped %d invalid JSON backslash sequence(s)", repair_count)
+        payload = json.loads(repaired)
+    if not isinstance(payload, dict):
+        raise ValueError("Model response threat profile JSON must be an object")
+    return payload
 
 
 def _drop_incomplete_embedded_evidence(profile: dict[str, Any]) -> int:
@@ -472,9 +493,7 @@ def parse_threat_profile_response(response: Any) -> dict[str, Any]:
     ]
     if not text_parts:
         raise ValueError("Model response did not include threat profile JSON")
-    payload = json.loads("\n".join(text_parts))
-    if not isinstance(payload, dict):
-        raise ValueError("Model response threat profile JSON must be an object")
+    payload = _load_model_json("\n".join(text_parts))
     unwrapped = _unwrap_evidence_objects_from_plain_lists(payload)
     if unwrapped:
         logger.warning(
