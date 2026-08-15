@@ -41,6 +41,8 @@ class Report(Base):
     classification_status = Column(String(30), default="unrecorded", index=True)
     claim_attribution_status = Column(String(30), default="legacy", index=True)
     claim_attribution_version = Column(String(10))
+    evidence_admissibility_status = Column(String(30), default="unassessed", index=True)
+    evidence_admissibility_version = Column(String(10))
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
@@ -60,6 +62,7 @@ class Report(Base):
     ml_techniques = Column(JSONB)
     quality_assessment = Column(JSONB)
     web_sources = Column(JSONB)
+    evidence_admissibility = Column(JSONB)
     # TODO(route-provenance-v2): Remove generation_route after the retained-report
     # window no longer contains aggregate-only route records. Never write it for
     # successful v2 reports; research_route and synthesis_route own new provenance.
@@ -110,6 +113,8 @@ class Report(Base):
             "classification_status": self.classification_status or "unrecorded",
             "claim_attribution_status": self.claim_attribution_status or "legacy",
             "claim_attribution_version": self.claim_attribution_version,
+            "evidence_admissibility_status": (self.evidence_admissibility_status or "unassessed"),
+            "evidence_admissibility_version": self.evidence_admissibility_version,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "quality_score": _optional_float(self.quality_score),
             "confidence_score": _optional_float(self.confidence_score),
@@ -131,6 +136,7 @@ class Report(Base):
             "evaluated_at": self.evaluated_at.isoformat() if self.evaluated_at else None,
             "quality_assessment": self.quality_assessment,
             "web_sources": self.web_sources or [],
+            "evidence_admissibility": self.evidence_admissibility,
             "threat_data": self.threat_data,
             "content_preview": _content_preview(self.content_preview, self.threat_data),
             "ml_techniques": self.ml_techniques,

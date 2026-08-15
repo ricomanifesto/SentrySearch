@@ -46,6 +46,7 @@ from src.domain.reports import (
     AnalystDisposition,
     ClaimAttributionStatus,
     ClassificationStatus,
+    EvidenceAdmissibilityStatus,
     EvaluationStatus,
     GenerationErrorCode,
     GenerationProgress,
@@ -58,6 +59,7 @@ from src.domain.reports import (
     derive_generation_route_scope,
     derive_review_status,
     is_judgment_eligible,
+    is_reuse_eligible,
 )
 
 logger = logging.getLogger(__name__)
@@ -171,6 +173,18 @@ def get_quality_assessment(report: Dict[str, Any]) -> Dict[str, Any] | None:
     return None
 
 
+def get_evidence_admissibility(report: Dict[str, Any]) -> Dict[str, Any] | None:
+    """Return only an explicitly persisted or profile-owned safety assessment."""
+
+    assessment = report.get("evidence_admissibility")
+    if isinstance(assessment, dict):
+        return assessment
+    threat_data = report.get("threat_data")
+    if isinstance(threat_data, dict) and isinstance(threat_data.get("evidenceAdmissibility"), dict):
+        return threat_data["evidenceAdmissibility"]
+    return None
+
+
 def reader_safe_threat_data(report: Dict[str, Any]) -> Dict[str, Any] | None:
     """Expose analyst fields without internal trace or duplicate source-analysis metadata."""
 
@@ -192,6 +206,17 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
     evaluation_status = get_evaluation_status(report)
     assessment = get_quality_assessment(report)
     report_status = get_report_status(report)
+    evidence_admissibility = get_evidence_admissibility(report)
+    try:
+        evidence_status = EvidenceAdmissibilityStatus(
+            report.get("evidence_admissibility_status")
+            or (
+                evidence_admissibility.get("status") if evidence_admissibility is not None else None
+            )
+            or EvidenceAdmissibilityStatus.UNASSESSED.value
+        )
+    except ValueError:
+        evidence_status = EvidenceAdmissibilityStatus.BLOCKED
     return {
         "id": report["id"],
         "tool_name": report["tool_name"],
@@ -204,6 +229,13 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
             report.get("claim_attribution_status") or ClaimAttributionStatus.LEGACY.value
         ),
         "claim_attribution_version": report.get("claim_attribution_version"),
+        "evidence_admissibility_status": evidence_status,
+        "evidence_admissibility_version": report.get("evidence_admissibility_version")
+        or (
+            evidence_admissibility.get("schemaVersion")
+            if evidence_admissibility is not None
+            else None
+        ),
         "quality_score": quality_score,
         "created_at": report["created_at"],
         "processing_time_ms": report.get("processing_time_ms") or 0,
@@ -223,6 +255,7 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
             quality_score=quality_score,
             quality_assessment=assessment,
             source_count=len(sources),
+            evidence_admissibility_status=evidence_status,
         ),
         "analyst_disposition": AnalystDisposition(
             report.get("analyst_disposition") or AnalystDisposition.UNREVIEWED.value
@@ -231,6 +264,12 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
             report_status=report_status,
             evaluation_status=evaluation_status,
             quality_score=quality_score,
+        ),
+        "eligible_for_acceptance": is_reuse_eligible(
+            report_status=report_status,
+            evaluation_status=evaluation_status,
+            quality_score=quality_score,
+            evidence_admissibility_status=evidence_status,
         ),
         "content_preview": report.get("content_preview"),
     }
@@ -278,6 +317,12 @@ def get_report_sources(report: Dict[str, Any]) -> List[ReportSource]:
                     or source.get("keyFindings")
                     or "No findings recorded"
                 ),
+                evidence_purpose=(source.get("evidence_purpose") or source.get("evidencePurpose")),
+                evidence_disposition=(
+                    source.get("evidence_disposition") or source.get("evidenceDisposition")
+                ),
+                evidence_reason=(source.get("evidence_reason") or source.get("evidenceReason")),
+                evidence_rule_id=(source.get("evidence_rule_id") or source.get("evidenceRuleId")),
             )
         )
     return normalized
@@ -301,6 +346,7 @@ def get_claim_attributions(report: Dict[str, Any]) -> List[ClaimAttributionEntry
             ClaimAttributionEntry(
                 claim_class=claim.get("claimClass"),
                 claim=str(claim.get("claim") or ""),
+                evidence_role=claim.get("evidenceRole"),
                 source_ids=[str(source_id) for source_id in claim.get("sourceIds") or []],
             )
         )
@@ -638,6 +684,7 @@ async def get_report(
             evaluation_route=report.get("evaluation_route"),
             quality_assessment=get_quality_assessment(report),
             claim_attributions=get_claim_attributions(report),
+            evidence_admissibility=get_evidence_admissibility(report),
             current_disposition=report.get("current_disposition"),
             disposition_history=report.get("disposition_history", []),
         )
@@ -794,6 +841,7 @@ def run_report_generation(
             "evaluation_attempts": 1,
             "evaluated_at": None,
             "web_sources": web_sources,
+            "evidence_admissibility": profile.get("evidenceAdmissibility"),
             "markdown_content": generate_markdown(rendered_profile),
             "trace_data": profile.get("_trace_data"),
             "content_preview": preview or None,
@@ -1135,6 +1183,7 @@ async def get_analytics(
                 quality_score=record.quality_score,
                 quality_assessment=record.quality_assessment,
                 source_count=record.source_count,
+                evidence_admissibility_status=record.evidence_admissibility_status,
             )
             for record in records
         ]
@@ -1261,6 +1310,7 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
                 quality_score=record.quality_score,
                 quality_assessment=record.quality_assessment,
                 source_count=record.source_count,
+                evidence_admissibility_status=record.evidence_admissibility_status,
             )
             for record in records
         ]

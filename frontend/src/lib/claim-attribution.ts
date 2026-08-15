@@ -11,8 +11,11 @@ export function applyClaimAttributions(
   let attributed = markdown;
   for (const claim of claims ?? []) {
     const exactClaim = claim.claim.trim();
-    if (!exactClaim || claim.source_ids.length === 0 || !attributed.includes(exactClaim)) continue;
-    const citations = citationMarkdown(claim.source_ids);
+    if (!exactClaim || !attributed.includes(exactClaim)) continue;
+    const citations = claim.evidence_role === 'general_practice'
+      ? '**General practice**'
+      : citationMarkdown(claim.source_ids);
+    if (!citations) continue;
     const inlineCodeClaim = `\`${exactClaim}\``;
     if (attributed.includes(inlineCodeClaim)) {
       attributed = attributed.replace(inlineCodeClaim, `${inlineCodeClaim} ${citations}`);

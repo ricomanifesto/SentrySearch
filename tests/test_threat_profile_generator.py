@@ -243,6 +243,11 @@ def test_threat_profile_generator_uses_bounded_parallel_quality_validation(monke
 def test_generation_separates_web_research_from_structured_synthesis(
     monkeypatch, threat_profile_data
 ):
+    monkeypatch.setattr(
+        "src.core.threat_profile_generator.assess_profile_evidence",
+        lambda _profile, _sources: {},
+    )
+
     class Messages:
         def __init__(self):
             self.requests: list[dict] = []
@@ -414,6 +419,10 @@ def test_generation_separates_web_research_from_structured_synthesis(
 def test_generation_retries_one_invalid_claim_map_without_weakening_attestation(
     monkeypatch, threat_profile_data, invalid_attribution
 ):
+    monkeypatch.setattr(
+        "src.core.threat_profile_generator.assess_profile_evidence",
+        lambda _profile, _sources: {},
+    )
     monkeypatch.setattr(
         "src.core.threat_profile_generator.create_model_client",
         lambda: SimpleNamespace(),

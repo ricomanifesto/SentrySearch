@@ -7,7 +7,8 @@ export type AnalystDisposition = 'unreviewed' | 'accepted' | 'needs_revision' | 
 export type StoredAnalystDisposition = Exclude<AnalystDisposition, 'unreviewed'>;
 export type ClassificationStatus = 'recorded' | 'reconciled' | 'unmapped' | 'unrecorded';
 export type ClaimAttributionStatus = 'attributed' | 'unattributed' | 'legacy';
-export type GenerationErrorCode = 'provider_rate_limited' | 'provider_unavailable' | 'provider_timeout' | 'model_request_rejected' | 'model_output_invalid' | 'evidence_unavailable' | 'evidence_unattested' | 'persistence_failed' | 'unknown';
+export type EvidenceAdmissibilityStatus = 'unassessed' | 'passed' | 'blocked';
+export type GenerationErrorCode = 'provider_rate_limited' | 'provider_unavailable' | 'provider_timeout' | 'model_request_rejected' | 'model_output_invalid' | 'evidence_unavailable' | 'evidence_unattested' | 'evidence_inadmissible' | 'persistence_failed' | 'unknown';
 export type GenerationStage = 'queued' | 'researching' | 'synthesizing' | 'validating' | 'finalizing' | 'completed' | 'failed';
 export type GenerationRouteScope = 'synthesis' | 'legacy_aggregate' | 'unrecorded';
 export type ReportSortField = 'created_at' | 'quality_score' | 'tool_name' | 'processing_time_ms';
@@ -21,6 +22,8 @@ export interface Report {
   classification_status: ClassificationStatus;
   claim_attribution_status: ClaimAttributionStatus;
   claim_attribution_version?: string | null;
+  evidence_admissibility_status: EvidenceAdmissibilityStatus;
+  evidence_admissibility_version?: string | null;
   quality_score: number | null;
   created_at: string;
   processing_time_ms: number;
@@ -37,6 +40,7 @@ export interface Report {
   review_status: ReviewStatus;
   analyst_disposition: AnalystDisposition;
   eligible_for_judgment: boolean;
+  eligible_for_acceptance: boolean;
   content_preview?: string | null;
 }
 
@@ -52,6 +56,7 @@ export interface ReportDetail extends Report {
   evaluation_route?: ModelRouteProvenance | null;
   quality_assessment?: Record<string, unknown> | null;
   claim_attributions: ClaimAttributionEntry[];
+  evidence_admissibility?: EvidenceAdmissibility | null;
   current_disposition?: AnalystDispositionEvent | null;
   disposition_history: AnalystDispositionEvent[];
 }
@@ -72,6 +77,7 @@ export interface GenerationFailureObservation {
   stage: GenerationStage | null;
   route_attempts: ModelRouteAttempt[];
   route?: ModelRouteProvenance | null;
+  evidence_admissibility?: EvidenceAdmissibility | null;
 }
 
 export interface ModelRouteAttempt {
@@ -104,11 +110,48 @@ export interface ReportSource {
   relevance_score: string;
   content_type: string;
   key_findings: string;
+  evidence_purpose?: SourcePurpose | null;
+  evidence_disposition?: EvidenceDisposition | null;
+  evidence_reason?: string | null;
+  evidence_rule_id?: string | null;
+}
+
+export type SourcePurpose = 'operational' | 'context_only' | 'excluded_non_operational';
+export type EvidenceDisposition = 'admitted' | 'context_required' | 'excluded' | 'rejected';
+
+export interface EvidenceSourceObservation {
+  source_id?: string | null;
+  title: string;
+  url: string;
+  domain: string;
+  purpose: SourcePurpose;
+  disposition: EvidenceDisposition;
+  reason: string;
+  rule_id: string;
+}
+
+export interface EvidenceIndicatorObservation {
+  claim_field: string;
+  claim_index: number;
+  value: string;
+  disposition: EvidenceDisposition;
+  reason: string;
+  rule_id: string;
+}
+
+export interface EvidenceAdmissibility {
+  schema_version: string;
+  status: EvidenceAdmissibilityStatus;
+  source_observations: EvidenceSourceObservation[];
+  indicator_observations: EvidenceIndicatorObservation[];
+  blocking_findings: string[];
+  summary: Record<string, number>;
 }
 
 export interface ClaimAttributionEntry {
   claim_class: 'threat_activity' | 'forensic_artifact' | 'detection_indicator' | 'mitigation_action';
   claim: string;
+  evidence_role?: 'direct_evidence' | 'general_practice' | null;
   source_ids: string[];
 }
 

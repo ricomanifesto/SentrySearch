@@ -137,7 +137,15 @@ def generate_markdown(data):
         md.append(f"# Threat Intelligence Profile: {core.get('name', 'Unknown Tool')}")
         md.append("")
 
-        # NEW: Add quality score badge if available
+        evidence = data.get("evidenceAdmissibility")
+        if isinstance(evidence, Mapping):
+            evidence_status = str(evidence.get("status") or "unassessed").replace("_", " ")
+            md.append(f"**Operational Evidence Safety**: {evidence_status.title()}")
+            md.append(
+                f"**Evidence Contract**: Schema {evidence.get('schemaVersion', 'unrecorded')}"
+            )
+            md.append("")
+
         if "_quality_assessment" in data:
             quality = data["_quality_assessment"]
             overall_score = quality.get("overall_score")
@@ -160,8 +168,6 @@ def generate_markdown(data):
         md.append(f"| **Created Date** | {core.get('createdDate', 'Unknown')} |")
         md.append(f"| **Last Updated** | {core.get('lastUpdated', 'Unknown')} |")
         md.append(f"| **Profile Version** | {core.get('profileVersion', 'Unknown')} |")
-        md.append(f"| **TLP Classification** | {core.get('tlpClassification', 'Unknown')} |")
-        md.append(f"| **Trust Score** | {core.get('trustScore', 'Unknown')} |")
         md.append("")
 
         # [All existing section generation code remains the same...]
@@ -210,6 +216,27 @@ def generate_markdown(data):
                         md.append(f"- **Relevance**: {relevance}")
                         md.append(f"- **Access Date**: {access_date}")
                         md.append(f"- **Key Findings**: {findings}")
+                        md.append("")
+
+            if isinstance(evidence, Mapping):
+                source_observations = evidence.get("sourceObservations")
+                excluded = [
+                    source
+                    for source in source_observations or []
+                    if isinstance(source, Mapping) and source.get("purpose") != "operational"
+                ]
+                if excluded:
+                    md.append("### Sources Not Used as Operational Evidence")
+                    md.append("")
+                    for source in excluded:
+                        title = source.get("title") or source.get("domain") or "Unknown source"
+                        url = source.get("url") or ""
+                        purpose = str(source.get("purpose") or "unknown").replace("_", " ")
+                        md.append(f"**{title}**")
+                        if url:
+                            md.append(f"- **URL**: [{url}]({url})")
+                        md.append(f"- **Disposition**: {purpose.title()}")
+                        md.append(f"- **Reason**: {source.get('reason') or 'Not recorded'}")
                         md.append("")
 
             # Data Quality Assessment

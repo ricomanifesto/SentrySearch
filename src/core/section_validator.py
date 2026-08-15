@@ -48,6 +48,7 @@ class SectionValidator(RetryingModelRequests):
         self.web_search_sources = []
         self.profile_source_context: dict[str, Any] = {}
         self.profile_claim_attribution: dict[str, Any] = {}
+        self.profile_evidence_admissibility: dict[str, Any] = {}
         self.profile_evidence_text = ""
         self._state_lock = Lock()
 
@@ -294,7 +295,10 @@ class SectionValidator(RetryingModelRequests):
         if criteria is None:
             raise ValueError(f"No evaluation rubric is defined for {section_name!r}")
 
-        source_context: dict[str, Any] = {"sourceLedger": self.profile_source_context}
+        source_context: dict[str, Any] = {
+            "sourceLedger": self.profile_source_context,
+            "deterministicEvidenceAdmissibility": self.profile_evidence_admissibility,
+        }
         if section_name in CLAIM_EVIDENCE_SECTIONS:
             source_context["claimAttribution"] = self.profile_claim_attribution
             source_context["attestedEvidenceExcerpt"] = self.profile_evidence_text[
@@ -367,6 +371,7 @@ class SectionValidator(RetryingModelRequests):
         sections_to_validate, results["skipped_sections"] = select_profile_sections(profile)
         self.profile_source_context = dict(profile.get("webSearchSources") or {})
         self.profile_claim_attribution = dict(profile.get("claimAttribution") or {})
+        self.profile_evidence_admissibility = dict(profile.get("evidenceAdmissibility") or {})
         self.profile_evidence_text = ""
 
         total_sections = len(sections_to_validate)

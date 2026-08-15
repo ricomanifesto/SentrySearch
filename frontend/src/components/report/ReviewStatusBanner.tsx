@@ -18,6 +18,7 @@ type ReviewStatusBannerProps = {
   onRetry?: () => void;
   attention?: ReviewAttentionSummary | null;
   analystDisposition?: AnalystDisposition;
+  acceptanceEligible?: boolean;
 };
 
 const secondaryButtonClass =
@@ -31,9 +32,11 @@ export function ReviewStatusBanner({
   onRetry,
   attention,
   analystDisposition = 'unreviewed',
+  acceptanceEligible = false,
 }: ReviewStatusBannerProps) {
   const active = status === 'evaluation_pending';
   const dispositionOwnsReadiness = analystDisposition !== 'unreviewed'
+    && (analystDisposition !== 'accepted' || acceptanceEligible)
     && (status === 'reviewable' || status === 'needs_attention');
   const tone = analystDisposition === 'accepted' && dispositionOwnsReadiness
     ? 'border-[var(--border-success)] bg-[var(--bg-success)]'
@@ -98,6 +101,14 @@ export function ReviewStatusBanner({
       {status === 'needs_attention' && attention ? (
         <div className="mt-4 border-t border-[var(--border-warning)] pt-4">
           <p className="text-sm font-medium text-[var(--text-warning)]">{attention.headline}</p>
+          {attention.evidenceFindings.length > 0 ? (
+            <div className="mt-3">
+              <p className="text-sm font-medium text-zinc-900">Evidence blockers</p>
+              <ul className="mt-1 list-disc space-y-1 pl-5 text-sm leading-6 text-zinc-700">
+                {attention.evidenceFindings.map((finding) => <li key={finding}>{finding}</li>)}
+              </ul>
+            </div>
+          ) : null}
           {attention.conflicts.length > 0 ? (
             <div className="mt-3">
               <p className="text-sm font-medium text-zinc-900">Conflicts to resolve</p>

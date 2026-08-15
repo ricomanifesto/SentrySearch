@@ -13,6 +13,7 @@ from src.domain.reports import (
     AnalystDisposition,
     ClaimAttributionStatus,
     ClassificationStatus,
+    EvidenceAdmissibilityStatus,
     EvaluationStatus,
     GenerationErrorCode,
     GenerationStage,
@@ -27,6 +28,7 @@ from src.domain.reports import (
     derive_review_status,
     evaluation_conflict_count,
     is_judgment_eligible,
+    is_reuse_eligible,
 )
 from src.core.source_ledger import (
     assert_claim_attribution_consistent,
@@ -47,6 +49,23 @@ class ReportStorageService:
     def __init__(self):
         self.db_manager = db_manager
         self.s3_manager = s3_manager
+
+    @staticmethod
+    def _evidence_admissibility_fields(
+        threat_data: Any,
+        explicit: Any = None,
+    ) -> tuple[dict[str, Any] | None, EvidenceAdmissibilityStatus, str | None]:
+        assessment = explicit
+        if assessment is None and isinstance(threat_data, dict):
+            assessment = threat_data.get("evidenceAdmissibility")
+        if not isinstance(assessment, dict):
+            return None, EvidenceAdmissibilityStatus.UNASSESSED, None
+        try:
+            status = EvidenceAdmissibilityStatus(assessment.get("status"))
+        except (TypeError, ValueError):
+            status = EvidenceAdmissibilityStatus.BLOCKED
+        version = str(assessment.get("schemaVersion") or "").strip() or None
+        return assessment, status, version
 
     @staticmethod
     def _source_count_from_values(web_sources: Any, threat_data: Any) -> int:
@@ -73,6 +92,9 @@ class ReportStorageService:
             quality_score=(float(model.quality_score) if model.quality_score is not None else None),
             quality_assessment=model.quality_assessment,
             source_count=cls._source_count(report),
+            evidence_admissibility_status=(
+                model.evidence_admissibility_status or EvidenceAdmissibilityStatus.UNASSESSED.value
+            ),
         )
         model.review_status = status.value
         return status
@@ -746,6 +768,13 @@ class ReportStorageService:
             )
             report_data["claim_attribution_status"] = attribution_status.value
             report_data["claim_attribution_version"] = attribution_version
+            evidence, evidence_status, evidence_version = self._evidence_admissibility_fields(
+                report_data.get("threat_data"),
+                report_data.get("evidence_admissibility"),
+            )
+            report_data["evidence_admissibility"] = evidence
+            report_data["evidence_admissibility_status"] = evidence_status.value
+            report_data["evidence_admissibility_version"] = evidence_version
             assert_source_ledger_consistent(
                 report_data.get("threat_data") or {},
                 report_data.get("web_sources") or [],
@@ -783,6 +812,13 @@ class ReportStorageService:
                         "claim_attribution_status", ClaimAttributionStatus.LEGACY.value
                     ),
                     claim_attribution_version=report_data.get("claim_attribution_version"),
+                    evidence_admissibility_status=report_data.get(
+                        "evidence_admissibility_status",
+                        EvidenceAdmissibilityStatus.UNASSESSED.value,
+                    ),
+                    evidence_admissibility_version=report_data.get(
+                        "evidence_admissibility_version"
+                    ),
                     quality_score=report_data.get("quality_score"),
                     confidence_score=report_data.get("confidence_score"),
                     trust_score=report_data.get("trust_score"),
@@ -792,6 +828,7 @@ class ReportStorageService:
                     ml_techniques=report_data.get("ml_techniques"),
                     quality_assessment=report_data.get("quality_assessment"),
                     web_sources=report_data.get("web_sources"),
+                    evidence_admissibility=report_data.get("evidence_admissibility"),
                     generation_route=report_data.get("generation_route"),
                     research_route=report_data.get("research_route"),
                     synthesis_route=report_data.get("synthesis_route"),
@@ -887,6 +924,15 @@ class ReportStorageService:
             assert_claim_attribution_consistent(report_data.get("threat_data") or {})
             report_data["claim_attribution_status"] = attribution_status.value
             report_data["claim_attribution_version"] = attribution_version
+            evidence, evidence_status, evidence_version = self._evidence_admissibility_fields(
+                report_data.get("threat_data"),
+                report_data.get("evidence_admissibility"),
+            )
+            if evidence_status is not EvidenceAdmissibilityStatus.PASSED:
+                raise ValueError("Generated report did not pass evidence admissibility")
+            report_data["evidence_admissibility"] = evidence
+            report_data["evidence_admissibility_status"] = evidence_status.value
+            report_data["evidence_admissibility_version"] = evidence_version
             assert_source_ledger_consistent(
                 report_data.get("threat_data") or {},
                 report_data.get("web_sources") or [],
@@ -940,6 +986,13 @@ class ReportStorageService:
                     "claim_attribution_status", ClaimAttributionStatus.LEGACY.value
                 )
                 report.claim_attribution_version = report_data.get("claim_attribution_version")
+                report.evidence_admissibility_status = report_data.get(
+                    "evidence_admissibility_status",
+                    EvidenceAdmissibilityStatus.UNASSESSED.value,
+                )
+                report.evidence_admissibility_version = report_data.get(
+                    "evidence_admissibility_version"
+                )
                 report.quality_score = report_data.get("quality_score")
                 report.confidence_score = report_data.get("confidence_score")
                 report.trust_score = report_data.get("trust_score")
@@ -949,6 +1002,7 @@ class ReportStorageService:
                 report.ml_techniques = report_data.get("ml_techniques")
                 report.quality_assessment = report_data.get("quality_assessment")
                 report.web_sources = report_data.get("web_sources")
+                report.evidence_admissibility = report_data.get("evidence_admissibility")
                 report.generation_route = report_data.get("generation_route")
                 report.research_route = report_data.get("research_route")
                 report.synthesis_route = report_data.get("synthesis_route")
@@ -1105,6 +1159,16 @@ class ReportStorageService:
                 report.generation_failure = failure
                 if isinstance(failure, dict) and isinstance(failure.get("route"), dict):
                     report.generation_route = failure["route"]
+                if isinstance(failure, dict) and isinstance(
+                    failure.get("evidence_admissibility"), dict
+                ):
+                    evidence, status, version = self._evidence_admissibility_fields(
+                        None,
+                        failure["evidence_admissibility"],
+                    )
+                    report.evidence_admissibility = evidence
+                    report.evidence_admissibility_status = status.value
+                    report.evidence_admissibility_version = version
                 self._refresh_review_status(report)
                 session.commit()
                 logger.info(f"Report marked failed: {report_id}")
@@ -1196,6 +1260,20 @@ class ReportStorageService:
                 ),
             ):
                 raise ValueError("Only completed, evaluated reports can be dispositioned")
+            if normalized is AnalystDisposition.ACCEPTED and not is_reuse_eligible(
+                report_status=report.status or ReportStatus.COMPLETED.value,
+                evaluation_status=evaluation_status,
+                quality_score=(
+                    float(report.quality_score) if report.quality_score is not None else None
+                ),
+                evidence_admissibility_status=(
+                    report.evidence_admissibility_status
+                    or EvidenceAdmissibilityStatus.UNASSESSED.value
+                ),
+            ):
+                raise ValueError(
+                    "Only reports that passed evidence admissibility can be accepted for reuse"
+                )
             if (
                 normalized is AnalystDisposition.ACCEPTED
                 and evaluation_conflict_count(report.quality_assessment) > 0
@@ -1420,6 +1498,7 @@ class ReportStorageService:
                         Report.quality_assessment,
                         Report.web_sources,
                         Report.threat_data,
+                        Report.evidence_admissibility_status,
                         Report.generation_error_code,
                         Report.generation_failure_stage,
                     )
@@ -1452,6 +1531,10 @@ class ReportStorageService:
                         source_count=self._source_count_from_values(
                             row.web_sources,
                             row.threat_data,
+                        ),
+                        evidence_admissibility_status=EvidenceAdmissibilityStatus(
+                            row.evidence_admissibility_status
+                            or EvidenceAdmissibilityStatus.UNASSESSED.value
                         ),
                         generation_error_code=(
                             GenerationErrorCode(row.generation_error_code)

@@ -18,8 +18,8 @@ class SourceLedgerError(ValueError):
     retryable = False
 
 
-CLAIM_ATTRIBUTION_SCHEMA_VERSION = "3"
-SUPPORTED_CLAIM_ATTRIBUTION_VERSIONS = frozenset({"2", CLAIM_ATTRIBUTION_SCHEMA_VERSION})
+CLAIM_ATTRIBUTION_SCHEMA_VERSION = "4"
+SUPPORTED_CLAIM_ATTRIBUTION_VERSIONS = frozenset({"2", "3", CLAIM_ATTRIBUTION_SCHEMA_VERSION})
 HIGH_RISK_CLAIM_CLASSES = frozenset(
     {
         "threat_activity",
@@ -128,10 +128,10 @@ def _selected_claim_value(profile: Mapping[str, Any], claim: Mapping[str, Any]) 
 
 
 def materialize_claim_attribution(profile: dict[str, Any]) -> None:
-    """Copy model-selected structured values into the reader-visible v3 claim map."""
+    """Copy model-selected structured values into the reader-visible claim map."""
 
     attribution = profile.get("claimAttribution")
-    if not isinstance(attribution, dict) or attribution.get("schemaVersion") != "3":
+    if not isinstance(attribution, dict) or attribution.get("schemaVersion") not in {"3", "4"}:
         return
     claims = attribution.get("claims")
     if not isinstance(claims, list):
@@ -225,23 +225,43 @@ def claim_attribution_status(
         if isinstance(source, Mapping) and str(source.get("sourceId") or "").strip()
     }
     observed_classes: set[str] = set()
+    observed_selectors: list[tuple[str, str, int]] = []
     for claim in claims:
         if not isinstance(claim, Mapping):
             return ClaimAttributionStatus.UNATTRIBUTED, version
         claim_text = str(claim.get("claim") or "").strip()
         source_ids = claim.get("sourceIds")
-        if not claim_text or not isinstance(source_ids, list) or not source_ids:
+        if not claim_text or not isinstance(source_ids, list):
+            return ClaimAttributionStatus.UNATTRIBUTED, version
+        evidence_role = str(claim.get("evidenceRole") or "")
+        if version == "4":
+            if evidence_role == "direct_evidence" and not source_ids:
+                return ClaimAttributionStatus.UNATTRIBUTED, version
+            if evidence_role == "general_practice" and (
+                claim.get("claimClass") != "mitigation_action" or source_ids
+            ):
+                return ClaimAttributionStatus.UNATTRIBUTED, version
+            if evidence_role not in {"direct_evidence", "general_practice"}:
+                return ClaimAttributionStatus.UNATTRIBUTED, version
+        elif not source_ids:
             return ClaimAttributionStatus.UNATTRIBUTED, version
         if any(str(source_id) not in known_ids for source_id in source_ids):
             return ClaimAttributionStatus.UNATTRIBUTED, version
         claim_class = str(claim.get("claimClass") or "")
-        if version == CLAIM_ATTRIBUTION_SCHEMA_VERSION:
+        if version in {"3", CLAIM_ATTRIBUTION_SCHEMA_VERSION}:
             try:
                 selected_claim = _selected_claim_value(profile, claim)
             except SourceLedgerError:
                 return ClaimAttributionStatus.UNATTRIBUTED, version
             if claim_text != selected_claim:
                 return ClaimAttributionStatus.UNATTRIBUTED, version
+            observed_selectors.append(
+                (
+                    claim_class,
+                    str(claim.get("claimField") or ""),
+                    int(claim.get("claimIndex")),
+                )
+            )
         else:
             section_name = CLAIM_CLASS_SECTIONS.get(claim_class)
             section = profile.get(section_name) if section_name else None
@@ -253,6 +273,25 @@ def claim_attribution_status(
         observed_classes.add(claim_class)
     if not HIGH_RISK_CLAIM_CLASSES.issubset(observed_classes):
         return ClaimAttributionStatus.UNATTRIBUTED, version
+    if version == CLAIM_ATTRIBUTION_SCHEMA_VERSION:
+        expected_selectors: list[tuple[str, str, int]] = []
+        for expected_class, fields in CLAIM_CLASS_SELECTORS.items():
+            for field_name, field_path in fields.items():
+                selected: Any = profile
+                for path_item in field_path:
+                    if not isinstance(selected, Mapping):
+                        selected = None
+                        break
+                    selected = selected.get(path_item)
+                if not isinstance(selected, list):
+                    continue
+                expected_selectors.extend(
+                    (expected_class, field_name, index)
+                    for index, value in enumerate(selected)
+                    if str(value or "").strip()
+                )
+        if sorted(observed_selectors) != sorted(expected_selectors):
+            return ClaimAttributionStatus.UNATTRIBUTED, version
     return ClaimAttributionStatus.ATTRIBUTED, version
 
 

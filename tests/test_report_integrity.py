@@ -20,6 +20,7 @@ from src.core import section_validator as section_validator_module
 from src.core.markdown_generator import generate_markdown
 from src.domain.reports import (
     ClaimAttributionStatus,
+    EvidenceAdmissibilityStatus,
     EvaluationStatus,
     GenerationRouteScope,
     ReportStatus,
@@ -28,6 +29,7 @@ from src.domain.reports import (
     derive_review_status,
     evaluation_conflict_count,
     is_judgment_eligible,
+    is_reuse_eligible,
 )
 from src.storage.models import Report
 from src.storage.report_service import ReportStorageService
@@ -254,8 +256,21 @@ def test_review_readiness_separates_generation_evaluation_and_analyst_attention(
                 "needs_improvement": False,
             },
             source_count=1,
+            evidence_admissibility_status=EvidenceAdmissibilityStatus.PASSED,
         )
         is ReviewStatus.REVIEWABLE
+    )
+
+    assert (
+        derive_review_status(
+            report_status=ReportStatus.COMPLETED,
+            evaluation_status=EvaluationStatus.COMPLETED,
+            quality_score=4.2,
+            quality_assessment={"summary": {"passed_sections": 7}},
+            source_count=1,
+            evidence_admissibility_status=EvidenceAdmissibilityStatus.UNASSESSED,
+        )
+        is ReviewStatus.NEEDS_ATTENTION
     )
     assert (
         derive_review_status(
@@ -284,6 +299,18 @@ def test_judgment_eligibility_is_derived_from_the_complete_evaluation_lifecycle(
         report_status=ReportStatus.COMPLETED,
         evaluation_status=EvaluationStatus.FAILED,
         quality_score=None,
+    )
+    assert is_reuse_eligible(
+        report_status=ReportStatus.COMPLETED,
+        evaluation_status=EvaluationStatus.COMPLETED,
+        quality_score=4.2,
+        evidence_admissibility_status=EvidenceAdmissibilityStatus.PASSED,
+    )
+    assert not is_reuse_eligible(
+        report_status=ReportStatus.COMPLETED,
+        evaluation_status=EvaluationStatus.COMPLETED,
+        quality_score=4.2,
+        evidence_admissibility_status=EvidenceAdmissibilityStatus.UNASSESSED,
     )
 
 

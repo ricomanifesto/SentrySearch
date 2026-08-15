@@ -81,6 +81,7 @@ export default function SampleReport() {
               heading="Sources"
               attributionStatus={SAMPLE_REPORT.claim_attribution_status}
               attributionVersion={SAMPLE_REPORT.claim_attribution_version}
+              evidenceAdmissibility={SAMPLE_REPORT.evidence_admissibility}
             />
           </aside>
         </div>

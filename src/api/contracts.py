@@ -11,6 +11,7 @@ from src.domain.reports import (
     AnalystDisposition,
     ClaimAttributionStatus,
     ClassificationStatus,
+    EvidenceAdmissibilityStatus,
     EvaluationStatus,
     GenerationErrorCode,
     GenerationStage,
@@ -47,6 +48,10 @@ class ReportResponse(BaseModel):
     classification_status: ClassificationStatus = ClassificationStatus.UNRECORDED
     claim_attribution_status: ClaimAttributionStatus = ClaimAttributionStatus.LEGACY
     claim_attribution_version: str | None = None
+    evidence_admissibility_status: EvidenceAdmissibilityStatus = (
+        EvidenceAdmissibilityStatus.UNASSESSED
+    )
+    evidence_admissibility_version: str | None = None
     quality_score: float | None
     created_at: datetime
     processing_time_ms: int = 0
@@ -63,6 +68,7 @@ class ReportResponse(BaseModel):
     review_status: ReviewStatus = ReviewStatus.NEEDS_EVALUATION
     analyst_disposition: AnalystDisposition = AnalystDisposition.UNREVIEWED
     eligible_for_judgment: bool = False
+    eligible_for_acceptance: bool = False
     content_preview: str | None = None
 
 
@@ -75,6 +81,47 @@ class ReportSource(BaseModel):
     relevance_score: str
     content_type: str
     key_findings: str
+    evidence_purpose: Literal["operational", "context_only", "excluded_non_operational"] | None = (
+        None
+    )
+    evidence_disposition: Literal["admitted", "context_required", "excluded", "rejected"] | None = (
+        None
+    )
+    evidence_reason: str | None = None
+    evidence_rule_id: str | None = None
+
+
+class EvidenceSourceObservation(BaseModel):
+    source_id: str | None = Field(default=None, validation_alias="sourceId")
+    title: str
+    url: str
+    domain: str
+    purpose: Literal["operational", "context_only", "excluded_non_operational"]
+    disposition: Literal["admitted", "context_required", "excluded", "rejected"]
+    reason: str
+    rule_id: str = Field(validation_alias="ruleId")
+
+
+class EvidenceIndicatorObservation(BaseModel):
+    claim_field: str = Field(validation_alias="claimField")
+    claim_index: int = Field(ge=0, validation_alias="claimIndex")
+    value: str
+    disposition: Literal["admitted", "context_required", "excluded", "rejected"]
+    reason: str
+    rule_id: str = Field(validation_alias="ruleId")
+
+
+class EvidenceAdmissibility(BaseModel):
+    schema_version: str = Field(validation_alias="schemaVersion")
+    status: EvidenceAdmissibilityStatus
+    source_observations: list[EvidenceSourceObservation] = Field(
+        default_factory=list, validation_alias="sourceObservations"
+    )
+    indicator_observations: list[EvidenceIndicatorObservation] = Field(
+        default_factory=list, validation_alias="indicatorObservations"
+    )
+    blocking_findings: list[str] = Field(default_factory=list, validation_alias="blockingFindings")
+    summary: dict[str, int] = Field(default_factory=dict)
 
 
 class ModelRouteProvenance(BaseModel):
@@ -96,6 +143,7 @@ class ClaimAttributionEntry(BaseModel):
         "mitigation_action",
     ]
     claim: str
+    evidence_role: Literal["direct_evidence", "general_practice"] | None = None
     source_ids: list[str] = Field(default_factory=list)
 
 
@@ -131,6 +179,7 @@ class ReportDetail(ReportResponse):
     evaluation_route: ModelRouteProvenance | None = None
     quality_assessment: dict[str, Any] | None = None
     claim_attributions: list[ClaimAttributionEntry] = Field(default_factory=list)
+    evidence_admissibility: EvidenceAdmissibility | None = None
     current_disposition: AnalystDispositionEvent | None = None
     disposition_history: list[AnalystDispositionEvent] = Field(default_factory=list)
 

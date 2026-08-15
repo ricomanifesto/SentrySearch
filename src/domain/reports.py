@@ -62,6 +62,14 @@ class ClaimAttributionStatus(StrEnum):
     LEGACY = "legacy"
 
 
+class EvidenceAdmissibilityStatus(StrEnum):
+    """Deterministic safety posture for operational evidence in a saved report."""
+
+    UNASSESSED = "unassessed"
+    PASSED = "passed"
+    BLOCKED = "blocked"
+
+
 class GenerationErrorCode(StrEnum):
     """Reader-safe, queryable reasons a generation run did not finish."""
 
@@ -72,6 +80,7 @@ class GenerationErrorCode(StrEnum):
     MODEL_OUTPUT_INVALID = "model_output_invalid"
     EVIDENCE_UNAVAILABLE = "evidence_unavailable"
     EVIDENCE_UNATTESTED = "evidence_unattested"
+    EVIDENCE_INADMISSIBLE = "evidence_inadmissible"
     PERSISTENCE_FAILED = "persistence_failed"
     UNKNOWN = "unknown"
 
@@ -187,6 +196,9 @@ class ReportAnalyticsRecord:
     evaluation_status: EvaluationStatus = EvaluationStatus.UNRECORDED
     quality_assessment: Mapping[str, Any] | None = None
     source_count: int = 0
+    evidence_admissibility_status: EvidenceAdmissibilityStatus = (
+        EvidenceAdmissibilityStatus.UNASSESSED
+    )
     generation_error_code: GenerationErrorCode | None = None
     generation_failure_stage: GenerationStage | None = None
 
@@ -235,6 +247,25 @@ def is_judgment_eligible(
     )
 
 
+def is_reuse_eligible(
+    *,
+    report_status: ReportStatus | str,
+    evaluation_status: EvaluationStatus | str | None,
+    quality_score: float | None,
+    evidence_admissibility_status: EvidenceAdmissibilityStatus | str,
+) -> bool:
+    """Return whether an analyst may accept the current vintage for reuse."""
+
+    return is_judgment_eligible(
+        report_status=report_status,
+        evaluation_status=evaluation_status,
+        quality_score=quality_score,
+    ) and (
+        EvidenceAdmissibilityStatus(evidence_admissibility_status)
+        is EvidenceAdmissibilityStatus.PASSED
+    )
+
+
 def evaluation_conflict_count(quality_assessment: Mapping[str, Any] | None) -> int:
     """Count explicit cross-section conflicts without inferring legacy evidence."""
 
@@ -255,6 +286,9 @@ def derive_review_status(
     quality_score: float | None,
     quality_assessment: Mapping[str, Any] | None,
     source_count: int,
+    evidence_admissibility_status: EvidenceAdmissibilityStatus | str = (
+        EvidenceAdmissibilityStatus.UNASSESSED
+    ),
 ) -> ReviewStatus:
     """Derive one honest review state without overloading generation completion."""
 
@@ -270,6 +304,11 @@ def derive_review_status(
     if evaluator is not EvaluationStatus.COMPLETED or quality_score is None:
         return ReviewStatus.NEEDS_EVALUATION
     if source_count < 1:
+        return ReviewStatus.NEEDS_ATTENTION
+    if (
+        EvidenceAdmissibilityStatus(evidence_admissibility_status)
+        is not EvidenceAdmissibilityStatus.PASSED
+    ):
         return ReviewStatus.NEEDS_ATTENTION
 
     assessment = quality_assessment or {}

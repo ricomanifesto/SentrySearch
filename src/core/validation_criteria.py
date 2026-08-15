@@ -171,7 +171,9 @@ SECTION_CRITERIA: Mapping[str, SectionCriteria] = MappingProxyType(
     }
 )
 
-PROFILE_METADATA_FIELDS = frozenset({"coreMetadata", "_quality_assessment"})
+PROFILE_METADATA_FIELDS = frozenset(
+    {"coreMetadata", "evidenceAdmissibility", "_quality_assessment"}
+)
 
 
 SECTION_EVALUATION_PROMPT = """You are a cybersecurity expert evaluating one section of a threat intelligence profile.
@@ -199,7 +201,7 @@ Section checks:
 Attested profile source context:
 {source_context}
 
-Use this profile-level source context when scoring source quality and checking whether section claims are supported. Do not assume that lack of inline citations inside this isolated section means the profile lacks sources.
+Use this profile-level source context when scoring source quality and checking whether section claims are supported. The deterministicEvidenceAdmissibility block is application-owned ground truth: do not override an exclusion or rejected indicator. Any rejected evidence that survives in operational content requires RETRY. Do not assume that lack of inline citations inside this isolated section means the profile lacks sources.
 
 Identify only the most important missing information, weak areas, technical issues, and concrete improvements.
 Keep each list to at most 3 concise one-sentence items. Keep reasoning to at most 2 concise sentences.
@@ -218,7 +220,7 @@ Treat dates on or before this date as historical or current, never as future dat
 
 {sections}
 
-Check technical claims, timelines, source use, and terminology. Score consistency from 0 to 5 using the same five-point scale as the section evaluations; this is not a 0 to 1 probability. Return at most 5 concise inconsistencies and 3 concise recommendations. Return one consistency evaluation that matches the provided response schema."""
+Check technical claims, timelines, source use, and terminology. Treat evidenceAdmissibility as application-owned ground truth and never override a rejected indicator or excluded source. Score consistency from 0 to 5 using the same five-point scale as the section evaluations; this is not a 0 to 1 probability. Return at most 5 concise inconsistencies and 3 concise recommendations. Return one consistency evaluation that matches the provided response schema."""
 
 
 def build_section_evaluation_prompt(

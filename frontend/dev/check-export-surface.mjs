@@ -28,7 +28,7 @@ const expectations = [
   { name: 'shows review state on every selectable export record', pattern: /getReviewStatusLabel\(record\.reviewStatus\)/ },
   { name: 'shows analyst disposition on every selectable export record', pattern: /getAnalystDispositionLabel\(record\.analystDisposition\)/ },
   { name: 'exports source evidence rather than only search tags', source: exportBuilder, pattern: /include_sources[\s\S]*web_sources: report\.web_sources/ },
-  { name: 'exports explicit claim attribution with its evidence ledger', source: exportBuilder, pattern: /web_sources: report\.web_sources, claim_attributions: report\.claim_attributions/ },
+  { name: 'exports explicit claim attribution with its evidence ledger', source: exportBuilder, pattern: /web_sources: report\.web_sources,[\s\S]*claim_attributions: report\.claim_attributions,[\s\S]*evidence_admissibility:/ },
   { name: 'exports evaluation lifecycle and review readiness', source: exportBuilder, pattern: /evaluation_status[\s\S]*review_status/ },
   { name: 'exports split and legacy route attestation', source: exportBuilder, pattern: /generation_route[\s\S]*research_route[\s\S]*synthesis_route[\s\S]*evaluation_route/ },
   { name: 'exports current disposition and append-only history', source: exportBuilder, pattern: /analyst_disposition[\s\S]*current_disposition[\s\S]*disposition_history/ },

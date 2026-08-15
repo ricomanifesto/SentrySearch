@@ -1,4 +1,8 @@
-import type { ClaimAttributionStatus, ReportSource } from '@/lib/api-contracts';
+import type {
+  ClaimAttributionStatus,
+  EvidenceAdmissibility,
+  ReportSource,
+} from '@/lib/api-contracts';
 
 import { getSafeExternalUrl } from './report-links';
 
@@ -8,6 +12,7 @@ type SourceEvidenceProps = {
   dateLabel?: 'Accessed' | 'Captured';
   attributionStatus?: ClaimAttributionStatus;
   attributionVersion?: string | null;
+  evidenceAdmissibility?: EvidenceAdmissibility | null;
 };
 
 export function SourceEvidence({
@@ -16,7 +21,14 @@ export function SourceEvidence({
   dateLabel = 'Accessed',
   attributionStatus,
   attributionVersion,
+  evidenceAdmissibility,
 }: SourceEvidenceProps) {
+  const nonOperationalSources = evidenceAdmissibility?.source_observations.filter(
+    (source) => source.purpose !== 'operational',
+  ) ?? [];
+  const contextIndicators = evidenceAdmissibility?.indicator_observations.filter(
+    (indicator) => indicator.disposition === 'context_required',
+  ) ?? [];
   return (
     <section data-contract="Report.SourceEvidence.v1" aria-labelledby="source-evidence-heading">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -24,13 +36,17 @@ export function SourceEvidence({
           {heading}
         </h2>
         <span className="text-sm text-zinc-500">
-          {sources.length} {sources.length === 1 ? 'source' : 'sources'}
+          {sources.length} operational {sources.length === 1 ? 'source' : 'sources'}
         </span>
       </div>
 
       {attributionStatus === 'attributed' ? (
         <p className="mt-2 text-sm leading-6 text-emerald-700">
-          High-risk claims link to this source ledger through attribution schema {attributionVersion ?? '2'}.
+          {attributionVersion === '4'
+            ? evidenceAdmissibility?.status === 'passed'
+              ? 'Every stored high-risk field item is covered by admissible attribution schema 4.'
+              : 'Attribution schema 4 records an evidence role for every stored high-risk field item; admissibility is reported separately below.'
+            : `Selected high-risk claims link to this source ledger through legacy attribution schema ${attributionVersion ?? '2'}.`}
         </p>
       ) : attributionStatus === 'unattributed' ? (
         <p className="mt-2 text-sm leading-6 text-amber-700">
@@ -41,6 +57,20 @@ export function SourceEvidence({
           Claim-level attribution was not recorded for this legacy report.
         </p>
       ) : null}
+
+      {evidenceAdmissibility?.status === 'passed' ? (
+        <p className="mt-2 text-sm leading-6 text-emerald-700">
+          Operational evidence checks passed under admissibility schema {evidenceAdmissibility.schema_version}.
+        </p>
+      ) : evidenceAdmissibility?.status === 'blocked' ? (
+        <p className="mt-2 text-sm leading-6 text-red-700">
+          Operational evidence checks blocked this record from reuse.
+        </p>
+      ) : (
+        <p className="mt-2 text-sm leading-6 text-amber-700">
+          Operational evidence admissibility was not assessed for this retained record.
+        </p>
+      )}
 
       {sources.length > 0 ? (
         <ol className="mt-4 space-y-4">
@@ -84,9 +114,52 @@ export function SourceEvidence({
         </ol>
       ) : (
         <p className="mt-3 text-sm leading-6 text-amber-700">
-          No structured source evidence is attached to this record.
+          No source passed into this record&apos;s operational evidence ledger.
         </p>
       )}
+
+      {nonOperationalSources.length > 0 ? (
+        <div className="mt-6 border-t border-zinc-200 pt-5">
+          <h3 className="text-sm font-semibold text-zinc-950">
+            Not used as operational evidence
+          </h3>
+          <p className="mt-1 text-sm leading-6 text-zinc-500">
+            These sources remain named in the audit record even though their purpose prevents operational reuse.
+          </p>
+          <ol className="mt-3 space-y-3">
+            {nonOperationalSources.map((source) => {
+              const safeUrl = getSafeExternalUrl(source.url);
+              return (
+                <li id={source.source_id ? `source-${source.source_id}` : undefined} key={`${source.source_id ?? source.url}-${source.rule_id}`} className="scroll-mt-24 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                  <p className="text-sm font-medium text-zinc-950">
+                    {safeUrl ? (
+                      <a href={safeUrl} target="_blank" rel="noopener noreferrer" className="text-blue-700 underline underline-offset-2">
+                        {source.title}
+                      </a>
+                    ) : source.title}
+                  </p>
+                  <p className="mt-1 text-sm leading-6 text-amber-900">
+                    {source.purpose === 'context_only' ? 'Context only' : 'Excluded'} · {source.reason}
+                  </p>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      ) : null}
+
+      {contextIndicators.length > 0 ? (
+        <div className="mt-6 border-t border-zinc-200 pt-5">
+          <h3 className="text-sm font-semibold text-zinc-950">Environment context required</h3>
+          <ul className="mt-2 space-y-2 text-sm leading-6 text-amber-900">
+            {contextIndicators.map((indicator) => (
+              <li key={`${indicator.claim_field}-${indicator.claim_index}`}>
+                <span className="font-mono">{indicator.value}</span> · {indicator.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </section>
   );
 }

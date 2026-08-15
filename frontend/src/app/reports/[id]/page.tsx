@@ -21,6 +21,7 @@ import { formatTaxonomyLabel, getQualityLabel } from '@/lib/report-query';
 import { getReportSectionLinks, splitReportContent } from '@/lib/report-content';
 import { getReviewAttentionSummary } from '@/lib/review-attention';
 import { getGenerationFailurePresentation } from '@/lib/generation-failure';
+import { getReviewStatusDescription, getReviewStatusLabel } from '@/lib/report-status';
 import { AuthGuard } from '@/components/AuthGuard';
 import { ReportNarrative } from '@/components/report/ReportNarrative';
 import { SourceEvidence } from '@/components/report/SourceEvidence';
@@ -32,6 +33,7 @@ import { AnalystDispositionPanel } from '@/components/report/AnalystDispositionP
 const LOCAL_REPORT_DETAIL_FIXTURE_ID = 'local-visual-fixture';
 const LOCAL_REVIEW_ATTENTION_FIXTURE_ID = 'local-review-attention-fixture';
 const LOCAL_FAILED_GENERATION_FIXTURE_ID = 'local-failed-generation-fixture';
+const LOCAL_EVIDENCE_SAFETY_FIXTURE_ID = 'local-evidence-safety-fixture';
 
 const localReportDetailFixture: ReportDetail = {
   ...SAMPLE_REPORT,
@@ -42,6 +44,7 @@ const localReportDetailFixture: ReportDetail = {
   evaluation_attempts: 1,
   review_status: 'needs_evaluation',
   eligible_for_judgment: false,
+  eligible_for_acceptance: false,
   classification_status: 'recorded',
   quality_assessment: null,
   research_route: {
@@ -154,11 +157,125 @@ const localFailedGenerationFixture: ReportDetail = {
   evaluation_attempts: 0,
   review_status: 'generation_failed',
   eligible_for_judgment: false,
+  eligible_for_acceptance: false,
   classification_status: 'unrecorded',
   quality_score: null,
   quality_assessment: null,
   markdown_content: undefined,
   web_sources: [],
+};
+
+const localEvidenceSafetyFixture: ReportDetail = {
+  ...SAMPLE_REPORT,
+  id: LOCAL_EVIDENCE_SAFETY_FIXTURE_ID,
+  tool_name: 'Noodle RAT · local adversarial fixture',
+  category: 'malware',
+  threat_type: 'remote_access_trojan',
+  content_preview: 'A local regression fixture for documentation-only infrastructure and training-source exclusion.',
+  quality_score: 4.4,
+  review_status: 'needs_attention',
+  analyst_disposition: 'unreviewed',
+  eligible_for_judgment: true,
+  eligible_for_acceptance: false,
+  claim_attribution_status: 'attributed',
+  claim_attribution_version: '4',
+  evidence_admissibility_status: 'blocked',
+  evidence_admissibility_version: '1',
+  markdown_content: [
+    '# Noodle RAT · local adversarial fixture',
+    '',
+    '> This development-only fixture preserves an unsafe report proposal so the evidence gate can be inspected. It is not a production intelligence record.',
+    '',
+    '## Proposed operational finding',
+    '',
+    'The generated proposal described `198.51.100.87` as malicious command-and-control infrastructure and recommended blocking it.',
+    '',
+    'That address belongs to documentation-only TEST-NET-2 space. The application must keep the source visible for audit while blocking this record from operational reuse.',
+  ].join('\n'),
+  web_sources: [],
+  evidence_admissibility: {
+    schema_version: '1',
+    status: 'blocked',
+    source_observations: [
+      {
+        source_id: 'S1',
+        title: 'Noodle RAT incident-response training scenario',
+        url: 'https://malwareandmonsters.com/im-handbook/resources/scenario-cards/noodle-rat/biotech-research/large-group/organizational-context.html',
+        domain: 'malwareandmonsters.com',
+        purpose: 'excluded_non_operational',
+        disposition: 'excluded',
+        reason: 'Training, tabletop, or fictional scenario material is not operational evidence.',
+        rule_id: 'source.training-scenario',
+      },
+      {
+        source_id: 'S2',
+        title: 'RFC 5737: IPv4 Address Blocks Reserved for Documentation',
+        url: 'https://www.rfc-editor.org/rfc/rfc5737.html',
+        domain: 'rfc-editor.org',
+        purpose: 'context_only',
+        disposition: 'context_required',
+        reason: 'Special-use address documentation provides context, not threat-specific evidence.',
+        rule_id: 'source.special-use-reference',
+      },
+    ],
+    indicator_observations: [
+      {
+        claim_field: 'ips',
+        claim_index: 0,
+        value: '198.51.100.87',
+        disposition: 'rejected',
+        reason: 'Documentation-only address space cannot be promoted as a malicious indicator.',
+        rule_id: 'indicator.ip-documentation',
+      },
+    ],
+    blocking_findings: [
+      'ips[0] was rejected: Documentation-only address space cannot be promoted as a malicious indicator.',
+      'Operational claim cites S1, which is excluded_non_operational.',
+    ],
+    summary: {
+      operationalSources: 0,
+      contextSources: 1,
+      excludedSources: 1,
+      admittedIndicators: 0,
+      contextIndicators: 0,
+      rejectedIndicators: 1,
+      coveredOperationalClaims: 1,
+    },
+  },
+  claim_attributions: [
+    {
+      claim_class: 'detection_indicator',
+      claim: '198.51.100.87 is malicious command-and-control infrastructure.',
+      evidence_role: 'direct_evidence',
+      source_ids: ['S1'],
+    },
+  ],
+  search_tags: ['noodle-rat', 'adversarial-fixture', 'evidence-safety'],
+  quality_assessment: {
+    overall_score: 4.4,
+    needs_improvement: false,
+    critical_issues: [],
+    summary: { passed_sections: 7, failed_sections: 0, unavailable_sections: 0 },
+    consistency: { consistency_score: 4.5, inconsistencies: [], recommendations: [] },
+  },
+  threat_data: {
+    profileId: 'local-noodle-rat-adversarial-fixture',
+    detectionAndMitigation: { iocs: { ips: ['198.51.100.87'] } },
+    claimAttribution: {
+      schemaVersion: '4',
+      claims: [
+        {
+          claimClass: 'detection_indicator',
+          claimField: 'ips',
+          claimIndex: 0,
+          evidenceRole: 'direct_evidence',
+          claim: '198.51.100.87 is malicious command-and-control infrastructure.',
+          sourceIds: ['S1'],
+        },
+      ],
+    },
+    evidenceAdmissibility: { schemaVersion: '1', status: 'blocked' },
+  },
 };
 
 function generationFailureSentence(stage?: GenerationStage | null): string {
@@ -242,7 +359,9 @@ export default function ReportDetailPage() {
         ? localReviewAttentionFixture
         : reportId === LOCAL_FAILED_GENERATION_FIXTURE_ID
           ? localFailedGenerationFixture
-        : undefined
+          : reportId === LOCAL_EVIDENCE_SAFETY_FIXTURE_ID
+            ? localEvidenceSafetyFixture
+            : undefined
     : undefined;
 
   return fixtureReport ? (
@@ -424,6 +543,15 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
               </button>
             </div>
           </section>
+          {report.generation_error_code === 'evidence_inadmissible' && report.evidence_admissibility ? (
+            <div className="mt-6 rounded-xl border border-zinc-200 bg-white p-5 text-left">
+              <SourceEvidence
+                heading="Evidence gate audit"
+                sources={[]}
+                evidenceAdmissibility={report.evidence_admissibility}
+              />
+            </div>
+          ) : null}
         </div>
       </main>
       <DeleteReportDialog
@@ -446,9 +574,17 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
     report.quality_assessment,
     report.web_sources.length,
     report.analyst_disposition,
+    report.evidence_admissibility_status,
+    report.evidence_admissibility,
+    report.eligible_for_acceptance,
   );
 
   const recordSummarySignals = [
+    {
+      label: 'Operational readiness',
+      value: getReviewStatusLabel(report.review_status),
+      detail: getReviewStatusDescription(report.review_status),
+    },
     {
       label: 'Content quality',
       value: qualityScore == null ? qualityLabel : `${qualityScore.toFixed(2)} / 5.00`,
@@ -484,8 +620,10 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
       label: 'Source transparency',
       description: report.web_sources.length > 0
         ? 'Structured source records are attached and can be opened beside the narrative.'
-        : 'No structured source evidence is attached to this saved report record.',
-      status: report.web_sources.length > 0 ? `${report.web_sources.length} sources` : 'No sources',
+        : report.evidence_admissibility?.source_observations.length
+          ? 'Non-operational sources remain named in the audit record; none passed into the operational ledger.'
+          : 'No structured source evidence is attached to this saved report record.',
+      status: report.web_sources.length > 0 ? `${report.web_sources.length} sources` : '0 operational sources',
       ready: report.web_sources.length > 0,
     },
     {
@@ -495,6 +633,20 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
         : 'Structured extraction data is not saved on this report record.',
       status: report.threat_data ? 'Available' : 'Unavailable',
       ready: Boolean(report.threat_data),
+    },
+    {
+      label: 'Operational evidence safety',
+      description: report.evidence_admissibility_status === 'passed'
+        ? 'Application-owned source-purpose, indicator, and claim-coverage checks passed.'
+        : report.evidence_admissibility_status === 'blocked'
+          ? 'Deterministic evidence checks blocked this record from operational reuse.'
+          : 'This retained record predates deterministic evidence-admissibility checks.',
+      status: report.evidence_admissibility_status === 'passed'
+        ? `Passed · schema ${report.evidence_admissibility_version ?? '1'}`
+        : report.evidence_admissibility_status === 'blocked'
+          ? 'Blocked'
+          : 'Legacy · not assessed',
+      ready: report.evidence_admissibility_status === 'passed',
     },
   ];
 
@@ -538,9 +690,20 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
           </div>
         </div>
 
+        <ReviewStatusBanner
+          status={report.review_status}
+          analystDisposition={report.analyst_disposition}
+          acceptanceEligible={report.eligible_for_acceptance}
+          retryPending={evaluationMutation.isPending}
+          retryDisabled={isFixtureRecord}
+          retryError={evaluationMutation.isError}
+          onRetry={() => evaluationMutation.mutate()}
+          attention={attentionSummary}
+        />
+
         <dl
           data-contract="Report.RecordSummarySignals.v1"
-          className="mt-8 grid gap-px overflow-hidden rounded-xl border border-zinc-200 bg-zinc-200 sm:grid-cols-2 xl:grid-cols-4"
+          className="mt-6 grid gap-px overflow-hidden rounded-xl border border-zinc-200 bg-zinc-200 sm:grid-cols-2 xl:grid-cols-5"
         >
           {recordSummarySignals.map((signal) => (
             <div key={signal.label} className="min-w-0 bg-white px-4 py-4">
@@ -556,16 +719,6 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
           researchRoute={report.research_route}
           synthesisRoute={report.synthesis_route}
           evaluationRoute={report.evaluation_route}
-        />
-
-        <ReviewStatusBanner
-          status={report.review_status}
-          analystDisposition={report.analyst_disposition}
-          retryPending={evaluationMutation.isPending}
-          retryDisabled={isFixtureRecord}
-          retryError={evaluationMutation.isError}
-          onRetry={() => evaluationMutation.mutate()}
-          attention={attentionSummary}
         />
 
         <AnalystDispositionPanel
@@ -632,6 +785,7 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
                 sources={report.web_sources}
                 attributionStatus={report.claim_attribution_status}
                 attributionVersion={report.claim_attribution_version}
+                evidenceAdmissibility={report.evidence_admissibility}
               />
             </section>
             <section data-contract="Report.SourceReviewChecklist.v1" className="rounded-xl border border-zinc-200 bg-white p-5">

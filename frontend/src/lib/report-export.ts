@@ -13,6 +13,8 @@ function projectReport(report: ReportDetail, config: ExportConfig): ExportRecord
           classification_status: report.classification_status,
           claim_attribution_status: report.claim_attribution_status,
           claim_attribution_version: report.claim_attribution_version ?? null,
+          evidence_admissibility_status: report.evidence_admissibility_status,
+          evidence_admissibility_version: report.evidence_admissibility_version ?? null,
           quality_score: report.quality_score,
           created_at: report.created_at,
           processing_time_ms: report.processing_time_ms,
@@ -36,7 +38,11 @@ function projectReport(report: ReportDetail, config: ExportConfig): ExportRecord
       : {}),
     ...(config.include_tags ? { search_tags: report.search_tags } : {}),
     ...(config.include_sources
-      ? { web_sources: report.web_sources, claim_attributions: report.claim_attributions }
+      ? {
+          web_sources: report.web_sources,
+          claim_attributions: report.claim_attributions,
+          evidence_admissibility: report.evidence_admissibility ?? null,
+        }
       : {}),
     ...(config.include_content ? { markdown_content: report.markdown_content ?? null } : {}),
   };

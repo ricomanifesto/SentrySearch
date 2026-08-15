@@ -188,11 +188,12 @@ test('recorded judgment owns operational readiness without erasing machine confl
   }, 3, 'needs_revision');
   const accepted = getReviewAttentionSummary({
     consistency: { inconsistencies: ['Timeline conflicts with metadata.'] },
-  }, 3, 'accepted');
+  }, 3, 'accepted', 'passed', null, true);
   const revisionHtml = renderToStaticMarkup(
     <ReviewStatusBanner
       status="needs_attention"
       analystDisposition="needs_revision"
+      acceptanceEligible={false}
       attention={needsRevision}
     />,
   );
@@ -200,6 +201,7 @@ test('recorded judgment owns operational readiness without erasing machine confl
     <ReviewStatusBanner
       status="needs_attention"
       analystDisposition="accepted"
+      acceptanceEligible={true}
       attention={accepted}
     />,
   );
@@ -211,10 +213,35 @@ test('recorded judgment owns operational readiness without erasing machine confl
   assert.match(acceptedHtml, /Timeline conflicts with metadata/);
 });
 
+test('an older acceptance cannot override an unassessed evidence record', () => {
+  const attention = getReviewAttentionSummary(
+    { consistency: { inconsistencies: ['Timeline conflicts with metadata.'] } },
+    3,
+    'accepted',
+    'unassessed',
+    null,
+    false,
+  );
+  const html = renderToStaticMarkup(
+    <ReviewStatusBanner
+      status="needs_attention"
+      analystDisposition="accepted"
+      acceptanceEligible={false}
+      attention={attention}
+    />,
+  );
+
+  assert.match(html, /Needs analyst review/);
+  assert.doesNotMatch(html, /Accepted for reuse/);
+  assert.match(html, /earlier analyst acceptance remains in history/);
+  assert.match(html, /no deterministic evidence-admissibility record/);
+});
+
 test('generation failure copy exonerates the target only when the record proves a route failure', () => {
   const provider = getGenerationFailurePresentation('provider_unavailable', true);
   const rejected = getGenerationFailurePresentation('model_request_rejected', false);
   const evidence = getGenerationFailurePresentation('evidence_unavailable', false);
+  const inadmissible = getGenerationFailurePresentation('evidence_inadmissible', false);
   const unknown = getGenerationFailurePresentation('unknown', false);
 
   assert.match(provider.detail, /Your target was not the cause/);
@@ -222,6 +249,8 @@ test('generation failure copy exonerates the target only when the record proves 
   assert.match(rejected.heading, /rejected the report contract/);
   assert.doesNotMatch(evidence.detail, /Your target was not the cause/);
   assert.match(evidence.detail, /too obscure|more specific name/);
+  assert.match(inadmissible.heading, /evidence was unsafe for operational use/i);
+  assert.doesNotMatch(inadmissible.detail, /Your target was not the cause/);
   assert.doesNotMatch(unknown.detail, /Your target was not the cause/);
 });
 
@@ -240,6 +269,9 @@ test('downloaded exports carry the canonical evidence ledger and route attestati
   assert.equal(record.web_sources[0].url, SAMPLE_REPORT.web_sources[0].url);
   assert.equal(record.review_status, 'reviewable');
   assert.equal(record.analyst_disposition, 'unreviewed');
+  assert.equal(record.evidence_admissibility_status, 'passed');
+  assert.equal(record.evidence_admissibility.schema_version, '1');
+  assert.equal(record.evidence_admissibility.source_observations.length, 3);
   assert.deepEqual(record.disposition_history, []);
   assert.ok(Object.hasOwn(record, 'generation_route'));
   assert.ok(Object.hasOwn(record, 'research_route'));

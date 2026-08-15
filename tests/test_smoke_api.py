@@ -894,6 +894,58 @@ def test_report_detail_defaults_null_quality_score(monkeypatch):
     assert response.evaluation_route is None
 
 
+def test_report_detail_exposes_a_blocking_evidence_record_without_acceptance(
+    monkeypatch,
+):
+    stored_report = {
+        "id": "report-blocked-evidence",
+        "tool_name": "Noodle RAT",
+        "category": "malware",
+        "threat_type": "remote_access_trojan",
+        "created_at": datetime.now(timezone.utc),
+        "status": "completed",
+        "evaluation_status": "completed",
+        "quality_score": 4.4,
+        "processing_time_ms": 1200,
+        "user_id": "analyst-user",
+        "evidence_admissibility_status": "blocked",
+        "evidence_admissibility_version": "1",
+        "evidence_admissibility": {
+            "schemaVersion": "1",
+            "status": "blocked",
+            "sourceObservations": [],
+            "indicatorObservations": [
+                {
+                    "claimField": "ips",
+                    "claimIndex": 0,
+                    "value": "198.51.100.87",
+                    "disposition": "rejected",
+                    "reason": "Documentation-only address space cannot be operational.",
+                    "ruleId": "indicator.ip-documentation",
+                }
+            ],
+            "blockingFindings": ["TEST-NET-2 address was rejected."],
+            "summary": {"rejectedIndicators": 1},
+        },
+    }
+    user = supabase_auth.AuthenticatedUser(
+        user_id="analyst-user",
+        email="analyst@example.com",
+        metadata={"role": "analyst"},
+    )
+    monkeypatch.setattr(
+        api_main.report_service, "get_report", lambda *args, **kwargs: stored_report
+    )
+
+    response = asyncio.run(api_main.get_report("report-blocked-evidence", True, user))
+
+    assert response.review_status.value == "needs_attention"
+    assert response.eligible_for_judgment is True
+    assert response.eligible_for_acceptance is False
+    assert response.evidence_admissibility is not None
+    assert response.evidence_admissibility.indicator_observations[0].value == "198.51.100.87"
+
+
 def test_report_detail_returns_persisted_model_route_provenance(monkeypatch):
     route = {
         "requested_models": ["google/gemma-4-26b-a4b-it:free"],

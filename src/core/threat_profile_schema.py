@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class StrictModel(BaseModel):
@@ -23,8 +23,6 @@ class CoreMetadata(StrictModel):
     created_date: str = Field(alias="createdDate")
     last_updated: str = Field(alias="lastUpdated")
     profile_version: str = Field(alias="profileVersion")
-    tlp_classification: str = Field(alias="tlpClassification")
-    trust_score: str = Field(alias="trustScore")
 
 
 class PrimarySource(StrictModel):
@@ -65,12 +63,23 @@ class ClaimAttributionEntry(StrictModel):
         "recoveryGuidance",
     ] = Field(alias="claimField")
     claim_index: int = Field(alias="claimIndex", ge=0)
-    source_ids: list[str] = Field(alias="sourceIds", min_length=1)
+    evidence_role: Literal["direct_evidence", "general_practice"] = Field(alias="evidenceRole")
+    source_ids: list[str] = Field(alias="sourceIds")
+
+    @model_validator(mode="after")
+    def validate_evidence_role(self) -> "ClaimAttributionEntry":
+        if self.evidence_role == "direct_evidence" and not self.source_ids:
+            raise ValueError("Direct evidence claims require at least one source ID")
+        if self.evidence_role == "general_practice" and (
+            self.claim_class != "mitigation_action" or self.source_ids
+        ):
+            raise ValueError("General practice is only valid for uncited mitigation guidance")
+        return self
 
 
 class ClaimAttribution(StrictModel):
-    schema_version: Literal["3"] = Field(alias="schemaVersion")
-    claims: list[ClaimAttributionEntry] = Field(min_length=4)
+    schema_version: Literal["4"] = Field(alias="schemaVersion")
+    claims: list[ClaimAttributionEntry] = Field(min_length=1)
 
 
 class WebSearchSources(StrictModel):
@@ -357,8 +366,8 @@ def attest_profile_sources(
 
     attribution = profile.get("claimAttribution")
     claims = attribution.get("claims") if isinstance(attribution, dict) else None
-    if not isinstance(attribution, dict) or attribution.get("schemaVersion") != "3":
-        raise ValueError("Threat profile claim attribution must use schema version 3")
+    if not isinstance(attribution, dict) or attribution.get("schemaVersion") != "4":
+        raise ValueError("Threat profile claim attribution must use schema version 4")
     if not isinstance(claims, list):
         raise ValueError("Threat profile claim attribution is incomplete")
     required_classes = {
@@ -374,8 +383,15 @@ def attest_profile_sources(
             raise ValueError("Threat profile claim attribution contains an invalid claim")
         observed_classes.add(str(claim.get("claimClass") or ""))
         cited_ids = claim.get("sourceIds")
-        if not isinstance(cited_ids, list) or not cited_ids:
+        evidence_role = claim.get("evidenceRole")
+        if not isinstance(cited_ids, list):
+            raise ValueError("Threat profile claim attribution contains invalid source IDs")
+        if evidence_role == "direct_evidence" and not cited_ids:
             raise ValueError("Threat profile claim attribution contains an uncited claim")
+        if evidence_role == "general_practice" and (
+            claim.get("claimClass") != "mitigation_action" or cited_ids
+        ):
+            raise ValueError("Threat profile general-practice attribution is invalid")
         if any(str(source_id) not in known_source_ids for source_id in cited_ids):
             raise ValueError("Threat profile claim attribution references an unknown source ID")
     if not required_classes.issubset(observed_classes):

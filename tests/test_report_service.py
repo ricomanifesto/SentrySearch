@@ -126,6 +126,11 @@ def test_additive_migration_creates_model_route_columns():
     )
     assert "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluated_at TIMESTAMPTZ" in statements
     assert "ALTER TABLE reports ADD COLUMN IF NOT EXISTS content_preview TEXT" in statements
+    assert (
+        "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evidence_admissibility_status "
+        "VARCHAR(30) DEFAULT 'unassessed'" in statements
+    )
+    assert "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evidence_admissibility JSONB" in statements
     assert "ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_status VARCHAR(30)" in statements
     assert (
         "ALTER TABLE reports ADD COLUMN IF NOT EXISTS classification_status VARCHAR(30)"
@@ -372,6 +377,7 @@ def test_accepting_recorded_conflicts_requires_an_analyst_note():
         evaluation_status="completed",
         evaluation_attempts=3,
         quality_score=4.0,
+        evidence_admissibility_status="passed",
         quality_assessment={
             "consistency": {"inconsistencies": ["Timeline conflicts with metadata."]}
         },
@@ -404,6 +410,49 @@ def test_accepting_recorded_conflicts_requires_an_analyst_note():
             str(report.id),
             disposition=AnalystDisposition.ACCEPTED,
             note=None,
+            reviewer_user_id="analyst-user",
+            owner_user_id="analyst-user",
+        )
+
+
+def test_unassessed_report_cannot_be_accepted_for_reuse():
+    report = Report(
+        id="ad0a93e1-4d27-4388-83f0-c1c8fa688a2e",
+        tool_name="Legacy report",
+        status="completed",
+        evaluation_status="completed",
+        evaluation_attempts=1,
+        quality_score=4.0,
+        evidence_admissibility_status="unassessed",
+    )
+
+    class FakeQuery:
+        def filter(self, *args):
+            return self
+
+        def with_for_update(self):
+            return self
+
+        def first(self):
+            return report
+
+    class FakeSession:
+        def query(self, *args):
+            return FakeQuery()
+
+    class FakeDatabaseManager:
+        @contextmanager
+        def get_session(self):
+            yield FakeSession()
+
+    service = ReportStorageService.__new__(ReportStorageService)
+    service.db_manager = cast(Any, FakeDatabaseManager())
+
+    with pytest.raises(ValueError, match="passed evidence admissibility"):
+        service.append_report_disposition(
+            str(report.id),
+            disposition=AnalystDisposition.ACCEPTED,
+            note="Legacy review.",
             reviewer_user_id="analyst-user",
             owner_user_id="analyst-user",
         )
@@ -486,6 +535,57 @@ def test_failed_generation_preserves_the_last_observed_stage_for_recovery():
     assert report.generation_failure_stage == "validating"
     assert report.status == "failed"
     assert report.review_status == "generation_failed"
+
+
+def test_failed_evidence_gate_persists_its_named_audit_record():
+    report = Report(
+        id="ad0a93e1-4d27-4388-83f0-c1c8fa688a2f",
+        tool_name="Noodle RAT",
+        status="generating",
+        generation_stage="validating",
+    )
+    assessment = {
+        "schemaVersion": "1",
+        "status": "blocked",
+        "sourceObservations": [],
+        "indicatorObservations": [],
+        "blockingFindings": ["TEST-NET-2 address was rejected."],
+        "summary": {"rejectedIndicators": 1},
+    }
+
+    class FakeQuery:
+        def filter(self, *args):
+            return self
+
+        def first(self):
+            return report
+
+    class FakeSession:
+        def query(self, *args):
+            return FakeQuery()
+
+        def commit(self):
+            return None
+
+    class FakeDatabaseManager:
+        @contextmanager
+        def get_session(self):
+            yield FakeSession()
+
+    service = ReportStorageService.__new__(ReportStorageService)
+    service.db_manager = cast(Any, FakeDatabaseManager())
+
+    assert (
+        service.mark_report_failed(
+            str(report.id),
+            error_code="evidence_inadmissible",
+            failure={"evidence_admissibility": assessment},
+        )
+        is True
+    )
+    assert report.evidence_admissibility_status == "blocked"
+    assert report.evidence_admissibility_version == "1"
+    assert report.evidence_admissibility == assessment
 
 
 def test_empty_quality_distribution_has_no_average_score():

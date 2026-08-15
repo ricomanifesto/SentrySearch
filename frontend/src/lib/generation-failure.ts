@@ -55,6 +55,13 @@ export function getGenerationFailurePresentation(
         retryLabel: 'Start another run',
         targetExonerated: false,
       };
+    case 'evidence_inadmissible':
+      return {
+        heading: 'The evidence was unsafe for operational use',
+        detail: 'The run found documentation, special-use, training, or otherwise non-operational evidence in a high-risk claim. No unsafe report was finalized.',
+        retryLabel: 'Start another run',
+        targetExonerated: false,
+      };
     case 'persistence_failed':
       return {
         heading: 'The review record could not be saved',

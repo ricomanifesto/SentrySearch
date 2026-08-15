@@ -1,5 +1,12 @@
+import type {
+  AnalystDisposition,
+  EvidenceAdmissibility,
+  EvidenceAdmissibilityStatus,
+} from './api-contracts';
+
 export type ReviewAttentionSummary = {
   headline: string;
+  evidenceFindings: string[];
   conflicts: string[];
   recommendations: string[];
 };
@@ -28,11 +35,25 @@ export function getReviewAttentionSummary(
   assessment: Record<string, unknown> | null | undefined,
   sourceCount: number,
   analystDisposition: AnalystDisposition = 'unreviewed',
+  evidenceStatus: EvidenceAdmissibilityStatus = 'passed',
+  evidenceAdmissibility?: EvidenceAdmissibility | null,
+  acceptanceEligible = false,
 ): ReviewAttentionSummary | null {
+  const evidenceFindings = evidenceAdmissibility?.blocking_findings ?? [];
   if (!assessment) {
+    if (evidenceStatus !== 'passed') {
+      return {
+        headline: evidenceStatus === 'blocked'
+          ? 'Operational reuse is blocked by deterministic evidence checks.'
+          : 'Operational reuse is blocked because evidence admissibility was not assessed.',
+        evidenceFindings,
+        conflicts: [],
+        recommendations: [],
+      };
+    }
     return sourceCount > 0
       ? null
-      : { headline: 'No structured source evidence is attached.', conflicts: [], recommendations: [] };
+      : { headline: 'No structured source evidence is attached.', evidenceFindings: [], conflicts: [], recommendations: [] };
   }
   const summary = assessment.summary && typeof assessment.summary === 'object'
     ? assessment.summary as Record<string, unknown>
@@ -53,22 +74,26 @@ export function getReviewAttentionSummary(
     failed ? `${failed} failed section${failed === 1 ? '' : 's'}` : '',
     unavailable ? `${unavailable} unavailable section${unavailable === 1 ? '' : 's'}` : '',
     enhance ? `${enhance} section${enhance === 1 ? '' : 's'} marked to enhance` : '',
-    sourceCount < 1 ? 'no structured source evidence' : '',
+    sourceCount < 1 ? 'no operational source evidence' : '',
+    evidenceStatus === 'blocked' ? `${evidenceFindings.length || 1} deterministic evidence blocker${evidenceFindings.length === 1 ? '' : 's'}` : '',
+    evidenceStatus === 'unassessed' ? 'no deterministic evidence-admissibility record' : '',
   ].filter(Boolean);
   return reasons.length > 0
     ? {
         headline: conflicts.length > 0
-          ? analystDisposition === 'accepted'
+          ? analystDisposition === 'accepted' && acceptanceEligible
             ? `An analyst accepted this evaluation vintage with ${sentenceList(reasons)} still recorded below.`
+            : analystDisposition === 'accepted'
+              ? `An earlier analyst acceptance remains in history, but operational reuse is blocked by ${sentenceList(reasons)}.`
             : analystDisposition === 'rejected'
               ? `This evaluation vintage was rejected; ${sentenceList(reasons)} remain in its audit record.`
               : analystDisposition === 'needs_revision'
                 ? `Operational reuse remains blocked by ${sentenceList(reasons)}.`
                 : `Operational reuse is blocked by ${sentenceList(reasons)} until an analyst records a disposition.`
           : `Analyst review is required: ${sentenceList(reasons)}.`,
+        evidenceFindings,
         conflicts,
         recommendations,
       }
     : null;
 }
-import type { AnalystDisposition } from '@/lib/api-contracts';

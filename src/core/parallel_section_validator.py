@@ -68,6 +68,7 @@ class ParallelSectionValidator(SectionValidator):
         sections_to_validate, skipped_sections = select_profile_sections(profile)
         self.profile_source_context = dict(profile.get("webSearchSources") or {})
         self.profile_claim_attribution = dict(profile.get("claimAttribution") or {})
+        self.profile_evidence_admissibility = dict(profile.get("evidenceAdmissibility") or {})
         self.profile_evidence_text = evidence_text or ""
         results: dict[str, Any] = {
             "section_validations": {},
@@ -194,7 +195,7 @@ class ParallelSectionValidator(SectionValidator):
         attribution = profile.get("claimAttribution")
         claim_bound_sections = (
             frozenset(CLAIM_CLASS_SECTIONS.values())
-            if isinstance(attribution, dict) and attribution.get("schemaVersion") in {"2", "3"}
+            if isinstance(attribution, dict) and attribution.get("schemaVersion") in {"2", "3", "4"}
             else frozenset()
         )
         for index, (section_name, validation) in enumerate(

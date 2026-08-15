@@ -110,8 +110,52 @@ test('links explicit claim attribution to source identity without duplicating th
 
   assert.match(narrative, /href="#source-S1"/);
   assert.match(sources, /id="source-S1"/);
-  assert.match(sources, /attribution schema 3/);
+  assert.match(sources, /legacy attribution schema 3/);
+  assert.match(sources, /Operational evidence admissibility was not assessed/);
   assert.equal((sources.match(/Example analysis/g) ?? []).length, 1);
+});
+
+test('names quarantined sources and their reason instead of making them disappear', () => {
+  const html = renderToStaticMarkup(
+    <SourceEvidence
+      attributionStatus="attributed"
+      attributionVersion="4"
+      sources={[]}
+      evidenceAdmissibility={{
+        schema_version: '1',
+        status: 'blocked',
+        source_observations: [
+          {
+            source_id: 'S1',
+            title: 'Noodle RAT incident-response training scenario',
+            url: 'https://malwareandmonsters.com/resources/scenario-cards/noodle-rat',
+            domain: 'malwareandmonsters.com',
+            purpose: 'excluded_non_operational',
+            disposition: 'excluded',
+            reason: 'Training, tabletop, or fictional scenario material is not operational evidence.',
+            rule_id: 'source.training-scenario',
+          },
+        ],
+        indicator_observations: [],
+        blocking_findings: ['Operational claim cites S1, which is excluded_non_operational.'],
+        summary: {
+          operationalSources: 0,
+          contextSources: 0,
+          excludedSources: 1,
+          admittedIndicators: 0,
+          contextIndicators: 0,
+          rejectedIndicators: 0,
+          coveredOperationalClaims: 1,
+        },
+      }}
+    />,
+  );
+
+  assert.match(html, /Operational evidence checks blocked this record from reuse/);
+  assert.match(html, /Not used as operational evidence/);
+  assert.match(html, /Noodle RAT incident-response training scenario/);
+  assert.match(html, /id="source-S1"/);
+  assert.match(html, /Training, tabletop, or fictional scenario material/);
 });
 
 test('places forensic-artifact citations outside inline code', () => {

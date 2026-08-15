@@ -21,6 +21,24 @@ class EvidenceAttestationError(RuntimeError):
     retryable = False
 
 
+class EvidenceAdmissibilityError(RuntimeError):
+    """Raised when attested evidence is unsafe for operational use."""
+
+    generation_error_code = GenerationErrorCode.EVIDENCE_INADMISSIBLE
+    retryable = False
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        findings: list[str] | None = None,
+        assessment: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.findings = tuple(findings or ())
+        self.assessment = dict(assessment or {})
+
+
 class ProfileOutputError(RuntimeError):
     """Raised when synthesis output cannot satisfy the structured profile contract."""
 
@@ -53,7 +71,7 @@ def build_generation_failure(
     except (TypeError, ValueError):
         normalized_stage = None
     attempts = route.get("attempts") if isinstance(route, Mapping) else None
-    return {
+    failure = {
         "schema_version": 1,
         "error_code": code.value,
         "retryable": bool(getattr(error, "retryable", False)),
@@ -61,3 +79,7 @@ def build_generation_failure(
         "route_attempts": list(attempts) if isinstance(attempts, list) else [],
         "route": dict(route) if isinstance(route, Mapping) else None,
     }
+    evidence_assessment = getattr(error, "assessment", None)
+    if isinstance(evidence_assessment, Mapping):
+        failure["evidence_admissibility"] = dict(evidence_assessment)
+    return failure

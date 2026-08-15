@@ -58,6 +58,7 @@ Thumbs.db
 /data/
 /docs/*
 !/docs/generation-reliability-decision-*.md
+!/docs/evidence-admissibility-decision-*.md
 backup_*/
 # Legacy main files (keep API files)
 /main.py

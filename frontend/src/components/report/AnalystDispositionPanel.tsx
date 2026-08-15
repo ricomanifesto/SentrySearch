@@ -63,6 +63,7 @@ export function AnalystDispositionPanel({
   const [selected, setSelected] = React.useState<StoredAnalystDisposition | ''>(currentSelection);
   const [note, setNote] = React.useState('');
   const conflictCount = getRecordedConflictCount(report.quality_assessment);
+  const acceptanceBlocked = !report.eligible_for_acceptance;
   const conflictNoteRequired = selected === 'accepted' && conflictCount > 0;
   const missingRequiredNote = conflictNoteRequired && note.trim().length === 0;
 
@@ -90,7 +91,7 @@ export function AnalystDispositionPanel({
         {choices.map((choice) => (
           <label
             key={choice.value}
-            className={`cursor-pointer rounded-lg border p-4 ${selected === choice.value ? 'border-blue-600 bg-blue-50' : 'border-zinc-200 bg-white'}`}
+            className={`rounded-lg border p-4 ${choice.value === 'accepted' && acceptanceBlocked ? 'cursor-not-allowed border-zinc-200 bg-zinc-50 opacity-60' : 'cursor-pointer'} ${selected === choice.value ? 'border-blue-600 bg-blue-50' : 'border-zinc-200 bg-white'}`}
           >
             <span className="flex items-start gap-3">
               <input
@@ -99,6 +100,7 @@ export function AnalystDispositionPanel({
                 value={choice.value}
                 checked={selected === choice.value}
                 onChange={() => setSelected(choice.value)}
+                disabled={choice.value === 'accepted' && acceptanceBlocked}
                 className="mt-1 h-4 w-4 border-zinc-300 text-blue-600 focus:ring-blue-500"
               />
               <span>
@@ -132,7 +134,7 @@ export function AnalystDispositionPanel({
       <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
         <button
           type="button"
-          disabled={disabled || pending || !selected || missingRequiredNote}
+          disabled={disabled || pending || !selected || missingRequiredNote || (selected === 'accepted' && acceptanceBlocked)}
           onClick={() => {
             if (selected && !missingRequiredNote) onRecord(selected, note);
           }}
@@ -160,6 +162,11 @@ export function AnalystDispositionPanel({
       {conflictNoteRequired ? (
         <p className="mt-3 text-sm text-amber-800">
           Name why reuse is justified while the recorded conflicts remain unresolved.
+        </p>
+      ) : null}
+      {acceptanceBlocked ? (
+        <p className="mt-3 text-sm text-amber-800">
+          Accept for reuse is unavailable until deterministic evidence admissibility passes. Needs revision and Reject remain available for this audit record.
         </p>
       ) : null}
 

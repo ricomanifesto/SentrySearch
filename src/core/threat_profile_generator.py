@@ -27,9 +27,15 @@ from src.core.threat_profile_schema import (
     parse_threat_profile_response,
 )
 from src.core.generation_failures import (
+    EvidenceAdmissibilityError,
     EvidenceAttestationError,
     EvidenceUnavailableError,
     ProfileOutputError,
+)
+from src.core.evidence_admissibility import (
+    assess_profile_evidence,
+    classify_research_sources,
+    evidence_correction_prompt,
 )
 from src.core.source_ledger import (
     SourceLedgerError,
@@ -70,6 +76,9 @@ complete corrected JSON object.
 - Every primary sourceId and URL MUST be copied exactly from the attested source catalog.
 - If a catalog source supports a claim, include that source in primarySources before citing it.
 - claimField and claimIndex MUST select a real non-empty value from the named claim class.
+- Schema version 4 MUST cover every non-empty allowed claim-field item exactly once.
+- Preserve evidenceRole: direct_evidence requires source IDs; general_practice is
+  allowed only for uncited generic mitigation guidance.
 - Do not invent, renumber, infer, or silently remove evidence.
 """
 
@@ -318,7 +327,7 @@ Return a compact but technically dense evidence dossier. Include concrete findin
                 raise EvidenceUnavailableError("OpenRouter web search returned no source evidence")
 
             try:
-                research_sources = attach_source_ids(research_sources)
+                research_sources = classify_research_sources(attach_source_ids(research_sources))
             except SourceLedgerError as error:
                 raise EvidenceAttestationError("Research source catalog was invalid") from error
 
@@ -343,9 +352,7 @@ Based on your comprehensive research findings, create a detailed profile in the 
     "profileAuthor": "OpenRouter model pipeline",
     "createdDate": "{datetime.now().strftime('%Y-%m-%d')}",
     "lastUpdated": "{datetime.now().strftime('%Y-%m-%d')}",
-    "profileVersion": "1.0",
-    "tlpClassification": "TLP:AMBER",
-    "trustScore": "Based on source quality"
+    "profileVersion": "1.0"
   }},
   "webSearchSources": {{
     "searchQueriesUsed": ["REQUIRED: List the research-stage queries represented in the evidence dossier"],
@@ -366,31 +373,35 @@ Based on your comprehensive research findings, create a detailed profile in the 
     "sourceReliability": "REQUIRED: Assessment based on attested domain authority and content quality"
   }},
   "claimAttribution": {{
-    "schemaVersion": "3",
+    "schemaVersion": "4",
     "claims": [
       {{
         "claimClass": "threat_activity",
         "claimField": "riskFactors",
         "claimIndex": 0,
+        "evidenceRole": "direct_evidence",
         "sourceIds": ["REQUIRED: One or more exact sourceId values supporting this claim"]
       }},
       {{
         "claimClass": "forensic_artifact",
         "claimField": "fileSystemArtifacts OR registryArtifacts OR networkArtifacts OR memoryArtifacts OR logArtifacts",
         "claimIndex": 0,
+        "evidenceRole": "direct_evidence",
         "sourceIds": ["REQUIRED: One or more exact sourceId values supporting this claim"]
       }},
       {{
         "claimClass": "detection_indicator",
         "claimField": "hashes OR domains OR ips OR urls OR filenames OR behavioralIndicators",
         "claimIndex": 0,
+        "evidenceRole": "direct_evidence",
         "sourceIds": ["REQUIRED: One or more exact sourceId values supporting this claim"]
       }},
       {{
         "claimClass": "mitigation_action",
         "claimField": "preventiveMeasures OR detectionMethods OR responseActions OR recoveryGuidance",
         "claimIndex": 0,
-        "sourceIds": ["REQUIRED: One or more exact sourceId values supporting this claim"]
+        "evidenceRole": "direct_evidence OR general_practice",
+        "sourceIds": ["REQUIRED for direct_evidence; empty only for general_practice"]
       }}
     ]
   }},
@@ -537,9 +548,13 @@ CRITICAL INSTRUCTIONS FOR OUTPUT:
 7. Cross-reference claims across multiple attested sources when possible
 8. If the attested research is limited, acknowledge this limitation in the relevant sections
 9. Preserve each sourceId exactly as supplied and use only those IDs in claimAttribution
-10. claimAttribution schemaVersion 3 MUST include at least one supported claim in each of the four named high-risk claim classes
+10. claimAttribution schemaVersion 4 MUST include exactly one selector for EVERY non-empty item in EVERY allowed claim field, not one representative item per class
 11. claimField MUST use one allowed field shown for its class, and claimIndex MUST select one real non-empty item from that field's array
-12. The application copies the selected item into the stored claim text; sourceIds identify its evidence, never a substitute source list
+12. Use evidenceRole direct_evidence with one or more exact sourceIds for every target-specific fact, artifact, indicator, detection, or response action
+13. evidenceRole general_practice is allowed only for generic mitigation guidance; it MUST use an empty sourceIds list and MUST NOT assert a target-specific fact
+14. Sources marked context_only or excluded_non_operational in the source catalog MUST NOT appear in primarySources or support high-risk claims
+15. Documentation, reserved, special-use, training, tabletop, and fictional infrastructure MUST NOT appear in operational IOC fields or target-specific actions
+16. The application copies the selected item into the stored claim text; sourceIds identify its evidence, never a substitute source list
 
 Remember: Accuracy and source verification are more important than completeness.
 
@@ -620,6 +635,27 @@ END ATTESTED SOURCE CATALOG"""
                     )
                     attest_profile_sources(json_data, response.web_search_sources)
                     assert_claim_attribution_consistent(json_data)
+                    assess_profile_evidence(json_data, response.web_search_sources)
+                except EvidenceAdmissibilityError as error:
+                    if attempt >= ATTRIBUTION_CORRECTION_ATTEMPTS:
+                        raise
+                    logger.warning(
+                        "Structured synthesis failed the operational evidence gate; "
+                        "requesting one bounded correction"
+                    )
+                    emit_progress(
+                        0.76,
+                        GenerationStage.VALIDATING,
+                        "Removing inadmissible operational evidence...",
+                    )
+                    request_content = [
+                        cached_prompt_block,
+                        {
+                            "type": "text",
+                            "text": f"\n\n{evidence_correction_prompt(error)}",
+                        },
+                    ]
+                    continue
                 except ValueError as error:
                     can_correct = attempt < ATTRIBUTION_CORRECTION_ATTEMPTS and str(error) in {
                         UNKNOWN_CLAIM_SOURCE_ERROR,

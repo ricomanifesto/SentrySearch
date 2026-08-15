@@ -119,9 +119,14 @@ const expectations = [
     pattern: /claim_class: 'threat_activity'[\s\S]*claim_class: 'forensic_artifact'[\s\S]*claim_class: 'detection_indicator'[\s\S]*claim_class: 'mitigation_action'/,
   },
   {
-    name: 'teaches current claim attribution schema 3',
+    name: 'teaches current claim attribution schema 4',
     source: sampleReport,
-    pattern: /claim_attribution_version: '3'[\s\S]*schemaVersion: '3'/,
+    pattern: /claim_attribution_version: '4'[\s\S]*schemaVersion: '4'/,
+  },
+  {
+    name: 'teaches the current deterministic evidence-admissibility contract',
+    source: sampleReport,
+    pattern: /evidence_admissibility_status: 'passed'[\s\S]*schema_version: '1'/,
   },
   {
     name: 'teaches explicit claim selectors instead of duplicated model prose',
