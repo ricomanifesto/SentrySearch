@@ -386,13 +386,15 @@ def test_generation_separates_web_research_from_structured_synthesis(
     assert synthesis_request["route_purpose"] == "synthesis"
     assert synthesis_request["max_tokens"] == 32768
     assert synthesis_request["session_id"].startswith("sentrysearch-synthesis-")
+    assert synthesis_request["strict_response_schema"] is False
     assert "tools" not in synthesis_request
-    assert "https://example.com/report" in synthesis_request["messages"][0]["content"]
-    assert "Example Threat uses remote access capabilities" in (
-        synthesis_request["messages"][0]["content"]
-    )
-    assert '"sourceId": "S1"' in synthesis_request["messages"][0]["content"]
-    assert '"claimAttribution"' in synthesis_request["messages"][0]["content"]
+    synthesis_content = synthesis_request["messages"][0]["content"]
+    assert synthesis_content[0]["cache_control"] == {"type": "ephemeral"}
+    synthesis_prompt = "".join(block["text"] for block in synthesis_content)
+    assert "https://example.com/report" in synthesis_prompt
+    assert "Example Threat uses remote access capabilities" in synthesis_prompt
+    assert '"sourceId": "S1"' in synthesis_prompt
+    assert '"claimAttribution"' in synthesis_prompt
     synthesis_response = next(response for response in messages.responses if response.parsed)
     assert synthesis_response.usage.input_tokens == 60
     assert synthesis_response.usage.output_tokens == 100
@@ -490,11 +492,14 @@ def test_generation_retries_one_invalid_claim_map_without_weakening_attestation(
         key: value for key, value in result.items() if not key.startswith("_")
     } == threat_profile_data
     assert len(requests) == 2
-    assert "CORRECTION ATTEMPT AFTER A FAILED EVIDENCE CONTRACT" in (
-        requests[1]["messages"][0]["content"]
-    )
-    assert "Every claimAttribution sourceId MUST appear" in (requests[1]["messages"][0]["content"])
-    assert "claimField and claimIndex MUST select" in (requests[1]["messages"][0]["content"])
+    initial_content = requests[0]["messages"][0]["content"]
+    correction_content = requests[1]["messages"][0]["content"]
+    assert correction_content[0] == initial_content[0]
+    assert correction_content[0]["cache_control"] == {"type": "ephemeral"}
+    correction_text = correction_content[1]["text"]
+    assert "CORRECTION ATTEMPT AFTER A FAILED EVIDENCE CONTRACT" in correction_text
+    assert "Every claimAttribution sourceId MUST appear" in correction_text
+    assert "claimField and claimIndex MUST select" in correction_text
     assert requests[1]["provider"] == requests[0]["provider"]
     assert "fallback_models" not in requests[0]
     assert "fallback_models" not in requests[1]
@@ -502,6 +507,8 @@ def test_generation_retries_one_invalid_claim_map_without_weakening_attestation(
     assert requests[1]["model"] == "google/gemini-2.5-flash"
     assert requests[0]["session_id"] == requests[1]["session_id"]
     assert requests[0]["session_id"].startswith("sentrysearch-synthesis-")
+    assert requests[0]["strict_response_schema"] is False
+    assert requests[1]["strict_response_schema"] is False
     assert progress_updates[-3].message == ("Reconciling claim evidence with the source ledger...")
     assert progress_updates[-1].stage is GenerationStage.FINALIZING
     assert requests[0]["response_format"] is ThreatProfile

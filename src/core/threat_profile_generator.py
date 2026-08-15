@@ -58,12 +58,10 @@ ATTRIBUTION_CORRECTION_ATTEMPTS = 1
 SYNTHESIS_RETRY_POLICY = RetryPolicy(max_attempts=1)
 
 
-def _claim_attribution_correction_prompt(prompt: str) -> str:
-    """Repeat synthesis once with the exact failed evidence invariant made explicit."""
+def _claim_attribution_correction_prompt() -> str:
+    """Describe the exact evidence invariant that earns one correction pass."""
 
-    return f"""{prompt}
-
-CORRECTION ATTEMPT AFTER A FAILED EVIDENCE CONTRACT:
+    return """CORRECTION ATTEMPT AFTER A FAILED EVIDENCE CONTRACT:
 The previous structured response used an invalid claim selector or cited a
 sourceId absent from its own webSearchSources.primarySources ledger. Return a
 complete corrected JSON object.
@@ -565,7 +563,12 @@ END ATTESTED SOURCE CATALOG"""
             synthesis_responses: list[SimpleNamespace] = []
             response: SimpleNamespace | None = None
             json_data: dict[str, Any] | None = None
-            request_prompt = prompt
+            cached_prompt_block = {
+                "type": "text",
+                "text": prompt,
+                "cache_control": {"type": "ephemeral"},
+            }
+            request_content = [cached_prompt_block]
             synthesis_session_id = f"sentrysearch-synthesis-{uuid4().hex}"
             for attempt in range(ATTRIBUTION_CORRECTION_ATTEMPTS + 1):
                 response = self._request_model(
@@ -581,11 +584,15 @@ END ATTESTED SOURCE CATALOG"""
                     # without turning an incomplete response into an unbounded retry.
                     max_tokens=32768,
                     temperature=0.3,
+                    # Gemini rejects very large or deeply nested response schemas.
+                    # JSON mode keeps provider-side syntax enforcement while the
+                    # complete Pydantic, evidence, and persist gates stay local.
+                    strict_response_schema=False,
                     # Gemini can reuse the unchanged dossier prefix during the one
                     # bounded evidence-correction pass. A stable session also keeps
                     # that pass on the provider route that succeeded.
                     session_id=synthesis_session_id,
-                    messages=[{"role": "user", "content": request_prompt}],
+                    messages=[{"role": "user", "content": request_content}],
                     response_format=ThreatProfile,
                 )
                 response.web_search_sources = research_sources
@@ -632,7 +639,13 @@ END ATTESTED SOURCE CATALOG"""
                         GenerationStage.VALIDATING,
                         "Reconciling claim evidence with the source ledger...",
                     )
-                    request_prompt = _claim_attribution_correction_prompt(prompt)
+                    request_content = [
+                        cached_prompt_block,
+                        {
+                            "type": "text",
+                            "text": f"\n\n{_claim_attribution_correction_prompt()}",
+                        },
+                    ]
                     continue
                 break
 

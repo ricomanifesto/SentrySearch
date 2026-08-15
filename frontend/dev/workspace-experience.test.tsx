@@ -213,10 +213,13 @@ test('recorded judgment owns operational readiness without erasing machine confl
 
 test('generation failure copy exonerates the target only when the record proves a route failure', () => {
   const provider = getGenerationFailurePresentation('provider_unavailable', true);
+  const rejected = getGenerationFailurePresentation('model_request_rejected', false);
   const evidence = getGenerationFailurePresentation('evidence_unavailable', false);
   const unknown = getGenerationFailurePresentation('unknown', false);
 
   assert.match(provider.detail, /Your target was not the cause/);
+  assert.match(rejected.detail, /Your target was not the cause/);
+  assert.match(rejected.heading, /rejected the report contract/);
   assert.doesNotMatch(evidence.detail, /Your target was not the cause/);
   assert.match(evidence.detail, /too obscure|more specific name/);
   assert.doesNotMatch(unknown.detail, /Your target was not the cause/);

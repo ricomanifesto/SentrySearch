@@ -126,12 +126,21 @@ target or evaluator, the winning explanation for the remaining failure.
 
 Research stays on its working free-first Gemma route. Structured synthesis moves
 to `google/gemini-2.5-flash`, pinned to Google AI Studio, because that route
-supports the required JSON-schema contract without the paid same-family fallback
-that failed both witnesses. Evaluation remains independently routed.
+offers JSON-mode output and more completion headroom without the paid
+same-family fallback that failed both witnesses. Evaluation remains
+independently routed.
+
+The first deployed request to this route was rejected by Google AI Studio with
+HTTP 400 in 411 milliseconds, before inference. Gemini documents this response
+for very large or deeply nested response schemas, which matches the full threat
+profile contract. Synthesis therefore uses provider JSON mode and keeps the
+complete Pydantic, evidence-attestation, and persist contracts in the
+application. Provider-side syntax enforcement remains; application truth gates
+do not weaken.
 
 The one permitted evidence-correction pass reuses a stable per-report
-`session_id` and preserves the original dossier and schema as an exact prompt
-prefix. This allows Gemini's provider-side implicit prompt cache to reuse that
-prefix when available, while cache-token telemetry records whether reuse really
-occurred. Identical-response caching is deliberately disabled: replaying a
-successful HTTP response would also replay the same contract-invalid output.
+`session_id` and preserves the original dossier behind an explicit ephemeral
+cache breakpoint. This allows Gemini's prompt cache to reuse that prefix when
+available, while cache-token telemetry records whether reuse really occurred.
+Identical-response caching is deliberately disabled: replaying a successful
+HTTP response would also replay the same contract-invalid output.

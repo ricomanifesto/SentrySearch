@@ -108,6 +108,12 @@ class ModelOutputError(ModelRetryableError):
     generation_error_code = GenerationErrorCode.MODEL_OUTPUT_INVALID
 
 
+class ModelRequestRejectedError(ModelClientError):
+    """Raised when a provider rejects the request contract before inference."""
+
+    generation_error_code = GenerationErrorCode.MODEL_REQUEST_REJECTED
+
+
 def resolve_model_name(model_name: str | None = None) -> str:
     """Return the configured OpenRouter model ID."""
     return (model_name or os.getenv(MODEL_ENV_VAR, DEFAULT_MODEL)).strip()
@@ -253,7 +259,10 @@ class ModelClient:
         if tools:
             request["tools"] = tools
         if response_format is not None:
-            request["response_format"] = self._structured_output_config(response_format)
+            request["response_format"] = self._structured_output_config(
+                response_format,
+                strict_schema=bool(kwargs.get("strict_response_schema", True)),
+            )
         provider = dict(kwargs.get("provider") or {})
         if tools or response_format is not None:
             provider["require_parameters"] = True
@@ -529,7 +538,7 @@ class ModelClient:
             raise ModelUnavailableError("OpenRouter model route unavailable")
         if not response.is_success:
             detail = error_type or f"HTTP {response.status_code}"
-            raise ModelClientError(f"OpenRouter request failed: {detail}")
+            raise ModelRequestRejectedError(f"OpenRouter request failed: {detail}")
         return response
 
     @staticmethod
@@ -596,15 +605,15 @@ class ModelClient:
         except (ValidationError, ValueError, TypeError) as error:
             raise ModelOutputError("OpenRouter structured output was invalid") from error
 
-    def _build_messages(self, kwargs: dict[str, Any]) -> list[dict[str, str]]:
-        messages: list[dict[str, str]] = []
+    def _build_messages(self, kwargs: dict[str, Any]) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = []
         if system := self._content_to_text(kwargs.get("system", "")):
             messages.append({"role": "system", "content": system})
         for message in kwargs.get("messages") or []:
             messages.append(
                 {
                     "role": str(message.get("role", "user")),
-                    "content": self._content_to_text(message.get("content", "")),
+                    "content": self._message_content(message.get("content", "")),
                 }
             )
         if not messages:
@@ -631,10 +640,36 @@ class ModelClient:
             normalized.append(tool)
         return normalized
 
+    @classmethod
+    def _message_content(cls, content: Any) -> str | list[dict[str, Any]]:
+        """Preserve cacheable text blocks while normalizing legacy text content."""
+
+        if not isinstance(content, list):
+            return cls._content_to_text(content)
+
+        blocks: list[dict[str, Any]] = []
+        for part in content:
+            if not isinstance(part, dict) or part.get("type", "text") != "text":
+                return cls._content_to_text(content)
+            block: dict[str, Any] = {
+                "type": "text",
+                "text": str(part.get("text", "")),
+            }
+            if isinstance(part.get("cache_control"), dict):
+                block["cache_control"] = dict(part["cache_control"])
+            blocks.append(block)
+        return blocks
+
     @staticmethod
-    def _structured_output_config(response_format: Any) -> dict[str, Any]:
+    def _structured_output_config(
+        response_format: Any,
+        *,
+        strict_schema: bool = True,
+    ) -> dict[str, Any]:
         if not hasattr(response_format, "model_json_schema"):
             raise ModelClientError("Structured output format must be a Pydantic model")
+        if not strict_schema:
+            return {"type": "json_object"}
         return {
             "type": "json_schema",
             "json_schema": {

@@ -25,6 +25,7 @@ const failureCauseLabels: Record<GenerationErrorCode, string> = {
   provider_rate_limited: 'Provider rate limited',
   provider_unavailable: 'Provider route unavailable',
   provider_timeout: 'Provider timed out',
+  model_request_rejected: 'Model request rejected',
   model_output_invalid: 'Model output invalid',
   evidence_unavailable: 'Evidence unavailable',
   evidence_unattested: 'Evidence could not be attested',

@@ -12,6 +12,7 @@ from src.core.openrouter_client import (
     ModelClient,
     ModelClientError,
     ModelRateLimitError,
+    ModelRequestRejectedError,
     ModelRetryableError,
     evaluation_request_options,
     research_request_options,
@@ -418,6 +419,46 @@ def test_model_client_sends_strict_schema_and_parses_chat_completion():
     }
 
 
+def test_model_client_uses_json_mode_and_preserves_prompt_cache_breakpoint():
+    requests = []
+    client = model_client(
+        [(200, chat_response('{"value":"structured"}', model="google/gemini-2.5-flash"), {})],
+        requests,
+    )
+
+    result = client.messages.create(
+        model="google/gemini-2.5-flash",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Evidence dossier",
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                    {"type": "text", "text": "Correction"},
+                ],
+            }
+        ],
+        response_format=StructuredResult,
+        strict_response_schema=False,
+        session_id="sentrysearch-synthesis-stable",
+    )
+
+    request_body = json.loads(requests[0].content)
+    assert result.parsed.value == "structured"
+    assert request_body["response_format"] == {"type": "json_object"}
+    assert request_body["messages"][0]["content"] == [
+        {
+            "type": "text",
+            "text": "Evidence dossier",
+            "cache_control": {"type": "ephemeral"},
+        },
+        {"type": "text", "text": "Correction"},
+    ]
+
+
 def test_model_client_captures_chat_citations():
     annotations = [
         {
@@ -563,6 +604,16 @@ def test_model_client_maps_http_internal_server_error_to_retryable_failure():
 
     with pytest.raises(ModelRetryableError, match="HTTP 500"):
         client.messages.create(messages=[{"role": "user", "content": "hello"}])
+
+
+def test_model_client_classifies_provider_request_rejection_before_inference():
+    client = model_client([(400, {"error": {"code": 400, "message": "Invalid argument"}}, {})])
+
+    with pytest.raises(ModelRequestRejectedError, match="HTTP 400") as captured:
+        client.messages.create(messages=[{"role": "user", "content": "hello"}])
+
+    assert captured.value.generation_error_code.value == "model_request_rejected"
+    assert captured.value.retryable is False
 
 
 def test_model_client_retries_length_response_with_a_larger_bounded_budget(monkeypatch):

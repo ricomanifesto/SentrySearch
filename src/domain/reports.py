@@ -68,6 +68,7 @@ class GenerationErrorCode(StrEnum):
     PROVIDER_RATE_LIMITED = "provider_rate_limited"
     PROVIDER_UNAVAILABLE = "provider_unavailable"
     PROVIDER_TIMEOUT = "provider_timeout"
+    MODEL_REQUEST_REJECTED = "model_request_rejected"
     MODEL_OUTPUT_INVALID = "model_output_invalid"
     EVIDENCE_UNAVAILABLE = "evidence_unavailable"
     EVIDENCE_UNATTESTED = "evidence_unattested"

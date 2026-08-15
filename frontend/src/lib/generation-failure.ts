@@ -34,6 +34,13 @@ export function getGenerationFailurePresentation(
         retryLabel: 'Retry this target',
         targetExonerated: true,
       };
+    case 'model_request_rejected':
+      return {
+        heading: 'The authoring route rejected the report contract',
+        detail: 'Your target was not the cause. The model route stopped before it produced report content.',
+        retryLabel: 'Retry this target',
+        targetExonerated: true,
+      };
     case 'evidence_unavailable':
       return {
         heading: 'Not enough attested evidence was returned',
