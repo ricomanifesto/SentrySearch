@@ -9,7 +9,10 @@ from pydantic import ValidationError
 from src.core.section_validator import SectionValidator
 from src.core.parallel_section_validator import ParallelSectionValidator
 from src.core.markdown_generator import generate_markdown
-from src.core.threat_profile_generator import ThreatProfileGenerator
+from src.core.threat_profile_generator import (
+    ThreatProfileGenerator,
+    _operational_synthesis_sources,
+)
 from src.domain.reports import GenerationProgress, GenerationStage
 from src.core.threat_profile_schema import (
     ThreatProfile,
@@ -42,6 +45,42 @@ def generated_embedded_profile(profile: dict) -> dict:
     return generated
 
 
+def test_structured_synthesis_catalog_exposes_only_captured_operational_sources():
+    sources = [
+        {
+            "sourceId": "S1",
+            "evidencePurpose": "operational",
+            "contentSnapshot": {
+                "status": "captured",
+                "text": "Operational report",
+                "sha256": "a" * 64,
+            },
+        },
+        {
+            "sourceId": "S2",
+            "evidencePurpose": "context_only",
+            "contentSnapshot": {
+                "status": "captured",
+                "text": "Context document",
+                "sha256": "b" * 64,
+            },
+        },
+        {
+            "sourceId": "S3",
+            "evidencePurpose": "operational",
+            "contentSnapshot": {
+                "status": "unavailable",
+                "text": None,
+                "sha256": None,
+            },
+        },
+    ]
+
+    eligible = _operational_synthesis_sources(sources)
+
+    assert [source["sourceId"] for source in eligible] == ["S1"]
+
+
 @pytest.fixture(autouse=True)
 def captured_research_sources(monkeypatch):
     """Keep generator tests deterministic at the new source-capture boundary."""
@@ -71,6 +110,19 @@ def captured_research_sources(monkeypatch):
     monkeypatch.setattr(
         "src.core.threat_profile_generator.capture_source_snapshots",
         capture,
+    )
+    monkeypatch.setattr(
+        "src.core.threat_profile_generator.classify_research_sources",
+        lambda sources: [
+            {
+                **dict(source),
+                "evidencePurpose": "operational",
+                "evidenceDisposition": "admitted",
+                "evidenceReason": "Captured test source.",
+                "evidenceRuleId": "source.captured-operational-content",
+            }
+            for source in sources
+        ],
     )
     monkeypatch.setattr(
         "src.core.threat_profile_generator.research_source_observations",
@@ -597,6 +649,8 @@ def test_generation_separates_web_research_from_structured_synthesis(
     assert "the application derives schema-5 claim selectors" in synthesis_prompt
     assert "reuse at least one exact nontrivial token" in synthesis_prompt
     assert "at least one verified item in each high-risk claim class" in synthesis_prompt
+    assert "BEGIN ATTESTED OPERATIONAL SOURCE CATALOG" in synthesis_prompt
+    assert "withheld from synthesis" in synthesis_prompt
     synthesis_response = next(response for response in messages.responses if response.parsed)
     assert synthesis_response.usage.input_tokens == 60
     assert synthesis_response.usage.output_tokens == 100
