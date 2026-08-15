@@ -19,14 +19,14 @@ export default function SampleReport() {
       <div className="border-b border-zinc-200 bg-white">
         <div className="mx-auto flex max-w-6xl flex-col items-start justify-between gap-3 px-6 py-4 sm:flex-row sm:items-center lg:px-8">
           <p className="text-base text-zinc-600">
-            <span className="font-medium text-zinc-950">Sample report.</span> The same
-            report renderer used in the analyst workspace, with no account needed.
+            <span className="font-medium text-zinc-950">Abridged sample record.</span> It uses
+            the same report renderer as the analyst workspace, with no account needed.
           </p>
           <Link
-            href="/auth/signup"
+            href="/generate"
             className="group inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-zinc-950 px-4 text-base font-medium text-white transition-colors hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 focus-visible:ring-offset-2"
           >
-            Generate your own
+            Generate a report
             <ArrowRightIcon className="h-4 w-4 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
           </Link>
         </div>
@@ -47,8 +47,12 @@ export default function SampleReport() {
             </span>
           </div>
           <p className="mt-4 max-w-2xl text-lg leading-8 text-zinc-600">
-            A source-backed profile showing how the production narrative, code, metadata,
-            and citation evidence are presented for review.
+            A curated, source-backed profile showing how the production renderer presents
+            narrative, code, metadata, and citation evidence for review.
+          </p>
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500">
+            This sample is intentionally shorter than a generated report and omits the full
+            research methodology, raw extraction record, and evaluator appendix.
           </p>
         </header>
 
@@ -65,13 +69,18 @@ export default function SampleReport() {
         <div className="fade-up fade-up-2 mt-10 grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start">
           <section className="order-last min-w-0 rounded-xl border border-zinc-200 bg-white p-6 sm:p-8 lg:order-first">
             <p className="text-base font-semibold text-zinc-950">Intelligence narrative</p>
-            <ReportNarrative markdown={SAMPLE_REPORT.markdown_content ?? ''} />
+            <ReportNarrative
+              markdown={SAMPLE_REPORT.markdown_content ?? ''}
+              claimAttributions={SAMPLE_REPORT.claim_attributions}
+            />
           </section>
           <aside className="order-first rounded-xl border border-zinc-200 bg-white p-5 lg:order-last lg:sticky lg:top-24">
             <SourceEvidence
               sources={SAMPLE_REPORT.web_sources}
               dateLabel="Captured"
               heading="Sources"
+              attributionStatus={SAMPLE_REPORT.claim_attribution_status}
+              attributionVersion={SAMPLE_REPORT.claim_attribution_version}
             />
           </aside>
         </div>
@@ -79,11 +88,11 @@ export default function SampleReport() {
         <div className="mt-12 rounded-2xl border border-zinc-200 bg-zinc-950 px-6 py-12 text-center sm:px-12">
           <h2 className="text-2xl font-semibold tracking-tight text-white">Run this on a target of your own</h2>
           <p className="mx-auto mt-3 max-w-md text-base leading-7 text-zinc-300">
-            Create a workspace to generate source-backed reports and keep the evidence beside every review record.
+            Open the workspace to generate source-backed reports and keep the evidence beside every review record.
           </p>
           <div className="mt-8 flex justify-center">
-            <Link href="/auth/signup" className="group inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-white px-6 text-base font-medium text-zinc-950 transition-colors hover:bg-zinc-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950">
-              Get started
+            <Link href="/generate" className="group inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-white px-6 text-base font-medium text-zinc-950 transition-colors hover:bg-zinc-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950">
+              Open workspace
               <ArrowRightIcon className="h-4 w-4 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
             </Link>
           </div>

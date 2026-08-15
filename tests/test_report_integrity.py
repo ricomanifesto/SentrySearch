@@ -1,16 +1,28 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
 from src.core.source_ledger import (
     SourceLedgerError,
+    assert_claim_attribution_consistent,
     assert_markdown_source_ledger_consistent,
     assert_source_ledger_consistent,
     canonicalize_profile_sources,
+    claim_attribution_status,
 )
 from src.core.validation_criteria import SECTION_CRITERIA, build_section_evaluation_prompt
+from src.core.validation_criteria import ConsistencyEvaluation
+from src.core.section_validator import SectionValidator
+from src.core import section_validator as section_validator_module
 from src.core.markdown_generator import generate_markdown
-from src.domain.reports import EvaluationStatus, ReportStatus, ReviewStatus, derive_review_status
+from src.domain.reports import (
+    ClaimAttributionStatus,
+    EvaluationStatus,
+    ReportStatus,
+    ReviewStatus,
+    derive_review_status,
+)
 from src.storage.models import Report
 from src.storage.report_service import ReportStorageService
 
@@ -52,6 +64,55 @@ def test_source_ledger_derives_every_reader_source_surface_from_primary_sources(
     ]
     assert "comprehensiveWebSearchSources" not in profile
     assert_source_ledger_consistent(profile, sources)
+
+
+def test_claim_attribution_v2_is_explicit_and_legacy_claims_are_never_inferred():
+    legacy = source_profile()
+    assert claim_attribution_status(legacy) == (ClaimAttributionStatus.LEGACY, None)
+
+    attributed = source_profile()
+    attributed["webSearchSources"]["primarySources"][0]["sourceId"] = "S1"
+    attributed.update(
+        {
+            "threatIntelligence": {"activity": "Observed campaign activity"},
+            "forensicArtifacts": {"fileSystemArtifacts": ["example.exe"]},
+            "detectionAndMitigation": {"behavioralIndicators": ["Service creation"]},
+            "mitigationAndResponse": {"responseActions": ["Isolate the host"]},
+            "claimAttribution": {
+                "schemaVersion": "2",
+                "claims": [
+                    {
+                        "claimClass": "threat_activity",
+                        "claim": "Observed campaign activity",
+                        "sourceIds": ["S1"],
+                    },
+                    {
+                        "claimClass": "forensic_artifact",
+                        "claim": "example.exe",
+                        "sourceIds": ["S1"],
+                    },
+                    {
+                        "claimClass": "detection_indicator",
+                        "claim": "Service creation",
+                        "sourceIds": ["S1"],
+                    },
+                    {
+                        "claimClass": "mitigation_action",
+                        "claim": "Isolate the host",
+                        "sourceIds": ["S1"],
+                    },
+                ],
+            },
+        }
+    )
+
+    assert claim_attribution_status(attributed) == (ClaimAttributionStatus.ATTRIBUTED, "2")
+    assert_claim_attribution_consistent(attributed)
+
+    attributed["claimAttribution"]["claims"][0]["sourceIds"] = ["S99"]
+    assert claim_attribution_status(attributed) == (ClaimAttributionStatus.UNATTRIBUTED, "2")
+    with pytest.raises(SourceLedgerError, match="schema v2"):
+        assert_claim_attribution_consistent(attributed)
 
 
 def test_source_ledger_refuses_to_finalize_a_divergent_reference_list():
@@ -142,3 +203,41 @@ def test_evaluation_prompt_names_the_current_date_boundary_explicitly():
 
     assert "Current UTC date: 2026-08-14" in prompt
     assert "never as future dates" in prompt
+    assert "Current UTC date: Unknown" not in prompt
+
+    with pytest.raises(ValueError, match="host-owned current UTC date"):
+        build_section_evaluation_prompt(
+            "webSearchSources",
+            {"primarySources": []},
+            SECTION_CRITERIA["webSearchSources"],
+            current_date="",
+        )
+
+
+def test_consistency_request_carries_the_current_utc_date(monkeypatch):
+    captured: dict = {}
+
+    class FixedDateTime:
+        @classmethod
+        def now(cls, _timezone):
+            return datetime(2026, 8, 14, tzinfo=timezone.utc)
+
+    validator = SectionValidator(client=None)
+
+    def request_model(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            parsed=ConsistencyEvaluation(
+                consistency_score=4.0,
+                inconsistencies=[],
+                recommendations=[],
+            )
+        )
+
+    monkeypatch.setattr(section_validator_module, "datetime", FixedDateTime)
+    monkeypatch.setattr(validator, "_request_model", request_model)
+
+    result = validator._check_consistency({"toolOverview": {"description": "Example"}})
+
+    assert result["was_evaluated"] is True
+    assert "Current UTC date: 2026-08-14" in captured["messages"][0]["content"]

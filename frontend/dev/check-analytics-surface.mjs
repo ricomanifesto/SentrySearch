@@ -99,6 +99,10 @@ const expectations = [
     pattern: /data-contract="Analytics\.GenerationRouteComparison\.v1"/,
   },
   {
+    name: 'exposes typed failure clusters by cause stage route and hour',
+    pattern: /data-contract="Analytics\.GenerationFailureEvidence\.v1"[\s\S]*Last stages[\s\S]*Routes[\s\S]*UTC hours/,
+  },
+  {
     name: 'separates requested fallback and legacy routes',
     pattern: /primary: 'Requested route'[\s\S]*fallback: 'Fallback route'[\s\S]*unrecorded: 'Legacy \/ unrecorded'/,
   },

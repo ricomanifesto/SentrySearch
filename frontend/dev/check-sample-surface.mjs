@@ -16,7 +16,7 @@ const expectations = [
   {
     name: 'labels the page as a sample',
     source: sample,
-    pattern: /Sample report/,
+    pattern: /Abridged sample record/,
   },
   {
     name: 'states that no account is required',
@@ -36,7 +36,7 @@ const expectations = [
   {
     name: 'uses the production markdown renderer',
     source: sample,
-    pattern: /<ReportNarrative markdown=\{SAMPLE_REPORT\.markdown_content \?\? ''\}/,
+    pattern: /<ReportNarrative[\s\S]*markdown=\{SAMPLE_REPORT\.markdown_content \?\? ''\}[\s\S]*claimAttributions=\{SAMPLE_REPORT\.claim_attributions\}/,
   },
   {
     name: 'renders inspectable structured source links',
@@ -47,6 +47,11 @@ const expectations = [
     name: 'labels fixed source dates as historical capture dates',
     source: sample,
     pattern: /dateLabel="Captured"/,
+  },
+  {
+    name: 'demonstrates versioned claim attribution against the source rail',
+    source: sample,
+    pattern: /claimAttributions=\{SAMPLE_REPORT\.claim_attributions\}[\s\S]*attributionStatus=\{SAMPLE_REPORT\.claim_attribution_status\}/,
   },
   {
     name: 'derives the threat family from the canonical sample report',
@@ -74,9 +79,19 @@ const expectations = [
     pattern: /font-mono/,
   },
   {
-    name: 'routes the call to action to account creation',
+    name: 'routes the call to action through the intent-preserving workspace boundary',
     source: sample,
-    pattern: /href="\/auth\/signup"/,
+    pattern: /href="\/generate"/,
+  },
+  {
+    name: 'names the content omitted from the abridged fixture',
+    source: sample,
+    pattern: /omits the full[\s\S]*research methodology[\s\S]*raw extraction record[\s\S]*evaluator appendix/,
+  },
+  {
+    name: 'does not misroute signed-in readers to account creation',
+    source: sample,
+    absentPattern: /href="\/auth\/signup"/,
   },
   {
     name: 'offers a path back to the public home',

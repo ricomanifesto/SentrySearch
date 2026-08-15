@@ -36,6 +36,36 @@ class ReviewStatus(StrEnum):
     REVIEWABLE = "reviewable"
 
 
+class ClassificationStatus(StrEnum):
+    """Provenance of the reader-facing category and threat-family fields."""
+
+    RECORDED = "recorded"
+    RECONCILED = "reconciled"
+    UNMAPPED = "unmapped"
+    UNRECORDED = "unrecorded"
+
+
+class ClaimAttributionStatus(StrEnum):
+    """Whether claim-level source identity exists for a saved report."""
+
+    ATTRIBUTED = "attributed"
+    UNATTRIBUTED = "unattributed"
+    LEGACY = "legacy"
+
+
+class GenerationErrorCode(StrEnum):
+    """Reader-safe, queryable reasons a generation run did not finish."""
+
+    PROVIDER_RATE_LIMITED = "provider_rate_limited"
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
+    PROVIDER_TIMEOUT = "provider_timeout"
+    MODEL_OUTPUT_INVALID = "model_output_invalid"
+    EVIDENCE_UNAVAILABLE = "evidence_unavailable"
+    EVIDENCE_UNATTESTED = "evidence_unattested"
+    PERSISTENCE_FAILED = "persistence_failed"
+    UNKNOWN = "unknown"
+
+
 class GenerationStage(StrEnum):
     """Reader-visible stages emitted by the generation pipeline."""
 
@@ -94,6 +124,8 @@ class ReportFilters:
     min_quality_score: float | None = None
     search_query: str | None = None
     tags: tuple[str, ...] = ()
+    statuses: tuple[ReportStatus, ...] = ()
+    review_statuses: tuple[ReviewStatus, ...] = ()
     created_after: datetime | None = None
     user_id: str | None = None
     sort_by: ReportSortField = ReportSortField.CREATED_AT
@@ -102,6 +134,16 @@ class ReportFilters:
     def __post_init__(self) -> None:
         object.__setattr__(self, "threat_types", _as_tuple(self.threat_types))
         object.__setattr__(self, "tags", _as_tuple(self.tags))
+        object.__setattr__(
+            self,
+            "statuses",
+            tuple(ReportStatus(value) for value in self.statuses),
+        )
+        object.__setattr__(
+            self,
+            "review_statuses",
+            tuple(ReviewStatus(value) for value in self.review_statuses),
+        )
         object.__setattr__(self, "sort_by", ReportSortField(self.sort_by))
         object.__setattr__(self, "sort_order", SortOrder(self.sort_order))
 
@@ -119,6 +161,8 @@ class ReportAnalyticsRecord:
     evaluation_status: EvaluationStatus = EvaluationStatus.UNRECORDED
     quality_assessment: Mapping[str, Any] | None = None
     source_count: int = 0
+    generation_error_code: GenerationErrorCode | None = None
+    generation_failure_stage: GenerationStage | None = None
 
 
 def coerce_evaluation_status(

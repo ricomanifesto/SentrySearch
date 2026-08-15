@@ -259,6 +259,26 @@ def test_model_client_uses_same_model_paid_fallback_after_rate_limit():
         "providers": ["TestProvider"],
         "used_fallback": True,
         "request_count": 1,
+        "attempts": [
+            {
+                "requested_model": "google/gemma-4-26b-a4b-it:free",
+                "selected_model": "google/gemma-4-26b-a4b-it:free",
+                "actual_model": None,
+                "provider": "google-ai-studio",
+                "outcome": "failed",
+                "error_code": "provider_rate_limited",
+                "retryable": True,
+            },
+            {
+                "requested_model": "google/gemma-4-26b-a4b-it:free",
+                "selected_model": "google/gemma-4-26b-a4b-it",
+                "actual_model": "google/gemma-4-26b-a4b-it",
+                "provider": "TestProvider",
+                "outcome": "succeeded",
+                "error_code": None,
+                "retryable": False,
+            },
+        ],
     }
 
 

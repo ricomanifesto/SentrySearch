@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -28,6 +28,7 @@ class CoreMetadata(StrictModel):
 
 
 class PrimarySource(StrictModel):
+    source_id: str = Field(alias="sourceId", min_length=1)
     url: str
     title: str
     domain: str
@@ -35,6 +36,22 @@ class PrimarySource(StrictModel):
     relevance_score: str = Field(alias="relevanceScore")
     content_type: str = Field(alias="contentType")
     key_findings: str = Field(alias="keyFindings")
+
+
+class ClaimAttributionEntry(StrictModel):
+    claim_class: Literal[
+        "threat_activity",
+        "forensic_artifact",
+        "detection_indicator",
+        "mitigation_action",
+    ] = Field(alias="claimClass")
+    claim: str = Field(min_length=1)
+    source_ids: list[str] = Field(alias="sourceIds", min_length=1)
+
+
+class ClaimAttribution(StrictModel):
+    schema_version: Literal["2"] = Field(alias="schemaVersion")
+    claims: list[ClaimAttributionEntry] = Field(min_length=4)
 
 
 class WebSearchSources(StrictModel):
@@ -203,6 +220,7 @@ class ThreatProfile(StrictModel):
 
     core_metadata: CoreMetadata = Field(alias="coreMetadata")
     web_search_sources: WebSearchSources = Field(alias="webSearchSources")
+    claim_attribution: ClaimAttribution = Field(alias="claimAttribution")
     tool_overview: ToolOverview = Field(alias="toolOverview")
     technical_details: TechnicalDetails = Field(alias="technicalDetails")
     command_and_control: CommandAndControl = Field(alias="commandAndControl")
@@ -288,6 +306,13 @@ def attest_profile_sources(
                 normalized = _normalize_url(replacement)
         claimed_urls.add(normalized)
 
+    unattested = sorted(claimed_urls - evidence_urls)
+    if unattested:
+        raise ValueError(
+            "Threat profile included URLs that were not returned by OpenRouter web search: "
+            + ", ".join(unattested)
+        )
+
     for source in claimed_sources:
         hostname = (urlsplit(str(source["url"])).hostname or "").lower()
         declared_domain = str(source.get("domain", "")).strip().lower()
@@ -298,12 +323,44 @@ def attest_profile_sources(
                 f"{declared_domain!r} != {hostname!r}"
             )
 
-    unattested = sorted(claimed_urls - evidence_urls)
-    if unattested:
-        raise ValueError(
-            "Threat profile included URLs that were not returned by OpenRouter web search: "
-            + ", ".join(unattested)
-        )
+    source_ids = [str(source.get("sourceId") or "").strip() for source in claimed_sources]
+    if any(not source_id for source_id in source_ids) or len(set(source_ids)) != len(source_ids):
+        raise ValueError("Threat profile primary source IDs must be non-empty and unique")
+    evidence_ids_by_url = {
+        normalized: str(source.get("sourceId") or "").strip()
+        for source in web_search_sources
+        if (normalized := _normalize_url(str(source.get("url", ""))))
+    }
+    for source in claimed_sources:
+        normalized = _normalize_url(str(source.get("url", "")))
+        if evidence_ids_by_url.get(normalized) != source.get("sourceId"):
+            raise ValueError("Threat profile source ID does not match its attested URL")
+
+    attribution = profile.get("claimAttribution")
+    claims = attribution.get("claims") if isinstance(attribution, dict) else None
+    if not isinstance(attribution, dict) or attribution.get("schemaVersion") != "2":
+        raise ValueError("Threat profile claim attribution must use schema version 2")
+    if not isinstance(claims, list):
+        raise ValueError("Threat profile claim attribution is incomplete")
+    required_classes = {
+        "threat_activity",
+        "forensic_artifact",
+        "detection_indicator",
+        "mitigation_action",
+    }
+    observed_classes: set[str] = set()
+    known_source_ids = set(source_ids)
+    for claim in claims:
+        if not isinstance(claim, dict):
+            raise ValueError("Threat profile claim attribution contains an invalid claim")
+        observed_classes.add(str(claim.get("claimClass") or ""))
+        cited_ids = claim.get("sourceIds")
+        if not isinstance(cited_ids, list) or not cited_ids:
+            raise ValueError("Threat profile claim attribution contains an uncited claim")
+        if any(str(source_id) not in known_source_ids for source_id in cited_ids):
+            raise ValueError("Threat profile claim attribution references an unknown source ID")
+    if not required_classes.issubset(observed_classes):
+        raise ValueError("Threat profile claim attribution is missing a high-risk claim class")
 
 
 def _prune_unavailable_source_records(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:

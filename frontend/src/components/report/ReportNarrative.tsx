@@ -1,30 +1,46 @@
-import type { ComponentPropsWithoutRef } from 'react';
+import type { ComponentPropsWithoutRef, ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 import { getSafeExternalUrl } from './report-links';
+import { reportHeadingId } from '@/lib/report-content';
+import { applyClaimAttributions } from '@/lib/claim-attribution';
+import type { ClaimAttributionEntry } from '@/lib/api-contracts';
 
 type ReportNarrativeProps = {
   markdown: string;
+  claimAttributions?: ClaimAttributionEntry[];
 };
 
-export function ReportNarrative({ markdown }: ReportNarrativeProps) {
+function safeNarrativeUrl(value: string | undefined): string | null {
+  if (value && /^#source-S[1-9]\d*$/.test(value)) return value;
+  return getSafeExternalUrl(value);
+}
+
+export function ReportNarrative({ markdown, claimAttributions }: ReportNarrativeProps) {
+  const attributedMarkdown = applyClaimAttributions(markdown, claimAttributions);
+  const headingText = (children: ReactNode): string => (
+    Array.isArray(children) ? children.join('') : String(children ?? '')
+  );
   return (
     <div data-contract="Report.RenderedNarrative.v1" className="report-narrative mt-5 min-w-0 text-zinc-700">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        urlTransform={(url) => getSafeExternalUrl(url) ?? ''}
+        urlTransform={(url) => safeNarrativeUrl(url) ?? ''}
         components={{
           h1: ({ children }) => (
             <h2 className="mt-10 border-b border-zinc-200 pb-3 text-2xl font-semibold tracking-tight text-zinc-950 first:mt-0">
               {children}
             </h2>
           ),
-          h2: ({ children }) => (
-            <h3 className="mt-10 border-b border-zinc-200 pb-2 text-xl font-semibold tracking-tight text-zinc-950 first:mt-0">
-              {children}
-            </h3>
-          ),
+          h2: ({ children }) => {
+            const label = headingText(children);
+            return (
+              <h3 id={reportHeadingId(label)} className="scroll-mt-24 mt-10 border-b border-zinc-200 pb-2 text-xl font-semibold tracking-tight text-zinc-950 first:mt-0">
+                {children}
+              </h3>
+            );
+          },
           h3: ({ children }) => (
             <h4 className="mt-8 text-lg font-semibold text-zinc-950">{children}</h4>
           ),
@@ -33,13 +49,16 @@ export function ReportNarrative({ markdown }: ReportNarrativeProps) {
           ),
           p: ({ children }) => <p className="mt-4 text-base leading-7 first:mt-0">{children}</p>,
           a: ({ href, children }) => {
-            const safeHref = getSafeExternalUrl(href);
+            const safeHref = safeNarrativeUrl(href);
+            const isSourceLink = safeHref?.startsWith('#source-') ?? false;
             return safeHref ? (
               <a
                 href={safeHref}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="font-medium text-blue-700 underline decoration-blue-300 underline-offset-2 hover:text-blue-800"
+                target={isSourceLink ? undefined : '_blank'}
+                rel={isSourceLink ? undefined : 'noopener noreferrer'}
+                className={isSourceLink
+                  ? 'ml-1 inline-flex rounded bg-blue-50 px-1.5 py-0.5 font-mono text-xs font-semibold text-blue-700 no-underline hover:bg-blue-100'
+                  : 'font-medium text-blue-700 underline decoration-blue-300 underline-offset-2 hover:text-blue-800'}
               >
                 {children}
               </a>
@@ -80,7 +99,7 @@ export function ReportNarrative({ markdown }: ReportNarrativeProps) {
           strong: ({ children }) => <strong className="font-semibold text-zinc-950">{children}</strong>,
         }}
       >
-        {markdown}
+        {attributedMarkdown}
       </ReactMarkdown>
     </div>
   );

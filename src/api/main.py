@@ -21,10 +21,16 @@ from src.storage.database import db_manager
 from src.core.threat_profile_generator import ThreatProfileGenerator
 from src.core.report_evaluator import evaluate_saved_report
 from src.core.markdown_generator import generate_markdown
-from src.core.source_ledger import canonicalize_profile_sources
+from src.core.generation_failures import (
+    PersistenceFailureError,
+    ProfileOutputError,
+    build_generation_failure,
+)
+from src.core.source_ledger import SourceLedgerError, canonicalize_profile_sources
 from src.auth.supabase_auth import AuthenticatedUser, verify_jwt_token
 from src.api.contracts import (
     PaginationParams,
+    ClaimAttributionEntry,
     ReportCreate,
     ReportDetail,
     ReportResponse,
@@ -35,7 +41,10 @@ from src.api.contracts import (
 )
 from src.domain.model_routes import generation_fallback_state
 from src.domain.reports import (
+    ClaimAttributionStatus,
+    ClassificationStatus,
     EvaluationStatus,
+    GenerationErrorCode,
     GenerationProgress,
     GenerationStage,
     ReportAnalyticsRecord,
@@ -52,6 +61,7 @@ def apply_schema_migrations() -> None:
     """Self-heal the database schema on boot (additive, idempotent migrations)."""
     try:
         db_manager.migrate_schema()
+        report_service.reconcile_reader_state()
     except Exception as e:  # pragma: no cover - startup best-effort
         logger.exception("Schema migration on startup failed: %s", e)
 
@@ -180,11 +190,22 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
         "tool_name": report["tool_name"],
         "category": get_report_label(report, "category"),
         "threat_type": get_report_label(report, "threat_type"),
+        "classification_status": ClassificationStatus(
+            report.get("classification_status") or ClassificationStatus.UNRECORDED.value
+        ),
+        "claim_attribution_status": ClaimAttributionStatus(
+            report.get("claim_attribution_status") or ClaimAttributionStatus.LEGACY.value
+        ),
+        "claim_attribution_version": report.get("claim_attribution_version"),
         "quality_score": quality_score,
         "created_at": report["created_at"],
         "processing_time_ms": report.get("processing_time_ms") or 0,
         "status": get_report_status(report),
         "generation_stage": get_generation_stage(report),
+        "generation_failure_stage": report.get("generation_failure_stage"),
+        "generation_error_code": report.get("generation_error_code"),
+        "generation_retryable": report.get("generation_retryable"),
+        "generation_failure": report.get("generation_failure"),
         "evaluation_status": evaluation_status,
         "evaluation_error_code": report.get("evaluation_error_code"),
         "evaluation_attempts": report.get("evaluation_attempts") or 0,
@@ -224,6 +245,9 @@ def get_report_sources(report: Dict[str, Any]) -> List[ReportSource]:
             continue
         normalized.append(
             ReportSource(
+                source_id=(
+                    str(source.get("source_id") or source.get("sourceId") or "").strip() or None
+                ),
                 title=str(source.get("title") or parsed.netloc),
                 url=url,
                 domain=str(source.get("domain") or parsed.netloc),
@@ -239,6 +263,30 @@ def get_report_sources(report: Dict[str, Any]) -> List[ReportSource]:
                     or source.get("keyFindings")
                     or "No findings recorded"
                 ),
+            )
+        )
+    return normalized
+
+
+def get_claim_attributions(report: Dict[str, Any]) -> List[ClaimAttributionEntry]:
+    """Return only explicit v2 claim links; never infer them for legacy records."""
+
+    if report.get("claim_attribution_status") != ClaimAttributionStatus.ATTRIBUTED.value:
+        return []
+    threat_data = report.get("threat_data")
+    attribution = threat_data.get("claimAttribution") if isinstance(threat_data, dict) else None
+    raw_claims = attribution.get("claims") if isinstance(attribution, dict) else None
+    if not isinstance(raw_claims, list):
+        return []
+    normalized: List[ClaimAttributionEntry] = []
+    for claim in raw_claims:
+        if not isinstance(claim, dict):
+            continue
+        normalized.append(
+            ClaimAttributionEntry(
+                claim_class=claim.get("claimClass"),
+                claim=str(claim.get("claim") or ""),
+                source_ids=[str(source_id) for source_id in claim.get("sourceIds") or []],
             )
         )
     return normalized
@@ -365,6 +413,54 @@ def build_route_performance(records: List[ReportAnalyticsRecord]) -> List[Dict[s
     return results
 
 
+def build_generation_failure_breakdown(
+    records: List[ReportAnalyticsRecord],
+) -> List[Dict[str, Any]]:
+    """Expose falsifiable failure clusters by cause, stage, route, and UTC hour."""
+
+    grouped: Dict[str, List[ReportAnalyticsRecord]] = {}
+    for record in records:
+        if record.status is not ReportStatus.FAILED:
+            continue
+        code = (
+            record.generation_error_code.value
+            if record.generation_error_code is not None
+            else GenerationErrorCode.UNKNOWN.value
+        )
+        grouped.setdefault(code, []).append(record)
+
+    breakdown: List[Dict[str, Any]] = []
+    for code, failures in sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0])):
+        stages: Dict[str, int] = {}
+        routes = {"primary": 0, "fallback": 0, "unrecorded": 0}
+        utc_hours: Dict[str, int] = {}
+        for failure in failures:
+            stage = (
+                failure.generation_failure_stage.value
+                if failure.generation_failure_stage is not None
+                else "unrecorded"
+            )
+            stages[stage] = stages.get(stage, 0) + 1
+            route = (
+                "fallback"
+                if failure.generation_used_fallback is True
+                else "primary" if failure.generation_used_fallback is False else "unrecorded"
+            )
+            routes[route] += 1
+            hour = f"{failure.created_at.astimezone(timezone.utc).hour:02d}:00"
+            utc_hours[hour] = utc_hours.get(hour, 0) + 1
+        breakdown.append(
+            {
+                "error_code": code,
+                "report_count": len(failures),
+                "stages": stages,
+                "routes": routes,
+                "utc_hours": utc_hours,
+            }
+        )
+    return breakdown
+
+
 # API Routes
 
 
@@ -422,6 +518,10 @@ async def list_reports(
     query: Optional[str] = Query(None, description="Search query"),
     threat_type: Optional[str] = Query(None, description="Filter by threat type"),
     min_quality: Optional[float] = Query(None, ge=0, le=5, description="Minimum quality score"),
+    status: Optional[List[ReportStatus]] = Query(None, description="Filter by generation state"),
+    review_status: Optional[List[ReviewStatus]] = Query(
+        None, description="Filter by reader-facing review state"
+    ),
 ):
     """List reports with pagination and filtering"""
     try:
@@ -439,6 +539,8 @@ async def list_reports(
             search_query=query,
             threat_type=threat_type,
             min_quality_score=min_quality,
+            statuses=status,
+            review_statuses=review_status,
             user_id=user_id,
         )
 
@@ -447,6 +549,8 @@ async def list_reports(
             search_query=query,
             threat_type=threat_type,
             min_quality_score=min_quality,
+            statuses=status,
+            review_statuses=review_status,
             user_id=user_id,
         )
 
@@ -465,6 +569,8 @@ async def list_reports(
                 "query": query,
                 "threat_type": threat_type,
                 "min_quality": min_quality,
+                "status": status,
+                "review_status": review_status,
             },
         }
 
@@ -498,6 +604,7 @@ async def get_report(
             generation_route=report.get("generation_route"),
             evaluation_route=report.get("evaluation_route"),
             quality_assessment=get_quality_assessment(report),
+            claim_attributions=get_claim_attributions(report),
         )
 
     except HTTPException:
@@ -552,9 +659,10 @@ def run_report_generation(
     the caller, so a provider error can't leak details.
     """
     start = time.monotonic()
+    generator: ThreatProfileGenerator | None = None
+    last_stage: GenerationStage | None = GenerationStage.QUEUED
     try:
         generator = ThreatProfileGenerator()
-        last_stage: GenerationStage | None = None
         stage_order = {
             GenerationStage.QUEUED: 0,
             GenerationStage.RESEARCHING: 1,
@@ -578,9 +686,7 @@ def run_report_generation(
         )
 
         if not raw_profile or "error" in raw_profile:
-            logger.error("Generation returned no usable result for report %s", report_id)
-            report_service.mark_report_failed(report_id)
-            return
+            raise ProfileOutputError("Generation returned no usable result")
 
         profile, web_sources = canonicalize_profile_sources(raw_profile)
 
@@ -627,12 +733,29 @@ def run_report_generation(
             "content_preview": preview or None,
             "search_tags": [tag for tag in [tool_name.lower(), category.lower()] if tag],
         }
-        report_service.finalize_report(report_id, report_data, user_id=user_id)
+        try:
+            report_service.finalize_report(report_id, report_data, user_id=user_id)
+        except SourceLedgerError:
+            raise
+        except Exception as error:
+            raise PersistenceFailureError("Generated report could not be persisted") from error
 
     except Exception as e:  # pragma: no cover - exercised via mark_report_failed test
         logger.exception("Background generation failed for report %s: %s", report_id, e)
         try:
-            report_service.mark_report_failed(report_id)
+            summarize_route = (
+                getattr(generator, "generation_route_provenance", None)
+                if generator is not None
+                else None
+            )
+            route = summarize_route() if callable(summarize_route) else None
+            failure = build_generation_failure(e, stage=last_stage, route=route)
+            report_service.mark_report_failed(
+                report_id,
+                error_code=GenerationErrorCode(failure["error_code"]),
+                retryable=bool(failure["retryable"]),
+                failure=failure,
+            )
         except Exception as mark_error:
             logger.exception("Could not mark report %s failed: %s", report_id, mark_error)
 
@@ -780,6 +903,10 @@ async def search_reports(
             search_params["min_quality_score"] = filters.min_quality_score
         if filters.tags:
             search_params["tags"] = filters.tags
+        if filters.statuses:
+            search_params["statuses"] = filters.statuses
+        if filters.review_statuses:
+            search_params["review_statuses"] = filters.review_statuses
         if filters.date_range_days:
             search_params["created_after"] = datetime.now(timezone.utc) - timedelta(
                 days=filters.date_range_days
@@ -959,6 +1086,7 @@ async def get_analytics(
                     ),
                     "evaluation_status": get_evaluation_status(report),
                     "review_status": report_response_fields(report)["review_status"],
+                    "status": get_report_status(report),
                 }
             )
 
@@ -978,6 +1106,9 @@ async def get_analytics(
                 "evaluation_failed_reports": sum(
                     record.evaluation_status is EvaluationStatus.FAILED for record in records
                 ),
+                "generation_failed_reports": sum(
+                    record.status is ReportStatus.FAILED for record in records
+                ),
                 "reviewable_reports": sum(
                     state is ReviewStatus.REVIEWABLE for state in review_states
                 ),
@@ -993,6 +1124,7 @@ async def get_analytics(
                 "processing_time_trends": trends["processing_time_trends"],
             },
             "route_performance": build_route_performance(records),
+            "generation_failure_breakdown": build_generation_failure_breakdown(records),
             "recent_activity": recent_activity,
         }
 
@@ -1008,8 +1140,17 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
 
         # Get basic metrics
         total_reports = report_service.count_reports(user_id=user_id)
-        recent_reports = report_service.count_reports(
-            created_after=datetime.now(timezone.utc) - timedelta(days=7), user_id=user_id
+        week_start = datetime.now(timezone.utc) - timedelta(days=7)
+        runs_this_week = report_service.count_reports(created_after=week_start, user_id=user_id)
+        completed_reports_this_week = report_service.count_reports(
+            created_after=week_start,
+            statuses=[ReportStatus.COMPLETED],
+            user_id=user_id,
+        )
+        failed_reports_this_week = report_service.count_reports(
+            created_after=week_start,
+            statuses=[ReportStatus.FAILED],
+            user_id=user_id,
         )
 
         # Get threat type distribution
@@ -1042,7 +1183,9 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
         return {
             "summary": {
                 "total_reports": total_reports,
-                "reports_this_week": recent_reports,
+                "runs_this_week": runs_this_week,
+                "completed_reports_this_week": completed_reports_this_week,
+                "failed_reports_this_week": failed_reports_this_week,
                 "avg_quality_score": quality_stats.get("average"),
                 "scored_reports": scored_reports,
                 "needs_attention_reports": sum(
@@ -1060,6 +1203,7 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
                     "quality_score": r.get("quality_score"),
                     "evaluation_status": get_evaluation_status(r),
                     "review_status": report_response_fields(r)["review_status"],
+                    "status": get_report_status(r),
                 }
                 for r in recent_activity
             ],
@@ -1072,3 +1216,4 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
 # Development server
 if __name__ == "__main__":
     uvicorn.run("src.api.main:app", host="0.0.0.0", port=8000, reload=True)
+    GenerationErrorCode,

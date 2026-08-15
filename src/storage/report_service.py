@@ -3,25 +3,32 @@ Report storage service combining PostgreSQL and S3 for SentrySearch
 """
 
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Sequence, cast
 from datetime import datetime, timezone
 import hashlib
 import json
 from sqlalchemy import asc, desc, or_
 
 from src.domain.reports import (
+    ClaimAttributionStatus,
+    ClassificationStatus,
     EvaluationStatus,
+    GenerationErrorCode,
     GenerationStage,
     ReportAnalyticsRecord,
     ReportFilters,
     ReportSortField,
     ReportStatus,
+    ReviewStatus,
     SortOrder,
     coerce_evaluation_status,
+    derive_review_status,
 )
 from src.core.source_ledger import (
+    assert_claim_attribution_consistent,
     assert_markdown_source_ledger_consistent,
     assert_source_ledger_consistent,
+    claim_attribution_status,
 )
 from src.domain.model_routes import generation_fallback_state
 
@@ -36,6 +43,117 @@ class ReportStorageService:
     def __init__(self):
         self.db_manager = db_manager
         self.s3_manager = s3_manager
+
+    @staticmethod
+    def _source_count_from_values(web_sources: Any, threat_data: Any) -> int:
+        if isinstance(web_sources, list) and web_sources:
+            return len(web_sources)
+        if isinstance(threat_data, dict):
+            source_block = threat_data.get("webSearchSources")
+            if isinstance(source_block, dict) and isinstance(
+                source_block.get("primarySources"), list
+            ):
+                return len(source_block["primarySources"])
+        return 0
+
+    @classmethod
+    def _source_count(cls, report: Report) -> int:
+        return cls._source_count_from_values(report.web_sources, report.threat_data)
+
+    @classmethod
+    def _refresh_review_status(cls, report: Report) -> ReviewStatus:
+        model = cast(Any, report)
+        status = derive_review_status(
+            report_status=model.status or ReportStatus.COMPLETED.value,
+            evaluation_status=model.evaluation_status,
+            quality_score=(float(model.quality_score) if model.quality_score is not None else None),
+            quality_assessment=model.quality_assessment,
+            source_count=cls._source_count(report),
+        )
+        model.review_status = status.value
+        return status
+
+    @staticmethod
+    def _structured_category_value(threat_data: Optional[Dict[str, Any]]) -> str | None:
+        if not isinstance(threat_data, dict):
+            return None
+        core_metadata = threat_data.get("coreMetadata")
+        if not isinstance(core_metadata, dict):
+            return None
+        value = core_metadata.get("category")
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    @classmethod
+    def _categorize_structured_threat_data(
+        cls, threat_data: Optional[Dict[str, Any]]
+    ) -> tuple[str, str] | None:
+        raw_category = cls._structured_category_value(threat_data)
+        if raw_category is None:
+            return None
+        category_from_data = raw_category.lower()
+        category_patterns = (
+            (("remote access", " rat"), ("malware", "remote_access_trojan")),
+            (
+                ("post-exploitation", "post exploitation", "framework"),
+                ("malware", "post_exploitation_framework"),
+            ),
+            (("ransomware",), ("malware", "ransomware")),
+            (("backdoor",), ("malware", "backdoor")),
+            (("trojan",), ("malware", "trojan")),
+            (("botnet",), ("malware", "botnet")),
+            (("downloader", "loader"), ("malware", "loader")),
+            (("apt",), ("malware", "apt_malware")),
+            (("malware",), ("malware", "malware")),
+            (("threat actor", "threat group"), ("threat_group", "threat_actor")),
+            (("security tool",), ("legitimate_software", "security_tool")),
+            (
+                ("software", "technology", "platform"),
+                ("legitimate_software", "legitimate_software"),
+            ),
+        )
+        for markers, classification in category_patterns:
+            if any(marker in f" {category_from_data}" for marker in markers):
+                return classification
+        return None
+
+    def resolve_classification(
+        self,
+        *,
+        tool_name: str,
+        threat_data: Optional[Dict[str, Any]],
+        stored_category: str | None = None,
+        stored_threat_type: str | None = None,
+        stored_status: str | None = None,
+        legacy: bool = False,
+    ) -> tuple[str, str, ClassificationStatus]:
+        """Resolve classification while retaining why a value is known or unknown."""
+
+        raw_category = self._structured_category_value(threat_data)
+        structured = self._categorize_structured_threat_data(threat_data)
+        current = (
+            stored_category or "unknown",
+            stored_threat_type or "unknown",
+        )
+        has_current = all(value not in {"", "unknown"} for value in current)
+        if structured is not None:
+            status = (
+                ClassificationStatus.RECONCILED
+                if stored_status == ClassificationStatus.RECONCILED.value
+                or legacy
+                and (not has_current or current != structured)
+                else ClassificationStatus.RECORDED
+            )
+            return (*structured, status)
+        if raw_category is not None:
+            return (*current, ClassificationStatus.UNMAPPED)
+        if has_current:
+            return (*current, ClassificationStatus.UNRECORDED)
+        inferred_category, inferred_threat_type = self.categorize_tool(tool_name)
+        return (
+            inferred_category,
+            inferred_threat_type,
+            ClassificationStatus.UNRECORDED,
+        )
 
     @staticmethod
     def _report_sort_expression(sort_by: str, sort_order: str):
@@ -81,6 +199,12 @@ class ReportStorageService:
             )
         if filters.tags:
             expressions.append(Report.search_tags.contains(list(filters.tags)))
+        if filters.statuses:
+            expressions.append(Report.status.in_([status.value for status in filters.statuses]))
+        if filters.review_statuses:
+            expressions.append(
+                Report.review_status.in_([status.value for status in filters.review_statuses])
+            )
         if filters.created_after:
             expressions.append(Report.created_at >= filters.created_after)
         return tuple(expressions)
@@ -94,6 +218,8 @@ class ReportStorageService:
         min_quality_score: Optional[float] = None,
         search_query: Optional[str] = None,
         tags: Optional[List[str]] = None,
+        statuses: Optional[Sequence[ReportStatus | str]] = None,
+        review_statuses: Optional[Sequence[ReviewStatus | str]] = None,
         created_after: Optional[datetime] = None,
         user_id: Optional[str] = None,
         sort_by: str = "created_at",
@@ -117,6 +243,8 @@ class ReportStorageService:
             min_quality_score=min_quality_score,
             search_query=search_query,
             tags=tuple(tags or ()),
+            statuses=tuple(ReportStatus(value) for value in statuses or ()),
+            review_statuses=tuple(ReviewStatus(value) for value in review_statuses or ()),
             created_after=created_after,
             user_id=user_id,
             sort_by=sort_field,
@@ -142,6 +270,10 @@ class ReportStorageService:
             return ("unknown", "unknown")
 
         tool_lower = tool_name.lower().strip()
+
+        structured_classification = self._categorize_structured_threat_data(threat_data)
+        if structured_classification is not None:
+            return structured_classification
 
         # Malware signatures (common malware families and indicators)
         malware_indicators = [
@@ -380,64 +512,74 @@ class ReportStorageService:
         # Default to unknown if no clear categorization
         return ("unknown", "unknown")
 
-    def update_existing_categorizations(self) -> int:
-        """
-        Update existing reports that have 'unknown' or empty category/threat_type.
-        Returns number of reports updated.
-        """
-        updated_count = 0
+    def reconcile_reader_state(self) -> Dict[str, int]:
+        """Backfill queryable review state and explicit classification provenance."""
+
+        summary = {
+            "review_updates": 0,
+            "classification_updates": 0,
+            "claim_attribution_updates": 0,
+        }
         try:
             with self.db_manager.get_session() as session:
-                # Find reports with unknown or empty categories
-                reports_to_update = (
-                    session.query(Report)
-                    .filter(
-                        or_(
-                            Report.category.is_(None),
-                            Report.category == "",
-                            Report.category == "unknown",
-                            Report.threat_type.is_(None),
-                            Report.threat_type == "",
-                            Report.threat_type == "unknown",
-                        )
+                # TODO(reader-state-backfill): Remove the startup full-table scan after every
+                # deployed database reports zero missing reader-state fields for one release.
+                reports = session.query(Report).all()
+                for report in reports:
+                    old_classification = (
+                        report.category,
+                        report.threat_type,
+                        report.classification_status,
                     )
-                    .all()
-                )
-
-                # Debug: show current values
-                for report in reports_to_update[:5]:
-                    logger.info(
-                        f"Report to update: '{report.tool_name}' (current category: '{report.category}', threat_type: '{report.threat_type}')"
+                    category, threat_type, classification_status = self.resolve_classification(
+                        tool_name=report.tool_name,
+                        threat_data=report.threat_data,
+                        stored_category=report.category,
+                        stored_threat_type=report.threat_type,
+                        stored_status=report.classification_status,
+                        legacy=True,
                     )
+                    report.category = category
+                    report.threat_type = threat_type
+                    report.classification_status = classification_status.value
+                    if old_classification != (
+                        report.category,
+                        report.threat_type,
+                        report.classification_status,
+                    ):
+                        summary["classification_updates"] += 1
 
-                logger.info(f"Found {len(reports_to_update)} reports to categorize")
+                    old_attribution = (
+                        report.claim_attribution_status,
+                        report.claim_attribution_version,
+                    )
+                    attribution_status, attribution_version = claim_attribution_status(
+                        report.threat_data
+                    )
+                    report.claim_attribution_status = attribution_status.value
+                    report.claim_attribution_version = attribution_version
+                    if old_attribution != (
+                        report.claim_attribution_status,
+                        report.claim_attribution_version,
+                    ):
+                        summary["claim_attribution_updates"] += 1
 
-                for report in reports_to_update:
-                    # Get new categorization
-                    category, threat_type = self.categorize_tool(report.tool_name)
-
-                    # Update if different from current values
-                    if report.category != category or report.threat_type != threat_type:
-                        old_category = report.category
-                        old_threat_type = report.threat_type
-
-                        report.category = category
-                        report.threat_type = threat_type
-                        updated_count += 1
-
-                        logger.info(
-                            f"Updated report '{report.tool_name}' (ID: {report.id}): "
-                            f"category '{old_category}' -> '{category}', "
-                            f"threat_type '{old_threat_type}' -> '{threat_type}'"
-                        )
+                    previous_review_status = report.review_status
+                    self._refresh_review_status(report)
+                    if previous_review_status != report.review_status:
+                        summary["review_updates"] += 1
 
                 session.commit()
-                logger.info(f"Successfully updated {updated_count} report categorizations")
-                return updated_count
-
+            logger.info("Reader-state reconciliation complete: %s", summary)
+            return summary
         except Exception as e:
-            logger.error(f"Error updating report categorizations: {e}")
+            logger.error("Error reconciling reader state: %s", e)
             raise
+
+    def update_existing_categorizations(self) -> int:
+        """Compatibility wrapper for the admin categorization endpoint."""
+
+        return self.reconcile_reader_state()["classification_updates"]
 
     def store_report(
         self,
@@ -458,9 +600,18 @@ class ReportStorageService:
                 raise ValueError("Report ID is required")
 
             tool_name = report_data.get("tool_name", "")
-            category, threat_type = self.categorize_tool(tool_name, report_data.get("threat_data"))
+            category, threat_type, classification_status = self.resolve_classification(
+                tool_name=tool_name,
+                threat_data=report_data.get("threat_data"),
+            )
             report_data["category"] = category
             report_data["threat_type"] = threat_type
+            report_data["classification_status"] = classification_status.value
+            attribution_status, attribution_version = claim_attribution_status(
+                report_data.get("threat_data")
+            )
+            report_data["claim_attribution_status"] = attribution_status.value
+            report_data["claim_attribution_version"] = attribution_version
             assert_source_ledger_consistent(
                 report_data.get("threat_data") or {},
                 report_data.get("web_sources") or [],
@@ -491,6 +642,13 @@ class ReportStorageService:
                     tool_name=report_data.get("tool_name", ""),
                     category=report_data.get("category", ""),
                     threat_type=report_data.get("threat_type", ""),
+                    classification_status=report_data.get(
+                        "classification_status", ClassificationStatus.UNRECORDED.value
+                    ),
+                    claim_attribution_status=report_data.get(
+                        "claim_attribution_status", ClaimAttributionStatus.LEGACY.value
+                    ),
+                    claim_attribution_version=report_data.get("claim_attribution_version"),
                     quality_score=report_data.get("quality_score"),
                     confidence_score=report_data.get("confidence_score"),
                     trust_score=report_data.get("trust_score"),
@@ -520,6 +678,8 @@ class ReportStorageService:
                     content_preview=report_data.get("content_preview"),
                 )
 
+                self._refresh_review_status(report)
+
                 session.add(report)
                 session.commit()
 
@@ -540,15 +700,20 @@ class ReportStorageService:
         ``finalize_report`` (on success) or ``mark_report_failed`` (on failure).
         """
         try:
-            category, threat_type = self.categorize_tool(tool_name)
+            category, threat_type, classification_status = self.resolve_classification(
+                tool_name=tool_name,
+                threat_data=None,
+            )
             with self.db_manager.get_session() as session:
                 report = Report(
                     id=report_id,
                     tool_name=tool_name,
                     category=category,
                     threat_type=threat_type,
+                    classification_status=classification_status.value,
                     status=ReportStatus.GENERATING.value,
                     generation_stage=GenerationStage.QUEUED.value,
+                    review_status=ReviewStatus.GENERATING.value,
                     user_id=user_id,
                     version="1.0",
                     search_tags=[],
@@ -573,9 +738,19 @@ class ReportStorageService:
         """
         try:
             tool_name = report_data.get("tool_name", "")
-            category, threat_type = self.categorize_tool(tool_name, report_data.get("threat_data"))
+            category, threat_type, classification_status = self.resolve_classification(
+                tool_name=tool_name,
+                threat_data=report_data.get("threat_data"),
+            )
             report_data["category"] = category
             report_data["threat_type"] = threat_type
+            report_data["classification_status"] = classification_status.value
+            attribution_status, attribution_version = claim_attribution_status(
+                report_data.get("threat_data")
+            )
+            assert_claim_attribution_consistent(report_data.get("threat_data") or {})
+            report_data["claim_attribution_status"] = attribution_status.value
+            report_data["claim_attribution_version"] = attribution_version
             assert_source_ledger_consistent(
                 report_data.get("threat_data") or {},
                 report_data.get("web_sources") or [],
@@ -622,6 +797,13 @@ class ReportStorageService:
                     report.tool_name = report_data["tool_name"]
                 report.category = report_data.get("category", report.category)
                 report.threat_type = report_data.get("threat_type", report.threat_type)
+                report.classification_status = report_data.get(
+                    "classification_status", ClassificationStatus.UNRECORDED.value
+                )
+                report.claim_attribution_status = report_data.get(
+                    "claim_attribution_status", ClaimAttributionStatus.LEGACY.value
+                )
+                report.claim_attribution_version = report_data.get("claim_attribution_version")
                 report.quality_score = report_data.get("quality_score")
                 report.confidence_score = report_data.get("confidence_score")
                 report.trust_score = report_data.get("trust_score")
@@ -647,6 +829,11 @@ class ReportStorageService:
                     report.user_id = user_id
                 report.status = ReportStatus.COMPLETED.value
                 report.generation_stage = GenerationStage.COMPLETED.value
+                report.generation_failure_stage = None
+                report.generation_error_code = None
+                report.generation_retryable = None
+                report.generation_failure = None
+                self._refresh_review_status(report)
 
                 session.commit()
                 logger.info(f"Report finalized successfully: {report_id}")
@@ -678,6 +865,7 @@ class ReportStorageService:
             report.evaluation_status = EvaluationStatus.PENDING.value
             report.evaluation_error_code = None
             report.evaluation_attempts = int(report.evaluation_attempts or 0) + 1
+            self._refresh_review_status(report)
             session.commit()
             return True
 
@@ -708,6 +896,7 @@ class ReportStorageService:
             report.evaluated_at = datetime.now(timezone.utc)
             report.threat_data = threat_data
             report.markdown_s3_key = markdown_s3_key
+            self._refresh_review_status(report)
             session.commit()
             return True
 
@@ -732,6 +921,7 @@ class ReportStorageService:
                 report.quality_assessment = quality_assessment
             if evaluation_route is not None:
                 report.evaluation_route = evaluation_route
+            self._refresh_review_status(report)
             session.commit()
             return True
 
@@ -745,6 +935,7 @@ class ReportStorageService:
                 if report is None:
                     return False
                 report.generation_stage = normalized_stage.value
+                self._refresh_review_status(report)
                 session.commit()
                 logger.info("Report %s generation stage: %s", report_id, normalized_stage.value)
                 return True
@@ -755,15 +946,33 @@ class ReportStorageService:
             logger.error(f"Error updating report generation stage: {e}")
             return False
 
-    def mark_report_failed(self, report_id: str) -> bool:
+    def mark_report_failed(
+        self,
+        report_id: str,
+        *,
+        error_code: GenerationErrorCode | str = GenerationErrorCode.UNKNOWN,
+        retryable: bool = False,
+        failure: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """Mark a pending report as failed so the UI can surface a retry state."""
         try:
             with self.db_manager.get_session() as session:
                 report = session.query(Report).filter(Report.id == report_id).first()
                 if report is None:
                     return False
+                if report.generation_stage not in {
+                    GenerationStage.FAILED.value,
+                    GenerationStage.COMPLETED.value,
+                }:
+                    report.generation_failure_stage = report.generation_stage
                 report.status = ReportStatus.FAILED.value
                 report.generation_stage = GenerationStage.FAILED.value
+                report.generation_error_code = GenerationErrorCode(error_code).value
+                report.generation_retryable = retryable
+                report.generation_failure = failure
+                if isinstance(failure, dict) and isinstance(failure.get("route"), dict):
+                    report.generation_route = failure["route"]
+                self._refresh_review_status(report)
                 session.commit()
                 logger.info(f"Report marked failed: {report_id}")
                 return True
@@ -821,6 +1030,8 @@ class ReportStorageService:
         min_quality_score: Optional[float] = None,
         search_query: Optional[str] = None,
         tags: Optional[List[str]] = None,
+        statuses: Optional[Sequence[ReportStatus | str]] = None,
+        review_statuses: Optional[Sequence[ReviewStatus | str]] = None,
         created_after: Optional[datetime] = None,
         sort_by: str = "created_at",
         sort_order: str = "desc",
@@ -835,6 +1046,8 @@ class ReportStorageService:
                 min_quality_score=min_quality_score,
                 search_query=search_query,
                 tags=tags,
+                statuses=statuses,
+                review_statuses=review_statuses,
                 created_after=created_after,
                 user_id=user_id,
                 sort_by=sort_by,
@@ -965,6 +1178,8 @@ class ReportStorageService:
                 min_quality_score=filters.get("min_quality_score"),
                 search_query=filters.get("search_query"),
                 tags=filters.get("tags"),
+                statuses=filters.get("statuses"),
+                review_statuses=filters.get("review_statuses"),
                 created_after=filters.get("created_after"),
                 user_id=filters.get("user_id"),
             )
@@ -995,6 +1210,9 @@ class ReportStorageService:
                         Report.evaluation_status,
                         Report.quality_assessment,
                         Report.web_sources,
+                        Report.threat_data,
+                        Report.generation_error_code,
+                        Report.generation_failure_stage,
                     )
                     .filter(*self._report_filter_expressions(filters))
                     .all()
@@ -1016,8 +1234,19 @@ class ReportStorageService:
                             ),
                         ),
                         quality_assessment=row.quality_assessment,
-                        source_count=(
-                            len(row.web_sources) if isinstance(row.web_sources, list) else 0
+                        source_count=self._source_count_from_values(
+                            row.web_sources,
+                            row.threat_data,
+                        ),
+                        generation_error_code=(
+                            GenerationErrorCode(row.generation_error_code)
+                            if row.generation_error_code
+                            else None
+                        ),
+                        generation_failure_stage=(
+                            GenerationStage(row.generation_failure_stage)
+                            if row.generation_failure_stage
+                            else None
                         ),
                     )
                     for row in rows

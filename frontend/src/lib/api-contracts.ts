@@ -3,6 +3,9 @@
 export type ReportStatus = 'generating' | 'completed' | 'failed';
 export type EvaluationStatus = 'unrecorded' | 'pending' | 'completed' | 'failed';
 export type ReviewStatus = 'generating' | 'generation_failed' | 'evaluation_pending' | 'needs_evaluation' | 'needs_attention' | 'reviewable';
+export type ClassificationStatus = 'recorded' | 'reconciled' | 'unmapped' | 'unrecorded';
+export type ClaimAttributionStatus = 'attributed' | 'unattributed' | 'legacy';
+export type GenerationErrorCode = 'provider_rate_limited' | 'provider_unavailable' | 'provider_timeout' | 'model_output_invalid' | 'evidence_unavailable' | 'evidence_unattested' | 'persistence_failed' | 'unknown';
 export type GenerationStage = 'queued' | 'researching' | 'synthesizing' | 'validating' | 'finalizing' | 'completed' | 'failed';
 export type ReportSortField = 'created_at' | 'quality_score' | 'tool_name' | 'processing_time_ms';
 export type SortOrder = 'asc' | 'desc';
@@ -12,11 +15,18 @@ export interface Report {
   tool_name: string;
   category: string;
   threat_type: string;
+  classification_status: ClassificationStatus;
+  claim_attribution_status: ClaimAttributionStatus;
+  claim_attribution_version?: string | null;
   quality_score: number | null;
   created_at: string;
   processing_time_ms: number;
   status?: ReportStatus;
   generation_stage?: GenerationStage;
+  generation_failure_stage?: GenerationStage | null;
+  generation_error_code?: GenerationErrorCode | null;
+  generation_retryable?: boolean | null;
+  generation_failure?: GenerationFailureObservation | null;
   evaluation_status: EvaluationStatus;
   evaluation_error_code?: string | null;
   evaluation_attempts: number;
@@ -33,6 +43,26 @@ export interface ReportDetail extends Report {
   generation_route?: ModelRouteProvenance | null;
   evaluation_route?: ModelRouteProvenance | null;
   quality_assessment?: Record<string, unknown> | null;
+  claim_attributions: ClaimAttributionEntry[];
+}
+
+export interface GenerationFailureObservation {
+  schema_version: 1;
+  error_code: GenerationErrorCode;
+  retryable: boolean;
+  stage: GenerationStage | null;
+  route_attempts: ModelRouteAttempt[];
+  route?: ModelRouteProvenance | null;
+}
+
+export interface ModelRouteAttempt {
+  requested_model: string;
+  selected_model: string;
+  actual_model?: string | null;
+  provider?: string | null;
+  outcome: 'succeeded' | 'failed';
+  error_code?: string | null;
+  retryable: boolean;
 }
 
 export interface ModelRouteProvenance {
@@ -43,9 +73,11 @@ export interface ModelRouteProvenance {
   providers: string[];
   used_fallback: boolean;
   request_count: number;
+  attempts?: ModelRouteAttempt[];
 }
 
 export interface ReportSource {
+  source_id?: string | null;
   title: string;
   url: string;
   domain: string;
@@ -53,6 +85,12 @@ export interface ReportSource {
   relevance_score: string;
   content_type: string;
   key_findings: string;
+}
+
+export interface ClaimAttributionEntry {
+  claim_class: 'threat_activity' | 'forensic_artifact' | 'detection_indicator' | 'mitigation_action';
+  claim: string;
+  source_ids: string[];
 }
 
 export interface ReportCreateRequest {
@@ -64,6 +102,8 @@ export interface ListReportFilters {
   query?: string;
   threat_type?: string;
   min_quality?: number;
+  statuses?: ReportStatus[];
+  review_statuses?: ReviewStatus[];
   sort_by?: ReportSortField;
   sort_order?: SortOrder;
 }
@@ -74,6 +114,8 @@ export interface SearchFilters {
   date_range_days?: number;
   min_quality_score?: number;
   tags?: string[];
+  statuses?: ReportStatus[];
+  review_statuses?: ReviewStatus[];
 }
 
 export interface ReportSort {
@@ -94,7 +136,9 @@ export interface PaginatedResponse<T> {
 export interface AnalyticsDashboard {
   summary: {
     total_reports: number;
-    reports_this_week: number;
+    runs_this_week: number;
+    completed_reports_this_week: number;
+    failed_reports_this_week: number;
     avg_quality_score: number | null;
     scored_reports: number;
     needs_attention_reports: number;
@@ -108,6 +152,7 @@ export interface AnalyticsDashboard {
     quality_score: number | null;
     evaluation_status: EvaluationStatus;
     review_status: ReviewStatus;
+    status: ReportStatus;
   }>;
 }
 
@@ -125,6 +170,7 @@ export interface AnalyticsData {
     scored_reports: number;
     unscored_reports: number;
     evaluation_failed_reports: number;
+    generation_failed_reports: number;
     reviewable_reports: number;
     needs_attention_reports: number;
   };
@@ -142,6 +188,13 @@ export interface AnalyticsData {
     avg_quality_score: number | null;
     avg_processing_time_ms: number | null;
   }>;
+  generation_failure_breakdown: Array<{
+    error_code: GenerationErrorCode;
+    report_count: number;
+    stages: Record<string, number>;
+    routes: { primary: number; fallback: number; unrecorded: number };
+    utc_hours: Record<string, number>;
+  }>;
   recent_activity: Array<{
     id: string;
     tool_name: string;
@@ -152,6 +205,7 @@ export interface AnalyticsData {
     generation_used_fallback: boolean | null;
     evaluation_status: EvaluationStatus;
     review_status: ReviewStatus;
+    status: ReportStatus;
   }>;
 }
 
@@ -176,6 +230,7 @@ export interface ExportConfig extends Record<string, unknown> {
   min_quality_score?: number;
   max_reports?: number;
   selected_reports?: string[];
+  review_statuses?: ReviewStatus[];
 }
 
 export interface ActivityEvent {

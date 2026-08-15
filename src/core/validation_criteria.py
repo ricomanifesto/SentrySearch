@@ -225,10 +225,14 @@ def build_section_evaluation_prompt(
     section_name: str,
     content: Mapping[str, Any],
     criteria: SectionCriteria,
+    *,
+    current_date: str,
     source_context: Mapping[str, Any] | None = None,
-    current_date: str | None = None,
 ) -> str:
     """Render the model prompt from one explicit rubric."""
+
+    if not current_date.strip():
+        raise ValueError("Evaluation prompts require the host-owned current UTC date")
 
     return SECTION_EVALUATION_PROMPT.format(
         section_name=section_name,
@@ -237,7 +241,7 @@ def build_section_evaluation_prompt(
         quality_checks="\n- ".join(criteria.quality_checks),
         source_context=json.dumps(source_context or {}, indent=2),
         minimum_score=criteria.minimum_score,
-        current_date=current_date or "Unknown",
+        current_date=current_date,
     )
 
 

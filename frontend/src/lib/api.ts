@@ -130,6 +130,8 @@ class SentrySearchAPI {
     if (filters?.query) params.append('query', filters.query);
     if (filters?.threat_type) params.append('threat_type', filters.threat_type);
     if (filters?.min_quality) params.append('min_quality', filters.min_quality.toString());
+    filters?.statuses?.forEach((status) => params.append('status', status));
+    filters?.review_statuses?.forEach((status) => params.append('review_status', status));
     if (filters?.sort_by) params.append('sort_by', filters.sort_by);
     if (filters?.sort_order) params.append('sort_order', filters.sort_order);
 
@@ -147,6 +149,9 @@ class SentrySearchAPI {
       evaluation_status: report.evaluation_status ?? (report.quality_score == null ? 'unrecorded' : 'completed'),
       evaluation_attempts: report.evaluation_attempts ?? 0,
       review_status: report.review_status ?? (report.quality_score == null ? 'needs_evaluation' : 'needs_attention'),
+      classification_status: report.classification_status ?? 'unrecorded',
+      claim_attribution_status: report.claim_attribution_status ?? 'legacy',
+      claim_attributions: report.claim_attributions ?? [],
       web_sources: report.web_sources ?? [],
       search_tags: report.search_tags ?? [],
     };
@@ -226,6 +231,7 @@ class SentrySearchAPI {
             threat_types: config.threat_types,
             date_range_days: config.date_range_days,
             min_quality_score: config.min_quality_score,
+            review_statuses: config.review_statuses,
           },
           page,
           pageSize,
@@ -243,7 +249,12 @@ class SentrySearchAPI {
             8,
             (report) => this.getReport(report.id, config.include_content),
           )
-        : summaries.map((report) => ({ ...report, web_sources: [], search_tags: [] }));
+        : summaries.map((report) => ({
+            ...report,
+            web_sources: [],
+            search_tags: [],
+            claim_attributions: [],
+          }));
     }
 
     return buildReportExport(reports, config);
@@ -254,7 +265,11 @@ class SentrySearchAPI {
     return analytics.recent_activity.map((report) => ({
       id: report.id,
       type: 'report_created',
-      description: `Generated ${report.tool_name}`,
+      description: report.status === 'failed'
+        ? `Generation failed for ${report.tool_name}`
+        : report.status === 'generating'
+          ? `Generating ${report.tool_name}`
+          : `Completed ${report.tool_name}`,
       metadata: {
         tool_name: report.tool_name,
         quality_score: report.quality_score,

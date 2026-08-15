@@ -5,6 +5,9 @@ export const SAMPLE_REPORT: ReportDetail = {
   tool_name: 'Cobalt Strike',
   category: 'malware',
   threat_type: 'post_exploitation_framework',
+  classification_status: 'recorded',
+  claim_attribution_status: 'attributed',
+  claim_attribution_version: '2',
   quality_score: 3.5,
   created_at: '2026-08-13T12:00:00.000Z',
   processing_time_ms: 0,
@@ -77,6 +80,7 @@ export const SAMPLE_REPORT: ReportDetail = {
   ].join('\n'),
   web_sources: [
     {
+      source_id: 'S1',
       title: 'Cobalt Strike product documentation',
       url: 'https://www.cobaltstrike.com/product',
       domain: 'cobaltstrike.com',
@@ -86,6 +90,7 @@ export const SAMPLE_REPORT: ReportDetail = {
       key_findings: 'Describes Beacon, command-and-control customization, and post-exploitation capabilities.',
     },
     {
+      source_id: 'S2',
       title: 'MITRE ATT&CK: Cobalt Strike (S0154)',
       url: 'https://attack.mitre.org/software/S0154/',
       domain: 'attack.mitre.org',
@@ -95,6 +100,7 @@ export const SAMPLE_REPORT: ReportDetail = {
       key_findings: 'Maps Cobalt Strike to observed adversary techniques and public reporting.',
     },
     {
+      source_id: 'S3',
       title: 'CISA: Increased Truebot Activity',
       url: 'https://www.cisa.gov/news-events/cybersecurity-advisories/aa23-187a',
       domain: 'cisa.gov',
@@ -104,11 +110,42 @@ export const SAMPLE_REPORT: ReportDetail = {
       key_findings: 'Documents malicious Beacon use for persistence, credential access, lateral movement, and exfiltration.',
     },
   ],
+  claim_attributions: [
+    {
+      claim_class: 'threat_activity',
+      claim: 'documents threat actors using Cobalt Strike Beacons for persistence, credential access, lateral movement, and data exfiltration in a wider intrusion chain.',
+      source_ids: ['S3'],
+    },
+    {
+      claim_class: 'forensic_artifact',
+      claim: 'Investigate process injection and memory-resident payload behavior.',
+      source_ids: ['S2'],
+    },
+    {
+      claim_class: 'detection_indicator',
+      claim: 'Hunt for periodic callbacks to low-reputation infrastructure, accounting for sleep and jitter.',
+      source_ids: ['S1', 'S2'],
+    },
+    {
+      claim_class: 'mitigation_action',
+      claim: 'Enforce least privilege and application control to limit payload execution and lateral movement.',
+      source_ids: ['S2', 'S3'],
+    },
+  ],
   search_tags: ['cobalt-strike', 'beacon', 'post-exploitation', 'source-reviewed'],
   threat_data: {
     profileId: 'sample-cobalt-strike',
     tlpClassification: 'TLP:CLEAR',
     attckSoftwareId: 'S0154',
+    claimAttribution: {
+      schemaVersion: '2',
+      claims: [
+        { claimClass: 'threat_activity', claim: 'documents threat actors using Cobalt Strike Beacons for persistence, credential access, lateral movement, and data exfiltration in a wider intrusion chain.', sourceIds: ['S3'] },
+        { claimClass: 'forensic_artifact', claim: 'Investigate process injection and memory-resident payload behavior.', sourceIds: ['S2'] },
+        { claimClass: 'detection_indicator', claim: 'Hunt for periodic callbacks to low-reputation infrastructure, accounting for sleep and jitter.', sourceIds: ['S1', 'S2'] },
+        { claimClass: 'mitigation_action', claim: 'Enforce least privilege and application control to limit payload execution and lateral movement.', sourceIds: ['S2', 'S3'] },
+      ],
+    },
   },
 };
 

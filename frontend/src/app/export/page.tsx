@@ -4,7 +4,7 @@ import React, { useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { ArrowDownTrayIcon } from '@heroicons/react/24/outline';
 
-import { api, type ExportConfig, type Report } from '@/lib/api';
+import { api, type ExportConfig, type Report, type ReviewStatus } from '@/lib/api';
 import {
   dateRangeFilterOptions,
   formatTaxonomyLabel,
@@ -12,6 +12,7 @@ import {
 } from '@/lib/report-query';
 import { formatDate, downloadAsFile } from '@/lib/utils';
 import { AuthGuard } from '@/components/AuthGuard';
+import { getReviewStatusClasses, getReviewStatusLabel } from '@/lib/report-status';
 
 type ExportEvidenceRecord = {
   id: string;
@@ -19,10 +20,11 @@ type ExportEvidenceRecord = {
   quality: string;
   date: string;
   threatType?: string;
+  reviewStatus: ReviewStatus;
 };
 
 type PackageScopeControl = {
-  key: 'date_range_days' | 'threat_types' | 'min_quality_score';
+  key: 'review_statuses' | 'date_range_days' | 'threat_types' | 'min_quality_score';
   label: string;
   options: Array<{ value: string; label: string }>;
   value: string;
@@ -46,6 +48,27 @@ const packageContentOptions = [
   { key: 'include_tags' as const, label: 'Search context', description: 'Search tags and categorization markers.' },
 ];
 
+const handoffStateOptions = [
+  { value: 'evaluated', label: 'Evaluated reports' },
+  { value: 'reviewable', label: 'Reviewable only' },
+  { value: 'needs_attention', label: 'Needs attention' },
+  { value: 'needs_evaluation', label: 'Needs evaluation' },
+  { value: 'generation_failed', label: 'Generation failures' },
+  { value: 'all', label: 'All lifecycle states' },
+];
+
+function reviewStatusesForHandoff(value: string): ReviewStatus[] | undefined {
+  if (value === 'evaluated') return ['reviewable', 'needs_attention'];
+  if (value === 'all') return undefined;
+  return [value as ReviewStatus];
+}
+
+function handoffValueForReviewStatuses(statuses?: ReviewStatus[]): string {
+  if (!statuses) return 'all';
+  if (statuses.join(',') === 'reviewable,needs_attention') return 'evaluated';
+  return statuses[0] ?? 'all';
+}
+
 function buildExportEvidenceRecord(report: Report): ExportEvidenceRecord {
   return {
     id: report.id,
@@ -55,6 +78,7 @@ function buildExportEvidenceRecord(report: Report): ExportEvidenceRecord {
       : `Quality ${report.quality_score.toFixed(2)}`,
     date: formatDate(report.created_at),
     threatType: report.threat_type ? formatTaxonomyLabel(report.threat_type) : undefined,
+    reviewStatus: report.review_status,
   };
 }
 
@@ -69,12 +93,13 @@ export default function ExportPage() {
     include_tags: true,
     include_sources: true,
     max_reports: 1000,
+    review_statuses: ['reviewable', 'needs_attention'],
   });
   const [selectedReports, setSelectedReports] = useState<string[]>([]);
 
   const { data: reportsData, isLoading } = useQuery({
-    queryKey: ['reports', 'export-preview'],
-    queryFn: () => api.listReports(1, 50),
+    queryKey: ['reports', 'export-preview', config.review_statuses],
+    queryFn: () => api.searchReports({ review_statuses: config.review_statuses }, 1, 50),
   });
 
   const { data: filterOptions } = useQuery({
@@ -135,6 +160,13 @@ export default function ExportPage() {
   const includedEvidenceLabels = packageContentOptions.filter((option) => Boolean(config[option.key])).map((option) => option.label);
   const packageScopeControls: PackageScopeControl[] = [
     {
+      key: 'review_statuses',
+      label: 'Lifecycle scope',
+      options: handoffStateOptions,
+      value: handoffValueForReviewStatuses(config.review_statuses),
+      onChange: (value) => handleConfigChange('review_statuses', reviewStatusesForHandoff(value)),
+    },
+    {
       key: 'date_range_days',
       label: 'Review window',
       options: dateRangeFilterOptions,
@@ -179,7 +211,7 @@ export default function ExportPage() {
     {
       label: 'Scope constraints',
       status: config.max_reports ? `${config.max_reports} record cap` : 'No record cap',
-      description: 'Review window, threat family, and report-quality constraints apply before packaging.',
+      description: 'Lifecycle, review window, threat family, and report-quality constraints apply before packaging.',
     },
   ];
 
@@ -255,7 +287,7 @@ export default function ExportPage() {
               <section data-contract="Export.PackageScopeControls.v1" className="rounded-xl border border-zinc-200 bg-white p-5">
                 <h2 className="text-base font-semibold text-zinc-950">Handoff constraints</h2>
                 <p className="mt-1 text-sm leading-6 text-zinc-500">
-                  Constrain the package to the evidence window, threat family, and report-quality floor needed for review.
+                  Constrain the package by lifecycle truth, evidence window, threat family, and report-quality floor.
                 </p>
                 <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
                   {packageScopeControls.map((control) => (
@@ -286,7 +318,7 @@ export default function ExportPage() {
                   <div className="min-w-0">
                     <h2 className="text-base font-semibold text-zinc-950">Report selection</h2>
                     <p className="mt-1 text-sm leading-6 text-zinc-500">
-                      Visible reports ready for handoff review, with report-quality and threat markers.
+                      Visible reports matching the lifecycle scope, with review state, report quality, and threat markers.
                     </p>
                   </div>
                   <button type="button" onClick={handleSelectAll} className="inline-flex h-9 shrink-0 items-center justify-center rounded-lg border border-zinc-300 bg-white px-3 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50">
@@ -403,6 +435,9 @@ function ExportEvidenceQueueRecord({
         </span>
         <span className="mt-2 flex flex-wrap items-center gap-2">
           <span className="text-sm text-zinc-500">{record.date}</span>
+          <span className={`rounded-md px-2 py-0.5 text-sm font-medium ${getReviewStatusClasses(record.reviewStatus)}`}>
+            {getReviewStatusLabel(record.reviewStatus)}
+          </span>
           {record.threatType ? (
             <span className="rounded-md bg-zinc-100 px-2 py-0.5 text-sm text-zinc-700">{record.threatType}</span>
           ) : null}

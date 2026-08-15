@@ -21,10 +21,13 @@ import httpx
 from pydantic import ValidationError
 
 from src.domain.model_routes import (
+    ModelRouteAttemptObservation,
+    ModelRouteAttemptOutcome,
     ModelRouteObservation,
     ModelRouteProvenance,
     ModelRoutePurpose,
 )
+from src.domain.reports import GenerationErrorCode
 
 EMPTY_RESPONSE_RETRIES = 3
 EMPTY_RESPONSE_RETRY_DELAY = 1.5
@@ -62,9 +65,15 @@ RETRYABLE_ERROR_TYPES = {
 class ModelClientError(RuntimeError):
     """Raised when OpenRouter cannot return usable model output."""
 
+    generation_error_code = GenerationErrorCode.UNKNOWN
+    retryable = False
+
 
 class ModelRetryableError(ModelClientError):
     """Raised when a transient OpenRouter failure can be retried safely."""
+
+    generation_error_code = GenerationErrorCode.PROVIDER_UNAVAILABLE
+    retryable = True
 
     def __init__(self, message: str, response: Any | None = None) -> None:
         super().__init__(message)
@@ -74,9 +83,26 @@ class ModelRetryableError(ModelClientError):
 class ModelRateLimitError(ModelRetryableError):
     """Raised when OpenRouter reports a rate limit response."""
 
+    generation_error_code = GenerationErrorCode.PROVIDER_RATE_LIMITED
+
 
 class ModelUnavailableError(ModelClientError):
     """Raised when the requested model route cannot serve the request."""
+
+    generation_error_code = GenerationErrorCode.PROVIDER_UNAVAILABLE
+    retryable = True
+
+
+class ModelTimeoutError(ModelRetryableError):
+    """Raised when a provider route exceeds the application request deadline."""
+
+    generation_error_code = GenerationErrorCode.PROVIDER_TIMEOUT
+
+
+class ModelOutputError(ModelRetryableError):
+    """Raised when a provider responds without contract-valid model output."""
+
+    generation_error_code = GenerationErrorCode.MODEL_OUTPUT_INVALID
 
 
 def resolve_model_name(model_name: str | None = None) -> str:
@@ -154,6 +180,7 @@ class ModelClient:
         self._api_key = key
         self._route_lock = Lock()
         self._route_observations: list[ModelRouteObservation] = []
+        self._route_attempts: list[ModelRouteAttemptObservation] = []
         self.messages = _Messages(self)
 
     def create_message(self, **kwargs: Any) -> SimpleNamespace:
@@ -198,6 +225,11 @@ class ModelClient:
             provider.setdefault("sort", "throughput")
         if provider:
             request["provider"] = provider
+        requested_providers = tuple(
+            str(provider_name)
+            for provider_name in (provider.get("only") or [])
+            if str(provider_name).strip()
+        )
 
         last_empty_error: ModelClientError | None = None
         for attempt in range(EMPTY_RESPONSE_RETRIES):
@@ -205,42 +237,68 @@ class ModelClient:
             if attempt:
                 attempt_request["session_id"] = f"sentrysearch-empty-retry-{uuid4().hex}"
             response, selected_model = self._post_with_model_fallbacks(
-                attempt_request, fallback_models
+                attempt_request,
+                fallback_models,
+                route_purpose=route_purpose,
             )
-            body = self._response_body(response)
-            self._raise_payload_error(body, response)
+            try:
+                body = self._response_body(response)
+                self._raise_payload_error(body, response)
 
-            choice = self._first_choice(body)
-            finish_reason = str(choice.get("finish_reason") or "")
-            if finish_reason in {"cancelled", "error"}:
-                raise ModelRetryableError(
-                    f"OpenRouter response was incomplete: {finish_reason or 'unknown'}",
-                    response=response,
-                )
-            if finish_reason == "length":
-                last_empty_error = ModelClientError(
-                    f"OpenRouter response was incomplete: {finish_reason or 'unknown'}"
-                )
-                if attempt + 1 < EMPTY_RESPONSE_RETRIES:
-                    request["max_tokens"] = min(
-                        int(request["max_tokens"]) * 2,
-                        MAX_COMPLETION_TOKENS,
+                choice = self._first_choice(body)
+                finish_reason = str(choice.get("finish_reason") or "")
+                if finish_reason in {"cancelled", "error"}:
+                    raise ModelOutputError(
+                        f"OpenRouter response was incomplete: {finish_reason or 'unknown'}",
+                        response=response,
                     )
-                    time.sleep(EMPTY_RESPONSE_RETRY_DELAY * (attempt + 1))
-                    continue
-                raise last_empty_error
+                if finish_reason == "length":
+                    last_empty_error = ModelOutputError(
+                        f"OpenRouter response was incomplete: {finish_reason or 'unknown'}"
+                    )
+                    if attempt + 1 < EMPTY_RESPONSE_RETRIES:
+                        self._record_failed_attempt(
+                            route_purpose,
+                            requested_model=str(request["model"]),
+                            selected_model=selected_model,
+                            provider=provider,
+                            error=last_empty_error,
+                        )
+                        request["max_tokens"] = min(
+                            int(request["max_tokens"]) * 2,
+                            MAX_COMPLETION_TOKENS,
+                        )
+                        time.sleep(EMPTY_RESPONSE_RETRY_DELAY * (attempt + 1))
+                        continue
+                    raise last_empty_error
 
-            text = self._extract_text(choice)
-            if not text:
-                last_empty_error = ModelClientError(
-                    "OpenRouter response did not include text output"
+                text = self._extract_text(choice)
+                if not text:
+                    last_empty_error = ModelOutputError(
+                        "OpenRouter response did not include text output"
+                    )
+                    if attempt + 1 < EMPTY_RESPONSE_RETRIES:
+                        self._record_failed_attempt(
+                            route_purpose,
+                            requested_model=str(request["model"]),
+                            selected_model=selected_model,
+                            provider=provider,
+                            error=last_empty_error,
+                        )
+                        time.sleep(EMPTY_RESPONSE_RETRY_DELAY * (attempt + 1))
+                        continue
+                    raise last_empty_error
+
+                parsed = self._parse_structured_output(text, response_format)
+            except ModelClientError as error:
+                self._record_failed_attempt(
+                    route_purpose,
+                    requested_model=str(request["model"]),
+                    selected_model=selected_model,
+                    provider=provider,
+                    error=error,
                 )
-                if attempt + 1 < EMPTY_RESPONSE_RETRIES:
-                    time.sleep(EMPTY_RESPONSE_RETRY_DELAY * (attempt + 1))
-                    continue
-                raise last_empty_error
-
-            parsed = self._parse_structured_output(text, response_format)
+                raise
             web_search_sources, tool_events, web_search_calls = self._extract_tool_telemetry(
                 body, choice
             )
@@ -261,11 +319,6 @@ class ModelClient:
             actual_model = str(body.get("model") or selected_model)
             provider_name = str(body.get("provider") or "")
             if route_purpose is not None:
-                requested_providers = tuple(
-                    str(provider_name)
-                    for provider_name in (provider.get("only") or [])
-                    if str(provider_name).strip()
-                )
                 self._record_route(
                     ModelRouteObservation(
                         purpose=route_purpose,
@@ -274,6 +327,16 @@ class ModelClient:
                         actual_model=actual_model,
                         provider=provider_name,
                         requested_providers=requested_providers,
+                    )
+                )
+                self._record_attempt(
+                    ModelRouteAttemptObservation(
+                        purpose=route_purpose,
+                        requested_model=str(request["model"]),
+                        selected_model=selected_model,
+                        actual_model=actual_model,
+                        provider=provider_name,
+                        outcome=ModelRouteAttemptOutcome.SUCCEEDED,
                     )
                 )
 
@@ -304,6 +367,8 @@ class ModelClient:
         self,
         request: dict[str, Any],
         fallback_models: list[str],
+        *,
+        route_purpose: ModelRoutePurpose | None,
     ) -> tuple[httpx.Response, str]:
         """Retry typed provider failures with explicitly configured model fallbacks."""
 
@@ -324,6 +389,13 @@ class ModelClient:
             try:
                 return self._post(candidate_request), model
             except (ModelRetryableError, ModelUnavailableError) as error:
+                self._record_failed_attempt(
+                    route_purpose,
+                    requested_model=primary_model,
+                    selected_model=model,
+                    provider=candidate_request.get("provider"),
+                    error=error,
+                )
                 last_error = error
 
         if last_error is not None:
@@ -333,6 +405,37 @@ class ModelClient:
     def _record_route(self, observation: ModelRouteObservation) -> None:
         with self._route_lock:
             self._route_observations.append(observation)
+
+    def _record_attempt(self, observation: ModelRouteAttemptObservation) -> None:
+        with self._route_lock:
+            self._route_attempts.append(observation)
+
+    def _record_failed_attempt(
+        self,
+        purpose: ModelRoutePurpose | None,
+        *,
+        requested_model: str,
+        selected_model: str,
+        provider: object,
+        error: ModelClientError,
+    ) -> None:
+        if purpose is None:
+            return
+        provider_values = provider.get("only") if isinstance(provider, dict) else ()
+        if not isinstance(provider_values, (list, tuple)):
+            provider_values = ()
+        provider_name = ", ".join(str(value) for value in provider_values)
+        self._record_attempt(
+            ModelRouteAttemptObservation(
+                purpose=purpose,
+                requested_model=requested_model,
+                selected_model=selected_model,
+                provider=provider_name,
+                outcome=ModelRouteAttemptOutcome.FAILED,
+                error_code=str(error.generation_error_code),
+                retryable=bool(error.retryable),
+            )
+        )
 
     def route_provenance(
         self,
@@ -350,10 +453,14 @@ class ModelClient:
                 for observation in self._route_observations
                 if observation.purpose is normalized_purpose
             )
+            attempts = tuple(
+                attempt for attempt in self._route_attempts if attempt.purpose is normalized_purpose
+            )
         return ModelRouteProvenance.summarize(
             observations,
             requested_model=requested_model,
             requested_providers=requested_providers,
+            attempts=attempts,
         )
 
     def _post(self, request: dict[str, Any]) -> httpx.Response:
@@ -369,9 +476,9 @@ class ModelClient:
                     headers=self._headers(),
                 )
         except httpx.TimeoutException as error:
-            raise ModelClientError("OpenRouter request timed out") from error
+            raise ModelTimeoutError("OpenRouter request timed out") from error
         except httpx.RequestError as error:
-            raise ModelClientError("OpenRouter API unavailable") from error
+            raise ModelRetryableError("OpenRouter API unavailable") from error
 
         error_type = self._response_error_type(response)
         if response.status_code == 429 or error_type == "rate_limit_exceeded":
@@ -393,9 +500,9 @@ class ModelClient:
         try:
             body = response.json()
         except json.JSONDecodeError as error:
-            raise ModelClientError("OpenRouter returned invalid JSON") from error
+            raise ModelOutputError("OpenRouter returned invalid JSON") from error
         if not isinstance(body, dict):
-            raise ModelClientError("OpenRouter returned an invalid response envelope")
+            raise ModelOutputError("OpenRouter returned an invalid response envelope")
         return body
 
     @classmethod
@@ -422,7 +529,7 @@ class ModelClient:
         for choice in body.get("choices") or []:
             if isinstance(choice, dict):
                 return choice
-        raise ModelClientError("OpenRouter response did not include a completion choice")
+        raise ModelOutputError("OpenRouter response did not include a completion choice")
 
     @staticmethod
     def _extract_text(choice: dict[str, Any]) -> str:
@@ -450,7 +557,7 @@ class ModelClient:
         try:
             return response_format.model_validate_json(text)
         except (ValidationError, ValueError, TypeError) as error:
-            raise ModelRetryableError("OpenRouter structured output was invalid") from error
+            raise ModelOutputError("OpenRouter structured output was invalid") from error
 
     def _build_messages(self, kwargs: dict[str, Any]) -> list[dict[str, str]]:
         messages: list[dict[str, str]] = []

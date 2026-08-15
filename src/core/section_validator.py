@@ -29,6 +29,16 @@ from src.core.validation_criteria import (
 
 logger = logging.getLogger(__name__)
 
+CLAIM_EVIDENCE_SECTIONS = frozenset(
+    {
+        "threatIntelligence",
+        "forensicArtifacts",
+        "detectionAndMitigation",
+        "mitigationAndResponse",
+    }
+)
+MAX_EVALUATION_EVIDENCE_CHARS = 24_000
+
 
 class SectionValidator(RetryingModelRequests):
     def __init__(self, client):
@@ -37,6 +47,8 @@ class SectionValidator(RetryingModelRequests):
         self.validation_history = []
         self.web_search_sources = []
         self.profile_source_context: dict[str, Any] = {}
+        self.profile_claim_attribution: dict[str, Any] = {}
+        self.profile_evidence_text = ""
         self._state_lock = Lock()
 
     def _extract_json_with_bracket_matching(self, text: str) -> Optional[dict]:
@@ -282,12 +294,19 @@ class SectionValidator(RetryingModelRequests):
         if criteria is None:
             raise ValueError(f"No evaluation rubric is defined for {section_name!r}")
 
+        source_context: dict[str, Any] = {"sourceLedger": self.profile_source_context}
+        if section_name in CLAIM_EVIDENCE_SECTIONS:
+            source_context["claimAttribution"] = self.profile_claim_attribution
+            source_context["attestedEvidenceExcerpt"] = self.profile_evidence_text[
+                :MAX_EVALUATION_EVIDENCE_CHARS
+            ]
+
         prompt = build_section_evaluation_prompt(
             section_name,
             content,
             criteria,
-            source_context=self.profile_source_context,
             current_date=datetime.now(timezone.utc).date().isoformat(),
+            source_context=source_context,
         )
 
         try:
@@ -347,6 +366,8 @@ class SectionValidator(RetryingModelRequests):
 
         sections_to_validate, results["skipped_sections"] = select_profile_sections(profile)
         self.profile_source_context = dict(profile.get("webSearchSources") or {})
+        self.profile_claim_attribution = dict(profile.get("claimAttribution") or {})
+        self.profile_evidence_text = ""
 
         total_sections = len(sections_to_validate)
         completed = 0

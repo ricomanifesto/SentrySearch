@@ -19,6 +19,7 @@ import {
   formatTaxonomyLabel,
   getQualityLabel,
   qualityFilterOptions,
+  reviewStateFilterOptions,
   reportSortOptions,
   reportQueryFromSearchParams,
   reportQuerySearchParams,
@@ -31,7 +32,7 @@ import { formatDate, formatProcessingTime, formatRelativeTime } from '@/lib/util
 import { AuthGuard } from '@/components/AuthGuard';
 import { getReviewStatusClasses, getReviewStatusLabel } from '@/lib/report-status';
 
-type ReviewQueueControlKey = 'threatType' | 'minQuality' | 'dateRangeDays' | 'sortBy' | 'sortOrder';
+type ReviewQueueControlKey = 'reviewState' | 'threatType' | 'minQuality' | 'dateRangeDays' | 'sortBy' | 'sortOrder';
 
 type ReviewQueueControl = {
   key: ReviewQueueControlKey;
@@ -106,6 +107,11 @@ function ReportsWorkspace() {
     queryFn: () => api.getSearchFilters(),
   });
 
+  const { data: libraryCount } = useQuery({
+    queryKey: ['reports', 'library-count'],
+    queryFn: () => api.listReports(1, 1),
+  });
+
   const threatTypeOptions = useMemo(() => [
     { value: '', label: 'All threat types' },
     ...(filterOptions?.threat_types.map((type) => ({
@@ -115,6 +121,7 @@ function ReportsWorkspace() {
   ], [filterOptions]);
 
   const reviewQueueControls: ReviewQueueControl[] = useMemo(() => [
+    { key: 'reviewState', label: 'Review state', options: reviewStateFilterOptions },
     { key: 'threatType', label: 'Threat type', options: threatTypeOptions },
     { key: 'minQuality', label: 'Minimum quality', options: qualityFilterOptions },
     { key: 'dateRangeDays', label: 'Date range', options: dateRangeFilterOptions },
@@ -187,7 +194,7 @@ function ReportsWorkspace() {
 
             {showFilters && (
               <div className="mt-4 border-t border-zinc-100 pt-4">
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {reviewQueueControls.map((control) => (
                     <label key={control.key} className="block">
                       <span className="block text-sm font-medium text-zinc-800">{control.label}</span>
@@ -215,8 +222,10 @@ function ReportsWorkspace() {
           {reportsData && (
             <p className="mt-4 text-sm text-zinc-500">
               {totalReports === 0
-                ? 'No saved reports'
-                : `Showing ${pageStart}–${pageEnd} of ${totalReports} saved reports`}
+                ? filters.reviewState === 'actionable' && (libraryCount?.pagination.total ?? 0) > 0
+                  ? 'No reports currently need action'
+                  : 'No matching reports'
+                : `Showing ${pageStart}–${pageEnd} of ${totalReports} ${filters.reviewState === 'actionable' ? 'action-needed' : 'matching'} reports`}
             </p>
           )}
 
@@ -237,12 +246,18 @@ function ReportsWorkspace() {
             ) : reportsData?.reports.length === 0 ? (
               <div className="rounded-xl border border-dashed border-zinc-300 px-6 py-12 text-center">
                 <h2 className="text-base font-semibold text-zinc-950">
-                  {hasActiveFilters ? 'No matching reports' : 'No saved reports yet'}
+                  {filters.reviewState === 'actionable' && (libraryCount?.pagination.total ?? 0) > 0
+                    ? 'The review queue is clear'
+                    : hasActiveFilters
+                      ? 'No matching reports'
+                      : 'No saved reports yet'}
                 </h2>
                 <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-zinc-500">
-                  {hasActiveFilters
-                    ? 'Adjust the search or filters to broaden the review queue.'
-                    : 'Generate your first report to start building the review queue.'}
+                  {filters.reviewState === 'actionable' && (libraryCount?.pagination.total ?? 0) > 0
+                    ? 'Saved reports remain available under All history; no runs currently need retry, evaluation, or review attention.'
+                    : hasActiveFilters
+                      ? 'Adjust the search or filters to broaden the review queue.'
+                      : 'Generate your first report to start building the review queue.'}
                 </p>
                 <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row">
                   {hasActiveFilters && (
@@ -339,6 +354,13 @@ function ReportReviewRecord({ report }: { report: Report }) {
             ) : null}
             {report.threat_type ? (
               <span className="rounded-md bg-zinc-100 px-2 py-1 text-sm text-zinc-700">{formatTaxonomyLabel(report.threat_type)}</span>
+            ) : null}
+            {report.classification_status === 'reconciled' ? (
+              <span className="rounded-md bg-emerald-50 px-2 py-1 text-sm text-emerald-700">Classification reconciled</span>
+            ) : report.classification_status === 'unmapped' ? (
+              <span className="rounded-md bg-amber-50 px-2 py-1 text-sm text-amber-700">Stored classification unmapped</span>
+            ) : report.classification_status === 'unrecorded' ? (
+              <span className="rounded-md bg-zinc-100 px-2 py-1 text-sm text-zinc-600">Legacy classification unrecorded</span>
             ) : null}
           </div>
         </div>

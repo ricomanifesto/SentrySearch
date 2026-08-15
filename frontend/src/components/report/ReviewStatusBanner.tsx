@@ -4,6 +4,7 @@ import {
   getReviewStatusDescription,
   getReviewStatusLabel,
 } from '@/lib/report-status';
+import type { ReviewAttentionSummary } from '@/lib/review-attention';
 
 type ReviewStatusBannerProps = {
   status: ReviewStatus;
@@ -11,6 +12,7 @@ type ReviewStatusBannerProps = {
   retryDisabled?: boolean;
   retryError?: boolean;
   onRetry?: () => void;
+  attention?: ReviewAttentionSummary | null;
 };
 
 const secondaryButtonClass =
@@ -22,15 +24,16 @@ export function ReviewStatusBanner({
   retryDisabled = false,
   retryError = false,
   onRetry,
+  attention,
 }: ReviewStatusBannerProps) {
   const active = status === 'evaluation_pending';
   const tone = status === 'reviewable'
-    ? 'border-emerald-200 bg-emerald-50'
+    ? 'border-[var(--border-success)] bg-[var(--bg-success)]'
     : status === 'generation_failed'
-      ? 'border-red-200 bg-red-50'
+      ? 'border-[var(--border-danger)] bg-[var(--bg-danger)]'
       : status === 'evaluation_pending' || status === 'generating'
-        ? 'border-blue-200 bg-blue-50'
-        : 'border-amber-200 bg-amber-50';
+        ? 'border-[var(--accent)] bg-[var(--bg-accent)]'
+        : 'border-[var(--border-warning)] bg-[var(--bg-warning)]';
 
   return (
     <section
@@ -63,6 +66,27 @@ export function ReviewStatusBanner({
         <p className="mt-3 text-sm text-red-700" role="alert">
           Evaluation could not be restarted. The saved narrative has not been removed.
         </p>
+      ) : null}
+      {status === 'needs_attention' && attention ? (
+        <div className="mt-4 border-t border-[var(--border-warning)] pt-4">
+          <p className="text-sm font-medium text-[var(--text-warning)]">{attention.headline}</p>
+          {attention.conflicts.length > 0 ? (
+            <div className="mt-3">
+              <p className="text-sm font-medium text-zinc-900">Conflicts to resolve</p>
+              <ul className="mt-1 list-disc space-y-1 pl-5 text-sm leading-6 text-zinc-700">
+                {attention.conflicts.map((conflict) => <li key={conflict}>{conflict}</li>)}
+              </ul>
+            </div>
+          ) : null}
+          {attention.recommendations.length > 0 ? (
+            <div className="mt-3">
+              <p className="text-sm font-medium text-zinc-900">Recommended next checks</p>
+              <ul className="mt-1 list-disc space-y-1 pl-5 text-sm leading-6 text-zinc-700">
+                {attention.recommendations.map((recommendation) => <li key={recommendation}>{recommendation}</li>)}
+              </ul>
+            </div>
+          ) : null}
+        </div>
       ) : null}
     </section>
   );

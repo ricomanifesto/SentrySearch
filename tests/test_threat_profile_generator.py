@@ -57,7 +57,7 @@ def test_parse_threat_profile_response_requires_sdk_parsed_payload(threat_profil
 def test_attest_profile_sources_accepts_only_hosted_search_evidence(threat_profile_data):
     attest_profile_sources(
         threat_profile_data,
-        [{"url": "https://example.com/report", "title": "Example report"}],
+        [{"sourceId": "S1", "url": "https://example.com/report", "title": "Example report"}],
     )
 
     invalid = deepcopy(threat_profile_data)
@@ -68,7 +68,7 @@ def test_attest_profile_sources_accepts_only_hosted_search_evidence(threat_profi
     with pytest.raises(ValueError, match="not returned by OpenRouter web search"):
         attest_profile_sources(
             invalid,
-            [{"url": "https://example.com/report", "title": "Example report"}],
+            [{"sourceId": "S1", "url": "https://example.com/report", "title": "Example report"}],
         )
 
     wrong_domain = deepcopy(threat_profile_data)
@@ -76,7 +76,7 @@ def test_attest_profile_sources_accepts_only_hosted_search_evidence(threat_profi
     with pytest.raises(ValueError, match="domain does not match"):
         attest_profile_sources(
             wrong_domain,
-            [{"url": "https://example.com/report", "title": "Example report"}],
+            [{"sourceId": "S1", "url": "https://example.com/report", "title": "Example report"}],
         )
 
     unverified_resource = deepcopy(threat_profile_data)
@@ -86,7 +86,7 @@ def test_attest_profile_sources_accepts_only_hosted_search_evidence(threat_profi
     with pytest.raises(ValueError, match="not returned by OpenRouter web search"):
         attest_profile_sources(
             unverified_resource,
-            [{"url": "https://example.com/report?utm_source=search"}],
+            [{"sourceId": "S1", "url": "https://example.com/report?utm_source=search"}],
         )
 
 
@@ -100,7 +100,7 @@ def test_source_attestation_prunes_explicit_unavailable_optional_urls(
 
     attest_profile_sources(
         unavailable,
-        [{"url": "https://example.com/report", "title": "Example report"}],
+        [{"sourceId": "S1", "url": "https://example.com/report", "title": "Example report"}],
     )
 
     assert unavailable["operationalGuidance"]["communityResources"] == []
@@ -117,7 +117,7 @@ def test_source_attestation_does_not_prune_required_source_placeholders(
     with pytest.raises(ValueError, match="requires at least one attested primary source"):
         attest_profile_sources(
             unavailable,
-            [{"url": "https://example.com/report", "title": "Example report"}],
+            [{"sourceId": "S1", "url": "https://example.com/report", "title": "Example report"}],
         )
 
 
@@ -130,8 +130,8 @@ def test_source_attestation_accepts_declared_parent_domain(threat_profile_data):
     attest_profile_sources(
         subdomain_source,
         [
-            {"url": "https://blog.example.com/report", "title": "Example report"},
-            {"url": "https://example.com/report", "title": "Example root report"},
+            {"sourceId": "S1", "url": "https://blog.example.com/report", "title": "Example report"},
+            {"sourceId": "S2", "url": "https://example.com/report", "title": "Example root report"},
         ],
     )
 
@@ -143,8 +143,16 @@ def test_source_attestation_accepts_declared_parent_domain(threat_profile_data):
         attest_profile_sources(
             lookalike_source,
             [
-                {"url": "https://notexample.com/report", "title": "Lookalike report"},
-                {"url": "https://example.com/report", "title": "Example root report"},
+                {
+                    "sourceId": "S1",
+                    "url": "https://notexample.com/report",
+                    "title": "Lookalike report",
+                },
+                {
+                    "sourceId": "S2",
+                    "url": "https://example.com/report",
+                    "title": "Example root report",
+                },
             ],
         )
 
@@ -152,13 +160,13 @@ def test_source_attestation_accepts_declared_parent_domain(threat_profile_data):
 def test_source_attestation_ignores_scheme_and_query_variants(threat_profile_data):
     attest_profile_sources(
         threat_profile_data,
-        [{"url": "http://example.com/report?utm_source=search"}],
+        [{"sourceId": "S1", "url": "http://example.com/report?utm_source=search"}],
     )
 
     with pytest.raises(ValueError, match="not returned by OpenRouter web search"):
         attest_profile_sources(
             threat_profile_data,
-            [{"url": "https://example.com/report?id=other"}],
+            [{"sourceId": "S1", "url": "https://example.com/report?id=other"}],
         )
 
 
@@ -171,8 +179,8 @@ def test_source_attestation_resolves_one_unambiguous_parent_url(threat_profile_d
     attest_profile_sources(
         shortened,
         [
-            {"url": "https://example.com/report"},
-            {"url": "https://example.com/reports/vendor-analysis"},
+            {"sourceId": "S1", "url": "https://example.com/report"},
+            {"sourceId": "S2", "url": "https://example.com/reports/vendor-analysis"},
         ],
     )
 
@@ -192,9 +200,9 @@ def test_source_attestation_rejects_an_ambiguous_parent_url(threat_profile_data)
         attest_profile_sources(
             shortened,
             [
-                {"url": "https://example.com/report"},
-                {"url": "https://example.com/reports/one"},
-                {"url": "https://example.com/reports/two"},
+                {"sourceId": "S1", "url": "https://example.com/report"},
+                {"sourceId": "S2", "url": "https://example.com/reports/one"},
+                {"sourceId": "S3", "url": "https://example.com/reports/two"},
             ],
         )
 
@@ -333,6 +341,7 @@ def test_generation_separates_web_research_from_structured_synthesis(
         "providers": [],
         "used_fallback": False,
         "request_count": 0,
+        "attempts": [],
     }
     assert result["_evaluation_route"]["requested_models"] == ["google/gemma-4-31b-it:free"]
     assert result["_evaluation_route"]["requested_providers"] == ["google-ai-studio"]
@@ -369,6 +378,8 @@ def test_generation_separates_web_research_from_structured_synthesis(
     assert "Example Threat uses remote access capabilities" in (
         synthesis_request["messages"][0]["content"]
     )
+    assert '"sourceId": "S1"' in synthesis_request["messages"][0]["content"]
+    assert '"claimAttribution"' in synthesis_request["messages"][0]["content"]
     synthesis_response = next(response for response in messages.responses if response.parsed)
     assert synthesis_response.usage.input_tokens == 60
     assert synthesis_response.usage.output_tokens == 100

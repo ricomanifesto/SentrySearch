@@ -2,6 +2,7 @@ import type {
   ListReportFilters,
   ReportSort,
   ReportSortField,
+  ReviewStatus,
   SearchFilters,
   SortOrder,
 } from './api-contracts';
@@ -11,6 +12,7 @@ export interface ReportQueryState {
   threatType: string;
   minQuality: string;
   dateRangeDays: string;
+  reviewState: string;
   sortBy: ReportSortField;
   sortOrder: SortOrder;
 }
@@ -20,6 +22,7 @@ export const defaultReportQuery: Readonly<ReportQueryState> = Object.freeze({
   threatType: '',
   minQuality: '',
   dateRangeDays: '',
+  reviewState: 'actionable',
   sortBy: 'created_at',
   sortOrder: 'desc',
 });
@@ -40,6 +43,24 @@ export const dateRangeFilterOptions = [
   { value: '365', label: 'Last year' },
 ];
 
+export const reviewStateFilterOptions = [
+  { value: 'actionable', label: 'Action needed' },
+  { value: 'reviewable', label: 'Reviewable' },
+  { value: 'needs_attention', label: 'Needs attention' },
+  { value: 'needs_evaluation', label: 'Needs evaluation' },
+  { value: 'generation_failed', label: 'Generation failed' },
+  { value: 'generating', label: 'Generating' },
+  { value: 'all', label: 'All history' },
+];
+
+export function reviewStatusesForState(value: string): ReviewStatus[] | undefined {
+  if (value === 'actionable') return ['generation_failed', 'needs_attention', 'needs_evaluation'];
+  if (value === 'all') return undefined;
+  return reviewStateFilterOptions.some((option) => option.value === value)
+    ? [value as ReviewStatus]
+    : ['generation_failed', 'needs_attention', 'needs_evaluation'];
+}
+
 export const reportSortOptions = [
   { value: 'created_at', label: 'Date created' },
   { value: 'quality_score', label: 'Quality score' },
@@ -57,6 +78,7 @@ export function toListReportFilters(state: ReportQueryState): ListReportFilters 
     query: state.query || undefined,
     threat_type: state.threatType || undefined,
     min_quality: state.minQuality ? Number.parseFloat(state.minQuality) : undefined,
+    review_statuses: reviewStatusesForState(state.reviewState),
     sort_by: state.sortBy,
     sort_order: state.sortOrder,
   };
@@ -68,6 +90,7 @@ export function toSearchFilters(state: ReportQueryState): SearchFilters {
     threat_types: state.threatType ? [state.threatType] : undefined,
     min_quality_score: state.minQuality ? Number.parseFloat(state.minQuality) : undefined,
     date_range_days: state.dateRangeDays ? Number.parseInt(state.dateRangeDays, 10) : undefined,
+    review_statuses: reviewStatusesForState(state.reviewState),
   };
 }
 
@@ -76,7 +99,8 @@ export function toReportSort(state: ReportQueryState): ReportSort {
 }
 
 export function countActiveReportFilters(state: ReportQueryState): number {
-  return [state.query, state.threatType, state.minQuality, state.dateRangeDays].filter(Boolean).length;
+  return [state.query, state.threatType, state.minQuality, state.dateRangeDays].filter(Boolean).length
+    + (state.reviewState !== defaultReportQuery.reviewState ? 1 : 0);
 }
 
 export function reportQueryFromSearchParams(params: URLSearchParams): ReportQueryState {
@@ -87,6 +111,9 @@ export function reportQueryFromSearchParams(params: URLSearchParams): ReportQuer
     threatType: params.get('threat_type') || '',
     minQuality: params.get('min_quality') || '',
     dateRangeDays: params.get('date_range') || '',
+    reviewState: reviewStateFilterOptions.some((option) => option.value === params.get('review_state'))
+      ? params.get('review_state') as string
+      : defaultReportQuery.reviewState,
     sortBy: reportSortOptions.some((option) => option.value === sortBy)
       ? sortBy as ReportSortField
       : defaultReportQuery.sortBy,
@@ -102,6 +129,7 @@ export function reportQuerySearchParams(state: ReportQueryState, page = 1): URLS
   if (state.threatType) params.set('threat_type', state.threatType);
   if (state.minQuality) params.set('min_quality', state.minQuality);
   if (state.dateRangeDays) params.set('date_range', state.dateRangeDays);
+  if (state.reviewState !== defaultReportQuery.reviewState) params.set('review_state', state.reviewState);
   if (state.sortBy !== defaultReportQuery.sortBy) params.set('sort_by', state.sortBy);
   if (state.sortOrder !== defaultReportQuery.sortOrder) params.set('sort_order', state.sortOrder);
   if (page > 1) params.set('page', String(page));

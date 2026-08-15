@@ -8,7 +8,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 from src.domain.reports import (
+    ClaimAttributionStatus,
+    ClassificationStatus,
     EvaluationStatus,
+    GenerationErrorCode,
     GenerationStage,
     ReportStatus,
     ReviewStatus,
@@ -40,11 +43,18 @@ class ReportResponse(BaseModel):
     tool_name: str
     category: str
     threat_type: str
+    classification_status: ClassificationStatus = ClassificationStatus.UNRECORDED
+    claim_attribution_status: ClaimAttributionStatus = ClaimAttributionStatus.LEGACY
+    claim_attribution_version: str | None = None
     quality_score: float | None
     created_at: datetime
     processing_time_ms: int = 0
     status: ReportStatus = ReportStatus.COMPLETED
     generation_stage: GenerationStage = GenerationStage.COMPLETED
+    generation_failure_stage: GenerationStage | None = None
+    generation_error_code: GenerationErrorCode | None = None
+    generation_retryable: bool | None = None
+    generation_failure: dict[str, Any] | None = None
     evaluation_status: EvaluationStatus = EvaluationStatus.UNRECORDED
     evaluation_error_code: str | None = None
     evaluation_attempts: int = 0
@@ -54,6 +64,7 @@ class ReportResponse(BaseModel):
 
 
 class ReportSource(BaseModel):
+    source_id: str | None = None
     title: str
     url: str
     domain: str
@@ -71,6 +82,18 @@ class ModelRouteProvenance(BaseModel):
     providers: list[str] = Field(default_factory=list)
     used_fallback: bool = False
     request_count: int = Field(default=0, ge=0)
+    attempts: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ClaimAttributionEntry(BaseModel):
+    claim_class: Literal[
+        "threat_activity",
+        "forensic_artifact",
+        "detection_indicator",
+        "mitigation_action",
+    ]
+    claim: str
+    source_ids: list[str] = Field(default_factory=list)
 
 
 class ReportDetail(ReportResponse):
@@ -81,6 +104,7 @@ class ReportDetail(ReportResponse):
     generation_route: ModelRouteProvenance | None = None
     evaluation_route: ModelRouteProvenance | None = None
     quality_assessment: dict[str, Any] | None = None
+    claim_attributions: list[ClaimAttributionEntry] = Field(default_factory=list)
 
 
 class SearchFilters(BaseModel):
@@ -89,6 +113,8 @@ class SearchFilters(BaseModel):
     date_range_days: int | None = Field(default=None, ge=1, le=3650)
     min_quality_score: float | None = Field(default=None, ge=0, le=5)
     tags: list[str] = Field(default_factory=list, max_length=50)
+    statuses: list[ReportStatus] = Field(default_factory=list, max_length=10)
+    review_statuses: list[ReviewStatus] = Field(default_factory=list, max_length=10)
 
 
 class PaginationParams(BaseModel):

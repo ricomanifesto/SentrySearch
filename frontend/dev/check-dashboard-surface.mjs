@@ -66,7 +66,7 @@ const expectations = [
   {
     name: 'uses a canonical briefing signals collection',
     source: briefingSignals,
-    pattern: /const signals = \[[\s\S]*label: 'Intelligence library'[\s\S]*label: 'Briefed this week'[\s\S]*label: 'Report quality'/,
+    pattern: /const signals = \[[\s\S]*label: 'Intelligence library'[\s\S]*label: 'Completed this week'[\s\S]*label: 'Report quality'/,
   },
   {
     name: 'renders briefing signals from the canonical collection',
@@ -77,6 +77,11 @@ const expectations = [
     name: 'frames recent reports as an intelligence review queue',
     source: dashboard,
     pattern: /Review queue/,
+  },
+  {
+    name: 'keeps failed runs in the action-needed dashboard queue',
+    source: dashboard,
+    pattern: /review_statuses: \['generation_failed', 'needs_attention', 'needs_evaluation'\]/,
   },
   {
     name: 'uses an honest empty state for the review queue',
@@ -102,6 +107,16 @@ const expectations = [
     name: 'does not fall back to a zero confidence score',
     source: dashboard,
     absentPattern: /avg_quality_score\?\.toFixed\(1\) \?\? '0\.0'/,
+  },
+  {
+    name: 'does not restore the briefed overstatement',
+    source: briefingSignals,
+    absentPattern: /Briefed this week|New intelligence generated/,
+  },
+  {
+    name: 'keeps public auth controls hidden while the session resolves',
+    source: navigation,
+    pattern: /if \(loading\)[\s\S]*Resolving workspace session[\s\S]*if \(!userLabel\)/,
   },
   {
     name: 'renders loading separately from zero-valued briefing signals',

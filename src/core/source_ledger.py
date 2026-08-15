@@ -3,13 +3,36 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 import re
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
+from src.domain.reports import ClaimAttributionStatus, GenerationErrorCode
+
 
 class SourceLedgerError(ValueError):
     """Raised when a report cannot attest one coherent reader-visible source ledger."""
+
+    generation_error_code = GenerationErrorCode.EVIDENCE_UNATTESTED
+    retryable = False
+
+
+CLAIM_ATTRIBUTION_SCHEMA_VERSION = "2"
+HIGH_RISK_CLAIM_CLASSES = frozenset(
+    {
+        "threat_activity",
+        "forensic_artifact",
+        "detection_indicator",
+        "mitigation_action",
+    }
+)
+CLAIM_CLASS_SECTIONS = {
+    "threat_activity": "threatIntelligence",
+    "forensic_artifact": "forensicArtifacts",
+    "detection_indicator": "detectionAndMitigation",
+    "mitigation_action": "mitigationAndResponse",
+}
 
 
 _MARKDOWN_LINK = re.compile(r"\]\((https?://[^)\s]+)\)")
@@ -37,6 +60,80 @@ def canonical_source_urls(sources: Iterable[Mapping[str, Any]]) -> tuple[str, ..
         seen.add(url)
         urls.append(url)
     return tuple(urls)
+
+
+def attach_source_ids(sources: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Assign stable request-local source IDs before synthesis and attestation."""
+
+    identified: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for source in sources:
+        item = dict(source)
+        url = _normalized_http_url(item.get("url"))
+        if url in seen:
+            continue
+        seen.add(url)
+        item["url"] = url
+        item["sourceId"] = f"S{len(identified) + 1}"
+        identified.append(item)
+    return identified
+
+
+def claim_attribution_status(
+    profile: Mapping[str, Any] | None,
+) -> tuple[ClaimAttributionStatus, str | None]:
+    """Classify attribution without inventing claim links for legacy records."""
+
+    if not isinstance(profile, Mapping) or "claimAttribution" not in profile:
+        return ClaimAttributionStatus.LEGACY, None
+    attribution = profile.get("claimAttribution")
+    if not isinstance(attribution, Mapping):
+        return ClaimAttributionStatus.UNATTRIBUTED, None
+    version = str(attribution.get("schemaVersion") or "").strip() or None
+    sources = profile.get("webSearchSources")
+    primary_sources = sources.get("primarySources") if isinstance(sources, Mapping) else None
+    claims = attribution.get("claims")
+    if version != CLAIM_ATTRIBUTION_SCHEMA_VERSION:
+        return ClaimAttributionStatus.UNATTRIBUTED, version
+    if not isinstance(primary_sources, list) or not isinstance(claims, list):
+        return ClaimAttributionStatus.UNATTRIBUTED, version
+    known_ids = {
+        str(source.get("sourceId") or "").strip()
+        for source in primary_sources
+        if isinstance(source, Mapping) and str(source.get("sourceId") or "").strip()
+    }
+    observed_classes: set[str] = set()
+    for claim in claims:
+        if not isinstance(claim, Mapping):
+            return ClaimAttributionStatus.UNATTRIBUTED, version
+        claim_text = str(claim.get("claim") or "").strip()
+        source_ids = claim.get("sourceIds")
+        if not claim_text or not isinstance(source_ids, list) or not source_ids:
+            return ClaimAttributionStatus.UNATTRIBUTED, version
+        if any(str(source_id) not in known_ids for source_id in source_ids):
+            return ClaimAttributionStatus.UNATTRIBUTED, version
+        claim_class = str(claim.get("claimClass") or "")
+        section_name = CLAIM_CLASS_SECTIONS.get(claim_class)
+        section = profile.get(section_name) if section_name else None
+        if not isinstance(section, Mapping):
+            return ClaimAttributionStatus.UNATTRIBUTED, version
+        section_text = json.dumps(section, sort_keys=True).casefold()
+        if claim_text.casefold() not in section_text:
+            return ClaimAttributionStatus.UNATTRIBUTED, version
+        observed_classes.add(claim_class)
+    if not HIGH_RISK_CLAIM_CLASSES.issubset(observed_classes):
+        return ClaimAttributionStatus.UNATTRIBUTED, version
+    return ClaimAttributionStatus.ATTRIBUTED, version
+
+
+def assert_claim_attribution_consistent(profile: Mapping[str, Any]) -> None:
+    """Fail closed when a new profile lacks the versioned high-risk evidence map."""
+
+    status, _ = claim_attribution_status(profile)
+    if status is not ClaimAttributionStatus.ATTRIBUTED:
+        raise SourceLedgerError(
+            "Current reports require claim attribution schema v2 for all high-risk claim classes"
+        )
 
 
 def canonicalize_profile_sources(profile: Mapping[str, Any]) -> tuple[dict[str, Any], list[dict]]:

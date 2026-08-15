@@ -66,6 +66,8 @@ class ParallelSectionValidator(SectionValidator):
         started_at = time.perf_counter()
         sections_to_validate, skipped_sections = select_profile_sections(profile)
         self.profile_source_context = dict(profile.get("webSearchSources") or {})
+        self.profile_claim_attribution = dict(profile.get("claimAttribution") or {})
+        self.profile_evidence_text = evidence_text or ""
         results: dict[str, Any] = {
             "section_validations": {},
             "overall_score": None,

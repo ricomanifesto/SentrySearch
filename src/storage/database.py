@@ -69,6 +69,14 @@ class DatabaseManager:
         statements = [
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'completed'",
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_stage VARCHAR(20) DEFAULT 'completed'",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_failure_stage VARCHAR(20)",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_error_code VARCHAR(50)",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_retryable BOOLEAN",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_failure JSONB",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_status VARCHAR(30)",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS classification_status VARCHAR(30)",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS claim_attribution_status VARCHAR(30)",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS claim_attribution_version VARCHAR(10)",
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_route JSONB",
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_route JSONB",
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_status VARCHAR(20)",
@@ -76,6 +84,9 @@ class DatabaseManager:
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_attempts INTEGER DEFAULT 0",
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluated_at TIMESTAMPTZ",
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS content_preview TEXT",
+            "CREATE INDEX IF NOT EXISTS ix_reports_review_status ON reports (review_status)",
+            "CREATE INDEX IF NOT EXISTS ix_reports_classification_status ON reports (classification_status)",
+            "CREATE INDEX IF NOT EXISTS ix_reports_claim_attribution_status ON reports (claim_attribution_status)",
         ]
         try:
             with self.engine.begin() as connection:

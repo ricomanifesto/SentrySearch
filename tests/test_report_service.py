@@ -8,7 +8,14 @@ from sqlalchemy.dialects import postgresql
 
 from src.api.contracts import ModelRouteProvenance, PaginationParams, ReportDetail, SearchFilters
 from src.domain.model_routes import generation_fallback_state
-from src.domain.reports import ReportFilters, ReportSortField, SortOrder
+from src.domain.reports import (
+    ClassificationStatus,
+    ReportFilters,
+    ReportSortField,
+    ReportStatus,
+    ReviewStatus,
+    SortOrder,
+)
 from src.storage.report_service import ReportStorageService
 from src.storage.models import Report
 from src.storage.database import DatabaseManager
@@ -113,18 +120,31 @@ def test_additive_migration_creates_model_route_columns():
     )
     assert "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluated_at TIMESTAMPTZ" in statements
     assert "ALTER TABLE reports ADD COLUMN IF NOT EXISTS content_preview TEXT" in statements
+    assert "ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_status VARCHAR(30)" in statements
+    assert (
+        "ALTER TABLE reports ADD COLUMN IF NOT EXISTS classification_status VARCHAR(30)"
+        in statements
+    )
+    assert (
+        "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_failure_stage VARCHAR(20)"
+        in statements
+    )
 
 
 def test_report_filters_are_immutable_and_normalize_collections():
     filters = ReportFilters(
         threat_types=("trojan", "ransomware"),
         tags=("endpoint",),
+        statuses=(ReportStatus.COMPLETED,),
+        review_statuses=(ReviewStatus.NEEDS_ATTENTION,),
         sort_by=ReportSortField.QUALITY_SCORE,
         sort_order=SortOrder.ASCENDING,
     )
 
     assert filters.threat_types == ("trojan", "ransomware")
     assert filters.tags == ("endpoint",)
+    assert filters.statuses == (ReportStatus.COMPLETED,)
+    assert filters.review_statuses == (ReviewStatus.NEEDS_ATTENTION,)
     assert filters.sort_by is ReportSortField.QUALITY_SCORE
     assert filters.sort_order is SortOrder.ASCENDING
 
@@ -143,6 +163,99 @@ def test_search_filter_expression_has_each_advertised_text_field_once():
     assert compiled.count("reports.tool_name ILIKE") == 1
     assert compiled.count("reports.category ILIKE") == 1
     assert compiled.count("reports.threat_type ILIKE") == 1
+
+
+def test_review_and_generation_statuses_are_queryable_contract_fields():
+    filters = ReportFilters(
+        statuses=(ReportStatus.COMPLETED,),
+        review_statuses=(ReviewStatus.REVIEWABLE, ReviewStatus.NEEDS_ATTENTION),
+    )
+    compiled = " ".join(
+        str(expression.compile(dialect=postgresql.dialect()))
+        for expression in ReportStorageService._report_filter_expressions(filters)
+    )
+
+    assert "reports.status IN" in compiled
+    assert "reports.review_status IN" in compiled
+
+
+def test_legacy_classification_reconciliation_keeps_unknown_reasons_distinct():
+    service = ReportStorageService.__new__(ReportStorageService)
+
+    reconciled = service.resolve_classification(
+        tool_name="Havoc",
+        threat_data={"coreMetadata": {"category": "Post-exploitation C2 framework"}},
+        stored_category="unknown",
+        stored_threat_type="unknown",
+        legacy=True,
+    )
+    unmapped = service.resolve_classification(
+        tool_name="Example",
+        threat_data={"coreMetadata": {"category": "Bespoke research artifact"}},
+        stored_category="unknown",
+        stored_threat_type="unknown",
+        legacy=True,
+    )
+    unrecorded = service.resolve_classification(
+        tool_name="Example",
+        threat_data={},
+        stored_category="unknown",
+        stored_threat_type="unknown",
+        legacy=True,
+    )
+    already_reconciled = service.resolve_classification(
+        tool_name="Havoc",
+        threat_data={"coreMetadata": {"category": "Post-exploitation C2 framework"}},
+        stored_category="malware",
+        stored_threat_type="post_exploitation_framework",
+        stored_status="reconciled",
+        legacy=True,
+    )
+
+    assert reconciled == (
+        "malware",
+        "post_exploitation_framework",
+        ClassificationStatus.RECONCILED,
+    )
+    assert unmapped[2] is ClassificationStatus.UNMAPPED
+    assert unrecorded[2] is ClassificationStatus.UNRECORDED
+    assert already_reconciled[2] is ClassificationStatus.RECONCILED
+
+
+def test_failed_generation_preserves_the_last_observed_stage_for_recovery():
+    report = Report(
+        id="ad0a93e1-4d27-4388-83f0-c1c8fa688a2e",
+        tool_name="Havoc",
+        status="generating",
+        generation_stage="validating",
+    )
+
+    class FakeQuery:
+        def filter(self, *args):
+            return self
+
+        def first(self):
+            return report
+
+    class FakeSession:
+        def query(self, *args):
+            return FakeQuery()
+
+        def commit(self):
+            return None
+
+    class FakeDatabaseManager:
+        @contextmanager
+        def get_session(self):
+            yield FakeSession()
+
+    service = ReportStorageService.__new__(ReportStorageService)
+    service.db_manager = cast(Any, FakeDatabaseManager())
+
+    assert service.mark_report_failed(str(report.id)) is True
+    assert report.generation_failure_stage == "validating"
+    assert report.status == "failed"
+    assert report.review_status == "generation_failed"
 
 
 def test_empty_quality_distribution_has_no_average_score():

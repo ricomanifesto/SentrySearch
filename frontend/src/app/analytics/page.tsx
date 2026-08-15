@@ -71,6 +71,7 @@ export default function AnalyticsPage() {
   const maxThreatCount = Math.max(1, ...threatEntries.map((entry) => entry.count));
   const shownRecentActivity = recentActivity.slice(0, 5);
   const routePerformance = analytics?.route_performance ?? [];
+  const generationFailures = analytics?.generation_failure_breakdown ?? [];
   const metricSignals = [
     {
       label: 'Reports in window',
@@ -87,7 +88,7 @@ export default function AnalyticsPage() {
     {
       label: 'Needs attention',
       value: overview?.needs_attention_reports ?? 0,
-      detail: `${overview?.evaluation_failed_reports ?? 0} evaluator failures`,
+      detail: `${overview?.generation_failed_reports ?? 0} generation failures · ${overview?.evaluation_failed_reports ?? 0} evaluator failures`,
     },
     {
       label: 'Generation completion',
@@ -169,6 +170,46 @@ export default function AnalyticsPage() {
                 </dl>
               ))}
             </div>
+          </section>
+
+          <section
+            data-contract="Analytics.GenerationFailureEvidence.v1"
+            className="mt-8 min-w-0 rounded-xl border border-zinc-200 bg-white p-5"
+          >
+            <h2 className="text-base font-semibold text-zinc-950">Generation failure evidence</h2>
+            <p className="mt-1 text-sm leading-6 text-zinc-500">
+              Typed failures grouped by cause, last pipeline stage, route, and UTC hour. Unknown history stays unrecorded.
+            </p>
+            {generationFailures.length > 0 ? (
+              <div className="mt-4 overflow-x-auto rounded-lg border border-zinc-200">
+                <table className="w-full min-w-[44rem] border-collapse text-left text-sm">
+                  <thead className="bg-zinc-100 text-zinc-950">
+                    <tr>
+                      <th className="px-3 py-2 font-semibold">Cause</th>
+                      <th className="px-3 py-2 font-semibold">Count</th>
+                      <th className="px-3 py-2 font-semibold">Last stages</th>
+                      <th className="px-3 py-2 font-semibold">Routes</th>
+                      <th className="px-3 py-2 font-semibold">UTC hours</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {generationFailures.map((failure) => (
+                      <tr key={failure.error_code} className="border-t border-zinc-200 align-top">
+                        <td className="px-3 py-3 font-medium text-zinc-950">{failure.error_code.replace(/_/g, ' ')}</td>
+                        <td className="px-3 py-3 text-zinc-700">{failure.report_count}</td>
+                        <td className="px-3 py-3 text-zinc-600">{Object.entries(failure.stages).map(([key, value]) => `${key}: ${value}`).join(' · ')}</td>
+                        <td className="px-3 py-3 text-zinc-600">{Object.entries(failure.routes).filter(([, value]) => value > 0).map(([key, value]) => `${key}: ${value}`).join(' · ')}</td>
+                        <td className="px-3 py-3 text-zinc-600">{Object.entries(failure.utc_hours).map(([key, value]) => `${key}: ${value}`).join(' · ')}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="mt-4 rounded-lg border border-dashed border-zinc-300 px-4 py-6 text-sm text-zinc-500">
+                No typed generation failures were recorded in this window.
+              </p>
+            )}
           </section>
 
           <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-2">

@@ -37,6 +37,7 @@ test('renders report markdown as semantic prose, tables, code, and guarded links
   const html = renderToStaticMarkup(<ReportNarrative markdown={markdown} />);
 
   assert.match(html, /<h3[^>]*>Findings<\/h3>/);
+  assert.match(html, /id="report-section-findings"/);
   assert.doesNotMatch(html, /<h1/);
   assert.doesNotMatch(html, /## Findings/);
   assert.match(html, /<table/);
@@ -73,6 +74,62 @@ test('renders structured source evidence as inspectable links', () => {
     html,
     /href="https:\/\/attack\.mitre\.org\/software\/S0154\/" target="_blank" rel="noopener noreferrer"/,
   );
+});
+
+test('links explicit claim attribution to source identity without duplicating the ledger', () => {
+  const narrative = renderToStaticMarkup(
+    <ReportNarrative
+      markdown="## Detection\n\nUnexpected service creation"
+      claimAttributions={[
+        {
+          claim_class: 'detection_indicator',
+          claim: 'Unexpected service creation',
+          source_ids: ['S1'],
+        },
+      ]}
+    />,
+  );
+  const sources = renderToStaticMarkup(
+    <SourceEvidence
+      attributionStatus="attributed"
+      attributionVersion="2"
+      sources={[
+        {
+          source_id: 'S1',
+          title: 'Example analysis',
+          url: 'https://example.com/report',
+          domain: 'example.com',
+          access_date: '2026-08-14',
+          relevance_score: 'High',
+          content_type: 'Analysis',
+          key_findings: 'Observed service creation.',
+        },
+      ]}
+    />,
+  );
+
+  assert.match(narrative, /href="#source-S1"/);
+  assert.match(sources, /id="source-S1"/);
+  assert.match(sources, /attribution schema 2/);
+  assert.equal((sources.match(/Example analysis/g) ?? []).length, 1);
+});
+
+test('places forensic-artifact citations outside inline code', () => {
+  const narrative = renderToStaticMarkup(
+    <ReportNarrative
+      markdown="## Forensic artifacts\n\nObserved `payload.dll` in the injected process."
+      claimAttributions={[
+        {
+          claim_class: 'forensic_artifact',
+          claim: 'payload.dll',
+          source_ids: ['S1'],
+        },
+      ]}
+    />,
+  );
+
+  assert.match(narrative, /<code[^>]*>payload\.dll<\/code> <a href="#source-S1"/);
+  assert.doesNotMatch(narrative, /<code[^>]*>[^<]*S1/);
 });
 
 test('labels canonical sample evidence as a captured snapshot', () => {

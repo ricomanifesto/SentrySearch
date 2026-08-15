@@ -35,9 +35,11 @@ export function DashboardBriefingSignals({
       detail: 'Saved reports in this workspace',
     },
     {
-      label: 'Briefed this week',
-      value: analytics?.summary.reports_this_week ?? 0,
-      detail: 'New intelligence generated',
+      label: 'Completed this week',
+      value: analytics?.summary.completed_reports_this_week ?? 0,
+      detail: analytics
+        ? `${analytics.summary.runs_this_week} runs started · ${analytics.summary.failed_reports_this_week} failed`
+        : 'Completed report records',
     },
     {
       label: 'Report quality',

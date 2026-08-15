@@ -23,8 +23,10 @@ export function getReviewStatusDescription(status: ReviewStatus): string {
 }
 
 export function getReviewStatusClasses(status: ReviewStatus): string {
-  if (status === 'reviewable') return 'bg-emerald-50 text-emerald-700';
-  if (status === 'generating' || status === 'evaluation_pending') return 'bg-blue-50 text-blue-700';
-  if (status === 'generation_failed') return 'bg-red-50 text-red-700';
-  return 'bg-amber-50 text-amber-800';
+  if (status === 'reviewable') return 'bg-[var(--bg-success)] text-[var(--text-success)]';
+  if (status === 'generating' || status === 'evaluation_pending') {
+    return 'bg-[var(--bg-accent)] text-[var(--text-accent)]';
+  }
+  if (status === 'generation_failed') return 'bg-[var(--bg-danger)] text-[var(--text-danger)]';
+  return 'bg-[var(--border-warning)] text-[var(--text-primary)]';
 }

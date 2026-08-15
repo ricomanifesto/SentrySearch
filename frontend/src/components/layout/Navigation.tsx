@@ -31,14 +31,72 @@ const navigation = [
   { name: 'Generate', href: '/generate', icon: PlusIcon },
 ];
 
+export function NavigationSessionActions({
+  loading,
+  userLabel,
+  onSignOut,
+}: {
+  loading: boolean;
+  userLabel?: string | null;
+  onSignOut: () => void;
+}) {
+  if (loading) {
+    return (
+      <div
+        className="h-9 w-36 animate-pulse rounded-lg bg-zinc-100"
+        role="status"
+        aria-label="Resolving workspace session"
+      />
+    );
+  }
+  if (!userLabel) {
+    return (
+      <div className="flex items-center space-x-2">
+        <Link href="/auth/signin" className="rounded-lg px-3 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100">
+          Sign in
+        </Link>
+        <Link href="/auth/signup" className="rounded-lg bg-zinc-950 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-800">
+          Sign up
+        </Link>
+      </div>
+    );
+  }
+  return (
+    <>
+      <Link
+        href="/settings"
+        aria-label="Workspace access"
+        className="rounded-md p-2 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700"
+        title="Workspace access"
+      >
+        <Cog6ToothIcon className="h-5 w-5" />
+      </Link>
+      <div className="flex items-center space-x-3">
+        <div className="flex items-center space-x-2">
+          <UserIcon className="h-5 w-5 text-zinc-400" />
+          <span className="text-sm text-zinc-700">{userLabel}</span>
+        </div>
+        <button
+          onClick={onSignOut}
+          aria-label="Sign out"
+          className="rounded-md p-2 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700"
+          title="Sign out"
+        >
+          <ArrowRightOnRectangleIcon className="h-5 w-5" />
+        </button>
+      </div>
+    </>
+  );
+}
+
 export function Navigation() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const pathname = usePathname();
-  const { user, signOut } = useAuth();
+  const { user, loading, signOut } = useAuth();
 
   // App navigation is only meaningful once signed in.
-  const allNavigation = user ? navigation : [];
-  const homeHref = user ? '/dashboard' : '/';
+  const allNavigation = !loading && user ? navigation : [];
+  const homeHref = loading ? pathname : user ? '/dashboard' : '/';
 
   return (
     <nav className="border-b border-zinc-200 bg-white">
@@ -109,49 +167,11 @@ export function Navigation() {
           {/* Desktop right side */}
           <div className="hidden sm:flex sm:items-center sm:space-x-4">
             <ThemeToggle />
-            {user ? (
-              <>
-                <Link
-                  href="/settings"
-                  aria-label="Workspace access"
-                  className="rounded-md p-2 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700"
-                  title="Workspace access"
-                >
-                  <Cog6ToothIcon className="h-5 w-5" />
-                </Link>
-                <div className="flex items-center space-x-3">
-                  <div className="flex items-center space-x-2">
-                    <UserIcon className="h-5 w-5 text-zinc-400" />
-                    <span className="text-sm text-zinc-700">
-                      {user.user_metadata?.name || user.email}
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => signOut()}
-                    aria-label="Sign out"
-                    className="rounded-md p-2 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700"
-                    title="Sign out"
-                  >
-                    <ArrowRightOnRectangleIcon className="h-5 w-5" />
-                  </button>
-                </div>
-              </>
-            ) : (
-              <div className="flex items-center space-x-2">
-                <Link
-                  href="/auth/signin"
-                  className="rounded-lg px-3 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100"
-                >
-                  Sign in
-                </Link>
-                <Link
-                  href="/auth/signup"
-                  className="rounded-lg bg-zinc-950 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-800"
-                >
-                  Sign up
-                </Link>
-              </div>
-            )}
+            <NavigationSessionActions
+              loading={loading}
+              userLabel={user?.user_metadata?.name || user?.email}
+              onSignOut={() => signOut()}
+            />
           </div>
         </div>
       </div>
@@ -182,7 +202,7 @@ export function Navigation() {
               );
             })}
 
-            {user && (
+            {!loading && user && (
               <div className="mt-2 space-y-1 border-t border-zinc-200 px-3 pt-3">
                 <Link
                   href="/settings"
@@ -206,7 +226,7 @@ export function Navigation() {
               </div>
             )}
 
-            {!user && (
+            {!loading && !user && (
               <div className="flex flex-col gap-2 px-3 pt-2">
                 <Link
                   href="/auth/signin"
@@ -222,6 +242,11 @@ export function Navigation() {
                 >
                   Sign up
                 </Link>
+              </div>
+            )}
+            {loading && (
+              <div className="px-3 pt-3" role="status" aria-label="Resolving workspace session">
+                <div className="h-11 animate-pulse rounded-lg bg-zinc-100" />
               </div>
             )}
           </div>

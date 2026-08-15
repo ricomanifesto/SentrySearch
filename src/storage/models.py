@@ -38,6 +38,9 @@ class Report(Base):
     tool_name = Column(String(255), nullable=False, index=True)
     category = Column(String(100), index=True)
     threat_type = Column(String(100), index=True)
+    classification_status = Column(String(30), default="unrecorded", index=True)
+    claim_attribution_status = Column(String(30), default="legacy", index=True)
+    claim_attribution_version = Column(String(10))
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
@@ -77,6 +80,11 @@ class Report(Base):
     # column existed are treated as finished.
     status = Column(String(20), default="completed", index=True)
     generation_stage = Column(String(20), default="completed")
+    generation_failure_stage = Column(String(20))
+    generation_error_code = Column(String(50))
+    generation_retryable = Column(Boolean)
+    generation_failure = Column(JSONB)
+    review_status = Column(String(30), default="needs_evaluation", index=True)
 
     # Flags and metadata
     is_flagged = Column(Boolean, default=False)
@@ -94,12 +102,20 @@ class Report(Base):
             "tool_name": self.tool_name,
             "category": self.category,
             "threat_type": self.threat_type,
+            "classification_status": self.classification_status or "unrecorded",
+            "claim_attribution_status": self.claim_attribution_status or "legacy",
+            "claim_attribution_version": self.claim_attribution_version,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "quality_score": _optional_float(self.quality_score),
             "confidence_score": _optional_float(self.confidence_score),
             "processing_time_ms": self.processing_time_ms or 0,
             "status": self.status or "completed",
             "generation_stage": self.generation_stage or self.status or "completed",
+            "generation_failure_stage": self.generation_failure_stage,
+            "generation_error_code": self.generation_error_code,
+            "generation_retryable": self.generation_retryable,
+            "generation_failure": self.generation_failure,
+            "review_status": self.review_status,
             "generation_route": self.generation_route,
             "evaluation_route": self.evaluation_route,
             "evaluation_status": self.evaluation_status,

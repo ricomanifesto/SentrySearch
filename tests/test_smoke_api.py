@@ -14,6 +14,7 @@ from src.auth import supabase_auth
 from src.api import main as api_main
 from src.core.markdown_generator import generate_markdown
 from src.domain.reports import (
+    GenerationErrorCode,
     GenerationProgress,
     GenerationStage,
     ReportAnalyticsRecord,
@@ -450,8 +451,9 @@ def test_background_generation_marks_failed_without_leaking_detail(monkeypatch):
 
     marked = {}
 
-    def mark_report_failed(report_id):
+    def mark_report_failed(report_id, **failure):
         marked["report_id"] = report_id
+        marked.update(failure)
         return True
 
     def finalize_report(*args, **kwargs):
@@ -464,6 +466,9 @@ def test_background_generation_marks_failed_without_leaking_detail(monkeypatch):
     api_main.run_report_generation("report-1", "SecretTool", "analyst-user")
 
     assert marked["report_id"] == "report-1"
+    assert marked["error_code"] is GenerationErrorCode.MODEL_OUTPUT_INVALID
+    assert marked["retryable"] is True
+    assert marked["failure"]["schema_version"] == 1
 
 
 def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
@@ -934,6 +939,42 @@ def test_search_results_default_null_quality_score(monkeypatch):
     assert response["reports"][0].threat_type == "unknown"
 
 
+def test_search_passes_canonical_review_and_generation_states_to_storage(monkeypatch):
+    captured_search = {}
+    captured_count = {}
+    monkeypatch.setattr(
+        api_main.report_service,
+        "search_reports",
+        lambda **kwargs: captured_search.update(kwargs) or [],
+    )
+    monkeypatch.setattr(
+        api_main.report_service,
+        "count_search_results",
+        lambda **kwargs: captured_count.update(kwargs) or 0,
+    )
+    user = supabase_auth.AuthenticatedUser(
+        user_id="analyst-user",
+        email="analyst@example.com",
+        metadata={"role": "analyst"},
+    )
+
+    asyncio.run(
+        api_main.search_reports(
+            api_main.SearchFilters(
+                statuses=[ReportStatus.COMPLETED],
+                review_statuses=[api_main.ReviewStatus.NEEDS_ATTENTION],
+            ),
+            api_main.PaginationParams(),
+            user,
+        )
+    )
+
+    assert captured_search["statuses"] == [ReportStatus.COMPLETED]
+    assert captured_search["review_statuses"] == [api_main.ReviewStatus.NEEDS_ATTENTION]
+    assert captured_count["statuses"] == [ReportStatus.COMPLETED]
+    assert captured_count["review_statuses"] == [api_main.ReviewStatus.NEEDS_ATTENTION]
+
+
 def test_analytics_requires_auth_before_storage_read(monkeypatch):
     storage_called = False
 
@@ -1117,6 +1158,42 @@ def test_route_performance_separates_primary_fallback_and_legacy_reports():
     ]
 
 
+def test_generation_failures_are_clustered_by_typed_cause_stage_route_and_hour():
+    start = datetime(2026, 8, 14, 13, 15, tzinfo=timezone.utc)
+    records = [
+        ReportAnalyticsRecord(
+            created_at=start,
+            quality_score=None,
+            processing_time_ms=None,
+            status=ReportStatus.FAILED,
+            threat_type="unknown",
+            generation_used_fallback=True,
+            generation_error_code=GenerationErrorCode.PROVIDER_UNAVAILABLE,
+            generation_failure_stage=GenerationStage.SYNTHESIZING,
+        ),
+        ReportAnalyticsRecord(
+            created_at=start + timedelta(minutes=20),
+            quality_score=None,
+            processing_time_ms=None,
+            status=ReportStatus.FAILED,
+            threat_type="unknown",
+            generation_used_fallback=False,
+            generation_error_code=GenerationErrorCode.PROVIDER_UNAVAILABLE,
+            generation_failure_stage=GenerationStage.RESEARCHING,
+        ),
+    ]
+
+    assert api_main.build_generation_failure_breakdown(records) == [
+        {
+            "error_code": "provider_unavailable",
+            "report_count": 2,
+            "stages": {"synthesizing": 1, "researching": 1},
+            "routes": {"primary": 1, "fallback": 1, "unrecorded": 0},
+            "utc_hours": {"13:00": 2},
+        }
+    ]
+
+
 def test_dashboard_analytics_filters_report_reads_by_authenticated_non_admin(monkeypatch):
     captured_count_kwargs = []
     captured_quality_kwargs = {}
@@ -1170,6 +1247,41 @@ def test_dashboard_analytics_filters_report_reads_by_authenticated_non_admin(mon
     assert captured_threat_kwargs["user_id"] == "analyst-user"
     assert captured_list_kwargs["user_id"] == "analyst-user"
     assert captured_analytics_kwargs["user_id"] == "analyst-user"
+
+
+def test_dashboard_weekly_counts_separate_completed_reports_from_failed_runs(monkeypatch):
+    observed_counts = []
+
+    def count_reports(**kwargs):
+        observed_counts.append(kwargs)
+        statuses = kwargs.get("statuses")
+        if statuses == [ReportStatus.COMPLETED]:
+            return 3
+        if statuses == [ReportStatus.FAILED]:
+            return 2
+        return 5 if "created_after" in kwargs else 9
+
+    monkeypatch.setattr(api_main.report_service, "count_reports", count_reports)
+    monkeypatch.setattr(api_main.report_service, "get_threat_type_stats", lambda **kwargs: {})
+    monkeypatch.setattr(
+        api_main.report_service,
+        "get_quality_score_distribution",
+        lambda **kwargs: {"average": None, "distribution": [], "total_scored": 0},
+    )
+    monkeypatch.setattr(api_main.report_service, "list_analytics_records", lambda **kwargs: [])
+    monkeypatch.setattr(api_main.report_service, "list_reports", lambda **kwargs: [])
+    user = supabase_auth.AuthenticatedUser(
+        user_id="analyst-user",
+        email="analyst@example.com",
+        metadata={"role": "analyst"},
+    )
+
+    response = asyncio.run(api_main.get_dashboard_analytics(user))
+
+    assert response["summary"]["runs_this_week"] == 5
+    assert response["summary"]["completed_reports_this_week"] == 3
+    assert response["summary"]["failed_reports_this_week"] == 2
+    assert "reports_this_week" not in response["summary"]
 
 
 def test_python_tooling_is_uv_managed():

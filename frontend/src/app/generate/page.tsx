@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { Suspense, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   DocumentMagnifyingGlassIcon,
   ExclamationTriangleIcon,
@@ -56,9 +56,21 @@ const reportIncludes = [
 ];
 
 export default function GeneratePage() {
+  return (
+    <AuthGuard>
+      <Suspense fallback={<main className="min-h-[60vh] bg-[var(--surface-0)]" role="status" aria-label="Loading generation console" />}>
+        <GenerateWorkspace />
+      </Suspense>
+    </AuthGuard>
+  );
+}
+
+function GenerateWorkspace() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const initialTarget = searchParams.get('target')?.trim().slice(0, 255) ?? '';
   const [formData, setFormData] = useState<GenerateFormData>({
-    tool_name: '',
+    tool_name: initialTarget,
     analysis_type: 'comprehensive',
   });
 
@@ -83,8 +95,7 @@ export default function GeneratePage() {
     'mt-2 block h-12 w-full rounded-lg border border-zinc-300 bg-white px-3 text-base text-zinc-950 outline-none transition-colors placeholder:text-zinc-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:opacity-60';
 
   return (
-    <AuthGuard>
-      <main data-surface="generate-console" className="overflow-x-hidden bg-[var(--surface-0)]">
+    <main data-surface="generate-console" className="overflow-x-hidden bg-[var(--surface-0)]">
         <div className="mx-auto max-w-6xl px-6 py-12 lg:px-8">
           <header className="max-w-2xl">
             <p className="text-sm font-medium text-blue-700">Generate</p>
@@ -194,7 +205,6 @@ export default function GeneratePage() {
             </aside>
           </div>
         </div>
-      </main>
-    </AuthGuard>
+    </main>
   );
 }

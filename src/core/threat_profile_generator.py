@@ -23,6 +23,12 @@ from src.core.threat_profile_schema import (
     attest_profile_sources,
     parse_threat_profile_response,
 )
+from src.core.generation_failures import (
+    EvidenceAttestationError,
+    EvidenceUnavailableError,
+    ProfileOutputError,
+)
+from src.core.source_ledger import SourceLedgerError, attach_source_ids
 from src.domain.model_routes import ModelRouteProvenance, ModelRoutePurpose
 from src.domain.reports import GenerationProgress, GenerationStage
 
@@ -93,6 +99,14 @@ class ThreatProfileGenerator(RetryingModelRequests):
             requested_model=requested_model,
             requested_providers=requested_providers,
         ).to_dict()
+
+    def generation_route_provenance(self) -> dict[str, object]:
+        """Expose generation attempts for persistence when the pipeline fails."""
+
+        return self._route_provenance(
+            ModelRoutePurpose.GENERATION,
+            generation_request_options(),
+        )
 
     def _research_evidence(self, tool_name: str) -> SimpleNamespace:
         """Collect independent evidence areas concurrently through OpenRouter web search."""
@@ -254,9 +268,16 @@ Return a compact but technically dense evidence dossier. Include concrete findin
             )
             research_sources = list(getattr(research_response, "web_search_sources", None) or [])
             if not research_text:
-                raise ValueError("OpenRouter research response did not include text output")
+                raise EvidenceUnavailableError(
+                    "OpenRouter research response did not include text output"
+                )
             if not research_sources:
-                raise ValueError("OpenRouter web search returned no source evidence")
+                raise EvidenceUnavailableError("OpenRouter web search returned no source evidence")
+
+            try:
+                research_sources = attach_source_ids(research_sources)
+            except SourceLedgerError as error:
+                raise EvidenceAttestationError("Research source catalog was invalid") from error
 
             source_catalog = json.dumps(research_sources, indent=2, sort_keys=True)
 
@@ -287,6 +308,7 @@ Based on your comprehensive research findings, create a detailed profile in the 
     "searchQueriesUsed": ["REQUIRED: List the research-stage queries represented in the evidence dossier"],
     "primarySources": [
       {{
+        "sourceId": "REQUIRED: Exact S-number paired with this URL in the attested source catalog",
         "url": "REQUIRED: Exact URL from the attested source catalog - NO invented URLs",
         "title": "REQUIRED: Actual title from the attested source catalog",
         "domain": "REQUIRED: Actual domain name from the attested source catalog",
@@ -299,6 +321,31 @@ Based on your comprehensive research findings, create a detailed profile in the 
     "searchStrategy": "REQUIRED: Describe the research-stage search approach",
     "dataFreshness": "REQUIRED: How recent the attested information is",
     "sourceReliability": "REQUIRED: Assessment based on attested domain authority and content quality"
+  }},
+  "claimAttribution": {{
+    "schemaVersion": "2",
+    "claims": [
+      {{
+        "claimClass": "threat_activity",
+        "claim": "REQUIRED: One exact high-risk claim stated in threatIntelligence",
+        "sourceIds": ["REQUIRED: One or more exact sourceId values supporting this claim"]
+      }},
+      {{
+        "claimClass": "forensic_artifact",
+        "claim": "REQUIRED: One exact artifact stated in forensicArtifacts",
+        "sourceIds": ["REQUIRED: One or more exact sourceId values supporting this claim"]
+      }},
+      {{
+        "claimClass": "detection_indicator",
+        "claim": "REQUIRED: One exact IOC or behavior stated in detectionAndMitigation",
+        "sourceIds": ["REQUIRED: One or more exact sourceId values supporting this claim"]
+      }},
+      {{
+        "claimClass": "mitigation_action",
+        "claim": "REQUIRED: One exact action stated in mitigationAndResponse",
+        "sourceIds": ["REQUIRED: One or more exact sourceId values supporting this claim"]
+      }}
+    ]
   }},
   "toolOverview": {{
     "description": "Comprehensive description based on findings",
@@ -442,6 +489,9 @@ CRITICAL INSTRUCTIONS FOR OUTPUT:
 6. primarySources and referencesAndIntelligenceSharing.sources MUST each contain at least one real URL from the attested source catalog
 7. Cross-reference claims across multiple attested sources when possible
 8. If the attested research is limited, acknowledge this limitation in the relevant sections
+9. Preserve each sourceId exactly as supplied and use only those IDs in claimAttribution
+10. claimAttribution schemaVersion 2 MUST include at least one supported claim in each of the four named high-risk claim classes
+11. Each attributed claim MUST be copied exactly from the corresponding structured section; sourceIds identify evidence, never a substitute source list
 
 Remember: Accuracy and source verification are more important than completeness.
 
@@ -513,8 +563,14 @@ END ATTESTED SOURCE CATALOG"""
                 "Validating structured response...",
             )
 
-            json_data = parse_threat_profile_response(response)
-            attest_profile_sources(json_data, response.web_search_sources)
+            try:
+                json_data = parse_threat_profile_response(response)
+            except (ValueError, TypeError) as error:
+                raise ProfileOutputError("Structured profile output was invalid") from error
+            try:
+                attest_profile_sources(json_data, response.web_search_sources)
+            except ValueError as error:
+                raise EvidenceAttestationError("Profile evidence attestation failed") from error
 
             if self.enable_metrics and self.performance_tracker:
                 self.performance_tracker.record_contract_result(

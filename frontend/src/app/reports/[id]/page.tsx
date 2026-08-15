@@ -14,11 +14,13 @@ import { useParams, useRouter } from 'next/navigation';
 import { ArrowLeftIcon, ArrowDownTrayIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { Dialog, DialogPanel, DialogTitle } from '@headlessui/react';
 
-import { api, type ReportDetail } from '@/lib/api';
+import { api, type GenerationStage, type ReportDetail } from '@/lib/api';
 import { formatDate, formatRelativeTime, formatProcessingTime, downloadAsFile } from '@/lib/utils';
 import { SAMPLE_REPORT } from '@/lib/sample-report';
-import { getQualityLabel } from '@/lib/report-query';
-import { splitReportContent } from '@/lib/report-content';
+import { formatTaxonomyLabel, getQualityLabel } from '@/lib/report-query';
+import { getReportSectionLinks, splitReportContent } from '@/lib/report-content';
+import { getReviewAttentionSummary } from '@/lib/review-attention';
+import { getGenerationFailurePresentation } from '@/lib/generation-failure';
 import { AuthGuard } from '@/components/AuthGuard';
 import { ReportNarrative } from '@/components/report/ReportNarrative';
 import { SourceEvidence } from '@/components/report/SourceEvidence';
@@ -27,6 +29,8 @@ import { RouteProvenance } from '@/components/report/RouteProvenance';
 import { ReviewStatusBanner } from '@/components/report/ReviewStatusBanner';
 
 const LOCAL_REPORT_DETAIL_FIXTURE_ID = 'local-visual-fixture';
+const LOCAL_REVIEW_ATTENTION_FIXTURE_ID = 'local-review-attention-fixture';
+const LOCAL_FAILED_GENERATION_FIXTURE_ID = 'local-failed-generation-fixture';
 
 const localReportDetailFixture: ReportDetail = {
   ...SAMPLE_REPORT,
@@ -36,6 +40,7 @@ const localReportDetailFixture: ReportDetail = {
   evaluation_error_code: 'evaluator_unavailable',
   evaluation_attempts: 1,
   review_status: 'needs_evaluation',
+  classification_status: 'recorded',
   quality_assessment: null,
   generation_route: {
     requested_models: ['google/gemma-4-26b-a4b-it:free'],
@@ -57,17 +62,152 @@ const localReportDetailFixture: ReportDetail = {
   },
 };
 
+const localReviewAttentionFixture: ReportDetail = {
+  ...SAMPLE_REPORT,
+  id: LOCAL_REVIEW_ATTENTION_FIXTURE_ID,
+  classification_status: 'reconciled',
+  review_status: 'needs_attention',
+  quality_assessment: {
+    overall_score: 3.5,
+    summary: {
+      total_sections: 7,
+      passed_sections: 5,
+      enhance_sections: 2,
+      failed_sections: 0,
+      unavailable_sections: 0,
+    },
+    consistency: {
+      consistency_score: 3.5,
+      inconsistencies: [
+        'The observed-use timeline needs reconciliation with the profile metadata date.',
+        'One detection claim needs a direct source link before operational reuse.',
+      ],
+      recommendations: ['Verify the timeline and source the detection claim.'],
+    },
+  },
+};
+
+const localFailedGenerationFixture: ReportDetail = {
+  ...SAMPLE_REPORT,
+  id: LOCAL_FAILED_GENERATION_FIXTURE_ID,
+  tool_name: 'Havoc',
+  status: 'failed',
+  generation_stage: 'failed',
+  generation_failure_stage: 'validating',
+  generation_error_code: 'provider_unavailable',
+  generation_retryable: true,
+  generation_failure: {
+    schema_version: 1,
+    error_code: 'provider_unavailable',
+    retryable: true,
+    stage: 'validating',
+    route_attempts: [
+      {
+        requested_model: 'google/gemma-4-26b-a4b-it:free',
+        selected_model: 'google/gemma-4-26b-a4b-it:free',
+        provider: 'google-ai-studio',
+        outcome: 'failed',
+        error_code: 'provider_unavailable',
+        retryable: true,
+      },
+    ],
+  },
+  evaluation_status: 'unrecorded',
+  evaluation_attempts: 0,
+  review_status: 'generation_failed',
+  classification_status: 'unrecorded',
+  quality_score: null,
+  quality_assessment: null,
+  markdown_content: undefined,
+  web_sources: [],
+};
+
+function generationStageLabel(stage?: GenerationStage | null): string {
+  switch (stage) {
+    case 'queued': return 'preparing research';
+    case 'researching': return 'researching sources';
+    case 'synthesizing': return 'synthesizing the narrative';
+    case 'validating': return 'validating report sections';
+    case 'finalizing': return 'saving the review record';
+    default: return 'an unrecorded generation stage';
+  }
+}
+
+function classificationDetail(status: ReportDetail['classification_status']): string {
+  switch (status) {
+    case 'recorded': return 'Stored structured classification';
+    case 'reconciled': return 'Recovered from the saved structured extraction';
+    case 'unmapped': return 'Stored classification exists but does not map to the canonical taxonomy';
+    case 'unrecorded': return 'Legacy record without structured classification provenance';
+  }
+}
+
+function DeleteReportDialog({
+  open,
+  toolName,
+  pending,
+  failed,
+  onClose,
+  onDelete,
+}: {
+  open: boolean;
+  toolName: string;
+  pending: boolean;
+  failed: boolean;
+  onClose: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <Dialog open={open} onClose={() => { if (!pending) onClose(); }} className="relative z-50">
+      <div className="fixed inset-0 bg-zinc-950/40" aria-hidden="true" />
+      <div className="fixed inset-0 flex items-center justify-center overflow-y-auto p-4">
+        <DialogPanel className="w-full max-w-md rounded-xl border border-zinc-200 bg-white p-6 shadow-xl">
+          <DialogTitle className="text-xl font-semibold text-zinc-950">Delete this report?</DialogTitle>
+          <p className="mt-3 text-sm leading-6 text-zinc-600">
+            The saved record and review history for {toolName} will be permanently removed.
+          </p>
+          {failed ? (
+            <p className="mt-3 text-sm text-red-700" role="alert">
+              The report could not be deleted. The saved record is still available.
+            </p>
+          ) : null}
+          <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+            <button type="button" disabled={pending} onClick={onClose} className={secondaryButtonClass}>
+              Keep report
+            </button>
+            <button
+              type="button"
+              disabled={pending}
+              onClick={onDelete}
+              className="inline-flex h-10 items-center justify-center rounded-lg bg-red-700 px-4 text-sm font-medium text-white transition-colors hover:bg-red-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:pointer-events-none disabled:opacity-50"
+            >
+              {pending ? 'Deleting report…' : 'Delete permanently'}
+            </button>
+          </div>
+        </DialogPanel>
+      </div>
+    </Dialog>
+  );
+}
+
 const secondaryButtonClass =
   'inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-zinc-300 bg-white px-4 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 disabled:pointer-events-none disabled:opacity-50';
 
 export default function ReportDetailPage() {
   const params = useParams();
   const reportId = params?.id as string;
-  const isLocalVisualFixture =
-    process.env.NODE_ENV === 'development' && reportId === LOCAL_REPORT_DETAIL_FIXTURE_ID;
+  const fixtureReport = process.env.NODE_ENV === 'development'
+    ? reportId === LOCAL_REPORT_DETAIL_FIXTURE_ID
+      ? localReportDetailFixture
+      : reportId === LOCAL_REVIEW_ATTENTION_FIXTURE_ID
+        ? localReviewAttentionFixture
+        : reportId === LOCAL_FAILED_GENERATION_FIXTURE_ID
+          ? localFailedGenerationFixture
+        : undefined
+    : undefined;
 
-  return isLocalVisualFixture ? (
-    <ReportDetailContent fixtureReport={localReportDetailFixture} />
+  return fixtureReport ? (
+    <ReportDetailContent fixtureReport={fixtureReport} />
   ) : (
     <AuthGuard>
       <ReportDetailContent />
@@ -196,7 +336,12 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
   }
 
   if (isFailed) {
+    const failurePresentation = getGenerationFailurePresentation(
+      report.generation_error_code,
+      report.generation_retryable,
+    );
     return (
+      <>
       <main data-surface="report-detail-record" className="overflow-x-hidden bg-[var(--surface-0)]">
         <div className="mx-auto max-w-2xl px-6 py-16 lg:px-8">
           <section
@@ -204,22 +349,55 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
             className="rounded-xl border border-red-200 bg-red-50 px-6 py-10 text-center"
             role="alert"
           >
-            <h1 className="text-2xl font-semibold text-red-900">Generation didn&apos;t finish</h1>
+            <p className="text-sm font-medium text-red-800">{report.tool_name}</p>
+            <h1 className="mt-2 text-2xl font-semibold text-red-900">{failurePresentation.heading}</h1>
             <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-red-700">
-              This report couldn&apos;t be completed. Your target was not the cause; start a new run when the service is ready.
+              This run stopped while {generationStageLabel(report.generation_failure_stage)}.
+              {' '}{failurePresentation.detail}
             </p>
-            <button type="button" onClick={() => router.push('/generate')} className={`${secondaryButtonClass} mt-6`}>
-              Start a new report
-            </button>
+            <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row">
+              <button
+                type="button"
+                onClick={() => router.push(`/generate?target=${encodeURIComponent(report.tool_name)}`)}
+                className={secondaryButtonClass}
+              >
+                {failurePresentation.retryLabel}
+              </button>
+              <button type="button" onClick={() => router.push('/reports?review_state=generation_failed')} className={secondaryButtonClass}>
+                View failed runs
+              </button>
+              <button
+                type="button"
+                onClick={handleDelete}
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-red-300 bg-white px-4 text-sm font-medium text-red-700 hover:bg-red-100"
+              >
+                <TrashIcon className="h-4 w-4" aria-hidden="true" />
+                Delete failed record
+              </button>
+            </div>
           </section>
         </div>
       </main>
+      <DeleteReportDialog
+        open={deleteConfirmationOpen}
+        toolName={report.tool_name}
+        pending={deleteMutation.isPending}
+        failed={deleteMutation.isError}
+        onClose={() => setDeleteConfirmationOpen(false)}
+        onDelete={() => deleteMutation.mutate()}
+      />
+      </>
     );
   }
 
   const qualityScore = report.quality_score;
   const qualityLabel = getQualityLabel(qualityScore);
   const contentParts = splitReportContent(report.markdown_content || '');
+  const sectionLinks = getReportSectionLinks(contentParts.narrative);
+  const attentionSummary = getReviewAttentionSummary(
+    report.quality_assessment,
+    report.web_sources.length,
+  );
 
   const recordSummarySignals = [
     {
@@ -227,8 +405,16 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
       value: qualityScore == null ? qualityLabel : `${qualityScore.toFixed(2)} / 5.00`,
       detail: qualityLabel,
     },
-    { label: 'Category', value: report.category || 'Unclassified', detail: 'Report classification' },
-    { label: 'Threat type', value: report.threat_type || 'Unclassified', detail: 'Observed behavior family' },
+    {
+      label: 'Category',
+      value: formatTaxonomyLabel(report.category || 'unclassified'),
+      detail: classificationDetail(report.classification_status),
+    },
+    {
+      label: 'Threat type',
+      value: formatTaxonomyLabel(report.threat_type || 'unclassified'),
+      detail: classificationDetail(report.classification_status),
+    },
     {
       label: 'Generated',
       value: formatRelativeTime(report.created_at),
@@ -327,6 +513,7 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
           retryDisabled={isFixtureRecord}
           retryError={evaluationMutation.isError}
           onRetry={() => evaluationMutation.mutate()}
+          attention={attentionSummary}
         />
 
         {report.search_tags && report.search_tags.length > 0 && (
@@ -343,11 +530,29 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
           {contentParts.appendices ? <a href="#evaluation-appendix" className="font-medium text-blue-700 hover:underline">Inspect evaluation</a> : null}
         </nav>
 
+        {sectionLinks.length > 0 ? (
+          <details className="mt-6 rounded-xl border border-zinc-200 bg-white px-5 py-4">
+            <summary className="cursor-pointer text-sm font-medium text-zinc-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+              Report outline · {sectionLinks.length} sections
+            </summary>
+            <nav aria-label="Narrative outline" className="mt-3 grid gap-2 sm:grid-cols-2">
+              {sectionLinks.map((section) => (
+                <a key={section.id} href={`#${section.id}`} className="text-sm text-blue-700 hover:underline">
+                  {section.label}
+                </a>
+              ))}
+            </nav>
+          </details>
+        ) : null}
+
         <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem]">
           <section id="intelligence-narrative" className="order-last min-w-0 scroll-mt-6 rounded-xl border border-zinc-200 bg-white p-6 lg:order-first">
             <p className="text-base font-semibold text-zinc-950">Intelligence narrative</p>
             {report.markdown_content ? (
-              <ReportNarrative markdown={contentParts.narrative} />
+              <ReportNarrative
+                markdown={contentParts.narrative}
+                claimAttributions={report.claim_attributions}
+              />
             ) : (
               <div className="mt-4 rounded-lg border border-dashed border-zinc-300 px-5 py-8 text-center">
                 <p className="text-sm font-medium text-zinc-950">Narrative unavailable</p>
@@ -360,7 +565,11 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
 
           <aside id="source-evidence" className="order-first min-w-0 scroll-mt-6 space-y-4 lg:order-last">
             <section className="rounded-xl border border-zinc-200 bg-white p-5">
-              <SourceEvidence sources={report.web_sources} />
+              <SourceEvidence
+                sources={report.web_sources}
+                attributionStatus={report.claim_attribution_status}
+                attributionVersion={report.claim_attribution_version}
+              />
             </section>
             <section data-contract="Report.SourceReviewChecklist.v1" className="rounded-xl border border-zinc-200 bg-white p-5">
               <h2 className="text-base font-semibold text-zinc-950">Review readiness</h2>
@@ -409,46 +618,14 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
         )}
       </div>
     </main>
-    <Dialog
+    <DeleteReportDialog
       open={deleteConfirmationOpen}
-      onClose={() => {
-        if (!deleteMutation.isPending) setDeleteConfirmationOpen(false);
-      }}
-      className="relative z-50"
-    >
-      <div className="fixed inset-0 bg-zinc-950/40" aria-hidden="true" />
-      <div className="fixed inset-0 flex items-center justify-center overflow-y-auto p-4">
-        <DialogPanel className="w-full max-w-md rounded-xl border border-zinc-200 bg-white p-6 shadow-xl">
-          <DialogTitle className="text-xl font-semibold text-zinc-950">Delete this report?</DialogTitle>
-          <p className="mt-3 text-sm leading-6 text-zinc-600">
-            The saved narrative, source evidence, and review history for {report.tool_name} will be permanently removed.
-          </p>
-          {deleteMutation.isError ? (
-            <p className="mt-3 text-sm text-red-700" role="alert">
-              The report could not be deleted. The saved record is still available.
-            </p>
-          ) : null}
-          <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
-            <button
-              type="button"
-              disabled={deleteMutation.isPending}
-              onClick={() => setDeleteConfirmationOpen(false)}
-              className={secondaryButtonClass}
-            >
-              Keep report
-            </button>
-            <button
-              type="button"
-              disabled={deleteMutation.isPending}
-              onClick={() => deleteMutation.mutate()}
-              className="inline-flex h-10 items-center justify-center rounded-lg bg-red-700 px-4 text-sm font-medium text-white transition-colors hover:bg-red-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:pointer-events-none disabled:opacity-50"
-            >
-              {deleteMutation.isPending ? 'Deleting report…' : 'Delete permanently'}
-            </button>
-          </div>
-        </DialogPanel>
-      </div>
-    </Dialog>
+      toolName={report.tool_name}
+      pending={deleteMutation.isPending}
+      failed={deleteMutation.isError}
+      onClose={() => setDeleteConfirmationOpen(false)}
+      onDelete={() => deleteMutation.mutate()}
+    />
     </>
   );
 }

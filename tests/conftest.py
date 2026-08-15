@@ -19,6 +19,7 @@ def build_threat_profile_data(source_url: str = "https://example.com/report") ->
             "searchQueriesUsed": ["Example Threat analysis"],
             "primarySources": [
                 {
+                    "sourceId": "S1",
                     "url": source_url,
                     "title": "Example report",
                     "domain": "example.com",
@@ -31,6 +32,31 @@ def build_threat_profile_data(source_url: str = "https://example.com/report") ->
             "searchStrategy": "Searched primary sources.",
             "dataFreshness": "Current as of 2026-08-11.",
             "sourceReliability": "Primary source.",
+        },
+        "claimAttribution": {
+            "schemaVersion": "2",
+            "claims": [
+                {
+                    "claimClass": "threat_activity",
+                    "claim": "Remote access",
+                    "sourceIds": ["S1"],
+                },
+                {
+                    "claimClass": "forensic_artifact",
+                    "claim": "example.exe",
+                    "sourceIds": ["S1"],
+                },
+                {
+                    "claimClass": "detection_indicator",
+                    "claim": "Unexpected service creation",
+                    "sourceIds": ["S1"],
+                },
+                {
+                    "claimClass": "mitigation_action",
+                    "claim": "Isolate affected host",
+                    "sourceIds": ["S1"],
+                },
+            ],
         },
         "toolOverview": {
             "description": "Example threat description.",

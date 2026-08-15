@@ -1,4 +1,4 @@
-import type { ReportSource } from '@/lib/api-contracts';
+import type { ClaimAttributionStatus, ReportSource } from '@/lib/api-contracts';
 
 import { getSafeExternalUrl } from './report-links';
 
@@ -6,12 +6,16 @@ type SourceEvidenceProps = {
   sources: ReportSource[];
   heading?: string;
   dateLabel?: 'Accessed' | 'Captured';
+  attributionStatus?: ClaimAttributionStatus;
+  attributionVersion?: string | null;
 };
 
 export function SourceEvidence({
   sources,
   heading = 'Source evidence',
   dateLabel = 'Accessed',
+  attributionStatus,
+  attributionVersion,
 }: SourceEvidenceProps) {
   return (
     <section data-contract="Report.SourceEvidence.v1" aria-labelledby="source-evidence-heading">
@@ -24,15 +28,33 @@ export function SourceEvidence({
         </span>
       </div>
 
+      {attributionStatus === 'attributed' ? (
+        <p className="mt-2 text-sm leading-6 text-emerald-700">
+          High-risk claims link to this source ledger through attribution schema {attributionVersion ?? '2'}.
+        </p>
+      ) : attributionStatus === 'unattributed' ? (
+        <p className="mt-2 text-sm leading-6 text-amber-700">
+          This record has sources, but its claim-level attribution did not pass the current contract.
+        </p>
+      ) : attributionStatus === 'legacy' ? (
+        <p className="mt-2 text-sm leading-6 text-zinc-500">
+          Claim-level attribution was not recorded for this legacy report.
+        </p>
+      ) : null}
+
       {sources.length > 0 ? (
         <ol className="mt-4 space-y-4">
           {sources.map((source, index) => {
             const safeUrl = getSafeExternalUrl(source.url);
             return (
-              <li key={`${source.url}-${index}`} className="border-t border-zinc-100 pt-4 first:border-t-0 first:pt-0">
+              <li
+                id={source.source_id ? `source-${source.source_id}` : undefined}
+                key={`${source.url}-${index}`}
+                className="scroll-mt-24 border-t border-zinc-100 pt-4 first:border-t-0 first:pt-0"
+              >
                 <div className="flex items-start gap-3">
                   <span className="pt-0.5 font-mono text-sm text-zinc-400">
-                    {String(index + 1).padStart(2, '0')}
+                    {source.source_id ?? String(index + 1).padStart(2, '0')}
                   </span>
                   <div className="min-w-0 flex-1">
                     {safeUrl ? (

@@ -10,6 +10,9 @@ function projectReport(report: ReportDetail, config: ExportConfig): ExportRecord
       ? {
           category: report.category,
           threat_type: report.threat_type,
+          classification_status: report.classification_status,
+          claim_attribution_status: report.claim_attribution_status,
+          claim_attribution_version: report.claim_attribution_version ?? null,
           quality_score: report.quality_score,
           created_at: report.created_at,
           processing_time_ms: report.processing_time_ms,
@@ -20,11 +23,16 @@ function projectReport(report: ReportDetail, config: ExportConfig): ExportRecord
           evaluated_at: report.evaluated_at ?? null,
           review_status: report.review_status,
           generation_route: report.generation_route ?? null,
+          generation_error_code: report.generation_error_code ?? null,
+          generation_retryable: report.generation_retryable ?? null,
+          generation_failure: report.generation_failure ?? null,
           evaluation_route: report.evaluation_route ?? null,
         }
       : {}),
     ...(config.include_tags ? { search_tags: report.search_tags } : {}),
-    ...(config.include_sources ? { web_sources: report.web_sources } : {}),
+    ...(config.include_sources
+      ? { web_sources: report.web_sources, claim_attributions: report.claim_attributions }
+      : {}),
     ...(config.include_content ? { markdown_content: report.markdown_content ?? null } : {}),
   };
 }

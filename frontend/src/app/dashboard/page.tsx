@@ -64,7 +64,9 @@ export default function Dashboard() {
     refetch: refetchReports,
   } = useQuery({
     queryKey: ['reports', 'recent'],
-    queryFn: () => api.listReports(1, 5),
+    queryFn: () => api.listReports(1, 5, {
+      review_statuses: ['generation_failed', 'needs_attention', 'needs_evaluation'],
+    }),
   });
 
   const threatCoverageRows = buildThreatCoverageRows(analytics?.threat_distribution);
@@ -117,11 +119,11 @@ export default function Dashboard() {
             <section className="rounded-xl border border-zinc-200 bg-white p-5">
               <div className="flex items-center justify-between gap-3">
                 <h2 className="text-base font-semibold text-zinc-950">Review queue</h2>
-                <Link href="/reports" className="text-sm font-medium text-blue-700 hover:underline">
+                <Link href="/reports?review_state=all" className="text-sm font-medium text-blue-700 hover:underline">
                   All reports
                 </Link>
               </div>
-              <p className="mt-1 text-sm text-zinc-500">Reopen reports for source context and readiness review.</p>
+              <p className="mt-1 text-sm text-zinc-500">Continue failed runs, evaluation recovery, and readiness review.</p>
               <div className="mt-4">
                 {reportsLoading ? (
                   <div className="space-y-3" role="status" aria-label="Loading recent reports">
@@ -172,13 +174,19 @@ export default function Dashboard() {
                   </ul>
                 ) : (
                   <div className="rounded-lg border border-dashed border-zinc-300 px-4 py-8 text-center">
-                    <p className="text-sm font-medium text-zinc-950">No reports yet</p>
-                    <p className="mt-1 text-sm text-zinc-500">Generate your first report to start the review queue.</p>
+                    <p className="text-sm font-medium text-zinc-950">
+                      {(analytics?.summary.total_reports ?? 0) > 0 ? 'No reports need action' : 'No reports yet'}
+                    </p>
+                    <p className="mt-1 text-sm text-zinc-500">
+                      {(analytics?.summary.total_reports ?? 0) > 0
+                        ? 'Your saved archive remains available; no runs currently need retry, evaluation, or review attention.'
+                        : 'Generate your first report to start the review queue.'}
+                    </p>
                     <Link
-                      href="/generate"
+                      href={(analytics?.summary.total_reports ?? 0) > 0 ? '/reports?review_state=all' : '/generate'}
                       className="mt-4 inline-flex items-center gap-1.5 text-sm font-medium text-blue-700 hover:underline"
                     >
-                      Generate intelligence
+                      {(analytics?.summary.total_reports ?? 0) > 0 ? 'Open all reports' : 'Generate intelligence'}
                       <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
                     </Link>
                   </div>
