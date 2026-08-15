@@ -49,7 +49,10 @@ class EvidenceSupport(StrictModel):
     """Verbatim captured text that supports one claim at one named source."""
 
     source_id: str = Field(alias="sourceId", min_length=1)
-    excerpt: str = Field(min_length=1, max_length=600)
+    # Gemini sometimes returns a complete source paragraph even when asked for a
+    # short excerpt. Keep parsing bounded by the captured snapshot ceiling; the
+    # deterministic source ledger verifies and shortens it before persistence.
+    excerpt: str = Field(min_length=1, max_length=12_000)
     snapshot_sha256: str | None = Field(default=None, alias="snapshotSha256")
 
 

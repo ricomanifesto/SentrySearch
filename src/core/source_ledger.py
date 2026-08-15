@@ -70,6 +70,7 @@ CLAIM_CLASS_SELECTORS = {
 
 _MARKDOWN_LINK = re.compile(r"\]\((https?://[^)\s]+)\)")
 _SUPPORT_TOKEN = re.compile(r"[a-z0-9][a-z0-9._/-]{2,}")
+MAX_PERSISTED_SUPPORT_EXCERPT = 600
 _SUPPORT_STOPWORDS = frozenset(
     {
         "and",
@@ -99,6 +100,39 @@ def _support_has_claim_anchor(claim: str, excerpt: str) -> bool:
         if token not in _SUPPORT_STOPWORDS
     }
     return bool(claim_tokens & excerpt_tokens)
+
+
+def _bounded_support_excerpt(claim: str, excerpt: str) -> str:
+    """Keep one exact source window around the strongest claim token."""
+
+    if len(excerpt) <= MAX_PERSISTED_SUPPORT_EXCERPT:
+        return excerpt
+    claim_tokens = sorted(
+        {
+            token
+            for token in _SUPPORT_TOKEN.findall(claim.casefold())
+            if token not in _SUPPORT_STOPWORDS
+        },
+        key=len,
+        reverse=True,
+    )
+    excerpt_casefolded = excerpt.casefold()
+    anchor = next(
+        (
+            (excerpt_casefolded.index(token), len(token))
+            for token in claim_tokens
+            if token in excerpt_casefolded
+        ),
+        None,
+    )
+    if anchor is None:
+        return excerpt[:MAX_PERSISTED_SUPPORT_EXCERPT].strip()
+    anchor_start, anchor_length = anchor
+    context = max(0, (MAX_PERSISTED_SUPPORT_EXCERPT - anchor_length) // 2)
+    start = max(0, anchor_start - context)
+    end = min(len(excerpt), start + MAX_PERSISTED_SUPPORT_EXCERPT)
+    start = max(0, end - MAX_PERSISTED_SUPPORT_EXCERPT)
+    return excerpt[start:end].strip()
 
 
 def _normalized_http_url(value: object) -> str:
@@ -264,7 +298,8 @@ def materialize_embedded_claim_evidence(
                         f"{claim_field}[{claim_index}] support excerpt is not verbatim in {source_id}."
                     )
                     continue
-                if not _support_has_claim_anchor(value, excerpt):
+                persisted_excerpt = _bounded_support_excerpt(value, excerpt)
+                if not _support_has_claim_anchor(value, persisted_excerpt):
                     findings.append(
                         f"{claim_field}[{claim_index}] support excerpt in {source_id} has no lexical claim anchor."
                     )
@@ -273,7 +308,7 @@ def materialize_embedded_claim_evidence(
                 verified_support.append(
                     {
                         "sourceId": source_id,
-                        "excerpt": excerpt,
+                        "excerpt": persisted_excerpt,
                         "snapshotSha256": snapshot_sha256,
                     }
                 )

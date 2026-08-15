@@ -21,6 +21,7 @@ from src.core.validation_criteria import ConsistencyEvaluation
 from src.core.section_validator import SectionValidator
 from src.core import section_validator as section_validator_module
 from src.core.markdown_generator import generate_markdown
+from src.core.threat_profile_schema import EvidenceSupport
 from src.domain.reports import (
     AnalystDisposition,
     ClaimAttributionStatus,
@@ -381,6 +382,48 @@ def test_embedded_evidence_rejects_an_exact_but_unrelated_support_excerpt():
         materialize_embedded_claim_evidence(profile, evidence_sources)
 
     assert any("no lexical claim anchor" in finding for finding in captured.value.findings)
+
+
+def test_embedded_evidence_bounds_a_long_verbatim_source_span_around_the_claim():
+    long_excerpt = f"{'Background context. ' * 45}Remote access{' More context.' * 45}"
+    parsed_support = EvidenceSupport.model_validate({"sourceId": "S1", "excerpt": long_excerpt})
+    assert len(parsed_support.excerpt) > 600
+    profile = {
+        "threatIntelligence": {
+            "riskAssessment": {
+                "riskFactors": [
+                    {
+                        "value": "Remote access",
+                        "evidenceRole": "direct_evidence",
+                        "sourceIds": ["S1"],
+                        "supportingEvidence": [{"sourceId": "S1", "excerpt": long_excerpt}],
+                    }
+                ]
+            }
+        },
+        "forensicArtifacts": {},
+        "detectionAndMitigation": {},
+        "mitigationAndResponse": {},
+    }
+    evidence_sources = [
+        {
+            "sourceId": "S1",
+            "contentSnapshot": {
+                "status": "captured",
+                "text": long_excerpt,
+                "sha256": "a" * 64,
+            },
+        }
+    ]
+
+    materialize_embedded_claim_evidence(profile, evidence_sources)
+
+    [raw_claim] = profile["claimAttribution"]["claims"]
+    claim = cast(dict[str, Any], raw_claim)
+    [support] = claim["supportingEvidence"]
+    assert len(support["excerpt"]) <= 600
+    assert "Remote access" in support["excerpt"]
+    assert support["excerpt"] in long_excerpt
 
 
 def test_plain_high_risk_values_without_a_legacy_ledger_fail_as_incomplete_generation():
