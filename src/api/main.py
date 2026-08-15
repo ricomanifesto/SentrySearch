@@ -31,8 +31,9 @@ from src.auth.supabase_auth import AuthenticatedUser, verify_jwt_token
 from src.api.contracts import (
     AnalystDispositionCreate,
     AnalystDispositionEvent,
-    PaginationParams,
     ClaimAttributionEntry,
+    EvidenceAdmissibility,
+    PaginationParams,
     ReportCreate,
     ReportDetail,
     ReportResponse,
@@ -183,6 +184,15 @@ def get_evidence_admissibility(report: Dict[str, Any]) -> Dict[str, Any] | None:
     if isinstance(threat_data, dict) and isinstance(threat_data.get("evidenceAdmissibility"), dict):
         return threat_data["evidenceAdmissibility"]
     return None
+
+
+def get_validated_evidence_admissibility(
+    report: Dict[str, Any],
+) -> EvidenceAdmissibility | None:
+    """Validate the persisted safety record before publishing it on the API."""
+
+    assessment = get_evidence_admissibility(report)
+    return EvidenceAdmissibility.model_validate(assessment) if assessment is not None else None
 
 
 def reader_safe_threat_data(report: Dict[str, Any]) -> Dict[str, Any] | None:
@@ -684,7 +694,7 @@ async def get_report(
             evaluation_route=report.get("evaluation_route"),
             quality_assessment=get_quality_assessment(report),
             claim_attributions=get_claim_attributions(report),
-            evidence_admissibility=get_evidence_admissibility(report),
+            evidence_admissibility=get_validated_evidence_admissibility(report),
             current_disposition=report.get("current_disposition"),
             disposition_history=report.get("disposition_history", []),
         )
