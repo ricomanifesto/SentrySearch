@@ -17,6 +17,7 @@ import { AuthGuard } from '@/components/AuthGuard';
 import { DashboardBriefingSignals } from '@/components/DashboardBriefingSignals';
 import { getQualityLabel } from '@/lib/report-query';
 import { getReviewStatusClasses, getReviewStatusLabel } from '@/lib/report-status';
+import { getAnalystDispositionClasses, getAnalystDispositionLabel } from '@/lib/analyst-disposition';
 
 const THREAT_COVERAGE_ROW_LIMIT = 5;
 
@@ -65,7 +66,7 @@ export default function Dashboard() {
   } = useQuery({
     queryKey: ['reports', 'recent'],
     queryFn: () => api.listReports(1, 5, {
-      review_statuses: ['generation_failed', 'needs_attention', 'needs_evaluation'],
+      requires_action: true,
     }),
   });
 
@@ -123,7 +124,7 @@ export default function Dashboard() {
                   All reports
                 </Link>
               </div>
-              <p className="mt-1 text-sm text-zinc-500">Continue failed runs, evaluation recovery, and readiness review.</p>
+              <p className="mt-1 text-sm text-zinc-500">Continue failed runs, evaluation recovery, and unresolved analyst judgments.</p>
               <div className="mt-4">
                 {reportsLoading ? (
                   <div className="space-y-3" role="status" aria-label="Loading recent reports">
@@ -167,6 +168,9 @@ export default function Dashboard() {
                             <span className={`rounded-md px-2 py-1 text-sm font-medium ${getReviewStatusClasses(report.review_status)}`}>
                               {getReviewStatusLabel(report.review_status)}
                             </span>
+                            <span className={`rounded-md px-2 py-1 text-sm font-medium ${getAnalystDispositionClasses(report.analyst_disposition)}`}>
+                              {getAnalystDispositionLabel(report.analyst_disposition)}
+                            </span>
                           </div>
                         </li>
                       );
@@ -179,7 +183,7 @@ export default function Dashboard() {
                     </p>
                     <p className="mt-1 text-sm text-zinc-500">
                       {(analytics?.summary.total_reports ?? 0) > 0
-                        ? 'Your saved archive remains available; no runs currently need retry, evaluation, or review attention.'
+                        ? 'Your saved archive remains available; no runs currently need retry, evaluation, revision, or analyst judgment.'
                         : 'Generate your first report to start the review queue.'}
                     </p>
                     <Link

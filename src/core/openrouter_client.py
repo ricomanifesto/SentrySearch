@@ -110,13 +110,16 @@ def resolve_model_name(model_name: str | None = None) -> str:
     return (model_name or os.getenv(MODEL_ENV_VAR, DEFAULT_MODEL)).strip()
 
 
-def generation_request_options(model_name: str | None = None) -> dict[str, Any]:
-    """Return generation routing that preserves custom-model overrides."""
+def _generation_request_options(
+    purpose: ModelRoutePurpose,
+    model_name: str | None = None,
+) -> dict[str, Any]:
+    """Return authoring-family routing with a typed pipeline purpose."""
 
     resolved_model = resolve_model_name(model_name)
     options: dict[str, Any] = {
         "model": resolved_model,
-        "route_purpose": ModelRoutePurpose.GENERATION.value,
+        "route_purpose": purpose.value,
     }
     if resolved_model == DEFAULT_MODEL:
         options["fallback_models"] = [DEFAULT_GENERATION_FALLBACK_MODEL]
@@ -125,6 +128,18 @@ def generation_request_options(model_name: str | None = None) -> dict[str, Any]:
             "allow_fallbacks": False,
         }
     return options
+
+
+def research_request_options(model_name: str | None = None) -> dict[str, Any]:
+    """Return routing for evidence-research calls."""
+
+    return _generation_request_options(ModelRoutePurpose.RESEARCH, model_name)
+
+
+def synthesis_request_options(model_name: str | None = None) -> dict[str, Any]:
+    """Return routing for report-authoring and enhancement calls."""
+
+    return _generation_request_options(ModelRoutePurpose.SYNTHESIS, model_name)
 
 
 def resolve_evaluation_model_name(model_name: str | None = None) -> str:

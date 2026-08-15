@@ -7,7 +7,7 @@ import { formatTaxonomyLabel, getQualityLabel } from '@/lib/report-query';
 import { SAMPLE_REPORT } from '@/lib/sample-report';
 
 const sampleSignals = [
-  { label: 'Report quality', value: `${SAMPLE_REPORT.quality_score?.toFixed(2)} / 5.00`, detail: getQualityLabel(SAMPLE_REPORT.quality_score) },
+  { label: 'Content quality', value: `${SAMPLE_REPORT.quality_score?.toFixed(2)} / 5.00`, detail: `${getQualityLabel(SAMPLE_REPORT.quality_score)} · readiness tracked separately` },
   { label: 'Category', value: formatTaxonomyLabel(SAMPLE_REPORT.category), detail: 'Canonical report category' },
   { label: 'Threat family', value: formatTaxonomyLabel(SAMPLE_REPORT.threat_type), detail: 'Canonical report classification' },
   { label: 'Sources', value: `${SAMPLE_REPORT.web_sources.length} cited`, detail: 'Open and inspect each source' },

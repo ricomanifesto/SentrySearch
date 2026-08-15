@@ -1,5 +1,6 @@
 import type {
   ListReportFilters,
+  AnalystDisposition,
   ReportSort,
   ReportSortField,
   ReviewStatus,
@@ -44,7 +45,11 @@ export const dateRangeFilterOptions = [
 ];
 
 export const reviewStateFilterOptions = [
-  { value: 'actionable', label: 'Action needed' },
+  { value: 'actionable', label: 'Unresolved work' },
+  { value: 'unreviewed', label: 'Awaiting analyst judgment' },
+  { value: 'needs_revision', label: 'Needs revision' },
+  { value: 'accepted', label: 'Accepted for reuse' },
+  { value: 'rejected', label: 'Rejected' },
   { value: 'reviewable', label: 'Reviewable' },
   { value: 'needs_attention', label: 'Needs attention' },
   { value: 'needs_evaluation', label: 'Needs evaluation' },
@@ -54,11 +59,17 @@ export const reviewStateFilterOptions = [
 ];
 
 export function reviewStatusesForState(value: string): ReviewStatus[] | undefined {
-  if (value === 'actionable') return ['generation_failed', 'needs_attention', 'needs_evaluation'];
+  if (value === 'actionable' || ['unreviewed', 'needs_revision', 'accepted', 'rejected'].includes(value)) return undefined;
   if (value === 'all') return undefined;
   return reviewStateFilterOptions.some((option) => option.value === value)
     ? [value as ReviewStatus]
-    : ['generation_failed', 'needs_attention', 'needs_evaluation'];
+    : undefined;
+}
+
+export function analystDispositionsForState(value: string): AnalystDisposition[] | undefined {
+  return ['unreviewed', 'needs_revision', 'accepted', 'rejected'].includes(value)
+    ? [value as AnalystDisposition]
+    : undefined;
 }
 
 export const reportSortOptions = [
@@ -79,6 +90,8 @@ export function toListReportFilters(state: ReportQueryState): ListReportFilters 
     threat_type: state.threatType || undefined,
     min_quality: state.minQuality ? Number.parseFloat(state.minQuality) : undefined,
     review_statuses: reviewStatusesForState(state.reviewState),
+    analyst_dispositions: analystDispositionsForState(state.reviewState),
+    requires_action: state.reviewState === 'actionable',
     sort_by: state.sortBy,
     sort_order: state.sortOrder,
   };
@@ -91,6 +104,8 @@ export function toSearchFilters(state: ReportQueryState): SearchFilters {
     min_quality_score: state.minQuality ? Number.parseFloat(state.minQuality) : undefined,
     date_range_days: state.dateRangeDays ? Number.parseInt(state.dateRangeDays, 10) : undefined,
     review_statuses: reviewStatusesForState(state.reviewState),
+    analyst_dispositions: analystDispositionsForState(state.reviewState),
+    requires_action: state.reviewState === 'actionable',
   };
 }
 

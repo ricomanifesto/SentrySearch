@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 import { DashboardBriefingSignals } from '../src/components/DashboardBriefingSignals';
 import { ReviewStatusBanner } from '../src/components/report/ReviewStatusBanner';
+import { AnalystDispositionPanel } from '../src/components/report/AnalystDispositionPanel';
 import { NavigationSessionActions } from '../src/components/layout/Navigation';
 import type { AnalyticsDashboard, ExportConfig } from '../src/lib/api-contracts';
 import { getReportSectionLinks, splitReportContent } from '../src/lib/report-content';
@@ -14,6 +15,8 @@ import {
   reportQueryFromSearchParams,
   reportQuerySearchParams,
   reviewStatusesForState,
+  toSearchFilters,
+  defaultReportQuery,
 } from '../src/lib/report-query';
 import { SAMPLE_REPORT } from '../src/lib/sample-report';
 
@@ -26,6 +29,7 @@ const emptyDashboard: AnalyticsDashboard = {
     avg_quality_score: null,
     scored_reports: 0,
     needs_attention_reports: 0,
+    unresolved_reports: 0,
   },
   threat_distribution: {},
   quality_distribution: [],
@@ -93,11 +97,10 @@ test('report-library filters survive a URL round trip', () => {
   assert.equal(reportQuerySearchParams(initial, 3).get('page'), '3');
 });
 
-test('the action-needed queue includes failed runs as well as review work', () => {
-  assert.deepEqual(
-    reviewStatusesForState('actionable'),
-    ['generation_failed', 'needs_attention', 'needs_evaluation'],
-  );
+test('the unresolved queue delegates current-vintage judgment semantics to the API', () => {
+  assert.equal(reviewStatusesForState('actionable'), undefined);
+  assert.equal(toSearchFilters({ ...defaultReportQuery }).requires_action, true);
+  assert.deepEqual(toSearchFilters({ ...defaultReportQuery, reviewState: 'accepted' }).analyst_dispositions, ['accepted']);
 });
 
 test('evaluation detail is separated from the operational narrative', () => {
@@ -173,9 +176,38 @@ test('needs-attention banner names the actual conflicts and recommendations', ()
   );
 
   assert.match(html, /1 cross-section conflict/);
-  assert.match(html, /1 cross-section conflict and 2 sections marked to enhance require review\./);
+  assert.match(html, /Operational reuse is blocked by 1 cross-section conflict and 2 sections marked to enhance until an analyst records a disposition\./);
   assert.match(html, /Timeline conflicts with metadata/);
   assert.match(html, /Verify the dated observation/);
+});
+
+test('recorded judgment owns operational readiness without erasing machine conflicts', () => {
+  const needsRevision = getReviewAttentionSummary({
+    consistency: { inconsistencies: ['Timeline conflicts with metadata.'] },
+  }, 3, 'needs_revision');
+  const accepted = getReviewAttentionSummary({
+    consistency: { inconsistencies: ['Timeline conflicts with metadata.'] },
+  }, 3, 'accepted');
+  const revisionHtml = renderToStaticMarkup(
+    <ReviewStatusBanner
+      status="needs_attention"
+      analystDisposition="needs_revision"
+      attention={needsRevision}
+    />,
+  );
+  const acceptedHtml = renderToStaticMarkup(
+    <ReviewStatusBanner
+      status="needs_attention"
+      analystDisposition="accepted"
+      attention={accepted}
+    />,
+  );
+
+  assert.match(revisionHtml, /An analyst kept this evaluation vintage in unresolved work/);
+  assert.match(revisionHtml, /Operational reuse remains blocked by 1 cross-section conflict/);
+  assert.match(acceptedHtml, /Accepted for reuse/);
+  assert.match(acceptedHtml, /An analyst accepted this evaluation vintage with 1 cross-section conflict still recorded below/);
+  assert.match(acceptedHtml, /Timeline conflicts with metadata/);
 });
 
 test('generation failure copy exonerates the target only when the record proves a route failure', () => {
@@ -203,7 +235,48 @@ test('downloaded exports carry the canonical evidence ledger and route attestati
   assert.equal(record.web_sources.length, SAMPLE_REPORT.web_sources.length);
   assert.equal(record.web_sources[0].url, SAMPLE_REPORT.web_sources[0].url);
   assert.equal(record.review_status, 'reviewable');
+  assert.equal(record.analyst_disposition, 'unreviewed');
+  assert.deepEqual(record.disposition_history, []);
   assert.ok(Object.hasOwn(record, 'generation_route'));
+  assert.ok(Object.hasOwn(record, 'research_route'));
+  assert.ok(Object.hasOwn(record, 'synthesis_route'));
   assert.ok(Object.hasOwn(record, 'evaluation_route'));
   assert.match(record.markdown_content, /Executive Summary/);
+});
+
+test('analyst judgment is presented as an append-only evaluation-vintage event', () => {
+  const html = renderToStaticMarkup(
+    <AnalystDispositionPanel
+      report={{
+        ...SAMPLE_REPORT,
+        analyst_disposition: 'needs_revision',
+        current_disposition: {
+          id: 'event-1',
+          disposition: 'needs_revision',
+          note: 'Sources and contradictions checked.',
+          evaluation_attempt: 1,
+          created_at: '2026-08-14T12:00:00.000Z',
+          is_current: true,
+        },
+        disposition_history: [{
+          id: 'event-1',
+          disposition: 'needs_revision',
+          note: 'Sources and contradictions checked.',
+          evaluation_attempt: 1,
+          created_at: '2026-08-14T12:00:00.000Z',
+          is_current: true,
+        }],
+      }}
+      onRecord={() => undefined}
+      onReevaluate={() => undefined}
+    />,
+  );
+
+  assert.match(html, /Each judgment is appended to the audit history/);
+  assert.match(html, /Needs revision/);
+  assert.match(html, /checked="" value="needs_revision"/);
+  assert.doesNotMatch(html, /value="accepted" checked=""/);
+  assert.match(html, /Sources and contradictions checked/);
+  assert.match(html, /current vintage/);
+  assert.match(html, /Re-run evaluation/);
 });

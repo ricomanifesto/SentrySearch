@@ -1,4 +1,8 @@
-import type { ReviewStatus } from '@/lib/api-contracts';
+import type { AnalystDisposition, ReviewStatus } from '@/lib/api-contracts';
+import {
+  getAnalystDispositionClasses,
+  getAnalystDispositionLabel,
+} from '@/lib/analyst-disposition';
 import {
   getReviewStatusClasses,
   getReviewStatusDescription,
@@ -13,6 +17,7 @@ type ReviewStatusBannerProps = {
   retryError?: boolean;
   onRetry?: () => void;
   attention?: ReviewAttentionSummary | null;
+  analystDisposition?: AnalystDisposition;
 };
 
 const secondaryButtonClass =
@@ -25,15 +30,37 @@ export function ReviewStatusBanner({
   retryError = false,
   onRetry,
   attention,
+  analystDisposition = 'unreviewed',
 }: ReviewStatusBannerProps) {
   const active = status === 'evaluation_pending';
-  const tone = status === 'reviewable'
+  const dispositionOwnsReadiness = analystDisposition !== 'unreviewed'
+    && (status === 'reviewable' || status === 'needs_attention');
+  const tone = analystDisposition === 'accepted' && dispositionOwnsReadiness
     ? 'border-[var(--border-success)] bg-[var(--bg-success)]'
-    : status === 'generation_failed'
+    : analystDisposition === 'rejected' && dispositionOwnsReadiness
+      ? 'border-[var(--border-danger)] bg-[var(--bg-danger)]'
+      : dispositionOwnsReadiness
+        ? 'border-[var(--border-warning)] bg-[var(--bg-warning)]'
+        : status === 'reviewable'
+          ? 'border-[var(--border-success)] bg-[var(--bg-success)]'
+          : status === 'generation_failed'
       ? 'border-[var(--border-danger)] bg-[var(--bg-danger)]'
       : status === 'evaluation_pending' || status === 'generating'
         ? 'border-[var(--accent)] bg-[var(--bg-accent)]'
         : 'border-[var(--border-warning)] bg-[var(--bg-warning)]';
+  const label = dispositionOwnsReadiness
+    ? getAnalystDispositionLabel(analystDisposition)
+    : getReviewStatusLabel(status);
+  const labelClasses = dispositionOwnsReadiness
+    ? getAnalystDispositionClasses(analystDisposition)
+    : getReviewStatusClasses(status);
+  const description = dispositionOwnsReadiness
+    ? analystDisposition === 'accepted'
+      ? 'An analyst accepted this evaluation vintage for reuse.'
+      : analystDisposition === 'needs_revision'
+        ? 'An analyst kept this evaluation vintage in unresolved work.'
+        : 'An analyst marked this evaluation vintage unsuitable for operational use.'
+    : getReviewStatusDescription(status);
 
   return (
     <section
@@ -44,11 +71,12 @@ export function ReviewStatusBanner({
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <span className={`inline-flex rounded-md px-2 py-1 text-sm font-medium ${getReviewStatusClasses(status)}`}>
-            {getReviewStatusLabel(status)}
+          <p className="text-sm font-medium text-zinc-900">Operational readiness</p>
+          <span className={`mt-2 inline-flex rounded-md px-2 py-1 text-sm font-medium ${labelClasses}`}>
+            {label}
           </span>
           <p className="mt-2 text-sm leading-6 text-zinc-700">
-            {getReviewStatusDescription(status)}
+            {description}
           </p>
         </div>
         {status === 'needs_evaluation' ? (

@@ -66,7 +66,7 @@ const expectations = [
   {
     name: 'uses a canonical briefing signals collection',
     source: briefingSignals,
-    pattern: /const signals = \[[\s\S]*label: 'Intelligence library'[\s\S]*label: 'Completed this week'[\s\S]*label: 'Report quality'/,
+    pattern: /const signals = \[[\s\S]*label: 'Intelligence library'[\s\S]*label: 'Completed this week'[\s\S]*label: 'Content quality'/,
   },
   {
     name: 'renders briefing signals from the canonical collection',
@@ -79,9 +79,9 @@ const expectations = [
     pattern: /Review queue/,
   },
   {
-    name: 'keeps failed runs in the action-needed dashboard queue',
+    name: 'uses the current-vintage unresolved-work query on the dashboard',
     source: dashboard,
-    pattern: /review_statuses: \['generation_failed', 'needs_attention', 'needs_evaluation'\]/,
+    pattern: /requires_action: true/,
   },
   {
     name: 'uses an honest empty state for the review queue',

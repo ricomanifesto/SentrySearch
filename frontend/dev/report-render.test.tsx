@@ -173,7 +173,7 @@ test('gives background generation a stage and elapsed-time shape', () => {
 test('keeps healthy default model routing silent', () => {
   const html = renderToStaticMarkup(
     <RouteProvenance
-      generationRoute={{
+      synthesisRoute={{
         requested_models: ['google/gemma-4-26b-a4b-it:free'],
         requested_providers: ['google-ai-studio'],
         selected_models: ['google/gemma-4-26b-a4b-it:free'],
@@ -191,7 +191,7 @@ test('keeps healthy default model routing silent', () => {
 test('discloses the actual route when report generation uses fallback', () => {
   const html = renderToStaticMarkup(
     <RouteProvenance
-      generationRoute={{
+      synthesisRoute={{
         requested_models: ['google/gemma-4-26b-a4b-it:free'],
         requested_providers: ['google-ai-studio'],
         selected_models: ['google/gemma-4-26b-a4b-it'],
@@ -209,4 +209,5 @@ test('discloses the actual route when report generation uses fallback', () => {
   assert.match(html, /google-ai-studio/);
   assert.match(html, /google\/gemma-4-26b-a4b-it/);
   assert.match(html, /Google AI Studio/);
+  assert.match(html, /Report authoring/);
 });

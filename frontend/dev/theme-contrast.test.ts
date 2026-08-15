@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { getReviewStatusClasses } from '../src/lib/report-status';
+import { getAnalystDispositionClasses } from '../src/lib/analyst-disposition';
 
 const css = readFileSync(new URL('../src/app/globals.css', import.meta.url), 'utf8');
 
@@ -48,4 +49,18 @@ test('review-status warning badge remains legible in the dark theme', () => {
   assert.ok(
     contrastRatio(darkToken('--text-primary'), darkToken('--border-warning')) >= 4.5,
   );
+});
+
+test('analyst disposition badges remain legible in the dark theme', () => {
+  const cases = [
+    ['accepted', '--color-green-800', '--color-green-100'],
+    ['needs_revision', '--color-amber-700', '--color-amber-50'],
+    ['rejected', '--color-red-800', '--color-red-50'],
+    ['unreviewed', '--color-zinc-700', '--color-zinc-100'],
+  ] as const;
+
+  for (const [state, foreground, background] of cases) {
+    assert.match(getAnalystDispositionClasses(state), /bg-|text-/);
+    assert.ok(contrastRatio(darkToken(foreground), darkToken(background)) >= 4.5);
+  }
 });

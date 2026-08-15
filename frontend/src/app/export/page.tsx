@@ -4,7 +4,7 @@ import React, { useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { ArrowDownTrayIcon } from '@heroicons/react/24/outline';
 
-import { api, type ExportConfig, type Report, type ReviewStatus } from '@/lib/api';
+import { api, type AnalystDisposition, type ExportConfig, type Report, type ReviewStatus } from '@/lib/api';
 import {
   dateRangeFilterOptions,
   formatTaxonomyLabel,
@@ -13,6 +13,7 @@ import {
 import { formatDate, downloadAsFile } from '@/lib/utils';
 import { AuthGuard } from '@/components/AuthGuard';
 import { getReviewStatusClasses, getReviewStatusLabel } from '@/lib/report-status';
+import { getAnalystDispositionClasses, getAnalystDispositionLabel } from '@/lib/analyst-disposition';
 
 type ExportEvidenceRecord = {
   id: string;
@@ -21,10 +22,11 @@ type ExportEvidenceRecord = {
   date: string;
   threatType?: string;
   reviewStatus: ReviewStatus;
+  analystDisposition: AnalystDisposition;
 };
 
 type PackageScopeControl = {
-  key: 'review_statuses' | 'date_range_days' | 'threat_types' | 'min_quality_score';
+  key: 'review_statuses' | 'analyst_dispositions' | 'date_range_days' | 'threat_types' | 'min_quality_score';
   label: string;
   options: Array<{ value: string; label: string }>;
   value: string;
@@ -43,7 +45,7 @@ const formatOptions = [
 
 const packageContentOptions = [
   { key: 'include_content' as const, label: 'Full narrative', description: 'Report markdown and analyst-readable context.' },
-  { key: 'include_metadata' as const, label: 'Processing metadata', description: 'Timestamps, report-quality scores, lifecycle states, and route details.' },
+  { key: 'include_metadata' as const, label: 'Processing metadata', description: 'Timestamps, content-quality scores, lifecycle states, analyst judgments, and route details.' },
   { key: 'include_sources' as const, label: 'Source evidence', description: 'Canonical source records with URLs, access dates, and key findings.' },
   { key: 'include_tags' as const, label: 'Search context', description: 'Search tags and categorization markers.' },
 ];
@@ -55,6 +57,14 @@ const handoffStateOptions = [
   { value: 'needs_evaluation', label: 'Needs evaluation' },
   { value: 'generation_failed', label: 'Generation failures' },
   { value: 'all', label: 'All lifecycle states' },
+];
+
+const analystDispositionOptions = [
+  { value: 'accepted', label: 'Accepted for reuse' },
+  { value: 'unreviewed', label: 'Awaiting analyst judgment' },
+  { value: 'needs_revision', label: 'Needs revision' },
+  { value: 'rejected', label: 'Rejected' },
+  { value: 'all', label: 'All analyst dispositions' },
 ];
 
 function reviewStatusesForHandoff(value: string): ReviewStatus[] | undefined {
@@ -69,16 +79,25 @@ function handoffValueForReviewStatuses(statuses?: ReviewStatus[]): string {
   return statuses[0] ?? 'all';
 }
 
+function dispositionsForHandoff(value: string): AnalystDisposition[] | undefined {
+  return value === 'all' ? undefined : [value as AnalystDisposition];
+}
+
+function handoffValueForDispositions(dispositions?: AnalystDisposition[]): string {
+  return dispositions?.[0] ?? 'all';
+}
+
 function buildExportEvidenceRecord(report: Report): ExportEvidenceRecord {
   return {
     id: report.id,
     title: report.tool_name,
     quality: report.quality_score == null
-      ? 'Quality not scored'
-      : `Quality ${report.quality_score.toFixed(2)}`,
+      ? 'Content quality not scored'
+      : `Content quality ${report.quality_score.toFixed(2)}`,
     date: formatDate(report.created_at),
     threatType: report.threat_type ? formatTaxonomyLabel(report.threat_type) : undefined,
     reviewStatus: report.review_status,
+    analystDisposition: report.analyst_disposition,
   };
 }
 
@@ -94,12 +113,16 @@ export default function ExportPage() {
     include_sources: true,
     max_reports: 1000,
     review_statuses: ['reviewable', 'needs_attention'],
+    analyst_dispositions: ['accepted'],
   });
   const [selectedReports, setSelectedReports] = useState<string[]>([]);
 
   const { data: reportsData, isLoading } = useQuery({
-    queryKey: ['reports', 'export-preview', config.review_statuses],
-    queryFn: () => api.searchReports({ review_statuses: config.review_statuses }, 1, 50),
+    queryKey: ['reports', 'export-preview', config.review_statuses, config.analyst_dispositions],
+    queryFn: () => api.searchReports({
+      review_statuses: config.review_statuses,
+      analyst_dispositions: config.analyst_dispositions,
+    }, 1, 50),
   });
 
   const { data: filterOptions } = useQuery({
@@ -160,6 +183,13 @@ export default function ExportPage() {
   const includedEvidenceLabels = packageContentOptions.filter((option) => Boolean(config[option.key])).map((option) => option.label);
   const packageScopeControls: PackageScopeControl[] = [
     {
+      key: 'analyst_dispositions',
+      label: 'Analyst disposition',
+      options: analystDispositionOptions,
+      value: handoffValueForDispositions(config.analyst_dispositions),
+      onChange: (value) => handleConfigChange('analyst_dispositions', dispositionsForHandoff(value)),
+    },
+    {
       key: 'review_statuses',
       label: 'Lifecycle scope',
       options: handoffStateOptions,
@@ -182,7 +212,7 @@ export default function ExportPage() {
     },
     {
       key: 'min_quality_score',
-      label: 'Minimum report quality',
+      label: 'Minimum content quality',
       options: qualityFilterOptions,
       value: config.min_quality_score?.toString() || '',
       onChange: (value) => handleConfigChange('min_quality_score', value ? parseFloat(value) : undefined),
@@ -211,7 +241,7 @@ export default function ExportPage() {
     {
       label: 'Scope constraints',
       status: config.max_reports ? `${config.max_reports} record cap` : 'No record cap',
-      description: 'Lifecycle, review window, threat family, and report-quality constraints apply before packaging.',
+      description: 'Disposition, lifecycle, review window, threat family, and content-quality constraints apply before packaging.',
     },
   ];
 
@@ -287,7 +317,7 @@ export default function ExportPage() {
               <section data-contract="Export.PackageScopeControls.v1" className="rounded-xl border border-zinc-200 bg-white p-5">
                 <h2 className="text-base font-semibold text-zinc-950">Handoff constraints</h2>
                 <p className="mt-1 text-sm leading-6 text-zinc-500">
-                  Constrain the package by lifecycle truth, evidence window, threat family, and report-quality floor.
+                  Constrain the package by analyst judgment, lifecycle truth, evidence window, threat family, and content-quality floor.
                 </p>
                 <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
                   {packageScopeControls.map((control) => (
@@ -318,7 +348,7 @@ export default function ExportPage() {
                   <div className="min-w-0">
                     <h2 className="text-base font-semibold text-zinc-950">Report selection</h2>
                     <p className="mt-1 text-sm leading-6 text-zinc-500">
-                      Visible reports matching the lifecycle scope, with review state, report quality, and threat markers.
+                      Visible reports matching the handoff scope, with analyst disposition, readiness, content quality, and threat markers.
                     </p>
                   </div>
                   <button type="button" onClick={handleSelectAll} className="inline-flex h-9 shrink-0 items-center justify-center rounded-lg border border-zinc-300 bg-white px-3 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50">
@@ -332,7 +362,7 @@ export default function ExportPage() {
                         <div key={i} className="h-16 animate-pulse rounded-lg bg-zinc-100" />
                       ))}
                     </div>
-                  ) : (
+                  ) : reportsData?.reports.length ? (
                     <div className="max-h-96 space-y-3 overflow-y-auto">
                       {reportsData?.reports.map((report) => (
                         <ExportEvidenceQueueRecord
@@ -342,6 +372,13 @@ export default function ExportPage() {
                           onSelectionChange={handleReportSelection}
                         />
                       ))}
+                    </div>
+                  ) : (
+                    <div className="rounded-lg border border-dashed border-zinc-300 px-5 py-8 text-center">
+                      <p className="text-sm font-medium text-zinc-950">No accepted reports match this handoff</p>
+                      <p className="mx-auto mt-1 max-w-md text-sm leading-6 text-zinc-500">
+                        Record an analyst disposition on a report, or broaden the disposition constraint for a non-handoff review package.
+                      </p>
                     </div>
                   )}
                 </div>
@@ -437,6 +474,9 @@ function ExportEvidenceQueueRecord({
           <span className="text-sm text-zinc-500">{record.date}</span>
           <span className={`rounded-md px-2 py-0.5 text-sm font-medium ${getReviewStatusClasses(record.reviewStatus)}`}>
             {getReviewStatusLabel(record.reviewStatus)}
+          </span>
+          <span className={`rounded-md px-2 py-0.5 text-sm font-medium ${getAnalystDispositionClasses(record.analystDisposition)}`}>
+            {getAnalystDispositionLabel(record.analystDisposition)}
           </span>
           {record.threatType ? (
             <span className="rounded-md bg-zinc-100 px-2 py-0.5 text-sm text-zinc-700">{record.threatType}</span>

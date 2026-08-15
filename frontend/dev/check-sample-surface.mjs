@@ -59,9 +59,9 @@ const expectations = [
     pattern: /formatTaxonomyLabel\(SAMPLE_REPORT\.threat_type\)/,
   },
   {
-    name: 'uses report quality rather than confidence for the evaluator score',
+    name: 'separates content quality from analyst readiness',
     source: sample,
-    pattern: /label: 'Report quality'/,
+    pattern: /label: 'Content quality'/,
   },
   {
     name: 'puts source evidence first on narrow screens',
@@ -104,9 +104,24 @@ const expectations = [
     absentPattern: /AuthGuard/,
   },
   {
-    name: 'keeps the public sample silent when there is no route divergence',
+    name: 'teaches the split research and authoring provenance shape',
     source: sampleReport,
-    absentPattern: /generation_route|evaluation_route/,
+    pattern: /research_route:[\s\S]*synthesis_route:[\s\S]*evaluation_route:/,
+  },
+  {
+    name: 'does not teach the legacy aggregate route shape in the sample',
+    source: sampleReport,
+    absentPattern: /generation_route:/,
+  },
+  {
+    name: 'pins every high-risk claim class in the teaching fixture',
+    source: sampleReport,
+    pattern: /claim_class: 'threat_activity'[\s\S]*claim_class: 'forensic_artifact'[\s\S]*claim_class: 'detection_indicator'[\s\S]*claim_class: 'mitigation_action'/,
+  },
+  {
+    name: 'uses an artifact observation for the forensic-artifact class',
+    source: sampleReport,
+    pattern: /A memory-resident Beacon payload inside an injected process is a forensic artifact/,
   },
   {
     name: 'does not use fonts below the legible minimum',

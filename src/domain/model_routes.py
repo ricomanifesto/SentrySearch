@@ -10,7 +10,8 @@ from typing import Iterable
 class ModelRoutePurpose(StrEnum):
     """Report pipeline roles with independently configured model routes."""
 
-    GENERATION = "generation"
+    RESEARCH = "research"
+    SYNTHESIS = "synthesis"
     EVALUATION = "evaluation"
 
 

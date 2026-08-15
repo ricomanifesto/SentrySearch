@@ -3,6 +3,8 @@
 export type ReportStatus = 'generating' | 'completed' | 'failed';
 export type EvaluationStatus = 'unrecorded' | 'pending' | 'completed' | 'failed';
 export type ReviewStatus = 'generating' | 'generation_failed' | 'evaluation_pending' | 'needs_evaluation' | 'needs_attention' | 'reviewable';
+export type AnalystDisposition = 'unreviewed' | 'accepted' | 'needs_revision' | 'rejected';
+export type StoredAnalystDisposition = Exclude<AnalystDisposition, 'unreviewed'>;
 export type ClassificationStatus = 'recorded' | 'reconciled' | 'unmapped' | 'unrecorded';
 export type ClaimAttributionStatus = 'attributed' | 'unattributed' | 'legacy';
 export type GenerationErrorCode = 'provider_rate_limited' | 'provider_unavailable' | 'provider_timeout' | 'model_output_invalid' | 'evidence_unavailable' | 'evidence_unattested' | 'persistence_failed' | 'unknown';
@@ -32,6 +34,7 @@ export interface Report {
   evaluation_attempts: number;
   evaluated_at?: string | null;
   review_status: ReviewStatus;
+  analyst_disposition: AnalystDisposition;
   content_preview?: string | null;
 }
 
@@ -40,10 +43,24 @@ export interface ReportDetail extends Report {
   threat_data?: Record<string, unknown>;
   web_sources: ReportSource[];
   search_tags: string[];
+  // TODO(route-provenance-v2): Remove after retained aggregate-only reports expire.
   generation_route?: ModelRouteProvenance | null;
+  research_route?: ModelRouteProvenance | null;
+  synthesis_route?: ModelRouteProvenance | null;
   evaluation_route?: ModelRouteProvenance | null;
   quality_assessment?: Record<string, unknown> | null;
   claim_attributions: ClaimAttributionEntry[];
+  current_disposition?: AnalystDispositionEvent | null;
+  disposition_history: AnalystDispositionEvent[];
+}
+
+export interface AnalystDispositionEvent {
+  id: string;
+  disposition: StoredAnalystDisposition;
+  note?: string | null;
+  evaluation_attempt: number;
+  created_at: string;
+  is_current: boolean;
 }
 
 export interface GenerationFailureObservation {
@@ -104,6 +121,8 @@ export interface ListReportFilters {
   min_quality?: number;
   statuses?: ReportStatus[];
   review_statuses?: ReviewStatus[];
+  analyst_dispositions?: AnalystDisposition[];
+  requires_action?: boolean;
   sort_by?: ReportSortField;
   sort_order?: SortOrder;
 }
@@ -116,6 +135,8 @@ export interface SearchFilters {
   tags?: string[];
   statuses?: ReportStatus[];
   review_statuses?: ReviewStatus[];
+  analyst_dispositions?: AnalystDisposition[];
+  requires_action?: boolean;
 }
 
 export interface ReportSort {
@@ -142,6 +163,7 @@ export interface AnalyticsDashboard {
     avg_quality_score: number | null;
     scored_reports: number;
     needs_attention_reports: number;
+    unresolved_reports: number;
   };
   threat_distribution: Record<string, number>;
   quality_distribution: Array<{ range: string; count: number }>;
@@ -152,6 +174,7 @@ export interface AnalyticsDashboard {
     quality_score: number | null;
     evaluation_status: EvaluationStatus;
     review_status: ReviewStatus;
+    analyst_disposition: AnalystDisposition;
     status: ReportStatus;
   }>;
 }
@@ -173,6 +196,8 @@ export interface AnalyticsData {
     generation_failed_reports: number;
     reviewable_reports: number;
     needs_attention_reports: number;
+    unresolved_reports: number;
+    accepted_reports: number;
   };
   trends: {
     daily_reports: Array<{ date: string; count: number }>;
@@ -205,6 +230,7 @@ export interface AnalyticsData {
     generation_used_fallback: boolean | null;
     evaluation_status: EvaluationStatus;
     review_status: ReviewStatus;
+    analyst_disposition: AnalystDisposition;
     status: ReportStatus;
   }>;
 }
@@ -231,6 +257,7 @@ export interface ExportConfig extends Record<string, unknown> {
   max_reports?: number;
   selected_reports?: string[];
   review_statuses?: ReviewStatus[];
+  analyst_dispositions?: AnalystDisposition[];
 }
 
 export interface ActivityEvent {

@@ -29,6 +29,8 @@ from src.core.generation_failures import (
 from src.core.source_ledger import SourceLedgerError, canonicalize_profile_sources
 from src.auth.supabase_auth import AuthenticatedUser, verify_jwt_token
 from src.api.contracts import (
+    AnalystDispositionCreate,
+    AnalystDispositionEvent,
     PaginationParams,
     ClaimAttributionEntry,
     ReportCreate,
@@ -41,6 +43,7 @@ from src.api.contracts import (
 )
 from src.domain.model_routes import generation_fallback_state
 from src.domain.reports import (
+    AnalystDisposition,
     ClaimAttributionStatus,
     ClassificationStatus,
     EvaluationStatus,
@@ -216,6 +219,9 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
             quality_score=quality_score,
             quality_assessment=assessment,
             source_count=len(sources),
+        ),
+        "analyst_disposition": AnalystDisposition(
+            report.get("analyst_disposition") or AnalystDisposition.UNREVIEWED.value
         ),
         "content_preview": report.get("content_preview"),
     }
@@ -522,6 +528,10 @@ async def list_reports(
     review_status: Optional[List[ReviewStatus]] = Query(
         None, description="Filter by reader-facing review state"
     ),
+    analyst_disposition: Optional[List[AnalystDisposition]] = Query(
+        None, description="Filter by the latest judgment for the current evaluation"
+    ),
+    requires_action: bool = Query(False, description="Return unresolved analyst work"),
 ):
     """List reports with pagination and filtering"""
     try:
@@ -541,6 +551,8 @@ async def list_reports(
             min_quality_score=min_quality,
             statuses=status,
             review_statuses=review_status,
+            analyst_dispositions=analyst_disposition,
+            requires_action=requires_action,
             user_id=user_id,
         )
 
@@ -551,6 +563,8 @@ async def list_reports(
             min_quality_score=min_quality,
             statuses=status,
             review_statuses=review_status,
+            analyst_dispositions=analyst_disposition,
+            requires_action=requires_action,
             user_id=user_id,
         )
 
@@ -571,6 +585,8 @@ async def list_reports(
                 "min_quality": min_quality,
                 "status": status,
                 "review_status": review_status,
+                "analyst_disposition": analyst_disposition,
+                "requires_action": requires_action,
             },
         }
 
@@ -602,15 +618,49 @@ async def get_report(
             web_sources=get_report_sources(report),
             search_tags=report.get("search_tags", []),
             generation_route=report.get("generation_route"),
+            research_route=report.get("research_route"),
+            synthesis_route=report.get("synthesis_route"),
             evaluation_route=report.get("evaluation_route"),
             quality_assessment=get_quality_assessment(report),
             claim_attributions=get_claim_attributions(report),
+            current_disposition=report.get("current_disposition"),
+            disposition_history=report.get("disposition_history", []),
         )
 
     except HTTPException:
         raise
     except Exception as e:
         raise internal_server_error("Failed to get report", e)
+
+
+@app.post(
+    "/api/reports/{report_id}/dispositions",
+    response_model=AnalystDispositionEvent,
+)
+async def append_report_disposition(
+    report_id: str,
+    request: AnalystDispositionCreate,
+    user: AuthenticatedUser = Depends(verify_jwt_token),
+):
+    """Append a judgment to the current evaluation vintage."""
+
+    try:
+        event = report_service.append_report_disposition(
+            report_id,
+            disposition=request.disposition,
+            note=request.note,
+            reviewer_user_id=user.id,
+            owner_user_id=get_report_user_id(user),
+        )
+        if event is None:
+            raise HTTPException(status_code=404, detail="Report not found")
+        return AnalystDispositionEvent(**event)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise internal_server_error("Failed to record analyst disposition", e)
 
 
 @app.post("/api/reports/{report_id}/evaluation", response_model=Dict[str, str])
@@ -718,6 +768,8 @@ def run_report_generation(
             "threat_data": threat_data,
             "quality_assessment": quality_data or None,
             "generation_route": profile.get("_generation_route"),
+            "research_route": profile.get("_research_route"),
+            "synthesis_route": profile.get("_synthesis_route"),
             "evaluation_route": profile.get("_evaluation_route"),
             "evaluation_status": (
                 EvaluationStatus.COMPLETED.value
@@ -744,11 +796,11 @@ def run_report_generation(
         logger.exception("Background generation failed for report %s: %s", report_id, e)
         try:
             summarize_route = (
-                getattr(generator, "generation_route_provenance", None)
+                getattr(generator, "route_provenance_for_stage", None)
                 if generator is not None
                 else None
             )
-            route = summarize_route() if callable(summarize_route) else None
+            route = summarize_route(last_stage) if callable(summarize_route) else None
             failure = build_generation_failure(e, stage=last_stage, route=route)
             report_service.mark_report_failed(
                 report_id,
@@ -907,6 +959,10 @@ async def search_reports(
             search_params["statuses"] = filters.statuses
         if filters.review_statuses:
             search_params["review_statuses"] = filters.review_statuses
+        if filters.analyst_dispositions:
+            search_params["analyst_dispositions"] = filters.analyst_dispositions
+        if filters.requires_action:
+            search_params["requires_action"] = True
         if filters.date_range_days:
             search_params["created_after"] = datetime.now(timezone.utc) - timedelta(
                 days=filters.date_range_days
@@ -1082,10 +1138,11 @@ async def get_analytics(
                     "created_at": report["created_at"],
                     "threat_type": report.get("threat_type"),
                     "generation_used_fallback": generation_fallback_state(
-                        report.get("generation_route")
+                        report.get("synthesis_route") or report.get("generation_route")
                     ),
                     "evaluation_status": get_evaluation_status(report),
                     "review_status": report_response_fields(report)["review_status"],
+                    "analyst_disposition": report_response_fields(report)["analyst_disposition"],
                     "status": get_report_status(report),
                 }
             )
@@ -1115,6 +1172,16 @@ async def get_analytics(
                 "needs_attention_reports": sum(
                     state in (ReviewStatus.NEEDS_ATTENTION, ReviewStatus.NEEDS_EVALUATION)
                     for state in review_states
+                ),
+                "unresolved_reports": report_service.count_reports(
+                    created_after=start_date,
+                    user_id=user_id,
+                    requires_action=True,
+                ),
+                "accepted_reports": report_service.count_reports(
+                    created_after=start_date,
+                    user_id=user_id,
+                    analyst_dispositions=[AnalystDisposition.ACCEPTED],
                 ),
             },
             "trends": {
@@ -1192,6 +1259,10 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
                     state in (ReviewStatus.NEEDS_ATTENTION, ReviewStatus.NEEDS_EVALUATION)
                     for state in review_states
                 ),
+                "unresolved_reports": report_service.count_reports(
+                    user_id=user_id,
+                    requires_action=True,
+                ),
             },
             "threat_distribution": threat_stats,
             "quality_distribution": quality_stats.get("distribution", []),
@@ -1203,6 +1274,7 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
                     "quality_score": r.get("quality_score"),
                     "evaluation_status": get_evaluation_status(r),
                     "review_status": report_response_fields(r)["review_status"],
+                    "analyst_disposition": report_response_fields(r)["analyst_disposition"],
                     "status": get_report_status(r),
                 }
                 for r in recent_activity

@@ -31,8 +31,8 @@ Supabase provides sign-in and session handling. Cloudflare Turnstile protects ac
 - `/auth/*`: sign-up, sign-in, password reset, and recovery.
 - `/generate`: create a threat profile.
 - `/reports` and `/reports/[id]`: search, filter, inspect, retry evaluation, and delete saved reports.
-- `/export`: prepare report evidence packages.
-- `/analytics`: review volume, quality, threat mix, activity, and model-route performance.
+- `/export`: prepare accepted report evidence packages with judgment history.
+- `/analytics`: review volume, content quality, unresolved work, threat mix, activity, and authoring-route performance.
 - `/settings`: view workspace identity, access posture, and generation policy.
 
 ## Checks

@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 from src.domain.reports import (
+    AnalystDisposition,
     ClaimAttributionStatus,
     ClassificationStatus,
     EvaluationStatus,
@@ -60,6 +61,7 @@ class ReportResponse(BaseModel):
     evaluation_attempts: int = 0
     evaluated_at: datetime | None = None
     review_status: ReviewStatus = ReviewStatus.NEEDS_EVALUATION
+    analyst_disposition: AnalystDisposition = AnalystDisposition.UNREVIEWED
     content_preview: str | None = None
 
 
@@ -96,15 +98,40 @@ class ClaimAttributionEntry(BaseModel):
     source_ids: list[str] = Field(default_factory=list)
 
 
+class AnalystDispositionEvent(BaseModel):
+    id: str
+    disposition: Literal["accepted", "needs_revision", "rejected"]
+    note: str | None = None
+    evaluation_attempt: int = Field(ge=0)
+    created_at: datetime
+    is_current: bool
+
+
+class AnalystDispositionCreate(BaseModel):
+    disposition: Literal["accepted", "needs_revision", "rejected"]
+    note: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def normalize_note(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        return value.strip() or None
+
+
 class ReportDetail(ReportResponse):
     markdown_content: str | None = None
     threat_data: dict[str, Any] | None = None
     web_sources: list[ReportSource] = Field(default_factory=list)
     search_tags: list[str] = Field(default_factory=list)
     generation_route: ModelRouteProvenance | None = None
+    research_route: ModelRouteProvenance | None = None
+    synthesis_route: ModelRouteProvenance | None = None
     evaluation_route: ModelRouteProvenance | None = None
     quality_assessment: dict[str, Any] | None = None
     claim_attributions: list[ClaimAttributionEntry] = Field(default_factory=list)
+    current_disposition: AnalystDispositionEvent | None = None
+    disposition_history: list[AnalystDispositionEvent] = Field(default_factory=list)
 
 
 class SearchFilters(BaseModel):
@@ -115,6 +142,8 @@ class SearchFilters(BaseModel):
     tags: list[str] = Field(default_factory=list, max_length=50)
     statuses: list[ReportStatus] = Field(default_factory=list, max_length=10)
     review_statuses: list[ReviewStatus] = Field(default_factory=list, max_length=10)
+    analyst_dispositions: list[AnalystDisposition] = Field(default_factory=list, max_length=10)
+    requires_action: bool = False
 
 
 class PaginationParams(BaseModel):

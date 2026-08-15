@@ -8,8 +8,9 @@ from types import SimpleNamespace
 from src.core.openrouter_client import (
     create_model_client,
     evaluation_request_options,
-    generation_request_options,
+    research_request_options,
     resolve_model_name,
+    synthesis_request_options,
 )
 from src.core.model_retry import RetryingModelRequests
 from typing import Dict, Any, Callable
@@ -100,12 +101,24 @@ class ThreatProfileGenerator(RetryingModelRequests):
             requested_providers=requested_providers,
         ).to_dict()
 
-    def generation_route_provenance(self) -> dict[str, object]:
-        """Expose generation attempts for persistence when the pipeline fails."""
+    def route_provenance_for_stage(self, stage: GenerationStage | None) -> dict[str, object]:
+        """Expose the route that owned the last observed pipeline stage."""
 
+        if stage is GenerationStage.RESEARCHING:
+            return self._route_provenance(
+                ModelRoutePurpose.RESEARCH,
+                research_request_options(),
+            )
+        if stage is GenerationStage.VALIDATING:
+            evaluation = self._route_provenance(
+                ModelRoutePurpose.EVALUATION,
+                evaluation_request_options(),
+            )
+            if evaluation.get("request_count") or evaluation.get("attempts"):
+                return evaluation
         return self._route_provenance(
-            ModelRoutePurpose.GENERATION,
-            generation_request_options(),
+            ModelRoutePurpose.SYNTHESIS,
+            synthesis_request_options(),
         )
 
     def _research_evidence(self, tool_name: str) -> SimpleNamespace:
@@ -131,7 +144,7 @@ Return a compact but technically dense evidence dossier. Include concrete findin
             futures = {
                 executor.submit(
                     self._request_model,
-                    **generation_request_options(),
+                    **research_request_options(),
                     max_tokens=4096,
                     temperature=0.3,
                     messages=[{"role": "user", "content": prompt}],
@@ -511,7 +524,7 @@ END ATTESTED SOURCE CATALOG"""
             logger.debug(f"Prompt size: {len(prompt)} characters")
 
             response = self._request_model(
-                **generation_request_options(),
+                **synthesis_request_options(),
                 # The full profile is returned as a single JSON object. Gemma's
                 # free route supports 32,768 completion tokens; using that ceiling
                 # keeps evidence-dense profiles from being truncated mid-JSON.
@@ -667,9 +680,13 @@ END ATTESTED SOURCE CATALOG"""
                     logger.warning("Trace export failed: %s", trace_error)
                     # Don't fail the main process for trace export errors
 
-            json_data["_generation_route"] = self._route_provenance(
-                ModelRoutePurpose.GENERATION,
-                generation_request_options(),
+            json_data["_research_route"] = self._route_provenance(
+                ModelRoutePurpose.RESEARCH,
+                research_request_options(),
+            )
+            json_data["_synthesis_route"] = self._route_provenance(
+                ModelRoutePurpose.SYNTHESIS,
+                synthesis_request_options(),
             )
             json_data["_evaluation_route"] = self._route_provenance(
                 ModelRoutePurpose.EVALUATION,

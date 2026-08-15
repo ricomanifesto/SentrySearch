@@ -19,6 +19,7 @@ function sentenceList(values: string[]): string {
 export function getReviewAttentionSummary(
   assessment: Record<string, unknown> | null | undefined,
   sourceCount: number,
+  analystDisposition: AnalystDisposition = 'unreviewed',
 ): ReviewAttentionSummary | null {
   if (!assessment) {
     return sourceCount > 0
@@ -48,9 +49,18 @@ export function getReviewAttentionSummary(
   ].filter(Boolean);
   return reasons.length > 0
     ? {
-        headline: `${sentenceList(reasons)} ${reasons.length === 1 ? 'requires' : 'require'} review.`,
+        headline: conflicts.length > 0
+          ? analystDisposition === 'accepted'
+            ? `An analyst accepted this evaluation vintage with ${sentenceList(reasons)} still recorded below.`
+            : analystDisposition === 'rejected'
+              ? `This evaluation vintage was rejected; ${sentenceList(reasons)} remain in its audit record.`
+              : analystDisposition === 'needs_revision'
+                ? `Operational reuse remains blocked by ${sentenceList(reasons)}.`
+                : `Operational reuse is blocked by ${sentenceList(reasons)} until an analyst records a disposition.`
+          : `Analyst review is required: ${sentenceList(reasons)}.`,
         conflicts,
         recommendations,
       }
     : null;
 }
+import type { AnalystDisposition } from '@/lib/api-contracts';

@@ -13,7 +13,7 @@ from typing import Any, Callable, List, Optional
 from src.core.model_retry import RetryingModelRequests
 from src.core.openrouter_client import (
     evaluation_request_options,
-    generation_request_options,
+    synthesis_request_options,
 )
 from src.core.threat_profile_schema import EVIDENCE_ENHANCEMENT_MODELS
 from src.core.validation_criteria import (
@@ -716,7 +716,7 @@ CRITICAL REQUIREMENTS:
 Your entire response must be valid JSON that can be directly parsed."""
 
             response = self._request_model(
-                **generation_request_options(),
+                **synthesis_request_options(),
                 max_tokens=4000,  # Increased to allow for complete JSON responses
                 temperature=0.3,
                 messages=[{"role": "user", "content": prompt}],
@@ -845,7 +845,7 @@ BEGIN ATTESTED EVIDENCE
 END ATTESTED EVIDENCE"""
 
         response = self._request_model(
-            **generation_request_options(),
+            **synthesis_request_options(),
             max_tokens=4096,
             temperature=0.2,
             messages=[{"role": "user", "content": prompt}],

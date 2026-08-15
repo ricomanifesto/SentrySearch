@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from contextlib import contextmanager
 from typing import Any, cast
+import uuid
 
 import pytest
 from pydantic import ValidationError
@@ -9,6 +10,7 @@ from sqlalchemy.dialects import postgresql
 from src.api.contracts import ModelRouteProvenance, PaginationParams, ReportDetail, SearchFilters
 from src.domain.model_routes import generation_fallback_state
 from src.domain.reports import (
+    AnalystDisposition,
     ClassificationStatus,
     ReportFilters,
     ReportSortField,
@@ -17,7 +19,7 @@ from src.domain.reports import (
     SortOrder,
 )
 from src.storage.report_service import ReportStorageService
-from src.storage.models import Report
+from src.storage.models import Report, ReportDispositionEvent
 from src.storage.database import DatabaseManager
 
 
@@ -71,6 +73,8 @@ def test_report_contract_collection_defaults_are_isolated():
 
 def test_report_schema_and_contract_preserve_route_provenance():
     assert "generation_route" in Report.__table__.c
+    assert "research_route" in Report.__table__.c
+    assert "synthesis_route" in Report.__table__.c
     assert "evaluation_route" in Report.__table__.c
 
     route = ModelRouteProvenance(
@@ -106,6 +110,8 @@ def test_additive_migration_creates_model_route_columns():
     manager.migrate_schema()
 
     assert "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_route JSONB" in statements
+    assert "ALTER TABLE reports ADD COLUMN IF NOT EXISTS research_route JSONB" in statements
+    assert "ALTER TABLE reports ADD COLUMN IF NOT EXISTS synthesis_route JSONB" in statements
     assert "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_route JSONB" in statements
     assert (
         "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_status VARCHAR(20)" in statements
@@ -128,6 +134,9 @@ def test_additive_migration_creates_model_route_columns():
     assert (
         "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_failure_stage VARCHAR(20)"
         in statements
+    )
+    assert any(
+        "CREATE TABLE IF NOT EXISTS report_disposition_events" in item for item in statements
     )
 
 
@@ -171,12 +180,188 @@ def test_review_and_generation_statuses_are_queryable_contract_fields():
         review_statuses=(ReviewStatus.REVIEWABLE, ReviewStatus.NEEDS_ATTENTION),
     )
     compiled = " ".join(
-        str(expression.compile(dialect=postgresql.dialect()))
+        str(
+            expression.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
         for expression in ReportStorageService._report_filter_expressions(filters)
     )
 
     assert "reports.status IN" in compiled
     assert "reports.review_status IN" in compiled
+
+
+def test_actionable_filter_uses_current_evaluation_disposition_without_backfill():
+    filters = ReportFilters(requires_action=True)
+    compiled = " ".join(
+        str(
+            expression.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        for expression in ReportStorageService._report_filter_expressions(filters)
+    )
+
+    assert (
+        "report_disposition_events.evaluation_attempt = coalesce(reports.evaluation_attempts"
+        in compiled
+    )
+    assert "needs_revision" in compiled
+    assert "reviewable" in compiled
+
+
+def test_fresh_evaluation_vintage_returns_to_unreviewed_without_deleting_history():
+    report = Report(
+        id="ad0a93e1-4d27-4388-83f0-c1c8fa688a2e",
+        tool_name="Havoc",
+        status="completed",
+        evaluation_status="completed",
+        evaluation_attempts=2,
+        quality_score=4.0,
+    )
+    event = ReportDispositionEvent(
+        id="bd0a93e1-4d27-4388-83f0-c1c8fa688a2e",
+        report_id=report.id,
+        reviewer_user_id="analyst-user",
+        disposition=AnalystDisposition.ACCEPTED.value,
+        evaluation_attempt=1,
+        created_at=datetime(2026, 8, 14, 12, tzinfo=timezone.utc),
+    )
+
+    class FakeQuery:
+        def filter(self, *args):
+            return self
+
+        def order_by(self, *args):
+            return self
+
+        def all(self):
+            return [event]
+
+    class FakeSession:
+        def query(self, *args):
+            return FakeQuery()
+
+    projected = ReportStorageService._attach_disposition_state(
+        FakeSession(), [report], include_history=True
+    )[0]
+
+    assert projected["analyst_disposition"] == AnalystDisposition.UNREVIEWED.value
+    assert projected["current_disposition"] is None
+    assert len(projected["disposition_history"]) == 1
+    assert projected["disposition_history"][0]["is_current"] is False
+
+
+def test_re_evaluation_advances_the_vintage_without_touching_disposition_events():
+    report = Report(
+        id="ad0a93e1-4d27-4388-83f0-c1c8fa688a2e",
+        tool_name="Havoc",
+        status="completed",
+        evaluation_status="completed",
+        evaluation_attempts=1,
+        quality_score=4.0,
+        web_sources=[{"url": "https://example.com"}],
+        quality_assessment={"summary": {"passed_sections": 1}},
+    )
+
+    class FakeQuery:
+        def filter(self, *args):
+            return self
+
+        def with_for_update(self):
+            return self
+
+        def first(self):
+            return report
+
+    class FakeSession:
+        def query(self, *args):
+            assert args == (Report,)
+            return FakeQuery()
+
+        def commit(self):
+            return None
+
+    class FakeDatabaseManager:
+        @contextmanager
+        def get_session(self):
+            yield FakeSession()
+
+    service = ReportStorageService.__new__(ReportStorageService)
+    service.db_manager = cast(Any, FakeDatabaseManager())
+
+    assert service.begin_report_evaluation(str(report.id), user_id="analyst-user") is True
+    assert report.evaluation_attempts == 2
+    assert report.evaluation_status == "pending"
+    assert report.review_status == "evaluation_pending"
+
+
+def test_disposition_append_records_the_current_evaluation_vintage():
+    report = Report(
+        id="ad0a93e1-4d27-4388-83f0-c1c8fa688a2e",
+        tool_name="Havoc",
+        status="completed",
+        evaluation_status="completed",
+        evaluation_attempts=3,
+        quality_score=4.0,
+    )
+    added: list[ReportDispositionEvent] = []
+
+    class FakeQuery:
+        def filter(self, *args):
+            return self
+
+        def with_for_update(self):
+            return self
+
+        def first(self):
+            return report
+
+    class FakeSession:
+        def query(self, *args):
+            assert args == (Report,)
+            return FakeQuery()
+
+        def add(self, event):
+            added.append(event)
+
+        def flush(self):
+            event = cast(Any, added[0])
+            event.id = uuid.UUID("bd0a93e1-4d27-4388-83f0-c1c8fa688a2e")
+            event.created_at = datetime(2026, 8, 14, 12, tzinfo=timezone.utc)
+
+        def refresh(self, event):
+            return None
+
+        def commit(self):
+            return None
+
+    class FakeDatabaseManager:
+        @contextmanager
+        def get_session(self):
+            yield FakeSession()
+
+    service = ReportStorageService.__new__(ReportStorageService)
+    service.db_manager = cast(Any, FakeDatabaseManager())
+
+    result = service.append_report_disposition(
+        str(report.id),
+        disposition=AnalystDisposition.NEEDS_REVISION,
+        note="  Reconcile the timeline.  ",
+        reviewer_user_id="analyst-user",
+        owner_user_id="analyst-user",
+    )
+
+    assert len(added) == 1
+    assert added[0].evaluation_attempt == 3
+    assert added[0].reviewer_user_id == "analyst-user"
+    assert result is not None
+    assert result["disposition"] == "needs_revision"
+    assert result["note"] == "Reconcile the timeline."
+    assert result["is_current"] is True
 
 
 def test_legacy_classification_reconciliation_keeps_unknown_reasons_distinct():

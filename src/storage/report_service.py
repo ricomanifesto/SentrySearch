@@ -7,9 +7,10 @@ from typing import Dict, Any, List, Optional, Sequence, cast
 from datetime import datetime, timezone
 import hashlib
 import json
-from sqlalchemy import asc, desc, or_
+from sqlalchemy import and_, asc, desc, func, or_, select
 
 from src.domain.reports import (
+    AnalystDisposition,
     ClaimAttributionStatus,
     ClassificationStatus,
     EvaluationStatus,
@@ -33,7 +34,7 @@ from src.core.source_ledger import (
 from src.domain.model_routes import generation_fallback_state
 
 from .database import db_manager
-from .models import Report
+from .models import Report, ReportDispositionEvent
 from .s3_manager import s3_manager
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,90 @@ class ReportStorageService:
         )
         model.review_status = status.value
         return status
+
+    @staticmethod
+    def _latest_disposition_expression():
+        """Return the latest judgment for the report's current evaluation attempt."""
+
+        return (
+            select(ReportDispositionEvent.disposition)
+            .where(
+                ReportDispositionEvent.report_id == Report.id,
+                ReportDispositionEvent.evaluation_attempt
+                == func.coalesce(Report.evaluation_attempts, 0),
+            )
+            .order_by(
+                ReportDispositionEvent.created_at.desc(),
+                ReportDispositionEvent.id.desc(),
+            )
+            .limit(1)
+            .correlate(Report)
+            .scalar_subquery()
+        )
+
+    @staticmethod
+    def _attach_disposition_state(
+        session: Any,
+        reports: Sequence[Report],
+        *,
+        include_history: bool = False,
+    ) -> list[Dict[str, Any]]:
+        """Project append-only judgments without mutating the report row."""
+
+        if not reports:
+            return []
+        query = session.query(ReportDispositionEvent)
+        if include_history:
+            query = query.filter(
+                ReportDispositionEvent.report_id.in_([report.id for report in reports])
+            )
+        else:
+            query = query.filter(
+                or_(
+                    *(
+                        and_(
+                            ReportDispositionEvent.report_id == report.id,
+                            ReportDispositionEvent.evaluation_attempt
+                            == int(cast(Any, report).evaluation_attempts or 0),
+                        )
+                        for report in reports
+                    )
+                )
+            )
+        events = query.order_by(
+            ReportDispositionEvent.created_at.asc(),
+            ReportDispositionEvent.id.asc(),
+        ).all()
+        by_report: dict[str, list[ReportDispositionEvent]] = {}
+        for event in events:
+            by_report.setdefault(str(event.report_id), []).append(event)
+
+        projected: list[Dict[str, Any]] = []
+        for report in reports:
+            current_attempt = int(cast(Any, report).evaluation_attempts or 0)
+            history = by_report.get(str(report.id), [])
+            current_events = [
+                event for event in history if event.evaluation_attempt == current_attempt
+            ]
+            current_event = current_events[-1] if current_events else None
+            report_dict = report.to_dict()
+            report_dict["analyst_disposition"] = (
+                current_event.disposition
+                if current_event is not None
+                else AnalystDisposition.UNREVIEWED.value
+            )
+            report_dict["current_disposition"] = (
+                current_event.to_dict(current_evaluation_attempt=current_attempt)
+                if current_event is not None
+                else None
+            )
+            report_dict["disposition_history"] = (
+                [event.to_dict(current_evaluation_attempt=current_attempt) for event in history]
+                if include_history
+                else []
+            )
+            projected.append(report_dict)
+        return projected
 
     @staticmethod
     def _structured_category_value(threat_data: Optional[Dict[str, Any]]) -> str | None:
@@ -205,6 +290,46 @@ class ReportStorageService:
             expressions.append(
                 Report.review_status.in_([status.value for status in filters.review_statuses])
             )
+        latest_disposition = ReportStorageService._latest_disposition_expression()
+        if filters.analyst_dispositions:
+            requested = set(filters.analyst_dispositions)
+            stored = [
+                disposition.value
+                for disposition in requested
+                if disposition is not AnalystDisposition.UNREVIEWED
+            ]
+            includes_unreviewed = AnalystDisposition.UNREVIEWED in requested
+            if includes_unreviewed and stored:
+                expressions.append(
+                    or_(latest_disposition.is_(None), latest_disposition.in_(stored))
+                )
+            elif includes_unreviewed:
+                expressions.append(latest_disposition.is_(None))
+            else:
+                expressions.append(latest_disposition.in_(stored))
+        if filters.requires_action:
+            expressions.append(
+                or_(
+                    Report.review_status.in_(
+                        [
+                            ReviewStatus.GENERATION_FAILED.value,
+                            ReviewStatus.NEEDS_EVALUATION.value,
+                        ]
+                    ),
+                    and_(
+                        Report.review_status.in_(
+                            [
+                                ReviewStatus.NEEDS_ATTENTION.value,
+                                ReviewStatus.REVIEWABLE.value,
+                            ]
+                        ),
+                        or_(
+                            latest_disposition.is_(None),
+                            latest_disposition == AnalystDisposition.NEEDS_REVISION.value,
+                        ),
+                    ),
+                )
+            )
         if filters.created_after:
             expressions.append(Report.created_at >= filters.created_after)
         return tuple(expressions)
@@ -220,6 +345,8 @@ class ReportStorageService:
         tags: Optional[List[str]] = None,
         statuses: Optional[Sequence[ReportStatus | str]] = None,
         review_statuses: Optional[Sequence[ReviewStatus | str]] = None,
+        analyst_dispositions: Optional[Sequence[AnalystDisposition | str]] = None,
+        requires_action: bool = False,
         created_after: Optional[datetime] = None,
         user_id: Optional[str] = None,
         sort_by: str = "created_at",
@@ -245,6 +372,10 @@ class ReportStorageService:
             tags=tuple(tags or ()),
             statuses=tuple(ReportStatus(value) for value in statuses or ()),
             review_statuses=tuple(ReviewStatus(value) for value in review_statuses or ()),
+            analyst_dispositions=tuple(
+                AnalystDisposition(value) for value in analyst_dispositions or ()
+            ),
+            requires_action=requires_action,
             created_after=created_after,
             user_id=user_id,
             sort_by=sort_field,
@@ -659,6 +790,8 @@ class ReportStorageService:
                     quality_assessment=report_data.get("quality_assessment"),
                     web_sources=report_data.get("web_sources"),
                     generation_route=report_data.get("generation_route"),
+                    research_route=report_data.get("research_route"),
+                    synthesis_route=report_data.get("synthesis_route"),
                     evaluation_route=report_data.get("evaluation_route"),
                     evaluation_status=report_data.get("evaluation_status"),
                     evaluation_error_code=report_data.get("evaluation_error_code"),
@@ -814,6 +947,8 @@ class ReportStorageService:
                 report.quality_assessment = report_data.get("quality_assessment")
                 report.web_sources = report_data.get("web_sources")
                 report.generation_route = report_data.get("generation_route")
+                report.research_route = report_data.get("research_route")
+                report.synthesis_route = report_data.get("synthesis_route")
                 report.evaluation_route = report_data.get("evaluation_route")
                 report.evaluation_status = report_data.get("evaluation_status")
                 report.evaluation_error_code = report_data.get("evaluation_error_code")
@@ -856,11 +991,6 @@ class ReportStorageService:
             if report is None or report.status != ReportStatus.COMPLETED.value:
                 return False
             if report.evaluation_status == EvaluationStatus.PENDING.value:
-                return False
-            if (
-                report.evaluation_status == EvaluationStatus.COMPLETED.value
-                and report.quality_score is not None
-            ):
                 return False
             report.evaluation_status = EvaluationStatus.PENDING.value
             report.evaluation_error_code = None
@@ -989,7 +1119,11 @@ class ReportStorageService:
                 if not report:
                     return None
 
-                report_dict = report.to_dict()
+                report_dict = self._attach_disposition_state(
+                    session,
+                    [report],
+                    include_history=True,
+                )[0]
                 # Full extraction data and tags are only needed on a single-report
                 # fetch (the record view), not the list, so they're added here rather
                 # than in the shared, list-facing to_dict().
@@ -1020,6 +1154,58 @@ class ReportStorageService:
             logger.error(f"Error getting report: {e}")
             raise
 
+    def append_report_disposition(
+        self,
+        report_id: str,
+        *,
+        disposition: AnalystDisposition | str,
+        note: str | None,
+        reviewer_user_id: str,
+        owner_user_id: str | None,
+    ) -> Dict[str, Any] | None:
+        """Append an analyst judgment without overwriting earlier review history."""
+
+        normalized = AnalystDisposition(disposition)
+        if normalized is AnalystDisposition.UNREVIEWED:
+            raise ValueError("Unreviewed is derived from the absence of a current judgment")
+        clean_note = note.strip() if isinstance(note, str) and note.strip() else None
+        if clean_note is not None and len(clean_note) > 1000:
+            raise ValueError("Disposition notes must not exceed 1000 characters")
+
+        with self.db_manager.get_session() as session:
+            query = session.query(Report).filter(Report.id == report_id)
+            if owner_user_id is not None:
+                query = query.filter(Report.user_id == owner_user_id)
+            report = query.with_for_update().first()
+            if report is None:
+                return None
+            evaluation_status = coerce_evaluation_status(
+                report.evaluation_status,
+                quality_score=(
+                    float(report.quality_score) if report.quality_score is not None else None
+                ),
+            )
+            if (
+                report.status != ReportStatus.COMPLETED.value
+                or evaluation_status is not EvaluationStatus.COMPLETED
+                or report.quality_score is None
+            ):
+                raise ValueError("Only completed, evaluated reports can be dispositioned")
+
+            event = ReportDispositionEvent(
+                report_id=report.id,
+                reviewer_user_id=reviewer_user_id,
+                disposition=normalized.value,
+                note=clean_note,
+                evaluation_attempt=int(report.evaluation_attempts or 0),
+            )
+            session.add(event)
+            session.flush()
+            session.refresh(event)
+            payload = event.to_dict(current_evaluation_attempt=int(report.evaluation_attempts or 0))
+            session.commit()
+            return payload
+
     def list_reports(
         self,
         limit: int = 20,
@@ -1032,6 +1218,8 @@ class ReportStorageService:
         tags: Optional[List[str]] = None,
         statuses: Optional[Sequence[ReportStatus | str]] = None,
         review_statuses: Optional[Sequence[ReviewStatus | str]] = None,
+        analyst_dispositions: Optional[Sequence[AnalystDisposition | str]] = None,
+        requires_action: bool = False,
         created_after: Optional[datetime] = None,
         sort_by: str = "created_at",
         sort_order: str = "desc",
@@ -1048,6 +1236,8 @@ class ReportStorageService:
                 tags=tags,
                 statuses=statuses,
                 review_statuses=review_statuses,
+                analyst_dispositions=analyst_dispositions,
+                requires_action=requires_action,
                 created_after=created_after,
                 user_id=user_id,
                 sort_by=sort_by,
@@ -1067,7 +1257,7 @@ class ReportStorageService:
 
                 reports = query.all()
 
-                return [report.to_dict() for report in reports]
+                return self._attach_disposition_state(session, reports)
 
         except Exception as e:
             logger.error(f"Error listing reports: {e}")
@@ -1122,6 +1312,9 @@ class ReportStorageService:
                     logger.warning(f"Could not delete S3 files: {e}")
 
                 # Delete database record
+                session.query(ReportDispositionEvent).filter(
+                    ReportDispositionEvent.report_id == report.id
+                ).delete(synchronize_session=False)
                 session.delete(report)
                 session.commit()
 
@@ -1180,6 +1373,8 @@ class ReportStorageService:
                 tags=filters.get("tags"),
                 statuses=filters.get("statuses"),
                 review_statuses=filters.get("review_statuses"),
+                analyst_dispositions=filters.get("analyst_dispositions"),
+                requires_action=bool(filters.get("requires_action", False)),
                 created_after=filters.get("created_after"),
                 user_id=filters.get("user_id"),
             )
@@ -1207,6 +1402,7 @@ class ReportStorageService:
                         Report.status,
                         Report.threat_type,
                         Report.generation_route,
+                        Report.synthesis_route,
                         Report.evaluation_status,
                         Report.quality_assessment,
                         Report.web_sources,
@@ -1226,7 +1422,9 @@ class ReportStorageService:
                         processing_time_ms=row.processing_time_ms,
                         status=ReportStatus(row.status or ReportStatus.COMPLETED.value),
                         threat_type=row.threat_type,
-                        generation_used_fallback=generation_fallback_state(row.generation_route),
+                        generation_used_fallback=generation_fallback_state(
+                            row.synthesis_route or row.generation_route
+                        ),
                         evaluation_status=coerce_evaluation_status(
                             row.evaluation_status,
                             quality_score=(

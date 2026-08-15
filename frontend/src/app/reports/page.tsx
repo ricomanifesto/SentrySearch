@@ -31,6 +31,7 @@ import {
 import { formatDate, formatProcessingTime, formatRelativeTime } from '@/lib/utils';
 import { AuthGuard } from '@/components/AuthGuard';
 import { getReviewStatusClasses, getReviewStatusLabel } from '@/lib/report-status';
+import { getAnalystDispositionClasses, getAnalystDispositionLabel } from '@/lib/analyst-disposition';
 
 type ReviewQueueControlKey = 'reviewState' | 'threatType' | 'minQuality' | 'dateRangeDays' | 'sortBy' | 'sortOrder';
 
@@ -123,7 +124,7 @@ function ReportsWorkspace() {
   const reviewQueueControls: ReviewQueueControl[] = useMemo(() => [
     { key: 'reviewState', label: 'Review state', options: reviewStateFilterOptions },
     { key: 'threatType', label: 'Threat type', options: threatTypeOptions },
-    { key: 'minQuality', label: 'Minimum quality', options: qualityFilterOptions },
+    { key: 'minQuality', label: 'Minimum content quality', options: qualityFilterOptions },
     { key: 'dateRangeDays', label: 'Date range', options: dateRangeFilterOptions },
     { key: 'sortBy', label: 'Sort by', options: reportSortOptions },
     { key: 'sortOrder', label: 'Order', options: sortOrderOptions },
@@ -155,7 +156,7 @@ function ReportsWorkspace() {
               <p className="text-sm font-medium text-blue-700">Saved intelligence</p>
               <h1 className="mt-3 text-3xl font-semibold tracking-tight text-zinc-950">Review queue</h1>
               <p className="mt-4 text-lg leading-8 text-zinc-600">
-                Search saved threat profiles, compare report quality, and reopen each
+                Search saved threat profiles, compare content quality, and reopen each
                 record with its source-backed context.
               </p>
             </div>
@@ -225,7 +226,7 @@ function ReportsWorkspace() {
                 ? filters.reviewState === 'actionable' && (libraryCount?.pagination.total ?? 0) > 0
                   ? 'No reports currently need action'
                   : 'No matching reports'
-                : `Showing ${pageStart}–${pageEnd} of ${totalReports} ${filters.reviewState === 'actionable' ? 'action-needed' : 'matching'} reports`}
+                : `Showing ${pageStart}–${pageEnd} of ${totalReports} ${filters.reviewState === 'actionable' ? 'unresolved' : 'matching'} reports`}
             </p>
           )}
 
@@ -254,7 +255,7 @@ function ReportsWorkspace() {
                 </h2>
                 <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-zinc-500">
                   {filters.reviewState === 'actionable' && (libraryCount?.pagination.total ?? 0) > 0
-                    ? 'Saved reports remain available under All history; no runs currently need retry, evaluation, or review attention.'
+                    ? 'Saved reports remain available under All history; no runs currently need retry, evaluation, revision, or analyst judgment.'
                     : hasActiveFilters
                       ? 'Adjust the search or filters to broaden the review queue.'
                       : 'Generate your first report to start building the review queue.'}
@@ -316,9 +317,9 @@ function ReportReviewRecord({ report }: { report: Report }) {
     : `${qualityLabel} · ${report.quality_score.toFixed(2)}`;
   const reportRecordSignals: ReportRecordSignal[] = [
     {
-      label: 'Report quality',
+      label: 'Content quality',
       value: qualityValue,
-      detail: 'Quality score carried from the saved report',
+      detail: 'Evaluator content score; readiness is tracked separately',
     },
     {
       label: 'Generated',
@@ -348,6 +349,9 @@ function ReportReviewRecord({ report }: { report: Report }) {
             </span>
             <span className={`rounded-md px-2 py-1 text-sm font-medium ${getReviewStatusClasses(report.review_status)}`}>
               {getReviewStatusLabel(report.review_status)}
+            </span>
+            <span className={`rounded-md px-2 py-1 text-sm font-medium ${getAnalystDispositionClasses(report.analyst_disposition)}`}>
+              {getAnalystDispositionLabel(report.analyst_disposition)}
             </span>
             {report.category ? (
               <span className="rounded-md bg-zinc-100 px-2 py-1 text-sm text-zinc-700">{formatTaxonomyLabel(report.category)}</span>

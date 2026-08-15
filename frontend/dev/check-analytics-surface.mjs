@@ -51,8 +51,8 @@ const expectations = [
     pattern: /Review window/,
   },
   {
-    name: 'shows evaluation health in the metric set',
-    pattern: /Needs attention[\s\S]*evaluator failures/,
+    name: 'shows unresolved analyst work in the metric set',
+    pattern: /Unresolved work[\s\S]*accepted[\s\S]*generation failures/,
   },
   {
     name: 'declares the analytics metric signal strip contract',
@@ -60,7 +60,7 @@ const expectations = [
   },
   {
     name: 'uses a canonical analytics metric signals collection',
-    pattern: /const metricSignals = \[[\s\S]*label: 'Reports in window'[\s\S]*label: 'Report quality'[\s\S]*label: 'Needs attention'[\s\S]*label: 'Generation completion'/,
+    pattern: /const metricSignals = \[[\s\S]*label: 'Reports in window'[\s\S]*label: 'Content quality'[\s\S]*label: 'Unresolved work'[\s\S]*label: 'Generation completion'/,
   },
   {
     name: 'renders analytics metric signals from the canonical collection',
@@ -71,7 +71,7 @@ const expectations = [
     absentPattern: /success_rate[^\n]*\|\|\s*0\.95/,
   },
   {
-    name: 'keeps generation completion separate from report quality',
+    name: 'keeps generation completion separate from content quality',
     pattern: /generation_completion_rate == null[\s\S]*terminal generation records/,
   },
   {
@@ -87,8 +87,8 @@ const expectations = [
     pattern: /Review timeline/,
   },
   {
-    name: 'uses report quality language for activity scores',
-    pattern: /Quality:/,
+    name: 'uses content quality language for activity scores',
+    pattern: /Content quality:/,
   },
   {
     name: 'frames threat distribution as a coverage map',
@@ -108,11 +108,19 @@ const expectations = [
   },
   {
     name: 'compares quality and runtime without fabricating missing values',
-    pattern: /avg_quality_score == null[\s\S]*Quality not scored[\s\S]*avg_processing_time_ms == null[\s\S]*Runtime not recorded/,
+    pattern: /avg_quality_score == null[\s\S]*Content quality not scored[\s\S]*avg_processing_time_ms == null[\s\S]*Runtime not recorded/,
   },
   {
     name: 'marks fallback-built reports in recent activity',
     pattern: /generation_used_fallback === true[\s\S]*Fallback route/,
+  },
+  {
+    name: 'uses human-readable generation failure causes and stages',
+    pattern: /Provider route unavailable[\s\S]*Legacy \/ unrecorded cause[\s\S]*Unrecorded stage/,
+  },
+  {
+    name: 'shows analyst disposition in recent activity',
+    pattern: /getAnalystDispositionLabel\(activity\.analyst_disposition\)/,
   },
   {
     name: 'uses triage language for empty threat coverage',

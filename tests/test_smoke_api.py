@@ -332,6 +332,57 @@ def test_evaluation_retry_claims_saved_report_without_restarting_generation(monk
     assert len(background_tasks.tasks) == 1
 
 
+def test_analyst_disposition_endpoint_appends_current_evaluation_judgment(monkeypatch):
+    user = supabase_auth.AuthenticatedUser(
+        user_id="analyst-user",
+        email="analyst@example.com",
+        metadata={"role": "analyst"},
+    )
+    calls = []
+
+    def append_report_disposition(report_id, **kwargs):
+        calls.append((report_id, kwargs))
+        return {
+            "id": "event-1",
+            "disposition": "accepted",
+            "note": "Sources checked.",
+            "evaluation_attempt": 2,
+            "created_at": datetime(2026, 8, 14, 12, tzinfo=timezone.utc),
+            "is_current": True,
+        }
+
+    monkeypatch.setattr(
+        api_main.report_service,
+        "append_report_disposition",
+        append_report_disposition,
+    )
+
+    event = asyncio.run(
+        api_main.append_report_disposition(
+            "report-1",
+            api_main.AnalystDispositionCreate(
+                disposition="accepted",
+                note=" Sources checked. ",
+            ),
+            user,
+        )
+    )
+
+    assert event.disposition == "accepted"
+    assert event.evaluation_attempt == 2
+    assert calls == [
+        (
+            "report-1",
+            {
+                "disposition": "accepted",
+                "note": "Sources checked.",
+                "reviewer_user_id": "analyst-user",
+                "owner_user_id": "analyst-user",
+            },
+        )
+    ]
+
+
 def test_evaluator_only_job_preserves_sources_and_persists_new_score(monkeypatch):
     profile = {
         "coreMetadata": {"name": "Example", "category": "Backdoor"},
@@ -492,14 +543,23 @@ def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
         },
         "_quality_assessment": {"overall_score": 4.1},
         "_processing_time_ms": 965000,
-        "_generation_route": {
+        "_research_route": {
             "requested_models": ["google/gemma-4-26b-a4b-it:free"],
             "requested_providers": ["google-ai-studio"],
             "selected_models": ["google/gemma-4-26b-a4b-it"],
             "actual_models": ["google/gemma-4-26b-a4b-it"],
             "providers": ["Google AI Studio"],
             "used_fallback": True,
-            "request_count": 4,
+            "request_count": 3,
+        },
+        "_synthesis_route": {
+            "requested_models": ["google/gemma-4-26b-a4b-it:free"],
+            "requested_providers": ["google-ai-studio"],
+            "selected_models": ["google/gemma-4-26b-a4b-it"],
+            "actual_models": ["google/gemma-4-26b-a4b-it"],
+            "providers": ["Google AI Studio"],
+            "used_fallback": True,
+            "request_count": 1,
         },
         "_evaluation_route": {
             "requested_models": ["google/gemma-4-31b-it:free"],
@@ -569,9 +629,12 @@ def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
     # The raw profile is persisted as structured extraction data, plus a rendered
     # narrative, the quality score, real timing, and search tags.
     assert data["threat_data"] is not profile
-    assert "_generation_route" not in data["threat_data"]
+    assert "_research_route" not in data["threat_data"]
+    assert "_synthesis_route" not in data["threat_data"]
     assert "_evaluation_route" not in data["threat_data"]
-    assert data["generation_route"] == profile["_generation_route"]
+    assert data["generation_route"] is None
+    assert data["research_route"] == profile["_research_route"]
+    assert data["synthesis_route"] == profile["_synthesis_route"]
     assert data["evaluation_route"] == profile["_evaluation_route"]
     assert data["quality_score"] == 4.1
     assert data["evaluation_status"] == "completed"

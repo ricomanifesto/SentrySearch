@@ -13,9 +13,10 @@ from src.core.openrouter_client import (
     ModelRateLimitError,
     ModelRetryableError,
     evaluation_request_options,
-    generation_request_options,
+    research_request_options,
     resolve_evaluation_model_name,
     resolve_model_name,
+    synthesis_request_options,
 )
 from src.core.threat_profile_schema import ThreatProfile
 from src.domain.model_routes import ModelRoutePurpose
@@ -101,9 +102,9 @@ def test_evaluation_model_can_be_overridden_independently(monkeypatch):
 
     assert resolve_model_name() == "example/generator"
     assert resolve_evaluation_model_name() == "example/evaluator"
-    assert generation_request_options() == {
+    assert synthesis_request_options() == {
         "model": "example/generator",
-        "route_purpose": "generation",
+        "route_purpose": "synthesis",
     }
     assert evaluation_request_options() == {
         "model": "example/evaluator",
@@ -114,14 +115,19 @@ def test_evaluation_model_can_be_overridden_independently(monkeypatch):
 def test_default_generation_model_is_pinned_to_google_ai_studio(monkeypatch):
     monkeypatch.delenv("SENTRYSEARCH_MODEL", raising=False)
 
-    assert generation_request_options() == {
+    expected_authoring_route = {
         "model": "google/gemma-4-26b-a4b-it:free",
-        "route_purpose": "generation",
+        "route_purpose": "synthesis",
         "fallback_models": ["google/gemma-4-26b-a4b-it"],
         "provider": {
             "only": ["google-ai-studio"],
             "allow_fallbacks": False,
         },
+    }
+    assert synthesis_request_options() == expected_authoring_route
+    assert research_request_options() == {
+        **expected_authoring_route,
+        "route_purpose": "research",
     }
 
 
@@ -222,7 +228,7 @@ def test_model_client_uses_same_model_paid_fallback_after_rate_limit():
         provider={"only": ["google-ai-studio"], "allow_fallbacks": False},
         messages=[{"role": "user", "content": "Analyze Sliver"}],
         tools=[{"type": "web_search"}],
-        route_purpose="generation",
+        route_purpose="synthesis",
     )
 
     assert result.content[0].text == "fallback report"
@@ -248,7 +254,7 @@ def test_model_client_uses_same_model_paid_fallback_after_rate_limit():
     assert result.provider == "TestProvider"
     assert result.used_fallback is True
     assert client.route_provenance(
-        ModelRoutePurpose.GENERATION,
+        ModelRoutePurpose.SYNTHESIS,
         requested_model="google/gemma-4-26b-a4b-it:free",
         requested_providers=("google-ai-studio",),
     ).to_dict() == {
@@ -318,8 +324,9 @@ def test_model_client_falls_back_when_pinned_primary_cannot_serve_synthesis():
     assert "provider" not in request_bodies[1]
 
 
-def test_model_client_keeps_generation_and_evaluation_provenance_separate():
+def test_model_client_keeps_research_synthesis_and_evaluation_provenance_separate():
     generation_body = chat_response("generated report")
+    synthesis_body = chat_response("authored report")
     evaluation_body = chat_response(
         "evaluation",
         model="google/gemma-4-31b-it:free",
@@ -327,14 +334,20 @@ def test_model_client_keeps_generation_and_evaluation_provenance_separate():
     client = model_client(
         [
             (200, generation_body, {}),
+            (200, synthesis_body, {}),
             (200, evaluation_body, {}),
         ]
     )
 
     client.messages.create(
         model="google/gemma-4-26b-a4b-it:free",
-        route_purpose="generation",
-        messages=[{"role": "user", "content": "Generate"}],
+        route_purpose="research",
+        messages=[{"role": "user", "content": "Research"}],
+    )
+    client.messages.create(
+        model="google/gemma-4-26b-a4b-it:free",
+        route_purpose="synthesis",
+        messages=[{"role": "user", "content": "Author"}],
     )
     client.messages.create(
         model="google/gemma-4-31b-it:free",
@@ -342,8 +355,12 @@ def test_model_client_keeps_generation_and_evaluation_provenance_separate():
         messages=[{"role": "user", "content": "Evaluate"}],
     )
 
-    generation = client.route_provenance(
-        ModelRoutePurpose.GENERATION,
+    research = client.route_provenance(
+        ModelRoutePurpose.RESEARCH,
+        requested_model="google/gemma-4-26b-a4b-it:free",
+    )
+    synthesis = client.route_provenance(
+        ModelRoutePurpose.SYNTHESIS,
         requested_model="google/gemma-4-26b-a4b-it:free",
     )
     evaluation = client.route_provenance(
@@ -351,8 +368,10 @@ def test_model_client_keeps_generation_and_evaluation_provenance_separate():
         requested_model="google/gemma-4-31b-it:free",
     )
 
-    assert generation.actual_models == ("google/gemma-4-26b-a4b-it:free",)
-    assert generation.request_count == 1
+    assert research.actual_models == ("google/gemma-4-26b-a4b-it:free",)
+    assert research.request_count == 1
+    assert synthesis.actual_models == ("google/gemma-4-26b-a4b-it:free",)
+    assert synthesis.request_count == 1
     assert evaluation.actual_models == ("google/gemma-4-31b-it:free",)
     assert evaluation.request_count == 1
 

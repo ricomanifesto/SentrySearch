@@ -18,6 +18,7 @@ import type {
   ReportCreateRequest,
   ReportDetail,
   ReportSort,
+  StoredAnalystDisposition,
   SearchFilterOptions,
   SearchFilters,
 } from './api-contracts';
@@ -132,6 +133,8 @@ class SentrySearchAPI {
     if (filters?.min_quality) params.append('min_quality', filters.min_quality.toString());
     filters?.statuses?.forEach((status) => params.append('status', status));
     filters?.review_statuses?.forEach((status) => params.append('review_status', status));
+    filters?.analyst_dispositions?.forEach((state) => params.append('analyst_disposition', state));
+    if (filters?.requires_action) params.append('requires_action', 'true');
     if (filters?.sort_by) params.append('sort_by', filters.sort_by);
     if (filters?.sort_order) params.append('sort_order', filters.sort_order);
 
@@ -149,11 +152,13 @@ class SentrySearchAPI {
       evaluation_status: report.evaluation_status ?? (report.quality_score == null ? 'unrecorded' : 'completed'),
       evaluation_attempts: report.evaluation_attempts ?? 0,
       review_status: report.review_status ?? (report.quality_score == null ? 'needs_evaluation' : 'needs_attention'),
+      analyst_disposition: report.analyst_disposition ?? 'unreviewed',
       classification_status: report.classification_status ?? 'unrecorded',
       claim_attribution_status: report.claim_attribution_status ?? 'legacy',
       claim_attributions: report.claim_attributions ?? [],
       web_sources: report.web_sources ?? [],
       search_tags: report.search_tags ?? [],
+      disposition_history: report.disposition_history ?? [],
     };
   }
 
@@ -171,6 +176,18 @@ class SentrySearchAPI {
 
   async retryReportEvaluation(reportId: string): Promise<{ report_id: string; evaluation_status: string; message: string }> {
     const response = await this.client.post(`/api/reports/${reportId}/evaluation`);
+    return response.data;
+  }
+
+  async appendReportDisposition(
+    reportId: string,
+    disposition: StoredAnalystDisposition,
+    note?: string,
+  ) {
+    const response = await this.client.post(`/api/reports/${reportId}/dispositions`, {
+      disposition,
+      note: note?.trim() || null,
+    });
     return response.data;
   }
 
@@ -232,6 +249,7 @@ class SentrySearchAPI {
             date_range_days: config.date_range_days,
             min_quality_score: config.min_quality_score,
             review_statuses: config.review_statuses,
+            analyst_dispositions: config.analyst_dispositions,
           },
           page,
           pageSize,
@@ -254,6 +272,7 @@ class SentrySearchAPI {
             web_sources: [],
             search_tags: [],
             claim_attributions: [],
+            disposition_history: [],
           }));
     }
 

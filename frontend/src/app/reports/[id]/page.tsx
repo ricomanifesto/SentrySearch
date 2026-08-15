@@ -14,7 +14,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { ArrowLeftIcon, ArrowDownTrayIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { Dialog, DialogPanel, DialogTitle } from '@headlessui/react';
 
-import { api, type GenerationStage, type ReportDetail } from '@/lib/api';
+import { api, type GenerationStage, type ReportDetail, type StoredAnalystDisposition } from '@/lib/api';
 import { formatDate, formatRelativeTime, formatProcessingTime, downloadAsFile } from '@/lib/utils';
 import { SAMPLE_REPORT } from '@/lib/sample-report';
 import { formatTaxonomyLabel, getQualityLabel } from '@/lib/report-query';
@@ -27,6 +27,7 @@ import { SourceEvidence } from '@/components/report/SourceEvidence';
 import { GenerationProgress } from '@/components/report/GenerationProgress';
 import { RouteProvenance } from '@/components/report/RouteProvenance';
 import { ReviewStatusBanner } from '@/components/report/ReviewStatusBanner';
+import { AnalystDispositionPanel } from '@/components/report/AnalystDispositionPanel';
 
 const LOCAL_REPORT_DETAIL_FIXTURE_ID = 'local-visual-fixture';
 const LOCAL_REVIEW_ATTENTION_FIXTURE_ID = 'local-review-attention-fixture';
@@ -42,14 +43,23 @@ const localReportDetailFixture: ReportDetail = {
   review_status: 'needs_evaluation',
   classification_status: 'recorded',
   quality_assessment: null,
-  generation_route: {
+  research_route: {
     requested_models: ['google/gemma-4-26b-a4b-it:free'],
     requested_providers: ['google-ai-studio'],
     selected_models: ['google/gemma-4-26b-a4b-it'],
     actual_models: ['google/gemma-4-26b-a4b-it'],
     providers: ['OpenAI'],
     used_fallback: true,
-    request_count: 4,
+    request_count: 3,
+  },
+  synthesis_route: {
+    requested_models: ['google/gemma-4-26b-a4b-it:free'],
+    requested_providers: ['google-ai-studio'],
+    selected_models: ['google/gemma-4-26b-a4b-it'],
+    actual_models: ['google/gemma-4-26b-a4b-it'],
+    providers: ['Parasail'],
+    used_fallback: true,
+    request_count: 1,
   },
   evaluation_route: {
     requested_models: ['google/gemma-4-31b-it:free'],
@@ -67,6 +77,33 @@ const localReviewAttentionFixture: ReportDetail = {
   id: LOCAL_REVIEW_ATTENTION_FIXTURE_ID,
   classification_status: 'reconciled',
   review_status: 'needs_attention',
+  analyst_disposition: 'needs_revision',
+  current_disposition: {
+    id: 'local-disposition-needs-revision',
+    disposition: 'needs_revision',
+    note: 'Reconcile the observed-use timeline and directly source the detection claim.',
+    evaluation_attempt: 1,
+    created_at: '2026-08-14T16:20:00.000Z',
+    is_current: true,
+  },
+  disposition_history: [
+    {
+      id: 'local-disposition-accepted',
+      disposition: 'accepted',
+      note: 'Initial review accepted the narrative before the consistency check was rerun.',
+      evaluation_attempt: 1,
+      created_at: '2026-08-14T15:45:00.000Z',
+      is_current: false,
+    },
+    {
+      id: 'local-disposition-needs-revision',
+      disposition: 'needs_revision',
+      note: 'Reconcile the observed-use timeline and directly source the detection claim.',
+      evaluation_attempt: 1,
+      created_at: '2026-08-14T16:20:00.000Z',
+      is_current: true,
+    },
+  ],
   quality_assessment: {
     overall_score: 3.5,
     summary: {
@@ -122,14 +159,14 @@ const localFailedGenerationFixture: ReportDetail = {
   web_sources: [],
 };
 
-function generationStageLabel(stage?: GenerationStage | null): string {
+function generationFailureSentence(stage?: GenerationStage | null): string {
   switch (stage) {
-    case 'queued': return 'preparing research';
-    case 'researching': return 'researching sources';
-    case 'synthesizing': return 'synthesizing the narrative';
-    case 'validating': return 'validating report sections';
-    case 'finalizing': return 'saving the review record';
-    default: return 'an unrecorded generation stage';
+    case 'queued': return 'This run stopped while preparing research.';
+    case 'researching': return 'This run stopped while researching sources.';
+    case 'synthesizing': return 'This run stopped while synthesizing the narrative.';
+    case 'validating': return 'This run stopped while validating report sections.';
+    case 'finalizing': return 'This run stopped while saving the review record.';
+    default: return 'This run stopped before a generation stage was recorded.';
   }
 }
 
@@ -268,6 +305,16 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
       await queryClient.invalidateQueries({ queryKey: ['analytics'] });
     },
   });
+  const dispositionMutation = useMutation({
+    mutationFn: ({ disposition, note }: { disposition: StoredAnalystDisposition; note: string }) => (
+      api.appendReportDisposition(reportId, disposition, note)
+    ),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['report', reportId] });
+      await queryClient.invalidateQueries({ queryKey: ['reports'] });
+      await queryClient.invalidateQueries({ queryKey: ['analytics'] });
+    },
+  });
 
   const handleDownload = () => {
     if (!report?.markdown_content) return;
@@ -352,8 +399,7 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
             <p className="text-sm font-medium text-red-800">{report.tool_name}</p>
             <h1 className="mt-2 text-2xl font-semibold text-red-900">{failurePresentation.heading}</h1>
             <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-red-700">
-              This run stopped while {generationStageLabel(report.generation_failure_stage)}.
-              {' '}{failurePresentation.detail}
+              {generationFailureSentence(report.generation_failure_stage)}{' '}{failurePresentation.detail}
             </p>
             <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row">
               <button
@@ -397,11 +443,12 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
   const attentionSummary = getReviewAttentionSummary(
     report.quality_assessment,
     report.web_sources.length,
+    report.analyst_disposition,
   );
 
   const recordSummarySignals = [
     {
-      label: 'Report quality',
+      label: 'Content quality',
       value: qualityScore == null ? qualityLabel : `${qualityScore.toFixed(2)} / 5.00`,
       detail: qualityLabel,
     },
@@ -504,16 +551,30 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
 
         <RouteProvenance
           generationRoute={report.generation_route}
+          researchRoute={report.research_route}
+          synthesisRoute={report.synthesis_route}
           evaluationRoute={report.evaluation_route}
         />
 
         <ReviewStatusBanner
           status={report.review_status}
+          analystDisposition={report.analyst_disposition}
           retryPending={evaluationMutation.isPending}
           retryDisabled={isFixtureRecord}
           retryError={evaluationMutation.isError}
           onRetry={() => evaluationMutation.mutate()}
           attention={attentionSummary}
+        />
+
+        <AnalystDispositionPanel
+          key={`${report.evaluation_attempts}-${report.current_disposition?.id ?? 'unreviewed'}`}
+          report={report}
+          disabled={isFixtureRecord}
+          pending={dispositionMutation.isPending}
+          failed={dispositionMutation.isError}
+          reevaluationPending={evaluationMutation.isPending}
+          onRecord={(disposition, note) => dispositionMutation.mutate({ disposition, note })}
+          onReevaluate={() => evaluationMutation.mutate()}
         />
 
         {report.search_tags && report.search_tags.length > 0 && (

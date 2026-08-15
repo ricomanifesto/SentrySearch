@@ -42,13 +42,13 @@ export function DashboardBriefingSignals({
         : 'Completed report records',
     },
     {
-      label: 'Report quality',
+      label: 'Content quality',
       value: analytics?.summary.avg_quality_score == null
         ? '—'
         : analytics.summary.avg_quality_score.toFixed(2),
       detail: analytics?.summary.avg_quality_score == null
         ? 'No scored reports yet'
-        : `${analytics.summary.scored_reports} of ${analytics.summary.total_reports} reports scored`,
+        : `${analytics.summary.scored_reports} scored · ${analytics.summary.unresolved_reports} unresolved`,
     },
   ];
 

@@ -2,6 +2,8 @@ import type { ModelRouteProvenance } from '@/lib/api-contracts';
 
 interface RouteProvenanceProps {
   generationRoute?: ModelRouteProvenance | null;
+  researchRoute?: ModelRouteProvenance | null;
+  synthesisRoute?: ModelRouteProvenance | null;
   evaluationRoute?: ModelRouteProvenance | null;
 }
 
@@ -11,19 +13,35 @@ function formatValues(values: string[], unavailable: string) {
 
 export function RouteProvenance({
   generationRoute,
+  researchRoute,
+  synthesisRoute,
   evaluationRoute,
 }: RouteProvenanceProps) {
   const divergentRoutes = [
-    generationRoute?.used_fallback
+    researchRoute?.used_fallback
       ? {
-          label: 'Generation',
-          route: generationRoute,
+          label: 'Evidence research',
+          route: researchRoute,
+        }
+      : null,
+    synthesisRoute?.used_fallback
+      ? {
+          label: 'Report authoring',
+          route: synthesisRoute,
         }
       : null,
     evaluationRoute?.used_fallback
       ? {
           label: 'Evaluation',
           route: evaluationRoute,
+        }
+      : null,
+    // TODO(route-provenance-v2): Remove this reader after aggregate-only retained
+    // reports expire; do not expand it to new records or pipeline roles.
+    !researchRoute && !synthesisRoute && generationRoute?.used_fallback
+      ? {
+          label: 'All generation calls (legacy aggregate)',
+          route: generationRoute,
         }
       : null,
   ].filter((item): item is { label: string; route: ModelRouteProvenance } => item !== null);
@@ -34,12 +52,12 @@ export function RouteProvenance({
 
   return (
     <section
-      data-contract="Report.RouteProvenance.v1"
+      data-contract="Report.RouteProvenance.v2"
       className="mt-6 rounded-xl border border-amber-200 bg-amber-50 p-5"
     >
       <h2 className="text-base font-semibold text-amber-900">Routing provenance</h2>
       <p className="mt-1 text-sm leading-6 text-amber-700">
-        This record completed through an application-owned fallback route.
+        One or more recorded pipeline roles completed through an application-owned fallback route.
       </p>
       <dl className="mt-4 space-y-3">
         {divergentRoutes.map(({ label, route }) => (

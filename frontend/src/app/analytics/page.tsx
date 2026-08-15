@@ -3,9 +3,10 @@
 import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import { api } from '@/lib/api';
+import { api, type GenerationErrorCode } from '@/lib/api';
 import { formatProcessingTime, formatRelativeTime } from '@/lib/utils';
 import { AuthGuard } from '@/components/AuthGuard';
+import { getAnalystDispositionClasses, getAnalystDispositionLabel } from '@/lib/analyst-disposition';
 
 const timeRangeOptions = [
   { value: '7d', label: 'Last 7 days' },
@@ -18,6 +19,29 @@ const routeLabels = {
   fallback: 'Fallback route',
   unrecorded: 'Legacy / unrecorded',
 } as const;
+
+const failureCauseLabels: Record<GenerationErrorCode, string> = {
+  provider_rate_limited: 'Provider rate limited',
+  provider_unavailable: 'Provider route unavailable',
+  provider_timeout: 'Provider timed out',
+  model_output_invalid: 'Model output invalid',
+  evidence_unavailable: 'Evidence unavailable',
+  evidence_unattested: 'Evidence could not be attested',
+  persistence_failed: 'Report could not be saved',
+  unknown: 'Legacy / unrecorded cause',
+};
+
+function humanizeStage(value: string): string {
+  const labels: Record<string, string> = {
+    queued: 'Preparing research',
+    researching: 'Researching sources',
+    synthesizing: 'Authoring report',
+    validating: 'Validating sections',
+    finalizing: 'Saving record',
+    unknown: 'Unrecorded stage',
+  };
+  return labels[value] ?? 'Unrecorded stage';
+}
 
 export default function AnalyticsPage() {
   const [timeRange, setTimeRange] = useState('30d');
@@ -79,16 +103,16 @@ export default function AnalyticsPage() {
       detail: `${overview?.total_reports ?? 0} saved across the workspace`,
     },
     {
-      label: 'Report quality',
+      label: 'Content quality',
       value: overview?.avg_quality_score == null ? '—' : overview.avg_quality_score.toFixed(2),
       detail: overview?.scored_reports
         ? `${overview.scored_reports} of ${reportsPeriod} reports scored`
         : 'No scored reports in this window',
     },
     {
-      label: 'Needs attention',
-      value: overview?.needs_attention_reports ?? 0,
-      detail: `${overview?.generation_failed_reports ?? 0} generation failures · ${overview?.evaluation_failed_reports ?? 0} evaluator failures`,
+      label: 'Unresolved work',
+      value: overview?.unresolved_reports ?? 0,
+      detail: `${overview?.accepted_reports ?? 0} accepted · ${overview?.generation_failed_reports ?? 0} generation failures`,
     },
     {
       label: 'Generation completion',
@@ -158,8 +182,8 @@ export default function AnalyticsPage() {
                   <dd className="mt-1 text-2xl font-semibold text-zinc-950">{route.report_count}</dd>
                   <dd className="mt-2 text-sm leading-6 text-zinc-500">
                     {route.avg_quality_score == null
-                      ? 'Quality not scored'
-                      : `${route.avg_quality_score.toFixed(2)} average report quality`}
+                      ? 'Content quality not scored'
+                      : `${route.avg_quality_score.toFixed(2)} average content quality`}
                     {` · ${route.scored_report_count}/${route.report_count} scored`}
                     <br />
                     {route.avg_processing_time_ms == null
@@ -195,9 +219,9 @@ export default function AnalyticsPage() {
                   <tbody>
                     {generationFailures.map((failure) => (
                       <tr key={failure.error_code} className="border-t border-zinc-200 align-top">
-                        <td className="px-3 py-3 font-medium text-zinc-950">{failure.error_code.replace(/_/g, ' ')}</td>
+                        <td className="px-3 py-3 font-medium text-zinc-950">{failureCauseLabels[failure.error_code]}</td>
                         <td className="px-3 py-3 text-zinc-700">{failure.report_count}</td>
-                        <td className="px-3 py-3 text-zinc-600">{Object.entries(failure.stages).map(([key, value]) => `${key}: ${value}`).join(' · ')}</td>
+                        <td className="px-3 py-3 text-zinc-600">{Object.entries(failure.stages).map(([key, value]) => `${humanizeStage(key)}: ${value}`).join(' · ')}</td>
                         <td className="px-3 py-3 text-zinc-600">{Object.entries(failure.routes).filter(([, value]) => value > 0).map(([key, value]) => `${key}: ${value}`).join(' · ')}</td>
                         <td className="px-3 py-3 text-zinc-600">{Object.entries(failure.utc_hours).map(([key, value]) => `${key}: ${value}`).join(' · ')}</td>
                       </tr>
@@ -237,11 +261,14 @@ export default function AnalyticsPage() {
                         <div className="flex shrink-0 flex-col items-end gap-1 text-sm">
                           <span className="text-zinc-700">
                             {activity.quality_score != null
-                              ? `Quality: ${activity.quality_score.toFixed(2)}`
-                              : 'Quality: Not scored'}
+                              ? `Content quality: ${activity.quality_score.toFixed(2)}`
+                              : 'Content quality: Not scored'}
                           </span>
                           <span className="capitalize text-zinc-500">
                             {activity.review_status.replace(/_/g, ' ')}
+                          </span>
+                          <span className={`rounded-md px-2 py-0.5 font-medium ${getAnalystDispositionClasses(activity.analyst_disposition)}`}>
+                            {getAnalystDispositionLabel(activity.analyst_disposition)}
                           </span>
                         </div>
                       </li>

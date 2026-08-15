@@ -78,6 +78,8 @@ class DatabaseManager:
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS claim_attribution_status VARCHAR(30)",
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS claim_attribution_version VARCHAR(10)",
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_route JSONB",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS research_route JSONB",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS synthesis_route JSONB",
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_route JSONB",
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_status VARCHAR(20)",
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_error_code VARCHAR(50)",
@@ -87,6 +89,10 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS ix_reports_review_status ON reports (review_status)",
             "CREATE INDEX IF NOT EXISTS ix_reports_classification_status ON reports (classification_status)",
             "CREATE INDEX IF NOT EXISTS ix_reports_claim_attribution_status ON reports (claim_attribution_status)",
+            "CREATE TABLE IF NOT EXISTS report_disposition_events (id UUID PRIMARY KEY, report_id UUID NOT NULL REFERENCES reports(id) ON DELETE CASCADE, reviewer_user_id VARCHAR(100) NOT NULL, disposition VARCHAR(30) NOT NULL, note TEXT, evaluation_attempt INTEGER NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+            "CREATE INDEX IF NOT EXISTS ix_report_disposition_events_report_id ON report_disposition_events (report_id)",
+            "CREATE INDEX IF NOT EXISTS ix_report_disposition_events_disposition ON report_disposition_events (disposition)",
+            "CREATE INDEX IF NOT EXISTS ix_report_disposition_events_current ON report_disposition_events (report_id, evaluation_attempt, created_at DESC)",
         ]
         try:
             with self.engine.begin() as connection:

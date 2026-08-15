@@ -2,7 +2,7 @@
 Database models for SentrySearch report storage using SQLAlchemy
 """
 
-from sqlalchemy import Column, String, DateTime, Integer, Numeric, Text, Boolean, JSON
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
@@ -60,7 +60,12 @@ class Report(Base):
     ml_techniques = Column(JSONB)
     quality_assessment = Column(JSONB)
     web_sources = Column(JSONB)
+    # TODO(route-provenance-v2): Remove generation_route after the retained-report
+    # window no longer contains aggregate-only route records. Never write it for
+    # successful v2 reports; research_route and synthesis_route own new provenance.
     generation_route = Column(JSONB)
+    research_route = Column(JSONB)
+    synthesis_route = Column(JSONB)
     evaluation_route = Column(JSONB)
     evaluation_status = Column(String(20))
     evaluation_error_code = Column(String(50))
@@ -117,6 +122,8 @@ class Report(Base):
             "generation_failure": self.generation_failure,
             "review_status": self.review_status,
             "generation_route": self.generation_route,
+            "research_route": self.research_route,
+            "synthesis_route": self.synthesis_route,
             "evaluation_route": self.evaluation_route,
             "evaluation_status": self.evaluation_status,
             "evaluation_error_code": self.evaluation_error_code,
@@ -130,6 +137,35 @@ class Report(Base):
             "user_id": self.user_id,
             "is_flagged": self.is_flagged,
             "is_favorite": self.is_favorite,
+        }
+
+
+class ReportDispositionEvent(Base):
+    """Append-only analyst judgment attached to one evaluation attempt."""
+
+    __tablename__ = "report_disposition_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    report_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("reports.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    reviewer_user_id = Column(String(100), nullable=False)
+    disposition = Column(String(30), nullable=False, index=True)
+    note = Column(Text)
+    evaluation_attempt = Column(Integer, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    def to_dict(self, *, current_evaluation_attempt: int) -> dict[str, Any]:
+        return {
+            "id": str(self.id),
+            "disposition": self.disposition,
+            "note": self.note,
+            "evaluation_attempt": self.evaluation_attempt,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "is_current": self.evaluation_attempt == current_evaluation_attempt,
         }
 
 
