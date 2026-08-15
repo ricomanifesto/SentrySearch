@@ -271,7 +271,12 @@ class ModelClient:
                     last_empty_error = ModelOutputError(
                         f"OpenRouter response was incomplete: {finish_reason or 'unknown'}"
                     )
-                    if attempt + 1 < EMPTY_RESPONSE_RETRIES:
+                    current_max_tokens = int(attempt_request["max_tokens"])
+                    next_max_tokens = min(current_max_tokens * 2, MAX_COMPLETION_TOKENS)
+                    if (
+                        attempt + 1 < EMPTY_RESPONSE_RETRIES
+                        and next_max_tokens > current_max_tokens
+                    ):
                         self._record_failed_attempt(
                             route_purpose,
                             requested_model=str(request["model"]),
@@ -279,10 +284,7 @@ class ModelClient:
                             provider=provider,
                             error=last_empty_error,
                         )
-                        request["max_tokens"] = min(
-                            int(request["max_tokens"]) * 2,
-                            MAX_COMPLETION_TOKENS,
-                        )
+                        request["max_tokens"] = next_max_tokens
                         time.sleep(EMPTY_RESPONSE_RETRY_DELAY * (attempt + 1))
                         continue
                     raise last_empty_error

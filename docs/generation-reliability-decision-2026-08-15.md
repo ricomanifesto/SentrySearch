@@ -81,3 +81,23 @@ successful synthesis therefore leaves a readable narrative, source ledger, and
 route record even if the optional judge is slow or unavailable. Evaluation
 continues as a separately recorded pending, completed, or failed operation and
 can be retried without regenerating the report.
+
+## Attempt-budget witness
+
+Common-target record `44abc03d-4aa4-4ab2-87fc-8d29edcbb3b6` remained in the
+persisted synthesis stage for about 46 minutes before failing with recorded
+provider-route exhaustion. The target was not implicated. This made the retry
+composition, rather than target class or evaluation, the winning explanation
+for the reader-visible delay.
+
+The synthesis request already starts at the 32,768-token ceiling. The client
+nevertheless repeated a `length` response at that same ceiling because the
+generic output retry loop had another slot. With a primary and fallback model,
+and a possible evidence-contract correction, those individually bounded loops
+could multiply into a half-hour-plus wait without gaining output capacity.
+
+The client now retries a truncated response only when it can actually raise the
+token allowance. A request below the ceiling may expand once; a request already
+at the ceiling fails immediately with its typed incomplete-output cause. Model
+fallback and the single evidence-contract correction remain available, but an
+identical at-ceiling request is never repeated.
