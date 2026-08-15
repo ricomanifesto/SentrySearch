@@ -72,6 +72,23 @@ def validate_python_tooling_contract() -> None:
     require_contains("requirements.txt", "\nhttpx==")
     require_not_contains("requirements.txt", "\nopenai==")
 
+    exported = subprocess.run(
+        ["uv", "export", "--frozen", "--no-dev", "--no-hashes", "--no-header"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    requirements_lines = read_text("requirements.txt").splitlines()
+    while requirements_lines and (
+        not requirements_lines[0].strip() or requirements_lines[0].lstrip().startswith("#")
+    ):
+        requirements_lines.pop(0)
+    if "\n".join(requirements_lines).strip() != exported:
+        raise AssertionError(
+            "requirements.txt must match uv.lock; run the export command recorded in its header"
+        )
+
 
 def validate_railway_config_contract() -> None:
     railway_config = json.loads(read_text("railway.json"))

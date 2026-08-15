@@ -63,6 +63,8 @@ jmespath==1.1.0
     # via
     #   boto3
     #   botocore
+json-repair==0.61.7
+    # via sentrysearch
 multidict==6.7.1
     # via yarl
 packaging==26.2
