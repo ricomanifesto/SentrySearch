@@ -218,6 +218,8 @@ def materialize_claim_attribution(profile: dict[str, Any]) -> None:
 def materialize_embedded_claim_evidence(
     profile: dict[str, Any],
     evidence_sources: Iterable[Mapping[str, Any]] = (),
+    *,
+    require_complete_classes: bool = False,
 ) -> None:
     """Derive schema-5 attribution and verify support against captured source text."""
 
@@ -353,7 +355,7 @@ def materialize_embedded_claim_evidence(
 
     if not claims:
         findings.append("No high-risk item carried embedded evidence.")
-    if discarded_findings:
+    if discarded_findings or require_complete_classes:
         observed_classes = {str(claim.get("claimClass") or "") for claim in claims}
         missing_classes = sorted(HIGH_RISK_CLAIM_CLASSES - observed_classes)
         if missing_classes:
@@ -361,7 +363,7 @@ def materialize_embedded_claim_evidence(
             findings.append(
                 "Embedded evidence is missing required claim classes: " + ", ".join(missing_classes)
             )
-        else:
+        elif discarded_findings:
             logger.warning(
                 "Discarded %d unsupported embedded claim(s) while preserving complete schema-5 coverage",
                 discarded_count,

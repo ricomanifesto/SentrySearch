@@ -370,6 +370,40 @@ def _classify_indicator(
     )
 
 
+def quarantine_rejected_indicator_items(profile: dict[str, Any]) -> list[dict[str, Any]]:
+    """Remove malformed or reserved IOC values before they enter the operational ledger."""
+
+    detection = profile.get("detectionAndMitigation")
+    iocs = detection.get("iocs") if isinstance(detection, dict) else None
+    if not isinstance(iocs, dict):
+        return []
+
+    observations: list[dict[str, Any]] = []
+    for claim_field in ("hashes", "domains", "ips", "urls", "filenames"):
+        values = iocs.get(claim_field)
+        if not isinstance(values, list):
+            continue
+        retained: list[Any] = []
+        for claim_index, item in enumerate(values):
+            value = str(item.get("value") if isinstance(item, Mapping) else item or "").strip()
+            disposition, reason, rule_id = _classify_indicator(claim_field, value)
+            if disposition is not EvidenceDisposition.REJECTED:
+                retained.append(item)
+                continue
+            observations.append(
+                {
+                    "claimField": claim_field,
+                    "claimIndex": claim_index,
+                    "value": value,
+                    "disposition": EvidenceDisposition.EXCLUDED.value,
+                    "reason": f"Removed before operational reuse. {reason}",
+                    "ruleId": rule_id,
+                }
+            )
+        values[:] = retained
+    return observations
+
+
 def _selected_values(profile: Mapping[str, Any]) -> list[tuple[str, str, int, str]]:
     selected_values: list[tuple[str, str, int, str]] = []
     for claim_class, fields in CLAIM_CLASS_SELECTORS.items():
@@ -421,6 +455,8 @@ def _profile_strings(
 def assess_profile_evidence(
     profile: dict[str, Any],
     research_sources: Iterable[Mapping[str, Any]],
+    *,
+    excluded_indicator_observations: Iterable[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Attach an application-owned safety record and fail closed on unsafe evidence."""
 
@@ -508,7 +544,20 @@ def assess_profile_evidence(
                 f"Claim attribution selector {selector[1]}[{selector[2]}] has no stored value."
             )
 
-    indicator_observations: list[dict[str, Any]] = []
+    if excluded_indicator_observations is None:
+        previous = profile.get("evidenceAdmissibility")
+        previous_observations = (
+            previous.get("indicatorObservations") if isinstance(previous, Mapping) else []
+        )
+        excluded_indicator_observations = [
+            observation
+            for observation in previous_observations or []
+            if isinstance(observation, Mapping)
+            and observation.get("disposition") == EvidenceDisposition.EXCLUDED.value
+        ]
+    indicator_observations: list[dict[str, Any]] = [
+        dict(observation) for observation in excluded_indicator_observations
+    ]
     indicator_fields = {"hashes", "domains", "ips", "urls", "filenames"}
     for _, claim_field, claim_index, value in expected_values:
         if claim_field not in indicator_fields:
@@ -618,6 +667,10 @@ def assess_profile_evidence(
             ),
             "rejectedIndicators": sum(
                 observation["disposition"] == EvidenceDisposition.REJECTED.value
+                for observation in indicator_observations
+            ),
+            "excludedIndicators": sum(
+                observation["disposition"] == EvidenceDisposition.EXCLUDED.value
                 for observation in indicator_observations
             ),
             "coveredOperationalClaims": len(expected_values),

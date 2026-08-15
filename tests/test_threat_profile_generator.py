@@ -403,7 +403,7 @@ def test_generation_separates_web_research_from_structured_synthesis(
 ):
     monkeypatch.setattr(
         "src.core.threat_profile_generator.assess_profile_evidence",
-        lambda _profile, _sources: {},
+        lambda _profile, _sources, **_kwargs: {},
     )
 
     class Messages:
@@ -590,7 +590,7 @@ def test_generation_retries_one_invalid_embedded_item_without_weakening_attestat
 ):
     monkeypatch.setattr(
         "src.core.threat_profile_generator.assess_profile_evidence",
-        lambda _profile, _sources: {},
+        lambda _profile, _sources, **_kwargs: {},
     )
     monkeypatch.setattr(
         "src.core.threat_profile_generator.create_model_client",
@@ -743,6 +743,14 @@ def test_generation_discards_legacy_claim_when_embedded_class_coverage_remains(
     invalid_profile["threatIntelligence"]["riskAssessment"]["riskFactors"].append(
         "Unattributed extra risk"
     )
+    invalid_profile["detectionAndMitigation"]["iocs"]["ips"].append(
+        {
+            "value": "See vendor report for current infrastructure",
+            "evidenceRole": "direct_evidence",
+            "sourceIds": ["S1"],
+            "supportingEvidence": [{"sourceId": "S1", "excerpt": "Remote access"}],
+        }
+    )
     requests: list[dict] = []
 
     research_response = SimpleNamespace(
@@ -788,6 +796,8 @@ def test_generation_discards_legacy_claim_when_embedded_class_coverage_remains(
     result = generator.get_threat_intelligence("Example Threat")
 
     assert result["threatIntelligence"]["riskAssessment"]["riskFactors"] == ["Remote access"]
+    assert result["detectionAndMitigation"]["iocs"]["ips"] == []
+    assert result["evidenceAdmissibility"]["summary"]["excludedIndicators"] == 1
     assert result["evidenceAdmissibility"]["status"] == "passed"
     assert len(requests) == 1
 

@@ -7,6 +7,7 @@ from src.core.evidence_admissibility import (
     SourcePurpose,
     assess_profile_evidence,
     classify_research_sources,
+    quarantine_rejected_indicator_items,
 )
 from src.core.generation_failures import (
     EvidenceAdmissibilityError,
@@ -260,6 +261,52 @@ def test_reserved_or_malformed_indicators_fail_closed(
         if item["claimField"] == claim_field
     )
     assert observation["ruleId"] == rule_id
+
+
+def test_invalid_embedded_indicators_are_quarantined_before_operational_reuse():
+    profile = {
+        "detectionAndMitigation": {
+            "iocs": {
+                "hashes": [],
+                "domains": [],
+                "ips": [
+                    {
+                        "value": "See vendor report for current infrastructure",
+                        "evidenceRole": "direct_evidence",
+                        "sourceIds": ["S1"],
+                        "supportingEvidence": [{"sourceId": "S1", "excerpt": "See vendor report"}],
+                    },
+                    {
+                        "value": "10.20.30.40",
+                        "evidenceRole": "direct_evidence",
+                        "sourceIds": ["S1"],
+                        "supportingEvidence": [{"sourceId": "S1", "excerpt": "10.20.30.40"}],
+                    },
+                ],
+                "urls": [],
+                "filenames": [],
+            }
+        }
+    }
+
+    observations = quarantine_rejected_indicator_items(profile)
+
+    assert [item["value"] for item in profile["detectionAndMitigation"]["iocs"]["ips"]] == [
+        "10.20.30.40"
+    ]
+    assert observations == [
+        {
+            "claimField": "ips",
+            "claimIndex": 0,
+            "value": "See vendor report for current infrastructure",
+            "disposition": "excluded",
+            "reason": (
+                "Removed before operational reuse. "
+                "Indicator is not a valid IP address or network."
+            ),
+            "ruleId": "indicator.ip-invalid",
+        }
+    ]
 
 
 def test_schema_five_requires_every_high_risk_field_item(threat_profile_data):

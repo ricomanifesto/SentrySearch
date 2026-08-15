@@ -38,6 +38,7 @@ from src.core.evidence_admissibility import (
     assess_profile_evidence,
     classify_research_sources,
     evidence_correction_prompt,
+    quarantine_rejected_indicator_items,
     research_source_observations,
 )
 from src.core.source_ledger import (
@@ -719,9 +720,11 @@ END ATTESTED SOURCE CATALOG"""
                             findings=assessment["blockingFindings"],
                             assessment=assessment,
                         )
+                    excluded_indicators = quarantine_rejected_indicator_items(json_data)
                     materialize_embedded_claim_evidence(
                         json_data,
                         response.web_search_sources,
+                        require_complete_classes=True,
                     )
                     materialize_claim_attribution(json_data)
                     materialize_cited_sources(
@@ -730,7 +733,11 @@ END ATTESTED SOURCE CATALOG"""
                         access_date=datetime.now().strftime("%Y-%m-%d"),
                     )
                     attest_profile_sources(json_data, response.web_search_sources)
-                    assess_profile_evidence(json_data, response.web_search_sources)
+                    assess_profile_evidence(
+                        json_data,
+                        response.web_search_sources,
+                        excluded_indicator_observations=excluded_indicators,
+                    )
                     # The application-owned gate produces item-specific findings
                     # for the one bounded correction pass. Keep the derived ledger
                     # assertion as a final invariant without hiding that diagnosis.

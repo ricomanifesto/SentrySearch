@@ -29,6 +29,9 @@ export function SourceEvidence({
   const contextIndicators = evidenceAdmissibility?.indicator_observations.filter(
     (indicator) => indicator.disposition === 'context_required',
   ) ?? [];
+  const excludedIndicators = evidenceAdmissibility?.indicator_observations.filter(
+    (indicator) => indicator.disposition === 'excluded' || indicator.disposition === 'rejected',
+  ) ?? [];
   const blockingFindings = evidenceAdmissibility?.blocking_findings ?? [];
   return (
     <section data-contract="Report.SourceEvidence.v1" aria-labelledby="source-evidence-heading">
@@ -187,6 +190,21 @@ export function SourceEvidence({
           <ul className="mt-2 space-y-2 text-sm leading-6 text-amber-900">
             {contextIndicators.map((indicator) => (
               <li key={`${indicator.claim_field}-${indicator.claim_index}`}>
+                <span className="font-mono">{indicator.value}</span> · {indicator.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {excludedIndicators.length > 0 ? (
+        <div className="mt-6 border-t border-zinc-200 pt-5">
+          <h3 className="text-sm font-semibold text-zinc-950">
+            Not used as operational indicators
+          </h3>
+          <ul className="mt-2 space-y-2 text-sm leading-6 text-amber-900">
+            {excludedIndicators.map((indicator) => (
+              <li key={`${indicator.claim_field}-${indicator.claim_index}-${indicator.value}`}>
                 <span className="font-mono">{indicator.value}</span> · {indicator.reason}
               </li>
             ))}

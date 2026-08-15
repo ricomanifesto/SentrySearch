@@ -184,6 +184,35 @@ test('renders incomplete coverage findings without calling the evidence unsafe',
   assert.doesNotMatch(html, /unsafe|blocked this record/);
 });
 
+test('names indicators quarantined before operational reuse', () => {
+  const html = renderToStaticMarkup(
+    <SourceEvidence
+      sources={[]}
+      evidenceAdmissibility={{
+        schema_version: '1',
+        status: 'passed',
+        source_observations: [],
+        indicator_observations: [
+          {
+            claim_field: 'ips',
+            claim_index: 0,
+            value: 'See vendor report for current infrastructure',
+            disposition: 'excluded',
+            reason: 'Removed before operational reuse. Indicator is not a valid IP address or network.',
+            rule_id: 'indicator.ip-invalid',
+          },
+        ],
+        blocking_findings: [],
+        summary: { excludedIndicators: 1 },
+      }}
+    />,
+  );
+
+  assert.match(html, /Not used as operational indicators/);
+  assert.match(html, /See vendor report for current infrastructure/);
+  assert.match(html, /Removed before operational reuse/);
+});
+
 test('places forensic-artifact citations outside inline code', () => {
   const narrative = renderToStaticMarkup(
     <ReportNarrative
