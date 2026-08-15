@@ -190,7 +190,8 @@ the complete report. Those objects represent one risk factor, one forensic
 artifact, one detection indicator, and one mitigation action. Every item carries
 value, evidenceRole, and supportingEvidence. The application derives sourceIds
 from those evidence entries. Use only source IDs and exact excerpts from the
-operational catalog below. You must reuse at least one
+operational catalog below. Use exactly one short supporting excerpt for each
+direct-evidence item. You must reuse at least one
 exact nontrivial token from every supporting excerpt, even when the claim is
 rewritten. Accuracy is more important than quantity.
 - copy one short verbatim excerpt for every direct source ID. Never paraphrase an
@@ -882,7 +883,7 @@ END ATTESTED OPERATIONAL SOURCE CATALOG"""
                     correction_response = self._request_model(
                         retry_policy=SYNTHESIS_RETRY_POLICY,
                         **synthesis_request_options(),
-                        max_tokens=4_096,
+                        max_tokens=8_192,
                         temperature=0,
                         # This is constrained evidence extraction, not open-ended
                         # analysis. Gemini otherwise consumes the correction budget

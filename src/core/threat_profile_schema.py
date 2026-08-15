@@ -326,9 +326,12 @@ class EmbeddedCorrectionSupport(StrictModel):
 class EmbeddedCorrectionClaimItem(StrictModel):
     """One bounded correction claim whose source IDs are derived from support."""
 
-    value: str = Field(min_length=1)
+    value: str = Field(min_length=1, max_length=1_000)
     evidence_role: Literal["direct_evidence", "general_practice"] = Field(alias="evidenceRole")
-    supporting_evidence: list[EmbeddedCorrectionSupport] = Field(alias="supportingEvidence")
+    supporting_evidence: list[EmbeddedCorrectionSupport] = Field(
+        alias="supportingEvidence",
+        max_length=1,
+    )
 
     @model_validator(mode="after")
     def validate_support(self) -> "EmbeddedCorrectionClaimItem":

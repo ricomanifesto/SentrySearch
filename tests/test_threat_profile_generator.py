@@ -106,6 +106,8 @@ def test_evidence_correction_schema_requires_each_claim_class(threat_profile_dat
     assert '"sourceIds"' not in json.dumps(schema)
     assert '"supportingEvidence"' in json.dumps(schema)
     assert '"maxLength": 600' in json.dumps(schema)
+    assert '"maxLength": 1000' in json.dumps(schema)
+    assert '"maxItems": 1' in json.dumps(schema)
     for field in tuple(correction):
         incomplete = deepcopy(correction)
         incomplete.pop(field)
@@ -895,7 +897,7 @@ def test_generation_retries_one_invalid_embedded_item_without_weakening_attestat
     assert requests[1]["response_format"] is (
         ThreatProfile if invalid_evidence == "schema_shape" else EmbeddedEvidenceCorrection
     )
-    assert requests[1]["max_tokens"] == (65536 if invalid_evidence == "schema_shape" else 4096)
+    assert requests[1]["max_tokens"] == (65536 if invalid_evidence == "schema_shape" else 8192)
     if invalid_evidence != "schema_shape":
         assert "exactly four" in correction_text
         assert "claimField chosen from the schema enum" in correction_text
