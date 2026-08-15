@@ -490,6 +490,8 @@ def test_generation_retries_one_invalid_claim_map_without_weakening_attestation(
     assert progress_updates[-1].stage is GenerationStage.FINALIZING
     assert requests[0]["response_format"] is ThreatProfile
     assert requests[1]["response_format"] is ThreatProfile
+    assert requests[0]["retry_policy"].max_attempts == 1
+    assert requests[1]["retry_policy"].max_attempts == 1
     assert synthesis_responses[-1].usage.input_tokens == 23
     assert synthesis_responses[-1].usage.output_tokens == 44
     assert synthesis_responses[-1].usage.web_search_calls == 1

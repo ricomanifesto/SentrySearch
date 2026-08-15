@@ -89,8 +89,14 @@ class RetryingModelRequests:
 
     client: Any
 
-    def _request_model(self, **kwargs: Any) -> Any:
+    def _request_model(
+        self,
+        *,
+        retry_policy: RetryPolicy = DEFAULT_RETRY_POLICY,
+        **kwargs: Any,
+    ) -> Any:
         return call_with_model_retry(
             lambda: self.client.messages.create(**kwargs),
             operation=type(self).__name__,
+            policy=retry_policy,
         )

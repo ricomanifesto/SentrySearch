@@ -101,3 +101,16 @@ token allowance. A request below the ceiling may expand once; a request already
 at the ceiling fails immediately with its typed incomplete-output cause. Model
 fallback and the single evidence-contract correction remain available, but an
 identical at-ceiling request is never repeated.
+
+The same common target was then rerun as record
+`5673220b-2d01-42ff-a414-5ac6e1eee9cb`. It failed after about 21 minutes with a
+typed invalid-model-output cause. That result exposed a second multiplier: the
+application retry wrapper repeated the client's complete deterministic
+primary/fallback sequence up to three times for synthesis output failures.
+
+Synthesis now has one application-level request attempt. That attempt still
+owns the explicit primary and same-family fallback routes. A second synthesis
+is permitted only after the first returned a parseable profile and that profile
+failed the named claim-evidence contract. Provider exhaustion, truncation at
+the fixed ceiling, and invalid structured output no longer replay the entire
+route sequence at the application layer.

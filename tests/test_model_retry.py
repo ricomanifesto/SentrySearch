@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 
-from src.core.model_retry import RetryPolicy, call_with_model_retry
+from src.core.model_retry import RetryPolicy, RetryingModelRequests, call_with_model_retry
 from src.core.openrouter_client import ModelRateLimitError, ModelRetryableError
 
 
@@ -96,3 +96,24 @@ def test_rate_limit_retry_does_not_retry_other_failures():
         )
 
     assert attempts == 1
+
+
+def test_retrying_model_requests_accepts_a_single_attempt_stage_policy():
+    class Requests(RetryingModelRequests):
+        def __init__(self):
+            self.attempts = 0
+            self.client = SimpleNamespace(messages=SimpleNamespace(create=self.create))
+
+        def create(self, **_kwargs):
+            self.attempts += 1
+            raise ModelRetryableError("busy")
+
+    requests = Requests()
+
+    with pytest.raises(ModelRetryableError, match="busy"):
+        requests._request_model(
+            retry_policy=RetryPolicy(max_attempts=1),
+            messages=[{"role": "user", "content": "hello"}],
+        )
+
+    assert requests.attempts == 1

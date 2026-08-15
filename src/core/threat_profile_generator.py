@@ -12,7 +12,7 @@ from src.core.openrouter_client import (
     resolve_model_name,
     synthesis_request_options,
 )
-from src.core.model_retry import RetryingModelRequests
+from src.core.model_retry import RetryPolicy, RetryingModelRequests
 from typing import Dict, Any, Callable
 from datetime import datetime
 import time
@@ -53,6 +53,7 @@ UNKNOWN_CLAIM_SOURCE_ERROR = "Threat profile claim attribution references an unk
 INVALID_CLAIM_SELECTOR_ERROR = "Current claim attribution selector is invalid"
 INCONSISTENT_CLAIM_ATTRIBUTION_ERROR = "Report claim attribution is inconsistent"
 ATTRIBUTION_CORRECTION_ATTEMPTS = 1
+SYNTHESIS_RETRY_POLICY = RetryPolicy(max_attempts=1)
 
 
 def _claim_attribution_correction_prompt(prompt: str) -> str:
@@ -565,6 +566,12 @@ END ATTESTED SOURCE CATALOG"""
             request_prompt = prompt
             for attempt in range(ATTRIBUTION_CORRECTION_ATTEMPTS + 1):
                 response = self._request_model(
+                    # The client already owns the deterministic primary/fallback
+                    # sequence. Repeating that entire sequence here multiplied one
+                    # synthesis into a reader-visible 20+ minute wait. Only a parsed
+                    # profile that fails the evidence contract earns the explicit
+                    # correction attempt below.
+                    retry_policy=SYNTHESIS_RETRY_POLICY,
                     **synthesis_request_options(),
                     # The full profile is returned as a single JSON object. Gemma's
                     # free route supports 32,768 completion tokens; using that ceiling
