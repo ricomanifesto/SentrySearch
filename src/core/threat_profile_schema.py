@@ -316,97 +316,58 @@ class EvidenceClaimItem(StrictModel):
         return self
 
 
-class EmbeddedForensicEvidence(StrictModel):
-    file_system_artifacts: list[EvidenceClaimItem] = Field(alias="fileSystemArtifacts")
-    registry_artifacts: list[EvidenceClaimItem] = Field(alias="registryArtifacts")
-    network_artifacts: list[EvidenceClaimItem] = Field(alias="networkArtifacts")
-    memory_artifacts: list[EvidenceClaimItem] = Field(alias="memoryArtifacts")
-    log_artifacts: list[EvidenceClaimItem] = Field(alias="logArtifacts")
+class EmbeddedForensicCorrectionItem(EvidenceClaimItem):
+    """One forensic artifact plus its destination in the complete profile."""
 
-    @model_validator(mode="after")
-    def require_one_artifact(self) -> "EmbeddedForensicEvidence":
-        if not any(
-            (
-                self.file_system_artifacts,
-                self.registry_artifacts,
-                self.network_artifacts,
-                self.memory_artifacts,
-                self.log_artifacts,
-            )
-        ):
-            raise ValueError("Evidence correction requires one forensic artifact")
-        return self
+    claim_field: Literal[
+        "fileSystemArtifacts",
+        "registryArtifacts",
+        "networkArtifacts",
+        "memoryArtifacts",
+        "logArtifacts",
+    ] = Field(alias="claimField")
 
 
-class EmbeddedIndicatorEvidence(StrictModel):
-    hashes: list[EvidenceClaimItem]
-    domains: list[EvidenceClaimItem]
-    ips: list[EvidenceClaimItem]
-    urls: list[EvidenceClaimItem]
-    filenames: list[EvidenceClaimItem]
-    behavioral_indicators: list[EvidenceClaimItem] = Field(alias="behavioralIndicators")
+class EmbeddedIndicatorCorrectionItem(EvidenceClaimItem):
+    """One detection indicator plus its destination in the complete profile."""
 
-    @model_validator(mode="after")
-    def require_one_indicator(self) -> "EmbeddedIndicatorEvidence":
-        if not any(
-            (
-                self.hashes,
-                self.domains,
-                self.ips,
-                self.urls,
-                self.filenames,
-                self.behavioral_indicators,
-            )
-        ):
-            raise ValueError("Evidence correction requires one detection indicator")
-        return self
+    claim_field: Literal[
+        "hashes",
+        "domains",
+        "ips",
+        "urls",
+        "filenames",
+        "behavioralIndicators",
+    ] = Field(alias="claimField")
 
 
-class EmbeddedMitigationEvidence(StrictModel):
-    preventive_measures: list[EvidenceClaimItem] = Field(alias="preventiveMeasures")
-    detection_methods: list[EvidenceClaimItem] = Field(alias="detectionMethods")
-    response_actions: list[EvidenceClaimItem] = Field(alias="responseActions")
-    recovery_guidance: list[EvidenceClaimItem] = Field(alias="recoveryGuidance")
+class EmbeddedMitigationCorrectionItem(EvidenceClaimItem):
+    """One mitigation action plus its destination in the complete profile."""
 
-    @model_validator(mode="after")
-    def require_one_action(self) -> "EmbeddedMitigationEvidence":
-        if not any(
-            (
-                self.preventive_measures,
-                self.detection_methods,
-                self.response_actions,
-                self.recovery_guidance,
-            )
-        ):
-            raise ValueError("Evidence correction requires one mitigation action")
-        return self
+    claim_field: Literal[
+        "preventiveMeasures",
+        "detectionMethods",
+        "responseActions",
+        "recoveryGuidance",
+    ] = Field(alias="claimField")
 
 
 class EmbeddedEvidenceCorrection(StrictModel):
     """Small correction artifact for high-risk fields only."""
 
-    risk_factors: list[EvidenceClaimItem] = Field(alias="riskFactors", min_length=1)
-    forensic_artifacts: EmbeddedForensicEvidence = Field(alias="forensicArtifacts")
-    detection_indicators: EmbeddedIndicatorEvidence = Field(alias="detectionIndicators")
-    mitigation_actions: EmbeddedMitigationEvidence = Field(alias="mitigationActions")
+    risk_factor: EvidenceClaimItem = Field(alias="riskFactor")
+    forensic_artifact: EmbeddedForensicCorrectionItem = Field(alias="forensicArtifact")
+    detection_indicator: EmbeddedIndicatorCorrectionItem = Field(alias="detectionIndicator")
+    mitigation_action: EmbeddedMitigationCorrectionItem = Field(alias="mitigationAction")
 
     @model_validator(mode="after")
     def require_direct_non_mitigation_evidence(self) -> "EmbeddedEvidenceCorrection":
-        direct_items = [
-            *self.risk_factors,
-            *self.forensic_artifacts.file_system_artifacts,
-            *self.forensic_artifacts.registry_artifacts,
-            *self.forensic_artifacts.network_artifacts,
-            *self.forensic_artifacts.memory_artifacts,
-            *self.forensic_artifacts.log_artifacts,
-            *self.detection_indicators.hashes,
-            *self.detection_indicators.domains,
-            *self.detection_indicators.ips,
-            *self.detection_indicators.urls,
-            *self.detection_indicators.filenames,
-            *self.detection_indicators.behavioral_indicators,
-        ]
-        if any(item.evidence_role != "direct_evidence" for item in direct_items):
+        items = (
+            self.risk_factor,
+            self.forensic_artifact,
+            self.detection_indicator,
+        )
+        if any(item.evidence_role != "direct_evidence" for item in items):
             raise ValueError("Risk, forensic, and detection corrections require direct evidence")
         return self
 

@@ -49,15 +49,57 @@ def generated_embedded_profile(profile: dict) -> dict:
 def generated_evidence_correction(profile: dict) -> dict:
     """Project the fixture's embedded arrays into the bounded correction shape."""
 
-    return {
-        "riskFactors": profile["threatIntelligence"]["riskAssessment"]["riskFactors"],
-        "forensicArtifacts": profile["forensicArtifacts"],
-        "detectionIndicators": {
-            **profile["detectionAndMitigation"]["iocs"],
-            "behavioralIndicators": profile["detectionAndMitigation"]["behavioralIndicators"],
-        },
-        "mitigationActions": profile["mitigationAndResponse"],
+    def first_item(fields: dict, names: tuple[str, ...]) -> tuple[str, dict]:
+        for name in names:
+            if fields[name]:
+                return name, deepcopy(fields[name][0])
+        raise AssertionError("Fixture must include every required evidence class")
+
+    forensic_field, forensic_item = first_item(
+        profile["forensicArtifacts"],
+        (
+            "fileSystemArtifacts",
+            "registryArtifacts",
+            "networkArtifacts",
+            "memoryArtifacts",
+            "logArtifacts",
+        ),
+    )
+    indicators = {
+        **profile["detectionAndMitigation"]["iocs"],
+        "behavioralIndicators": profile["detectionAndMitigation"]["behavioralIndicators"],
     }
+    indicator_field, indicator_item = first_item(
+        indicators,
+        ("hashes", "domains", "ips", "urls", "filenames", "behavioralIndicators"),
+    )
+    mitigation_field, mitigation_item = first_item(
+        profile["mitigationAndResponse"],
+        ("preventiveMeasures", "detectionMethods", "responseActions", "recoveryGuidance"),
+    )
+    return {
+        "riskFactor": deepcopy(profile["threatIntelligence"]["riskAssessment"]["riskFactors"][0]),
+        "forensicArtifact": {"claimField": forensic_field, **forensic_item},
+        "detectionIndicator": {"claimField": indicator_field, **indicator_item},
+        "mitigationAction": {"claimField": mitigation_field, **mitigation_item},
+    }
+
+
+def test_evidence_correction_schema_requires_each_claim_class(threat_profile_data):
+    profile = generated_embedded_profile(threat_profile_data)
+    correction = generated_evidence_correction(profile)
+
+    assert EmbeddedEvidenceCorrection.model_json_schema()["required"] == [
+        "riskFactor",
+        "forensicArtifact",
+        "detectionIndicator",
+        "mitigationAction",
+    ]
+    for field in tuple(correction):
+        incomplete = deepcopy(correction)
+        incomplete.pop(field)
+        with pytest.raises(ValidationError):
+            EmbeddedEvidenceCorrection.model_validate(incomplete)
 
 
 def test_structured_synthesis_catalog_exposes_only_captured_operational_sources():
@@ -803,10 +845,11 @@ def test_generation_retries_one_invalid_embedded_item_without_weakening_attestat
         assert "embedded evidence object" in correction_text
     else:
         correction_text = correction_content[0]["text"]
+        normalized_correction_text = " ".join(correction_text.split())
         assert "CORRECTION ATTEMPT AFTER A FAILED EVIDENCE GATE" in correction_text
         assert "copy one short verbatim excerpt" in correction_text
         assert "supportingEvidence" in correction_text
-        assert "reuse at least one exact nontrivial token" in correction_text
+        assert "reuse at least one exact nontrivial token" in normalized_correction_text
         assert "one detection indicator" in correction_text
     assert requests[1]["provider"] == requests[0]["provider"]
     assert "fallback_models" not in requests[0]
@@ -830,8 +873,8 @@ def test_generation_retries_one_invalid_embedded_item_without_weakening_attestat
     )
     assert requests[1]["max_tokens"] == (65536 if invalid_evidence == "schema_shape" else 4096)
     if invalid_evidence != "schema_shape":
-        assert "Return exactly four items" in correction_text
-        assert "Keep every other optional array empty" in correction_text
+        assert "exactly four" in correction_text
+        assert "claimField chosen from the schema enum" in correction_text
     assert requests[0]["retry_policy"].max_attempts == 1
     assert requests[1]["retry_policy"].max_attempts == 1
     aggregate_response = (

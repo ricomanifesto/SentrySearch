@@ -98,16 +98,39 @@ def _apply_embedded_evidence_correction(
 ) -> None:
     """Replace only high-risk generated arrays with one bounded correction."""
 
-    profile["threatIntelligence"]["riskAssessment"]["riskFactors"] = correction["riskFactors"]
-    profile["forensicArtifacts"] = correction["forensicArtifacts"]
-    indicators = correction["detectionIndicators"]
+    profile["threatIntelligence"]["riskAssessment"]["riskFactors"] = [correction["riskFactor"]]
+    forensic = dict(correction["forensicArtifact"])
+    forensic_field = forensic.pop("claimField")
+    profile["forensicArtifacts"] = {
+        field: [forensic] if field == forensic_field else []
+        for field in (
+            "fileSystemArtifacts",
+            "registryArtifacts",
+            "networkArtifacts",
+            "memoryArtifacts",
+            "logArtifacts",
+        )
+    }
+    indicator = dict(correction["detectionIndicator"])
+    indicator_field = indicator.pop("claimField")
     profile["detectionAndMitigation"] = {
         "iocs": {
-            field: indicators[field] for field in ("hashes", "domains", "ips", "urls", "filenames")
+            field: [indicator] if field == indicator_field else []
+            for field in ("hashes", "domains", "ips", "urls", "filenames")
         },
-        "behavioralIndicators": indicators["behavioralIndicators"],
+        "behavioralIndicators": ([indicator] if indicator_field == "behavioralIndicators" else []),
     }
-    profile["mitigationAndResponse"] = correction["mitigationActions"]
+    mitigation = dict(correction["mitigationAction"])
+    mitigation_field = mitigation.pop("claimField")
+    profile["mitigationAndResponse"] = {
+        field: [mitigation] if field == mitigation_field else []
+        for field in (
+            "preventiveMeasures",
+            "detectionMethods",
+            "responseActions",
+            "recoveryGuidance",
+        )
+    }
 
 
 def _materialize_and_validate_evidence(
@@ -151,13 +174,16 @@ rest of the report.
 Deterministic findings:
 {findings}
 
-Return only the JSON object required by the response schema. Every list item is
-an embedded evidence object with value, evidenceRole, sourceIds, and
-supportingEvidence. Use only source IDs and exact excerpts from the operational
-catalog below. Return exactly four items: one risk factor; one forensic artifact;
-one detection indicator; and one mitigation action. Keep every other optional array empty. Every
-direct-evidence value must reuse at least one exact nontrivial token from every
-supporting excerpt. Accuracy is more important than quantity.
+Return only the JSON object required by the response schema. It has exactly four
+required embedded evidence objects: riskFactor, forensicArtifact,
+detectionIndicator, and mitigationAction. The last three also require a
+claimField chosen from the schema enum so the application can place the item in
+the complete report. Those objects represent one risk factor, one forensic
+artifact, one detection indicator, and one mitigation action. Every item carries
+value, evidenceRole, sourceIds, and supportingEvidence. Use only source IDs and
+exact excerpts from the operational catalog below. You must reuse at least one
+exact nontrivial token from every supporting excerpt, even when the claim is
+rewritten. Accuracy is more important than quantity.
 - copy one short verbatim excerpt for every direct source ID. Never paraphrase an
 excerpt, invent a source, or replace rejected evidence with an alternative.
 
