@@ -193,6 +193,15 @@ def test_parse_threat_profile_response_accepts_parsed_or_deferred_json(threat_pr
     )
     assert repaired["technicalDetails"]["persistence"] == [r"C:\Windows"]
 
+    missing_comma = json.dumps(threat_profile_data).replace(', "toolOverview"', ' "toolOverview"')
+    repaired_missing_comma = parse_threat_profile_response(
+        SimpleNamespace(
+            parsed=None,
+            content=[SimpleNamespace(type="text", text=missing_comma)],
+        )
+    )
+    assert repaired_missing_comma == threat_profile_data
+
     incomplete_campaign = deepcopy(threat_profile_data)
     incomplete_campaign["threatIntelligence"]["entities"]["campaigns"].append(
         {"name": "Unfinished model record", "timeframe": "Unknown"}

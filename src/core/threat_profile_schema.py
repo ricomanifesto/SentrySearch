@@ -9,6 +9,7 @@ from copy import deepcopy
 from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
+from json_repair import repair_json
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 logger = logging.getLogger(__name__)
@@ -110,18 +111,35 @@ def _drop_incomplete_campaigns(profile: dict[str, Any]) -> int:
 
 
 def _load_model_json(text: str) -> dict[str, Any]:
-    """Parse model JSON, repairing only backslashes illegal in JSON strings."""
+    """Parse model JSON and repair syntax before the complete domain validation."""
 
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as error:
-        if "Invalid \\escape" not in error.msg:
-            raise
-        repaired, repair_count = _INVALID_JSON_ESCAPE.subn(lambda _: r"\\", text)
-        if not repair_count:
-            raise
-        logger.warning("Escaped %d invalid JSON backslash sequence(s)", repair_count)
-        payload = json.loads(repaired)
+        repair_input = text
+        if "Invalid \\escape" in error.msg:
+            repaired, repair_count = _INVALID_JSON_ESCAPE.subn(lambda _: r"\\", text)
+            if repair_count:
+                logger.warning("Escaped %d invalid JSON backslash sequence(s)", repair_count)
+                repair_input = repaired
+                try:
+                    payload = json.loads(repair_input)
+                except json.JSONDecodeError as repaired_error:
+                    error = repaired_error
+                else:
+                    if not isinstance(payload, dict):
+                        raise ValueError("Model response threat profile JSON must be an object")
+                    return payload
+        payload = repair_json(
+            repair_input,
+            return_objects=True,
+            skip_json_loads=True,
+        )
+        logger.warning(
+            "Repaired malformed model JSON after parser error at line %d column %d",
+            error.lineno,
+            error.colno,
+        )
     if not isinstance(payload, dict):
         raise ValueError("Model response threat profile JSON must be an object")
     return payload
