@@ -18,7 +18,7 @@
     "check:search-surface": "node dev/check-search-surface.mjs",
     "check:settings-surface": "node dev/check-settings-surface.mjs",
     "check:surface-coverage": "node dev/run-surface-checks.mjs",
-    "test:experience": "node --import tsx --test dev/auth-next.test.ts dev/generation-errors.test.ts dev/report-render.test.tsx dev/theme-contrast.test.ts dev/workspace-experience.test.tsx",
+    "test:experience": "node --import tsx --test dev/auth-next.test.ts dev/design-consistency.test.ts dev/generation-errors.test.ts dev/report-render.test.tsx dev/theme-contrast.test.ts dev/workspace-experience.test.tsx",
     "test:render": "node --import tsx --test dev/report-render.test.tsx",
     "start": "next start",
     "lint": "eslint ."

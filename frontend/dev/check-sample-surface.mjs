@@ -6,6 +6,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const samplePath = resolve(here, '../src/app/sample/page.tsx');
 const sample = await readFile(samplePath, 'utf8');
 const sampleReport = await readFile(resolve(here, '../src/lib/sample-report.ts'), 'utf8');
+const sourceEvidence = await readFile(resolve(here, '../src/components/report/SourceEvidence.tsx'), 'utf8');
 
 const expectations = [
   {
@@ -74,9 +75,14 @@ const expectations = [
     absentPattern: /value: 'Dual-use'/,
   },
   {
-    name: 'uses monospace for source and identifier detail',
+    name: 'keeps the report title in the product typeface',
     source: sample,
-    pattern: /font-mono/,
+    absentPattern: /<h1 className="[^"]*font-mono/,
+  },
+  {
+    name: 'uses monospace for machine-readable source domains',
+    source: sourceEvidence,
+    pattern: /font-mono[^>]*>\{source\.domain\}/,
   },
   {
     name: 'routes the call to action through the intent-preserving workspace boundary',

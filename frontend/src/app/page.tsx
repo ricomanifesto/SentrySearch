@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ArrowRightIcon } from '@heroicons/react/24/outline';
 
+import { WorkspaceHandoff } from '@/components/WorkspaceHandoff';
 import { useAuth } from '@/contexts/AuthContext';
 import { getQualityLabel } from '@/lib/report-query';
 import { SAMPLE_REPORT, SAMPLE_REPORT_CARD } from '@/lib/sample-report';
@@ -84,7 +85,7 @@ export default function Landing() {
           >
             <div className="flex items-center justify-between gap-3 border-b border-zinc-200 px-5 py-4">
               <div className="flex items-center gap-3">
-                <span className="font-mono text-base font-medium text-zinc-950">{SAMPLE_REPORT.tool_name}</span>
+                <span className="text-base font-semibold text-zinc-950">{SAMPLE_REPORT.tool_name}</span>
                 <span className="rounded-md bg-blue-50 px-2 py-1 text-sm font-medium text-blue-700">
                   {getQualityLabel(SAMPLE_REPORT.quality_score)}
                 </span>
@@ -118,11 +119,11 @@ export default function Landing() {
             </h2>
           </div>
 
-          <ol className="mt-10 grid gap-px overflow-hidden rounded-xl border border-zinc-200 bg-zinc-200 sm:grid-cols-3">
+          <ol className="mt-10 grid gap-10 sm:grid-cols-3 sm:gap-12">
             {steps.map((step) => (
-              <li key={step.n} className="bg-white p-6">
-                <span className="font-mono text-base font-medium text-blue-700">{step.n}</span>
-                <h3 className="mt-3 text-base font-semibold text-zinc-950">{step.title}</h3>
+              <li key={step.n}>
+                <span className="text-sm font-semibold tabular-nums text-blue-700">Step {step.n}</span>
+                <h3 className="mt-4 text-lg font-semibold text-zinc-950">{step.title}</h3>
                 <p className="mt-2 text-base leading-7 text-zinc-600">{step.body}</p>
               </li>
             ))}
@@ -130,25 +131,8 @@ export default function Landing() {
         </div>
       </section>
 
-      <section className="mx-auto max-w-5xl px-6 py-24 lg:px-8">
-        <div className="rounded-2xl border border-zinc-200 bg-zinc-950 px-6 py-14 text-center sm:px-12">
-          <h2 className="text-2xl font-semibold tracking-tight text-white">
-            Generate your first report
-          </h2>
-          <p className="mx-auto mt-3 max-w-md text-base leading-7 text-zinc-300">
-            Create a workspace to run a report and keep your saved intelligence in
-            one place.
-          </p>
-          <div className="mt-8 flex justify-center">
-            <Link
-              href="/auth/signup"
-              className="group inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-white px-6 text-base font-medium text-zinc-950 transition-colors duration-150 hover:bg-zinc-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950"
-            >
-              Get started
-              <ArrowRightIcon className="h-4 w-4 transition-transform duration-150 group-hover:translate-x-0.5" />
-            </Link>
-          </div>
-        </div>
+      <section className="mx-auto max-w-5xl px-6 py-20 lg:px-8">
+        <WorkspaceHandoff href="/auth/signup" />
       </section>
 
       <footer className="border-t border-zinc-200">

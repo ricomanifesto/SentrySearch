@@ -125,7 +125,7 @@ export function SourceEvidence({
                       <p className="font-medium leading-6 text-zinc-950">{source.title}</p>
                     )}
                     <p className="mt-1 break-words font-mono text-sm text-zinc-500">{source.domain}</p>
-                    <p className="mt-2 text-sm leading-6 text-zinc-600">{source.key_findings}</p>
+                    <p className="mt-2 text-base leading-7 text-zinc-600">{source.key_findings}</p>
                     <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-sm text-zinc-500">
                       <span>{source.content_type}</span>
                       <span>Relevance {source.relevance_score}</span>

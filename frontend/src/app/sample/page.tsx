@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { ArrowLeftIcon, ArrowRightIcon } from '@heroicons/react/24/outline';
 
+import { WorkspaceHandoff } from '@/components/WorkspaceHandoff';
 import { ReportNarrative } from '@/components/report/ReportNarrative';
 import { SourceEvidence } from '@/components/report/SourceEvidence';
 import { formatTaxonomyLabel, getQualityLabel } from '@/lib/report-query';
@@ -41,7 +42,7 @@ export default function SampleReport() {
         <header className="fade-up mt-8 max-w-3xl">
           <p className="text-sm font-medium text-blue-700">Threat intelligence report</p>
           <div className="mt-3 flex flex-wrap items-center gap-3">
-            <h1 className="font-mono text-3xl font-semibold tracking-tight text-zinc-950">{SAMPLE_REPORT.tool_name}</h1>
+            <h1 className="text-3xl font-semibold tracking-tight text-zinc-950">{SAMPLE_REPORT.tool_name}</h1>
             <span className="rounded-md bg-blue-50 px-2 py-1 text-sm font-medium text-blue-700">
               {getQualityLabel(SAMPLE_REPORT.quality_score)}
             </span>
@@ -86,17 +87,8 @@ export default function SampleReport() {
           </aside>
         </div>
 
-        <div className="mt-12 rounded-2xl border border-zinc-200 bg-zinc-950 px-6 py-12 text-center sm:px-12">
-          <h2 className="text-2xl font-semibold tracking-tight text-white">Run this on a target of your own</h2>
-          <p className="mx-auto mt-3 max-w-md text-base leading-7 text-zinc-300">
-            Open the workspace to generate source-backed reports and keep the evidence beside every review record.
-          </p>
-          <div className="mt-8 flex justify-center">
-            <Link href="/generate" className="group inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-white px-6 text-base font-medium text-zinc-950 transition-colors hover:bg-zinc-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950">
-              Open workspace
-              <ArrowRightIcon className="h-4 w-4 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
-            </Link>
-          </div>
+        <div className="mt-16 py-4">
+          <WorkspaceHandoff href="/generate" />
         </div>
       </article>
     </main>
