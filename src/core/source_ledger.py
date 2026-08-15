@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import logging
 import re
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlsplit, urlunsplit
@@ -14,6 +15,8 @@ from src.domain.reports import (
     EvidenceAdmissibilityStatus,
     GenerationErrorCode,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SourceLedgerError(ValueError):
@@ -222,6 +225,8 @@ def materialize_embedded_claim_evidence(
     embedded_count = 0
     string_count = 0
     findings: list[str] = []
+    discarded_findings: list[str] = []
+    discarded_count = 0
     selected_lists: list[tuple[str, str, list[Any]]] = []
     snapshots_by_id: dict[str, tuple[str, str]] = {}
     for source in evidence_sources:
@@ -278,9 +283,10 @@ def materialize_embedded_claim_evidence(
             supports = raw_support if isinstance(raw_support, list) else []
             verified_support: list[dict[str, str]] = []
             support_ids: list[str] = []
+            item_findings: list[str] = []
             for support in supports:
                 if not isinstance(support, Mapping):
-                    findings.append(
+                    item_findings.append(
                         f"{claim_field}[{claim_index}] contains an invalid support record."
                     )
                     continue
@@ -288,19 +294,19 @@ def materialize_embedded_claim_evidence(
                 excerpt = str(support.get("excerpt") or "").strip()
                 snapshot = snapshots_by_id.get(source_id)
                 if not source_id or not excerpt or snapshot is None:
-                    findings.append(
+                    item_findings.append(
                         f"{claim_field}[{claim_index}] support is not tied to a captured source."
                     )
                     continue
                 snapshot_text, snapshot_sha256 = snapshot
                 if excerpt not in snapshot_text:
-                    findings.append(
+                    item_findings.append(
                         f"{claim_field}[{claim_index}] support excerpt is not verbatim in {source_id}."
                     )
                     continue
                 persisted_excerpt = _bounded_support_excerpt(value, excerpt)
                 if not _support_has_claim_anchor(value, persisted_excerpt):
-                    findings.append(
+                    item_findings.append(
                         f"{claim_field}[{claim_index}] support excerpt in {source_id} has no lexical claim anchor."
                     )
                     continue
@@ -313,20 +319,24 @@ def materialize_embedded_claim_evidence(
                     }
                 )
             if not value:
-                findings.append(f"{claim_field}[{claim_index}] has no reader-visible value.")
-                continue
+                item_findings.append(f"{claim_field}[{claim_index}] has no reader-visible value.")
             if role == "direct_evidence" and (not source_ids or source_ids != support_ids):
-                findings.append(
+                item_findings.append(
                     f"{claim_field}[{claim_index}] lacks verified captured support for every source."
                 )
             elif role == "general_practice" and (
                 claim_class != "mitigation_action" or source_ids or supports
             ):
-                findings.append(
+                item_findings.append(
                     f"{claim_field}[{claim_index}] uses general practice outside uncited mitigation guidance."
                 )
             elif role not in {"direct_evidence", "general_practice"}:
-                findings.append(f"{claim_field}[{claim_index}] has no valid evidence role.")
+                item_findings.append(f"{claim_field}[{claim_index}] has no valid evidence role.")
+
+            if item_findings:
+                discarded_findings.extend(item_findings)
+                discarded_count += 1
+                continue
             normalized_values.append(value)
             claims.append(
                 {
@@ -343,6 +353,19 @@ def materialize_embedded_claim_evidence(
 
     if not claims:
         findings.append("No high-risk item carried embedded evidence.")
+    if discarded_findings:
+        observed_classes = {str(claim.get("claimClass") or "") for claim in claims}
+        missing_classes = sorted(HIGH_RISK_CLAIM_CLASSES - observed_classes)
+        if missing_classes:
+            findings.extend(discarded_findings)
+            findings.append(
+                "Embedded evidence is missing required claim classes: " + ", ".join(missing_classes)
+            )
+        else:
+            logger.warning(
+                "Discarded %d unsupported embedded claim(s) while preserving complete schema-5 coverage",
+                discarded_count,
+            )
 
     if findings:
         assessment = {

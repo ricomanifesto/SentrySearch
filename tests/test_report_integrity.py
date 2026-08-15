@@ -347,6 +347,56 @@ def test_embedded_evidence_rejects_a_paraphrased_support_excerpt():
     assert any("not verbatim in S1" in finding for finding in captured.value.findings)
 
 
+def test_embedded_evidence_discards_unsupported_claim_when_all_classes_remain_covered():
+    evidence_sources = [
+        {
+            "sourceId": "S1",
+            "contentSnapshot": {
+                "status": "captured",
+                "text": (
+                    "Remote access. payload.dll. Unexpected service creation. "
+                    "Isolate affected hosts."
+                ),
+                "sha256": "a" * 64,
+            },
+        }
+    ]
+
+    def supported(value: str) -> dict[str, Any]:
+        return {
+            "value": value,
+            "evidenceRole": "direct_evidence",
+            "sourceIds": ["S1"],
+            "supportingEvidence": [{"sourceId": "S1", "excerpt": value}],
+        }
+
+    profile = {
+        "threatIntelligence": {
+            "riskAssessment": {
+                "riskFactors": [
+                    supported("Remote access"),
+                    {
+                        **supported("Unsupported risk"),
+                        "supportingEvidence": [
+                            {"sourceId": "S1", "excerpt": "Paraphrased support"}
+                        ],
+                    },
+                ]
+            }
+        },
+        "forensicArtifacts": {"fileSystemArtifacts": [supported("payload.dll")]},
+        "detectionAndMitigation": {
+            "behavioralIndicators": [supported("Unexpected service creation")]
+        },
+        "mitigationAndResponse": {"responseActions": [supported("Isolate affected hosts")]},
+    }
+
+    materialize_embedded_claim_evidence(profile, evidence_sources)
+
+    assert profile["threatIntelligence"]["riskAssessment"]["riskFactors"] == ["Remote access"]
+    assert len(profile["claimAttribution"]["claims"]) == 4
+
+
 def test_embedded_evidence_rejects_an_exact_but_unrelated_support_excerpt():
     profile = {
         "threatIntelligence": {
