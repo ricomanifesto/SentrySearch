@@ -398,27 +398,17 @@ def materialize_cited_sources(
     *,
     access_date: str,
 ) -> None:
-    """Add explicitly cited attested sources to the one reader-visible ledger."""
+    """Build every reader-visible source surface from cited attested evidence."""
 
     web = profile.get("webSearchSources")
     attribution = profile.get("claimAttribution")
     if not isinstance(web, dict) or not isinstance(attribution, Mapping):
         raise SourceLedgerError("Current claim attribution source ledger is invalid")
-    primary_sources = web.get("primarySources")
     claims = attribution.get("claims")
-    if not isinstance(primary_sources, list) or not isinstance(claims, list):
+    if not isinstance(web.get("primarySources"), list) or not isinstance(claims, list):
         raise SourceLedgerError("Current claim attribution source ledger is invalid")
 
-    evidence_by_id = {
-        str(source.get("sourceId") or "").strip(): source
-        for source in evidence_sources
-        if str(source.get("sourceId") or "").strip()
-    }
-    visible_ids = {
-        str(source.get("sourceId") or "").strip()
-        for source in primary_sources
-        if isinstance(source, Mapping) and str(source.get("sourceId") or "").strip()
-    }
+    evidence_records = [source for source in evidence_sources if isinstance(source, Mapping)]
     cited_ids: list[str] = []
     for claim in claims:
         if not isinstance(claim, Mapping):
@@ -428,27 +418,68 @@ def materialize_cited_sources(
             if normalized_id and normalized_id not in cited_ids:
                 cited_ids.append(normalized_id)
 
-    for source_id in cited_ids:
-        if source_id in visible_ids:
-            continue
-        evidence = evidence_by_id.get(source_id)
-        if evidence is None:
+    cited_set = set(cited_ids)
+    primary_sources: list[dict[str, Any]] = []
+    for evidence in evidence_records:
+        source_id = str(evidence.get("sourceId") or "").strip()
+        if source_id not in cited_set:
             continue
         url = _normalized_http_url(evidence.get("url"))
         hostname = (urlsplit(url).hostname or "").lower()
-        primary_sources.append(
+        snapshot = evidence.get("contentSnapshot")
+        snapshot = snapshot if isinstance(snapshot, Mapping) else {}
+        source_record: dict[str, Any] = {
+            "sourceId": source_id,
+            "url": url,
+            "title": str(evidence.get("title") or hostname or "Unknown source"),
+            "domain": hostname,
+            "accessDate": str(evidence.get("accessDate") or access_date),
+            "relevanceScore": str(evidence.get("relevanceScore") or "Unknown"),
+            "contentType": str(evidence.get("contentType") or "Web source"),
+            "keyFindings": str(
+                evidence.get("keyFindings") or "No separate finding summary recorded"
+            ),
+        }
+        optional_snapshot_fields = {
+            "evidenceSnapshotStatus": snapshot.get("status"),
+            "evidenceSnapshotSha256": snapshot.get("sha256"),
+            "evidenceSnapshotCapturedAt": snapshot.get("capturedAt"),
+            "evidenceSnapshotFinalUrl": snapshot.get("finalUrl"),
+            "evidencePageAge": evidence.get("evidencePageAge"),
+        }
+        source_record.update(
             {
-                "sourceId": source_id,
-                "url": url,
-                "title": str(evidence.get("title") or hostname or "Unknown source"),
-                "domain": hostname,
-                "accessDate": access_date,
-                "relevanceScore": "Unknown",
-                "contentType": "Web source",
-                "keyFindings": "No separate finding summary recorded",
+                key: value
+                for key, value in optional_snapshot_fields.items()
+                if value is not None and str(value).strip()
             }
         )
-        visible_ids.add(source_id)
+        primary_sources.append(source_record)
+
+    web["primarySources"] = primary_sources
+    references = profile.get("referencesAndIntelligenceSharing")
+    if not isinstance(references, dict):
+        raise SourceLedgerError("Current references source ledger is invalid")
+    references["sources"] = [
+        {
+            "title": source["title"],
+            "url": source["url"],
+            "date": source["accessDate"],
+            "relevanceScore": source["relevanceScore"],
+        }
+        for source in primary_sources
+    ]
+    operations = profile.get("operationalGuidance")
+    if isinstance(operations, dict):
+        operations["communityResources"] = [
+            {
+                "resourceType": source["contentType"],
+                "name": source["title"],
+                "url": source["url"],
+                "focus": source["keyFindings"],
+            }
+            for source in primary_sources
+        ]
 
 
 def claim_attribution_status(

@@ -175,6 +175,13 @@ def test_claim_attribution_v3_materializes_explicit_structured_selectors():
 
     materialize_claim_attribution(profile)
     profile["claimAttribution"]["claims"][0]["sourceIds"] = ["S2"]
+    profile["webSearchSources"]["primarySources"][0]["url"] = "https://hallucinated.example/primary"
+    profile["referencesAndIntelligenceSharing"]["sources"] = [
+        {"title": "Invented", "url": "https://hallucinated.example/reference"}
+    ]
+    profile["operationalGuidance"]["communityResources"] = [
+        {"name": "Invented", "url": "https://hallucinated.example/community"}
+    ]
 
     assert claim_attribution_status(profile) == (ClaimAttributionStatus.UNATTRIBUTED, "3")
 
@@ -208,6 +215,14 @@ def test_claim_attribution_v3_materializes_explicit_structured_selectors():
         "contentType": "Web source",
         "keyFindings": "No separate finding summary recorded",
     }
+    assert [source["url"] for source in profile["referencesAndIntelligenceSharing"]["sources"]] == [
+        "https://example.com/report",
+        "https://example.com/campaign",
+    ]
+    assert [source["url"] for source in profile["operationalGuidance"]["communityResources"]] == [
+        "https://example.com/report",
+        "https://example.com/campaign",
+    ]
     assert claim_attribution_status(profile) == (ClaimAttributionStatus.ATTRIBUTED, "3")
     assert_claim_attribution_consistent(profile)
 
