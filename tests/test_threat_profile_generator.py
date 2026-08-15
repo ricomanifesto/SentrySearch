@@ -557,7 +557,7 @@ def test_generation_separates_web_research_from_structured_synthesis(
     assert synthesis_request["model"] == "google/gemini-2.5-flash"
     assert "fallback_models" not in synthesis_request
     assert synthesis_request["route_purpose"] == "synthesis"
-    assert synthesis_request["max_tokens"] == 32768
+    assert synthesis_request["max_tokens"] == 65536
     assert synthesis_request["session_id"].startswith("sentrysearch-synthesis-")
     assert synthesis_request["strict_response_schema"] is False
     assert "tools" not in synthesis_request

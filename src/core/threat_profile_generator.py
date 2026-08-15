@@ -7,6 +7,7 @@ from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
 from src.core.openrouter_client import (
+    MAX_COMPLETION_TOKENS,
     create_model_client,
     evaluation_request_options,
     research_request_options,
@@ -645,10 +646,10 @@ END ATTESTED SOURCE CATALOG"""
                     # correction attempt below.
                     retry_policy=SYNTHESIS_RETRY_POLICY,
                     **synthesis_request_options(),
-                    # The full profile is returned as a single JSON object. The app
-                    # keeps a 32,768-token ceiling so evidence-dense profiles have room
-                    # without turning an incomplete response into an unbounded retry.
-                    max_tokens=32768,
+                    # The full profile is returned as a single JSON object. Gemini 2.5
+                    # Flash supports a bounded 65,536-token output, which leaves room
+                    # for reasoning plus evidence-dense JSON without unbounded retries.
+                    max_tokens=MAX_COMPLETION_TOKENS,
                     temperature=0.3,
                     # Gemini rejects very large or deeply nested response schemas.
                     # JSON mode keeps provider-side syntax enforcement while the

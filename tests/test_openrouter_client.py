@@ -671,6 +671,7 @@ def test_model_client_rejects_repeated_incomplete_length_responses(monkeypatch):
         [
             (200, chat_response('{"value":', finish_reason="length"), {}),
             (200, chat_response('{"value":', finish_reason="length"), {}),
+            (200, chat_response('{"value":', finish_reason="length"), {}),
         ],
         requests,
     )
@@ -685,6 +686,7 @@ def test_model_client_rejects_repeated_incomplete_length_responses(monkeypatch):
     assert [json.loads(request.content)["max_tokens"] for request in requests] == [
         16_384,
         32_768,
+        65_536,
     ]
 
 
@@ -699,7 +701,7 @@ def test_model_client_does_not_repeat_a_length_response_at_the_token_ceiling():
         client.messages.create(
             messages=[{"role": "user", "content": "hello"}],
             response_format=StructuredResult,
-            max_tokens=32_768,
+            max_tokens=65_536,
         )
 
     assert len(requests) == 1

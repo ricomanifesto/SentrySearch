@@ -31,7 +31,7 @@ from src.domain.reports import GenerationErrorCode
 
 EMPTY_RESPONSE_RETRIES = 3
 EMPTY_RESPONSE_RETRY_DELAY = 1.5
-MAX_COMPLETION_TOKENS = 32_768
+MAX_COMPLETION_TOKENS = 65_536
 
 DEFAULT_MODEL = "google/gemini-2.5-flash"
 DEFAULT_GENERATION_PROVIDER = "google-ai-studio"
