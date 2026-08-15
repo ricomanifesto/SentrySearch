@@ -9,7 +9,11 @@ import re
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlsplit
 
-from src.core.generation_failures import EvidenceAdmissibilityError
+from src.core.generation_failures import (
+    EvidenceAdmissibilityError,
+    EvidenceCoverageError,
+    EvidenceGateError,
+)
 from src.core.source_ledger import CLAIM_CLASS_SELECTORS
 from src.domain.reports import EvidenceAdmissibilityStatus
 
@@ -368,22 +372,23 @@ def assess_profile_evidence(
         for observation in source_observations
         if observation["sourceId"]
     }
-    blocking_findings: list[str] = []
+    coverage_findings: list[str] = []
+    safety_findings: list[str] = []
 
     attribution = profile.get("claimAttribution")
     claims = attribution.get("claims") if isinstance(attribution, Mapping) else None
     if not isinstance(attribution, Mapping) or attribution.get("schemaVersion") != "4":
-        blocking_findings.append("Operational claim coverage does not use attribution schema 4.")
+        coverage_findings.append("Operational claim coverage does not use attribution schema 4.")
         claims = []
     if not isinstance(claims, list):
-        blocking_findings.append("Operational claim coverage is missing.")
+        coverage_findings.append("Operational claim coverage is missing.")
         claims = []
 
     expected_values = _selected_values(profile)
     claims_by_selector: dict[tuple[str, str, int], list[Mapping[str, Any]]] = {}
     for claim in claims:
         if not isinstance(claim, Mapping):
-            blocking_findings.append("Operational claim coverage contains an invalid record.")
+            coverage_findings.append("Operational claim coverage contains an invalid record.")
             continue
         selector = (
             str(claim.get("claimClass") or ""),
@@ -396,21 +401,21 @@ def assess_profile_evidence(
         source_ids = [str(value) for value in claim.get("sourceIds") or []]
         if role == "general_practice":
             if selector[0] != "mitigation_action" or source_ids:
-                blocking_findings.append(
+                coverage_findings.append(
                     "General-practice attribution is only valid for uncited mitigation guidance."
                 )
             continue
         if role != "direct_evidence" or not source_ids:
-            blocking_findings.append("An operational claim lacks direct evidence.")
+            coverage_findings.append("An operational claim lacks direct evidence.")
             continue
         for source_id in source_ids:
             observation = sources_by_id.get(source_id)
             if observation is None:
-                blocking_findings.append(
+                coverage_findings.append(
                     f"Operational claim cites unknown source {source_id or 'without an ID'}."
                 )
             elif observation["purpose"] != SourcePurpose.OPERATIONAL.value:
-                blocking_findings.append(
+                safety_findings.append(
                     f"Operational claim cites {source_id}, which is {observation['purpose']}."
                 )
 
@@ -418,7 +423,7 @@ def assess_profile_evidence(
         selector = (claim_class, claim_field, claim_index)
         matches = claims_by_selector.get(selector, [])
         if len(matches) != 1:
-            blocking_findings.append(
+            coverage_findings.append(
                 f"{claim_field}[{claim_index}] requires exactly one schema-4 attribution record."
             )
 
@@ -428,7 +433,7 @@ def assess_profile_evidence(
     }
     for selector in claims_by_selector:
         if selector not in expected_selectors:
-            blocking_findings.append(
+            coverage_findings.append(
                 f"Claim attribution selector {selector[1]}[{selector[2]}] has no stored value."
             )
 
@@ -448,7 +453,7 @@ def assess_profile_evidence(
         }
         indicator_observations.append(observation)
         if disposition is EvidenceDisposition.REJECTED:
-            blocking_findings.append(f"{claim_field}[{claim_index}] was rejected: {reason}")
+            safety_findings.append(f"{claim_field}[{claim_index}] was rejected: {reason}")
 
     observed_indicator_keys = {
         (observation["value"], observation["ruleId"]) for observation in indicator_observations
@@ -474,7 +479,7 @@ def assess_profile_evidence(
                 }
             )
             if disposition is EvidenceDisposition.REJECTED:
-                blocking_findings.append(
+                safety_findings.append(
                     f"{path.removeprefix('profile.')} contains rejected infrastructure "
                     f"{value}: {reason}"
                 )
@@ -493,17 +498,23 @@ def assess_profile_evidence(
             source["evidenceReason"] = observation["reason"]
             source["evidenceRuleId"] = observation["ruleId"]
             if observation["purpose"] != SourcePurpose.OPERATIONAL.value:
-                blocking_findings.append(
+                safety_findings.append(
                     f"Primary source {observation['sourceId']} is not operational evidence."
                 )
 
-    blocking_findings = _unique(blocking_findings)
+    coverage_findings = _unique(coverage_findings)
+    safety_findings = _unique(safety_findings)
+    blocking_findings = [*safety_findings, *coverage_findings]
     assessment = {
         "schemaVersion": EVIDENCE_ADMISSIBILITY_SCHEMA_VERSION,
         "status": (
             EvidenceAdmissibilityStatus.BLOCKED.value
-            if blocking_findings
-            else EvidenceAdmissibilityStatus.PASSED.value
+            if safety_findings
+            else (
+                EvidenceAdmissibilityStatus.UNASSESSED.value
+                if coverage_findings
+                else EvidenceAdmissibilityStatus.PASSED.value
+            )
         ),
         "sourceObservations": source_observations,
         "indicatorObservations": indicator_observations,
@@ -534,25 +545,33 @@ def assess_profile_evidence(
                 for observation in indicator_observations
             ),
             "coveredOperationalClaims": len(expected_values),
+            "safetyFindings": len(safety_findings),
+            "coverageFindings": len(coverage_findings),
         },
     }
     profile["evidenceAdmissibility"] = assessment
-    if blocking_findings:
+    if safety_findings:
         raise EvidenceAdmissibilityError(
             "Generated report contains evidence that is unsafe for operational use",
             findings=blocking_findings,
             assessment=assessment,
         )
+    if coverage_findings:
+        raise EvidenceCoverageError(
+            "Generated report has incomplete high-risk claim coverage",
+            findings=coverage_findings,
+            assessment=assessment,
+        )
     return assessment
 
 
-def evidence_correction_prompt(error: EvidenceAdmissibilityError) -> str:
+def evidence_correction_prompt(error: EvidenceGateError) -> str:
     """Give one bounded correction attempt the deterministic failures verbatim."""
 
     findings = "\n".join(f"- {finding}" for finding in error.findings[:12])
-    return f"""CORRECTION ATTEMPT AFTER A FAILED OPERATIONAL EVIDENCE GATE:
-The previous response contained inadmissible evidence or incomplete schema-4
-coverage. Return a complete corrected JSON object.
+    return f"""CORRECTION ATTEMPT AFTER A FAILED EVIDENCE GATE:
+The previous response contained inadmissible evidence or incomplete embedded
+high-risk evidence. Return a complete corrected JSON object.
 
 Deterministic findings:
 {findings}
@@ -561,9 +580,9 @@ Deterministic findings:
   infrastructure from operational indicators and target-specific actions.
 - Do not include or cite sources marked context_only or excluded_non_operational
   in any high-risk operational claim.
-- claimAttribution schemaVersion 4 MUST cover every non-empty item in every
-  allowed claim field exactly once.
-- Use evidenceRole direct_evidence with exact source IDs for supported claims.
+- Every high-risk array item MUST carry value, evidenceRole, and sourceIds; do
+  not emit a parallel claimAttribution map.
+- Use evidenceRole direct_evidence with exact source IDs for supported items.
 - Use evidenceRole general_practice with no source IDs only for generic mitigation
   guidance that does not assert a target-specific fact.
 - Do not replace rejected values with invented alternatives.

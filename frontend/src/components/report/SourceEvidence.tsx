@@ -29,6 +29,7 @@ export function SourceEvidence({
   const contextIndicators = evidenceAdmissibility?.indicator_observations.filter(
     (indicator) => indicator.disposition === 'context_required',
   ) ?? [];
+  const blockingFindings = evidenceAdmissibility?.blocking_findings ?? [];
   return (
     <section data-contract="Report.SourceEvidence.v1" aria-labelledby="source-evidence-heading">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -50,7 +51,7 @@ export function SourceEvidence({
         </p>
       ) : attributionStatus === 'unattributed' ? (
         <p className="mt-2 text-sm leading-6 text-amber-700">
-          This record has sources, but its claim-level attribution did not pass the current contract.
+          The generated claim-level attribution did not pass the current contract.
         </p>
       ) : attributionStatus === 'legacy' ? (
         <p className="mt-2 text-sm leading-6 text-zinc-500">
@@ -68,9 +69,33 @@ export function SourceEvidence({
         </p>
       ) : (
         <p className="mt-2 text-sm leading-6 text-amber-700">
-          Operational evidence admissibility was not assessed for this retained record.
+          {blockingFindings.length > 0
+            ? 'Operational safety could not be assessed because high-risk evidence coverage was incomplete.'
+            : 'Operational evidence admissibility was not assessed for this retained record.'}
         </p>
       )}
+
+      {blockingFindings.length > 0 ? (
+        <div
+          data-contract="Report.EvidenceBlockingFindings.v1"
+          className={`mt-4 rounded-lg border p-4 ${
+            evidenceAdmissibility?.status === 'blocked'
+              ? 'border-red-200 bg-red-50'
+              : 'border-amber-200 bg-amber-50'
+          }`}
+        >
+          <h3 className="text-sm font-semibold text-zinc-950">
+            {evidenceAdmissibility?.status === 'blocked'
+              ? 'Why this record was blocked'
+              : 'Why this run could not finalize'}
+          </h3>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-sm leading-6 text-zinc-800">
+            {blockingFindings.map((finding, index) => (
+              <li key={`${index}-${finding}`}>{finding}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       {sources.length > 0 ? (
         <ol className="mt-4 space-y-4">

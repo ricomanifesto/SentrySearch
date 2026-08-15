@@ -25,6 +25,7 @@ function projectReport(report: ReportDetail, config: ExportConfig): ExportRecord
           evaluated_at: report.evaluated_at ?? null,
           review_status: report.review_status,
           analyst_disposition: report.analyst_disposition,
+          eligible_for_handoff: report.eligible_for_handoff,
           current_disposition: report.current_disposition ?? null,
           disposition_history: report.disposition_history,
           generation_route: report.generation_route ?? null,

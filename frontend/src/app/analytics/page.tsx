@@ -29,6 +29,7 @@ const failureCauseLabels: Record<GenerationErrorCode, string> = {
   model_output_invalid: 'Model output invalid',
   evidence_unavailable: 'Evidence unavailable',
   evidence_unattested: 'Evidence could not be attested',
+  evidence_incomplete: 'Generated evidence coverage incomplete',
   evidence_inadmissible: 'Evidence unsafe for operational use',
   persistence_failed: 'Report could not be saved',
   unknown: 'Legacy / unrecorded cause',

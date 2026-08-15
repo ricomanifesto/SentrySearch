@@ -69,6 +69,7 @@ class ReportResponse(BaseModel):
     analyst_disposition: AnalystDisposition = AnalystDisposition.UNREVIEWED
     eligible_for_judgment: bool = False
     eligible_for_acceptance: bool = False
+    eligible_for_handoff: bool = False
     content_preview: str | None = None
 
 
@@ -194,6 +195,7 @@ class SearchFilters(BaseModel):
     review_statuses: list[ReviewStatus] = Field(default_factory=list, max_length=10)
     analyst_dispositions: list[AnalystDisposition] = Field(default_factory=list, max_length=10)
     requires_action: bool = False
+    eligible_for_handoff: bool = False
 
 
 class PaginationParams(BaseModel):

@@ -22,6 +22,7 @@ export const SAMPLE_REPORT: ReportDetail = {
   analyst_disposition: 'unreviewed',
   eligible_for_judgment: true,
   eligible_for_acceptance: true,
+  eligible_for_handoff: false,
   current_disposition: null,
   disposition_history: [],
   quality_assessment: {

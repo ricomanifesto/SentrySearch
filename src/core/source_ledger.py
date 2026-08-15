@@ -8,7 +8,12 @@ import re
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
-from src.domain.reports import ClaimAttributionStatus, GenerationErrorCode
+from src.core.generation_failures import EvidenceCoverageError
+from src.domain.reports import (
+    ClaimAttributionStatus,
+    EvidenceAdmissibilityStatus,
+    GenerationErrorCode,
+)
 
 
 class SourceLedgerError(ValueError):
@@ -19,6 +24,7 @@ class SourceLedgerError(ValueError):
 
 
 CLAIM_ATTRIBUTION_SCHEMA_VERSION = "4"
+CLAIM_ATTRIBUTION_GENERATION_SHAPE = "embedded_evidence_items"
 SUPPORTED_CLAIM_ATTRIBUTION_VERSIONS = frozenset({"2", "3", CLAIM_ATTRIBUTION_SCHEMA_VERSION})
 HIGH_RISK_CLAIM_CLASSES = frozenset(
     {
@@ -140,6 +146,105 @@ def materialize_claim_attribution(profile: dict[str, Any]) -> None:
         if not isinstance(claim, dict):
             raise SourceLedgerError("Current claim attribution selector is invalid")
         claim["claim"] = _selected_claim_value(profile, claim)
+
+
+def materialize_embedded_claim_evidence(profile: dict[str, Any]) -> None:
+    """Derive schema-4 attribution from evidence attached to high-risk items."""
+
+    claims: list[dict[str, Any]] = []
+    embedded_count = 0
+    string_count = 0
+    findings: list[str] = []
+    selected_lists: list[tuple[str, str, list[Any]]] = []
+
+    for claim_class, fields in CLAIM_CLASS_SELECTORS.items():
+        for claim_field, field_path in fields.items():
+            selected: Any = profile
+            for field_name in field_path:
+                if not isinstance(selected, Mapping):
+                    selected = None
+                    break
+                selected = selected.get(field_name)
+            if not isinstance(selected, list):
+                continue
+            selected_lists.append((claim_class, claim_field, selected))
+            for item in selected:
+                if isinstance(item, Mapping):
+                    embedded_count += 1
+                elif str(item or "").strip():
+                    string_count += 1
+
+    if embedded_count == 0 and isinstance(profile.get("claimAttribution"), Mapping):
+        # Retained test and compatibility payloads can still supply the legacy
+        # parallel ledger during the bounded migration window above.
+        return
+    if embedded_count and string_count:
+        findings.append("High-risk fields mix embedded evidence items with legacy string values.")
+
+    for claim_class, claim_field, values in selected_lists:
+        normalized_values: list[str] = []
+        for claim_index, item in enumerate(values):
+            if not isinstance(item, Mapping):
+                value = str(item or "").strip()
+                if value:
+                    normalized_values.append(value)
+                continue
+            value = str(item.get("value") or "").strip()
+            role = str(item.get("evidenceRole") or "").strip()
+            raw_source_ids = item.get("sourceIds")
+            source_ids = (
+                [str(source_id).strip() for source_id in raw_source_ids if str(source_id).strip()]
+                if isinstance(raw_source_ids, list)
+                else []
+            )
+            if not value:
+                findings.append(f"{claim_field}[{claim_index}] has no reader-visible value.")
+                continue
+            if role == "direct_evidence" and not source_ids:
+                findings.append(f"{claim_field}[{claim_index}] lacks direct source identity.")
+            elif role == "general_practice" and (claim_class != "mitigation_action" or source_ids):
+                findings.append(
+                    f"{claim_field}[{claim_index}] uses general practice outside uncited mitigation guidance."
+                )
+            elif role not in {"direct_evidence", "general_practice"}:
+                findings.append(f"{claim_field}[{claim_index}] has no valid evidence role.")
+            normalized_values.append(value)
+            claims.append(
+                {
+                    "claimClass": claim_class,
+                    "claim": value,
+                    "claimField": claim_field,
+                    "claimIndex": len(normalized_values) - 1,
+                    "evidenceRole": role,
+                    "sourceIds": source_ids,
+                }
+            )
+        values[:] = normalized_values
+
+    if not claims:
+        findings.append("No high-risk item carried embedded evidence.")
+
+    if findings:
+        assessment = {
+            "schemaVersion": "1",
+            "status": EvidenceAdmissibilityStatus.UNASSESSED.value,
+            "sourceObservations": [],
+            "indicatorObservations": [],
+            "blockingFindings": findings,
+            "summary": {"safetyFindings": 0, "coverageFindings": len(findings)},
+        }
+        profile["evidenceAdmissibility"] = assessment
+        raise EvidenceCoverageError(
+            "Generated report has incomplete embedded high-risk evidence",
+            findings=findings,
+            assessment=assessment,
+        )
+
+    profile["claimAttribution"] = {
+        "schemaVersion": CLAIM_ATTRIBUTION_SCHEMA_VERSION,
+        "generationShape": CLAIM_ATTRIBUTION_GENERATION_SHAPE,
+        "claims": claims,
+    }
 
 
 def materialize_cited_sources(

@@ -32,6 +32,7 @@ import { formatDate, formatProcessingTime, formatRelativeTime } from '@/lib/util
 import { AuthGuard } from '@/components/AuthGuard';
 import { getReviewStatusClasses, getReviewStatusLabel } from '@/lib/report-status';
 import { getAnalystDispositionClasses, getAnalystDispositionLabel } from '@/lib/analyst-disposition';
+import { getGenerationFailurePresentation } from '@/lib/generation-failure';
 
 type ReviewQueueControlKey = 'reviewState' | 'threatType' | 'minQuality' | 'dateRangeDays' | 'sortBy' | 'sortOrder';
 
@@ -46,6 +47,26 @@ type ReportRecordSignal = {
   value: string;
   detail: string;
 };
+
+type FailedRunGroup = {
+  target: string;
+  reports: Report[];
+};
+
+function groupVisibleFailedRuns(reports: Report[]): FailedRunGroup[] {
+  const grouped = new Map<string, FailedRunGroup>();
+  for (const report of reports) {
+    if (report.status !== 'failed') continue;
+    const key = report.tool_name.trim().replaceAll(/\s+/g, ' ').toLocaleLowerCase();
+    const group = grouped.get(key);
+    if (group) {
+      group.reports.push(report);
+    } else {
+      grouped.set(key, { target: report.tool_name, reports: [report] });
+    }
+  }
+  return [...grouped.values()];
+}
 
 const selectClass =
   'mt-1.5 block h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition-colors focus:border-blue-500 focus:ring-2 focus:ring-blue-100';
@@ -147,6 +168,14 @@ function ReportsWorkspace() {
   const totalReports = reportsData?.pagination.total ?? 0;
   const pageStart = reportsData ? ((reportsData.pagination.page - 1) * reportsData.pagination.limit) + 1 : 0;
   const pageEnd = reportsData ? Math.min(reportsData.pagination.page * reportsData.pagination.limit, reportsData.pagination.total) : 0;
+  const failedRunGroups = useMemo(
+    () => groupVisibleFailedRuns(reportsData?.reports ?? []),
+    [reportsData?.reports],
+  );
+  const completedRecords = useMemo(
+    () => reportsData?.reports.filter((report) => report.status !== 'failed') ?? [],
+    [reportsData?.reports],
+  );
 
   return (
       <main data-surface="report-review-queue" className="overflow-x-hidden bg-[var(--surface-0)]">
@@ -271,8 +300,11 @@ function ReportsWorkspace() {
               </div>
             ) : (
               <>
-                <div className="space-y-4">
-                  {reportsData?.reports.map((report) => (
+                {failedRunGroups.length > 0 ? (
+                  <FailedRunLane groups={failedRunGroups} />
+                ) : null}
+                <div className={failedRunGroups.length > 0 && completedRecords.length > 0 ? 'mt-6 space-y-4' : 'space-y-4'}>
+                  {completedRecords.map((report) => (
                     <ReportReviewRecord key={report.id} report={report} />
                   ))}
                 </div>
@@ -307,6 +339,49 @@ function ReportsWorkspace() {
           </div>
         </div>
       </main>
+  );
+}
+
+function FailedRunLane({ groups }: { groups: FailedRunGroup[] }) {
+  return (
+    <section data-contract="Reports.FailedRunLane.v1" className="rounded-xl border border-red-200 bg-red-50 p-5 sm:p-6">
+      <h2 className="text-base font-semibold text-red-950">Failed generation attempts</h2>
+      <p className="mt-1 text-sm leading-6 text-red-800">
+        Repeated failures are grouped by target on this page so retry work does not crowd out completed intelligence.
+      </p>
+      <div className="mt-4 space-y-3">
+        {groups.map((group) => {
+          const latest = group.reports[0];
+          const failure = getGenerationFailurePresentation(
+            latest.generation_error_code,
+            latest.generation_retryable,
+          );
+          return (
+            <article key={group.target.toLocaleLowerCase()} className="rounded-lg border border-red-200 bg-white p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <Link href={`/reports/${latest.id}`} className="font-semibold text-zinc-950 hover:text-blue-700">
+                    {group.target}
+                  </Link>
+                  <p className="mt-1 text-sm leading-6 text-zinc-600">{failure.heading}</p>
+                  <p className="mt-1 text-sm text-zinc-500">
+                    {group.reports.length} failed {group.reports.length === 1 ? 'attempt' : 'attempts'} shown · latest {formatRelativeTime(latest.created_at)}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Link href={`/generate?target=${encodeURIComponent(group.target)}`} className={secondaryButtonClass}>
+                    Retry target
+                  </Link>
+                  <Link href={`/reports?review_state=generation_failed&query=${encodeURIComponent(group.target)}`} className={secondaryButtonClass}>
+                    View attempts
+                  </Link>
+                </div>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 

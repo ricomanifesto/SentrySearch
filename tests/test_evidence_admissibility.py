@@ -10,6 +10,7 @@ from src.core.evidence_admissibility import (
 )
 from src.core.generation_failures import (
     EvidenceAdmissibilityError,
+    EvidenceCoverageError,
     build_generation_failure,
 )
 from src.domain.reports import GenerationStage
@@ -172,8 +173,14 @@ def test_schema_four_requires_every_high_risk_field_item(threat_profile_data):
     profile = deepcopy(threat_profile_data)
     profile["claimAttribution"]["claims"] = profile["claimAttribution"]["claims"][:-1]
 
-    with pytest.raises(EvidenceAdmissibilityError, match="unsafe for operational use"):
+    with pytest.raises(
+        EvidenceCoverageError, match="incomplete high-risk claim coverage"
+    ) as captured:
         assess_profile_evidence(profile, [OPERATIONAL_SOURCE])
+
+    assert captured.value.assessment["status"] == "unassessed"
+    assert captured.value.assessment["summary"]["safetyFindings"] == 0
+    assert captured.value.assessment["summary"]["coverageFindings"] == 1
 
 
 def test_typed_failure_keeps_the_application_owned_evidence_audit():
@@ -195,4 +202,26 @@ def test_typed_failure_keeps_the_application_owned_evidence_audit():
 
     assert failure["error_code"] == "evidence_inadmissible"
     assert failure["retryable"] is False
+    assert failure["evidence_admissibility"] == assessment
+
+
+def test_incomplete_coverage_has_its_own_retryable_failure_taxonomy():
+    assessment = {
+        "schemaVersion": "1",
+        "status": "unassessed",
+        "sourceObservations": [],
+        "indicatorObservations": [],
+        "blockingFindings": ["riskFactors[0] lacks direct source identity."],
+        "summary": {"safetyFindings": 0, "coverageFindings": 1},
+    }
+    error = EvidenceCoverageError(
+        "incomplete evidence",
+        findings=assessment["blockingFindings"],
+        assessment=assessment,
+    )
+
+    failure = build_generation_failure(error, stage=GenerationStage.VALIDATING)
+
+    assert failure["error_code"] == "evidence_incomplete"
+    assert failure["retryable"] is True
     assert failure["evidence_admissibility"] == assessment

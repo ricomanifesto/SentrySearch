@@ -59,6 +59,7 @@ from src.domain.reports import (
     coerce_evaluation_status,
     derive_generation_route_scope,
     derive_review_status,
+    is_handoff_eligible,
     is_judgment_eligible,
     is_reuse_eligible,
 )
@@ -227,6 +228,9 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
         )
     except ValueError:
         evidence_status = EvidenceAdmissibilityStatus.BLOCKED
+    analyst_disposition = AnalystDisposition(
+        report.get("analyst_disposition") or AnalystDisposition.UNREVIEWED.value
+    )
     return {
         "id": report["id"],
         "tool_name": report["tool_name"],
@@ -267,9 +271,7 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
             source_count=len(sources),
             evidence_admissibility_status=evidence_status,
         ),
-        "analyst_disposition": AnalystDisposition(
-            report.get("analyst_disposition") or AnalystDisposition.UNREVIEWED.value
-        ),
+        "analyst_disposition": analyst_disposition,
         "eligible_for_judgment": is_judgment_eligible(
             report_status=report_status,
             evaluation_status=evaluation_status,
@@ -280,6 +282,13 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
             evaluation_status=evaluation_status,
             quality_score=quality_score,
             evidence_admissibility_status=evidence_status,
+        ),
+        "eligible_for_handoff": is_handoff_eligible(
+            report_status=report_status,
+            evaluation_status=evaluation_status,
+            quality_score=quality_score,
+            evidence_admissibility_status=evidence_status,
+            analyst_disposition=analyst_disposition,
         ),
         "content_preview": report.get("content_preview"),
     }
@@ -603,6 +612,7 @@ async def list_reports(
         None, description="Filter by the latest judgment for the current evaluation"
     ),
     requires_action: bool = Query(False, description="Return unresolved analyst work"),
+    eligible_for_handoff: bool = Query(False, description="Return records safe to hand off"),
 ):
     """List reports with pagination and filtering"""
     try:
@@ -624,6 +634,7 @@ async def list_reports(
             review_statuses=review_status,
             analyst_dispositions=analyst_disposition,
             requires_action=requires_action,
+            eligible_for_handoff=eligible_for_handoff,
             user_id=user_id,
         )
 
@@ -636,6 +647,7 @@ async def list_reports(
             review_statuses=review_status,
             analyst_dispositions=analyst_disposition,
             requires_action=requires_action,
+            eligible_for_handoff=eligible_for_handoff,
             user_id=user_id,
         )
 
@@ -658,6 +670,7 @@ async def list_reports(
                 "review_status": review_status,
                 "analyst_disposition": analyst_disposition,
                 "requires_action": requires_action,
+                "eligible_for_handoff": eligible_for_handoff,
             },
         }
 
@@ -1037,6 +1050,8 @@ async def search_reports(
             search_params["analyst_dispositions"] = filters.analyst_dispositions
         if filters.requires_action:
             search_params["requires_action"] = True
+        if filters.eligible_for_handoff:
+            search_params["eligible_for_handoff"] = True
         if filters.date_range_days:
             search_params["created_after"] = datetime.now(timezone.utc) - timedelta(
                 days=filters.date_range_days

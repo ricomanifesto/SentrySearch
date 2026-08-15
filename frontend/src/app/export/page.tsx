@@ -4,7 +4,7 @@ import React, { useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { ArrowDownTrayIcon } from '@heroicons/react/24/outline';
 
-import { api, type AnalystDisposition, type ExportConfig, type Report, type ReviewStatus } from '@/lib/api';
+import { api, ExportHandoffEligibilityError, type AnalystDisposition, type ExportConfig, type Report, type ReviewStatus } from '@/lib/api';
 import {
   dateRangeFilterOptions,
   formatTaxonomyLabel,
@@ -143,6 +143,7 @@ export default function ExportPage() {
       date_range_days: config.date_range_days,
       threat_types: config.threat_types,
       min_quality_score: config.min_quality_score,
+      eligible_for_handoff: true,
     }, 1, 50),
   });
 
@@ -455,7 +456,9 @@ export default function ExportPage() {
                   ))}
                   {exportMutation.error && (
                     <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                      The export package could not be prepared. Adjust the package settings and try again.
+                      {exportMutation.error instanceof ExportHandoffEligibilityError
+                        ? `${exportMutation.error.blockedCount} selected ${exportMutation.error.blockedCount === 1 ? 'record is' : 'records are'} no longer eligible for handoff. Refresh the scope before preparing a package.`
+                        : 'The export package could not be prepared. Adjust the package settings and try again.'}
                     </div>
                   )}
                   {exportMutation.isPending && (

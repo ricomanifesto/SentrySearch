@@ -17,7 +17,7 @@ SentrySearch researches a malware family, attack tool, or exposed technology and
 - Gate source purpose, every high-risk claim, and operational indicators before a report can be accepted for reuse.
 - Search saved reports by target, category, threat type, date, tags, and content-quality score.
 - Record append-only analyst dispositions against an evaluation vintage and re-run evaluation without repeating research.
-- Export accepted records with their evidence, route provenance, current disposition, and judgment history.
+- Export only currently evidence-safe, evaluated, accepted records with their evidence, route provenance, disposition, and judgment history.
 - Review report volume, content quality, unresolved work, threat distribution, and authoring-route performance.
 - Export selected reports as evidence packages.
 
@@ -27,7 +27,7 @@ Reports and analytics are private to the signed-in workspace.
 
 Research defaults to `google/gemma-4-26b-a4b-it:free`, structured report synthesis to `google/gemini-2.5-flash`, and evaluation to `google/gemma-4-31b-it:free`. SentrySearch calls them through OpenRouter's Chat Completions API. Primary requests are pinned to Google AI Studio with provider fallback disabled. If a free research or evaluation route is unavailable, SentrySearch retries the paid version of the same model without that provider pin, so OpenRouter may select another provider. Synthesis uses JSON mode with the full Pydantic and evidence contracts enforced before persistence. Its single evidence-correction pass keeps a stable per-report routing session and an explicit cache breakpoint on the unchanged dossier; provider-reported cache tokens are recorded with report performance metrics.
 
-New reports use claim-attribution schema 4 and an application-owned evidence-admissibility record. Training and context-only sources remain named in the audit trail without becoming operational evidence; documentation and special-use indicators fail closed, while internal addressing remains visibly context-qualified. Retained reports are never backfilled by inference.
+New reports attach evidence role and source identity directly to every generated high-risk item, then derive claim-attribution schema 4 and an application-owned evidence-admissibility record. Training and context-only sources remain named in the audit trail without becoming operational evidence; documentation and special-use indicators fail closed, while internal addressing remains visibly context-qualified. Incomplete generated coverage is recorded separately from unsafe evidence. Retained reports are never backfilled by inference.
 
 The generator can use OpenRouter's hosted web search. Its output must contain the required threat-profile fields defined with Pydantic before it is saved. Each new report records research, report-authoring, and evaluation routes separately: the model requested by the app, the route selected for the request, and the model reported by the provider. Retained reports from before that split keep an explicitly labeled aggregate generation route. The report page shows when a fallback route was used.
 

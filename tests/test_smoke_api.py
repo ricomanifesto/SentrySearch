@@ -942,8 +942,30 @@ def test_report_detail_exposes_a_blocking_evidence_record_without_acceptance(
     assert response.review_status.value == "needs_attention"
     assert response.eligible_for_judgment is True
     assert response.eligible_for_acceptance is False
+    assert response.eligible_for_handoff is False
     assert response.evidence_admissibility is not None
     assert response.evidence_admissibility.indicator_observations[0].value == "198.51.100.87"
+
+
+def test_report_response_handoff_requires_current_acceptance_and_passed_evidence():
+    fields = api_main.report_response_fields(
+        {
+            "id": "report-handoff-ready",
+            "tool_name": "Cobalt Strike",
+            "category": "malware",
+            "threat_type": "post_exploitation_framework",
+            "created_at": datetime.now(timezone.utc),
+            "status": "completed",
+            "evaluation_status": "completed",
+            "quality_score": 4.2,
+            "evidence_admissibility_status": "passed",
+            "analyst_disposition": "accepted",
+            "web_sources": [{"url": "https://example.com/report"}],
+        }
+    )
+
+    assert fields["eligible_for_acceptance"] is True
+    assert fields["eligible_for_handoff"] is True
 
 
 def test_report_detail_returns_persisted_model_route_provenance(monkeypatch):

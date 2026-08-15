@@ -21,11 +21,8 @@ class EvidenceAttestationError(RuntimeError):
     retryable = False
 
 
-class EvidenceAdmissibilityError(RuntimeError):
-    """Raised when attested evidence is unsafe for operational use."""
-
-    generation_error_code = GenerationErrorCode.EVIDENCE_INADMISSIBLE
-    retryable = False
+class EvidenceGateError(RuntimeError):
+    """Base error retaining application-owned evidence-gate findings."""
 
     def __init__(
         self,
@@ -37,6 +34,20 @@ class EvidenceAdmissibilityError(RuntimeError):
         super().__init__(message)
         self.findings = tuple(findings or ())
         self.assessment = dict(assessment or {})
+
+
+class EvidenceCoverageError(EvidenceGateError):
+    """Raised when generated high-risk claims lack complete source coverage."""
+
+    generation_error_code = GenerationErrorCode.EVIDENCE_INCOMPLETE
+    retryable = True
+
+
+class EvidenceAdmissibilityError(EvidenceGateError):
+    """Raised when attested evidence is unsafe for operational use."""
+
+    generation_error_code = GenerationErrorCode.EVIDENCE_INADMISSIBLE
+    retryable = False
 
 
 class ProfileOutputError(RuntimeError):

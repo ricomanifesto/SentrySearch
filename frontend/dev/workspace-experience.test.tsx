@@ -241,6 +241,7 @@ test('generation failure copy exonerates the target only when the record proves 
   const provider = getGenerationFailurePresentation('provider_unavailable', true);
   const rejected = getGenerationFailurePresentation('model_request_rejected', false);
   const evidence = getGenerationFailurePresentation('evidence_unavailable', false);
+  const incomplete = getGenerationFailurePresentation('evidence_incomplete', true);
   const inadmissible = getGenerationFailurePresentation('evidence_inadmissible', false);
   const unknown = getGenerationFailurePresentation('unknown', false);
 
@@ -249,6 +250,8 @@ test('generation failure copy exonerates the target only when the record proves 
   assert.match(rejected.heading, /rejected the report contract/);
   assert.doesNotMatch(evidence.detail, /Your target was not the cause/);
   assert.match(evidence.detail, /too obscure|more specific name/);
+  assert.match(incomplete.heading, /evidence coverage was incomplete/i);
+  assert.equal(incomplete.targetExonerated, true);
   assert.match(inadmissible.heading, /evidence was unsafe for operational use/i);
   assert.doesNotMatch(inadmissible.detail, /Your target was not the cause/);
   assert.doesNotMatch(unknown.detail, /Your target was not the cause/);
@@ -269,6 +272,7 @@ test('downloaded exports carry the canonical evidence ledger and route attestati
   assert.equal(record.web_sources[0].url, SAMPLE_REPORT.web_sources[0].url);
   assert.equal(record.review_status, 'reviewable');
   assert.equal(record.analyst_disposition, 'unreviewed');
+  assert.equal(record.eligible_for_handoff, false);
   assert.equal(record.evidence_admissibility_status, 'passed');
   assert.equal(record.evidence_admissibility.schema_version, '1');
   assert.equal(record.evidence_admissibility.source_observations.length, 3);

@@ -55,6 +55,13 @@ export function getGenerationFailurePresentation(
         retryLabel: 'Start another run',
         targetExonerated: false,
       };
+    case 'evidence_incomplete':
+      return {
+        heading: 'The generated evidence coverage was incomplete',
+        detail: 'The model output did not attach a complete source role and source identity to every stored high-risk item, so no report was finalized.',
+        retryLabel: 'Start another run',
+        targetExonerated: true,
+      };
     case 'evidence_inadmissible':
       return {
         heading: 'The evidence was unsafe for operational use',

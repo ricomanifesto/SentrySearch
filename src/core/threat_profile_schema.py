@@ -82,6 +82,19 @@ class ClaimAttribution(StrictModel):
     claims: list[ClaimAttributionEntry] = Field(min_length=1)
 
 
+class EvidenceClaimItem(StrictModel):
+    """One high-risk generated value with evidence identity attached at creation."""
+
+    value: str = Field(min_length=1)
+    evidence_role: Literal["direct_evidence", "general_practice"] = Field(alias="evidenceRole")
+    source_ids: list[str] = Field(alias="sourceIds")
+
+
+# TODO(embedded-evidence-v1): Remove string-valued generation compatibility after
+# three successful production canaries use embedded high-risk evidence.
+EvidenceClaimValue = EvidenceClaimItem | str
+
+
 class WebSearchSources(StrictModel):
     search_queries_used: list[str] = Field(alias="searchQueriesUsed", min_length=1)
     primary_sources: list[PrimarySource] = Field(alias="primarySources", min_length=1)
@@ -152,7 +165,7 @@ class RiskAssessment(StrictModel):
     overall_risk: str = Field(alias="overallRisk")
     impact_rating: str = Field(alias="impactRating")
     likelihood_rating: str = Field(alias="likelihoodRating")
-    risk_factors: list[str] = Field(alias="riskFactors")
+    risk_factors: list[EvidenceClaimValue] = Field(alias="riskFactors")
 
 
 class ThreatIntelligence(StrictModel):
@@ -161,31 +174,31 @@ class ThreatIntelligence(StrictModel):
 
 
 class ForensicArtifacts(StrictModel):
-    file_system_artifacts: list[str] = Field(alias="fileSystemArtifacts")
-    registry_artifacts: list[str] = Field(alias="registryArtifacts")
-    network_artifacts: list[str] = Field(alias="networkArtifacts")
-    memory_artifacts: list[str] = Field(alias="memoryArtifacts")
-    log_artifacts: list[str] = Field(alias="logArtifacts")
+    file_system_artifacts: list[EvidenceClaimValue] = Field(alias="fileSystemArtifacts")
+    registry_artifacts: list[EvidenceClaimValue] = Field(alias="registryArtifacts")
+    network_artifacts: list[EvidenceClaimValue] = Field(alias="networkArtifacts")
+    memory_artifacts: list[EvidenceClaimValue] = Field(alias="memoryArtifacts")
+    log_artifacts: list[EvidenceClaimValue] = Field(alias="logArtifacts")
 
 
 class IndicatorsOfCompromise(StrictModel):
-    hashes: list[str]
-    domains: list[str]
-    ips: list[str]
-    urls: list[str]
-    filenames: list[str]
+    hashes: list[EvidenceClaimValue]
+    domains: list[EvidenceClaimValue]
+    ips: list[EvidenceClaimValue]
+    urls: list[EvidenceClaimValue]
+    filenames: list[EvidenceClaimValue]
 
 
 class DetectionAndMitigation(StrictModel):
     iocs: IndicatorsOfCompromise
-    behavioral_indicators: list[str] = Field(alias="behavioralIndicators")
+    behavioral_indicators: list[EvidenceClaimValue] = Field(alias="behavioralIndicators")
 
 
 class MitigationAndResponse(StrictModel):
-    preventive_measures: list[str] = Field(alias="preventiveMeasures")
-    detection_methods: list[str] = Field(alias="detectionMethods")
-    response_actions: list[str] = Field(alias="responseActions")
-    recovery_guidance: list[str] = Field(alias="recoveryGuidance")
+    preventive_measures: list[EvidenceClaimValue] = Field(alias="preventiveMeasures")
+    detection_methods: list[EvidenceClaimValue] = Field(alias="detectionMethods")
+    response_actions: list[EvidenceClaimValue] = Field(alias="responseActions")
+    recovery_guidance: list[EvidenceClaimValue] = Field(alias="recoveryGuidance")
 
 
 class ReferenceSource(StrictModel):
@@ -248,7 +261,7 @@ class ThreatProfile(StrictModel):
 
     core_metadata: CoreMetadata = Field(alias="coreMetadata")
     web_search_sources: WebSearchSources = Field(alias="webSearchSources")
-    claim_attribution: ClaimAttribution = Field(alias="claimAttribution")
+    claim_attribution: ClaimAttribution | None = Field(default=None, alias="claimAttribution")
     tool_overview: ToolOverview = Field(alias="toolOverview")
     technical_details: TechnicalDetails = Field(alias="technicalDetails")
     command_and_control: CommandAndControl = Field(alias="commandAndControl")

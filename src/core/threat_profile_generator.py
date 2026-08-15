@@ -28,6 +28,7 @@ from src.core.threat_profile_schema import (
 )
 from src.core.generation_failures import (
     EvidenceAdmissibilityError,
+    EvidenceCoverageError,
     EvidenceAttestationError,
     EvidenceUnavailableError,
     ProfileOutputError,
@@ -42,6 +43,7 @@ from src.core.source_ledger import (
     assert_claim_attribution_consistent,
     attach_source_ids,
     materialize_claim_attribution,
+    materialize_embedded_claim_evidence,
     materialize_cited_sources,
 )
 from src.domain.model_routes import ModelRouteProvenance, ModelRoutePurpose
@@ -68,15 +70,14 @@ def _claim_attribution_correction_prompt() -> str:
     """Describe the exact evidence invariant that earns one correction pass."""
 
     return """CORRECTION ATTEMPT AFTER A FAILED EVIDENCE CONTRACT:
-The previous structured response used an invalid claim selector or cited a
+The previous structured response used incomplete embedded evidence or cited a
 sourceId absent from its own webSearchSources.primarySources ledger. Return a
 complete corrected JSON object.
 
-- Every claimAttribution sourceId MUST appear in webSearchSources.primarySources.
+- Every high-risk item sourceId MUST appear in webSearchSources.primarySources.
 - Every primary sourceId and URL MUST be copied exactly from the attested source catalog.
 - If a catalog source supports a claim, include that source in primarySources before citing it.
-- claimField and claimIndex MUST select a real non-empty value from the named claim class.
-- Schema version 4 MUST cover every non-empty allowed claim-field item exactly once.
+- Every high-risk array item MUST be an object with value, evidenceRole, and sourceIds.
 - Preserve evidenceRole: direct_evidence requires source IDs; general_practice is
   allowed only for uncited generic mitigation guidance.
 - Do not invent, renumber, infer, or silently remove evidence.
@@ -372,39 +373,6 @@ Based on your comprehensive research findings, create a detailed profile in the 
     "dataFreshness": "REQUIRED: How recent the attested information is",
     "sourceReliability": "REQUIRED: Assessment based on attested domain authority and content quality"
   }},
-  "claimAttribution": {{
-    "schemaVersion": "4",
-    "claims": [
-      {{
-        "claimClass": "threat_activity",
-        "claimField": "riskFactors",
-        "claimIndex": 0,
-        "evidenceRole": "direct_evidence",
-        "sourceIds": ["REQUIRED: One or more exact sourceId values supporting this claim"]
-      }},
-      {{
-        "claimClass": "forensic_artifact",
-        "claimField": "fileSystemArtifacts OR registryArtifacts OR networkArtifacts OR memoryArtifacts OR logArtifacts",
-        "claimIndex": 0,
-        "evidenceRole": "direct_evidence",
-        "sourceIds": ["REQUIRED: One or more exact sourceId values supporting this claim"]
-      }},
-      {{
-        "claimClass": "detection_indicator",
-        "claimField": "hashes OR domains OR ips OR urls OR filenames OR behavioralIndicators",
-        "claimIndex": 0,
-        "evidenceRole": "direct_evidence",
-        "sourceIds": ["REQUIRED: One or more exact sourceId values supporting this claim"]
-      }},
-      {{
-        "claimClass": "mitigation_action",
-        "claimField": "preventiveMeasures OR detectionMethods OR responseActions OR recoveryGuidance",
-        "claimIndex": 0,
-        "evidenceRole": "direct_evidence OR general_practice",
-        "sourceIds": ["REQUIRED for direct_evidence; empty only for general_practice"]
-      }}
-    ]
-  }},
   "toolOverview": {{
     "description": "Comprehensive description based on findings",
     "primaryPurpose": "Main purpose of the tool",
@@ -464,31 +432,31 @@ Based on your comprehensive research findings, create a detailed profile in the 
       "overallRisk": "High/Medium/Low",
       "impactRating": "Impact assessment",
       "likelihoodRating": "Likelihood assessment",
-      "riskFactors": ["Key risk factors"]
+      "riskFactors": [{{"value": "Key risk factor", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}]
     }}
   }},
   "forensicArtifacts": {{
-    "fileSystemArtifacts": ["File paths and names"],
-    "registryArtifacts": ["Registry keys"],
-    "networkArtifacts": ["Network artifacts"],
-    "memoryArtifacts": ["Memory artifacts"],
-    "logArtifacts": ["Log patterns"]
+    "fileSystemArtifacts": [{{"value": "File path or name", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}],
+    "registryArtifacts": [{{"value": "Registry key", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}],
+    "networkArtifacts": [{{"value": "Network artifact", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}],
+    "memoryArtifacts": [{{"value": "Memory artifact", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}],
+    "logArtifacts": [{{"value": "Log pattern", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}]
   }},
   "detectionAndMitigation": {{
     "iocs": {{
-      "hashes": ["File hashes"],
-      "domains": ["Malicious domains"],
-      "ips": ["Malicious IP addresses"],
-      "urls": ["Malicious URLs"],
-      "filenames": ["Malicious filenames"]
+      "hashes": [{{"value": "Complete file hash", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}],
+      "domains": [{{"value": "Malicious domain", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}],
+      "ips": [{{"value": "Malicious IP address", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}],
+      "urls": [{{"value": "Malicious URL", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}],
+      "filenames": [{{"value": "Malicious filename", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}]
     }},
-    "behavioralIndicators": ["Behavioral patterns for detection"]
+    "behavioralIndicators": [{{"value": "Behavioral pattern for detection", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}]
   }},
   "mitigationAndResponse": {{
-    "preventiveMeasures": ["Prevention recommendations"],
-    "detectionMethods": ["Detection methods"],
-    "responseActions": ["Incident response actions"],
-    "recoveryGuidance": ["Recovery steps"]
+    "preventiveMeasures": [{{"value": "Generic prevention recommendation", "evidenceRole": "general_practice", "sourceIds": []}}],
+    "detectionMethods": [{{"value": "Detection method", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}],
+    "responseActions": [{{"value": "Incident response action", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}],
+    "recoveryGuidance": [{{"value": "Generic recovery step", "evidenceRole": "general_practice", "sourceIds": []}}]
   }},
   "referencesAndIntelligenceSharing": {{
     "sources": [
@@ -547,14 +515,14 @@ CRITICAL INSTRUCTIONS FOR OUTPUT:
 6. primarySources and referencesAndIntelligenceSharing.sources MUST each contain at least one real URL from the attested source catalog
 7. Cross-reference claims across multiple attested sources when possible
 8. If the attested research is limited, acknowledge this limitation in the relevant sections
-9. Preserve each sourceId exactly as supplied and use only those IDs in claimAttribution
-10. claimAttribution schemaVersion 4 MUST include exactly one selector for EVERY non-empty item in EVERY allowed claim field, not one representative item per class
-11. claimField MUST use one allowed field shown for its class, and claimIndex MUST select one real non-empty item from that field's array
-12. Use evidenceRole direct_evidence with one or more exact sourceIds for every target-specific fact, artifact, indicator, detection, or response action
-13. evidenceRole general_practice is allowed only for generic mitigation guidance; it MUST use an empty sourceIds list and MUST NOT assert a target-specific fact
-14. Sources marked context_only or excluded_non_operational in the source catalog MUST NOT appear in primarySources or support high-risk claims
-15. Documentation, reserved, special-use, training, tabletop, and fictional infrastructure MUST NOT appear in operational IOC fields or target-specific actions
-16. The application copies the selected item into the stored claim text; sourceIds identify its evidence, never a substitute source list
+9. Every item in riskFactors, every forensic-artifact array, every IOC array, behavioralIndicators, and every mitigation-and-response array MUST be an object with value, evidenceRole, and sourceIds; never emit a plain string in those arrays
+10. Preserve each sourceId exactly as supplied and use only those IDs inside the high-risk item it supports
+11. Use evidenceRole direct_evidence with one or more exact sourceIds for every target-specific fact, artifact, indicator, detection, or response action
+12. evidenceRole general_practice is allowed only for generic mitigation guidance; it MUST use an empty sourceIds list and MUST NOT assert a target-specific fact
+13. Sources marked context_only or excluded_non_operational in the source catalog MUST NOT appear in primarySources or support high-risk items
+14. Documentation, reserved, special-use, training, tabletop, and fictional infrastructure MUST NOT appear in operational IOC fields or target-specific actions
+15. Do not emit claimAttribution; the application derives schema-4 claim selectors deterministically from the embedded evidence on each high-risk item
+16. Use an empty array when attested evidence does not support a high-risk field; never copy a template placeholder into the output
 
 Remember: Accuracy and source verification are more important than completeness.
 
@@ -627,6 +595,7 @@ END ATTESTED SOURCE CATALOG"""
                 except (ValueError, TypeError) as error:
                     raise ProfileOutputError("Structured profile output was invalid") from error
                 try:
+                    materialize_embedded_claim_evidence(json_data)
                     materialize_claim_attribution(json_data)
                     materialize_cited_sources(
                         json_data,
@@ -635,22 +604,27 @@ END ATTESTED SOURCE CATALOG"""
                     )
                     attest_profile_sources(json_data, response.web_search_sources)
                     assess_profile_evidence(json_data, response.web_search_sources)
-                    # The application-owned safety gate produces selector-specific
-                    # findings for the one bounded correction pass. Keep the older
-                    # ledger assertion as a final invariant, but do not let its
-                    # generic error hide the actionable schema-4 diagnosis.
+                    # The application-owned gate produces item-specific findings
+                    # for the one bounded correction pass. Keep the derived ledger
+                    # assertion as a final invariant without hiding that diagnosis.
                     assert_claim_attribution_consistent(json_data)
-                except EvidenceAdmissibilityError as error:
+                except (EvidenceAdmissibilityError, EvidenceCoverageError) as error:
                     if attempt >= ATTRIBUTION_CORRECTION_ATTEMPTS:
                         raise
+                    coverage_failure = isinstance(error, EvidenceCoverageError)
                     logger.warning(
-                        "Structured synthesis failed the operational evidence gate; "
-                        "requesting one bounded correction"
+                        "Structured synthesis failed the %s evidence gate; "
+                        "requesting one bounded correction",
+                        "coverage" if coverage_failure else "operational safety",
                     )
                     emit_progress(
                         0.76,
                         GenerationStage.VALIDATING,
-                        "Removing inadmissible operational evidence...",
+                        (
+                            "Completing high-risk evidence identity..."
+                            if coverage_failure
+                            else "Removing inadmissible operational evidence..."
+                        ),
                     )
                     request_content = [
                         cached_prompt_block,

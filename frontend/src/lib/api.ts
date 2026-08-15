@@ -26,6 +26,13 @@ import { buildReportExport } from './report-export';
 
 export type * from './api-contracts';
 
+export class ExportHandoffEligibilityError extends Error {
+  constructor(readonly blockedCount: number) {
+    super('The selected handoff scope contains ineligible reports.');
+    this.name = 'ExportHandoffEligibilityError';
+  }
+}
+
 // API Configuration
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001';
 
@@ -135,6 +142,7 @@ class SentrySearchAPI {
     filters?.review_statuses?.forEach((status) => params.append('review_status', status));
     filters?.analyst_dispositions?.forEach((state) => params.append('analyst_disposition', state));
     if (filters?.requires_action) params.append('requires_action', 'true');
+    if (filters?.eligible_for_handoff) params.append('eligible_for_handoff', 'true');
     if (filters?.sort_by) params.append('sort_by', filters.sort_by);
     if (filters?.sort_order) params.append('sort_order', filters.sort_order);
 
@@ -155,6 +163,7 @@ class SentrySearchAPI {
       analyst_disposition: report.analyst_disposition ?? 'unreviewed',
       eligible_for_judgment: report.eligible_for_judgment === true,
       eligible_for_acceptance: report.eligible_for_acceptance === true,
+      eligible_for_handoff: report.eligible_for_handoff === true,
       classification_status: report.classification_status ?? 'unrecorded',
       claim_attribution_status: report.claim_attribution_status ?? 'legacy',
       evidence_admissibility_status: report.evidence_admissibility_status ?? 'unassessed',
@@ -241,6 +250,10 @@ class SentrySearchAPI {
         8,
         (reportId) => this.getReport(reportId, config.include_content),
       );
+      const blockedCount = reports.filter((report) => !report.eligible_for_handoff).length;
+      if (blockedCount > 0) {
+        throw new ExportHandoffEligibilityError(blockedCount);
+      }
     } else {
       const summaries: Report[] = [];
       let page = 1;
@@ -253,6 +266,7 @@ class SentrySearchAPI {
             min_quality_score: config.min_quality_score,
             review_statuses: config.review_statuses,
             analyst_dispositions: config.analyst_dispositions,
+            eligible_for_handoff: true,
           },
           page,
           pageSize,
@@ -277,6 +291,9 @@ class SentrySearchAPI {
             claim_attributions: [],
             disposition_history: [],
           }));
+      if (reports.some((report) => !report.eligible_for_handoff)) {
+        throw new ExportHandoffEligibilityError(1);
+      }
     }
 
     return buildReportExport(reports, config);

@@ -355,6 +355,27 @@ class ReportStorageService:
                     ),
                 )
             )
+        if filters.eligible_for_handoff:
+            expressions.extend(
+                [
+                    Report.status == ReportStatus.COMPLETED.value,
+                    Report.quality_score.isnot(None),
+                    or_(
+                        Report.evaluation_status == EvaluationStatus.COMPLETED.value,
+                        and_(
+                            Report.evaluation_status.is_(None),
+                            Report.quality_score.isnot(None),
+                        ),
+                        and_(
+                            Report.evaluation_status == EvaluationStatus.UNRECORDED.value,
+                            Report.quality_score.isnot(None),
+                        ),
+                    ),
+                    Report.evidence_admissibility_status
+                    == EvidenceAdmissibilityStatus.PASSED.value,
+                    latest_disposition == AnalystDisposition.ACCEPTED.value,
+                ]
+            )
         if filters.created_after:
             expressions.append(Report.created_at >= filters.created_after)
         return tuple(expressions)
@@ -372,6 +393,7 @@ class ReportStorageService:
         review_statuses: Optional[Sequence[ReviewStatus | str]] = None,
         analyst_dispositions: Optional[Sequence[AnalystDisposition | str]] = None,
         requires_action: bool = False,
+        eligible_for_handoff: bool = False,
         created_after: Optional[datetime] = None,
         user_id: Optional[str] = None,
         sort_by: str = "created_at",
@@ -401,6 +423,7 @@ class ReportStorageService:
                 AnalystDisposition(value) for value in analyst_dispositions or ()
             ),
             requires_action=requires_action,
+            eligible_for_handoff=eligible_for_handoff,
             created_after=created_after,
             user_id=user_id,
             sort_by=sort_field,
@@ -1311,6 +1334,7 @@ class ReportStorageService:
         review_statuses: Optional[Sequence[ReviewStatus | str]] = None,
         analyst_dispositions: Optional[Sequence[AnalystDisposition | str]] = None,
         requires_action: bool = False,
+        eligible_for_handoff: bool = False,
         created_after: Optional[datetime] = None,
         sort_by: str = "created_at",
         sort_order: str = "desc",
@@ -1329,6 +1353,7 @@ class ReportStorageService:
                 review_statuses=review_statuses,
                 analyst_dispositions=analyst_dispositions,
                 requires_action=requires_action,
+                eligible_for_handoff=eligible_for_handoff,
                 created_after=created_after,
                 user_id=user_id,
                 sort_by=sort_by,
@@ -1466,6 +1491,7 @@ class ReportStorageService:
                 review_statuses=filters.get("review_statuses"),
                 analyst_dispositions=filters.get("analyst_dispositions"),
                 requires_action=bool(filters.get("requires_action", False)),
+                eligible_for_handoff=bool(filters.get("eligible_for_handoff", False)),
                 created_after=filters.get("created_after"),
                 user_id=filters.get("user_id"),
             )

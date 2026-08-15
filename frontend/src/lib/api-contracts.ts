@@ -8,7 +8,7 @@ export type StoredAnalystDisposition = Exclude<AnalystDisposition, 'unreviewed'>
 export type ClassificationStatus = 'recorded' | 'reconciled' | 'unmapped' | 'unrecorded';
 export type ClaimAttributionStatus = 'attributed' | 'unattributed' | 'legacy';
 export type EvidenceAdmissibilityStatus = 'unassessed' | 'passed' | 'blocked';
-export type GenerationErrorCode = 'provider_rate_limited' | 'provider_unavailable' | 'provider_timeout' | 'model_request_rejected' | 'model_output_invalid' | 'evidence_unavailable' | 'evidence_unattested' | 'evidence_inadmissible' | 'persistence_failed' | 'unknown';
+export type GenerationErrorCode = 'provider_rate_limited' | 'provider_unavailable' | 'provider_timeout' | 'model_request_rejected' | 'model_output_invalid' | 'evidence_unavailable' | 'evidence_unattested' | 'evidence_incomplete' | 'evidence_inadmissible' | 'persistence_failed' | 'unknown';
 export type GenerationStage = 'queued' | 'researching' | 'synthesizing' | 'validating' | 'finalizing' | 'completed' | 'failed';
 export type GenerationRouteScope = 'synthesis' | 'legacy_aggregate' | 'unrecorded';
 export type ReportSortField = 'created_at' | 'quality_score' | 'tool_name' | 'processing_time_ms';
@@ -41,6 +41,7 @@ export interface Report {
   analyst_disposition: AnalystDisposition;
   eligible_for_judgment: boolean;
   eligible_for_acceptance: boolean;
+  eligible_for_handoff: boolean;
   content_preview?: string | null;
 }
 
@@ -168,6 +169,7 @@ export interface ListReportFilters {
   review_statuses?: ReviewStatus[];
   analyst_dispositions?: AnalystDisposition[];
   requires_action?: boolean;
+  eligible_for_handoff?: boolean;
   sort_by?: ReportSortField;
   sort_order?: SortOrder;
 }
@@ -182,6 +184,7 @@ export interface SearchFilters {
   review_statuses?: ReviewStatus[];
   analyst_dispositions?: AnalystDisposition[];
   requires_action?: boolean;
+  eligible_for_handoff?: boolean;
 }
 
 export interface ReportSort {

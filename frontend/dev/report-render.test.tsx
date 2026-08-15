@@ -152,10 +152,35 @@ test('names quarantined sources and their reason instead of making them disappea
   );
 
   assert.match(html, /Operational evidence checks blocked this record from reuse/);
+  assert.match(html, /Why this record was blocked/);
+  assert.match(html, /Operational claim cites S1, which is excluded_non_operational/);
   assert.match(html, /Not used as operational evidence/);
   assert.match(html, /Noodle RAT incident-response training scenario/);
   assert.match(html, /id="source-S1"/);
   assert.match(html, /Training, tabletop, or fictional scenario material/);
+});
+
+test('renders incomplete coverage findings without calling the evidence unsafe', () => {
+  const html = renderToStaticMarkup(
+    <SourceEvidence
+      attributionStatus="unattributed"
+      attributionVersion="4"
+      sources={[]}
+      evidenceAdmissibility={{
+        schema_version: '1',
+        status: 'unassessed',
+        source_observations: [],
+        indicator_observations: [],
+        blocking_findings: ['riskFactors[0] lacks direct source identity.'],
+        summary: { safetyFindings: 0, coverageFindings: 1 },
+      }}
+    />,
+  );
+
+  assert.match(html, /Operational safety could not be assessed/);
+  assert.match(html, /Why this run could not finalize/);
+  assert.match(html, /riskFactors\[0\] lacks direct source identity/);
+  assert.doesNotMatch(html, /unsafe|blocked this record/);
 });
 
 test('places forensic-artifact citations outside inline code', () => {

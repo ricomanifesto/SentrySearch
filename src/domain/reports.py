@@ -80,6 +80,7 @@ class GenerationErrorCode(StrEnum):
     MODEL_OUTPUT_INVALID = "model_output_invalid"
     EVIDENCE_UNAVAILABLE = "evidence_unavailable"
     EVIDENCE_UNATTESTED = "evidence_unattested"
+    EVIDENCE_INCOMPLETE = "evidence_incomplete"
     EVIDENCE_INADMISSIBLE = "evidence_inadmissible"
     PERSISTENCE_FAILED = "persistence_failed"
     UNKNOWN = "unknown"
@@ -155,6 +156,7 @@ class ReportFilters:
     review_statuses: tuple[ReviewStatus, ...] = ()
     analyst_dispositions: tuple[AnalystDisposition, ...] = ()
     requires_action: bool = False
+    eligible_for_handoff: bool = False
     created_after: datetime | None = None
     user_id: str | None = None
     sort_by: ReportSortField = ReportSortField.CREATED_AT
@@ -263,6 +265,27 @@ def is_reuse_eligible(
     ) and (
         EvidenceAdmissibilityStatus(evidence_admissibility_status)
         is EvidenceAdmissibilityStatus.PASSED
+    )
+
+
+def is_handoff_eligible(
+    *,
+    report_status: ReportStatus | str,
+    evaluation_status: EvaluationStatus | str | None,
+    quality_score: float | None,
+    evidence_admissibility_status: EvidenceAdmissibilityStatus | str,
+    analyst_disposition: AnalystDisposition | str,
+) -> bool:
+    """Return whether the current accepted vintage may leave the workspace."""
+
+    return (
+        is_reuse_eligible(
+            report_status=report_status,
+            evaluation_status=evaluation_status,
+            quality_score=quality_score,
+            evidence_admissibility_status=evidence_admissibility_status,
+        )
+        and AnalystDisposition(analyst_disposition) is AnalystDisposition.ACCEPTED
     )
 
 

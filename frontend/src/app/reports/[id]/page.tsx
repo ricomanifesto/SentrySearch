@@ -34,6 +34,7 @@ const LOCAL_REPORT_DETAIL_FIXTURE_ID = 'local-visual-fixture';
 const LOCAL_REVIEW_ATTENTION_FIXTURE_ID = 'local-review-attention-fixture';
 const LOCAL_FAILED_GENERATION_FIXTURE_ID = 'local-failed-generation-fixture';
 const LOCAL_EVIDENCE_SAFETY_FIXTURE_ID = 'local-evidence-safety-fixture';
+const LOCAL_EVIDENCE_COVERAGE_FIXTURE_ID = 'local-evidence-coverage-fixture';
 
 const localReportDetailFixture: ReportDetail = {
   ...SAMPLE_REPORT,
@@ -45,6 +46,7 @@ const localReportDetailFixture: ReportDetail = {
   review_status: 'needs_evaluation',
   eligible_for_judgment: false,
   eligible_for_acceptance: false,
+  eligible_for_handoff: false,
   classification_status: 'recorded',
   quality_assessment: null,
   research_route: {
@@ -82,6 +84,8 @@ const localReviewAttentionFixture: ReportDetail = {
   classification_status: 'reconciled',
   review_status: 'needs_attention',
   analyst_disposition: 'needs_revision',
+  eligible_for_acceptance: false,
+  eligible_for_handoff: false,
   current_disposition: {
     id: 'local-disposition-needs-revision',
     disposition: 'needs_revision',
@@ -158,6 +162,7 @@ const localFailedGenerationFixture: ReportDetail = {
   review_status: 'generation_failed',
   eligible_for_judgment: false,
   eligible_for_acceptance: false,
+  eligible_for_handoff: false,
   classification_status: 'unrecorded',
   quality_score: null,
   quality_assessment: null,
@@ -177,10 +182,22 @@ const localEvidenceSafetyFixture: ReportDetail = {
   analyst_disposition: 'unreviewed',
   eligible_for_judgment: true,
   eligible_for_acceptance: false,
+  eligible_for_handoff: false,
   claim_attribution_status: 'attributed',
   claim_attribution_version: '4',
   evidence_admissibility_status: 'blocked',
   evidence_admissibility_version: '1',
+  current_disposition: null,
+  disposition_history: [
+    {
+      id: 'local-prior-accepted-disposition',
+      disposition: 'accepted',
+      note: 'Accepted before the current evidence-safety assessment existed.',
+      evaluation_attempt: 0,
+      created_at: '2026-08-14T15:45:00.000Z',
+      is_current: false,
+    },
+  ],
   markdown_content: [
     '# Noodle RAT · local adversarial fixture',
     '',
@@ -278,6 +295,63 @@ const localEvidenceSafetyFixture: ReportDetail = {
   },
 };
 
+const localEvidenceCoverageFixture: ReportDetail = {
+  ...SAMPLE_REPORT,
+  id: LOCAL_EVIDENCE_COVERAGE_FIXTURE_ID,
+  tool_name: 'Noodle RAT · incomplete evidence fixture',
+  status: 'failed',
+  generation_stage: 'failed',
+  generation_failure_stage: 'validating',
+  generation_error_code: 'evidence_incomplete',
+  generation_retryable: true,
+  evaluation_status: 'unrecorded',
+  evaluation_attempts: 0,
+  evaluated_at: null,
+  review_status: 'generation_failed',
+  analyst_disposition: 'unreviewed',
+  eligible_for_judgment: false,
+  eligible_for_acceptance: false,
+  eligible_for_handoff: false,
+  claim_attribution_status: 'unattributed',
+  claim_attribution_version: '4',
+  evidence_admissibility_status: 'unassessed',
+  evidence_admissibility_version: '1',
+  quality_score: null,
+  quality_assessment: null,
+  markdown_content: undefined,
+  web_sources: [],
+  claim_attributions: [],
+  evidence_admissibility: {
+    schema_version: '1',
+    status: 'unassessed',
+    source_observations: [],
+    indicator_observations: [],
+    blocking_findings: [
+      'riskFactors[0] lacks direct source identity.',
+      'behavioralIndicators[0] requires exactly one schema-4 attribution record.',
+    ],
+    summary: { safetyFindings: 0, coverageFindings: 2 },
+  },
+  generation_failure: {
+    schema_version: 1,
+    error_code: 'evidence_incomplete',
+    retryable: true,
+    stage: 'validating',
+    route_attempts: [],
+    evidence_admissibility: {
+      schema_version: '1',
+      status: 'unassessed',
+      source_observations: [],
+      indicator_observations: [],
+      blocking_findings: [
+        'riskFactors[0] lacks direct source identity.',
+        'behavioralIndicators[0] requires exactly one schema-4 attribution record.',
+      ],
+      summary: { safetyFindings: 0, coverageFindings: 2 },
+    },
+  },
+};
+
 function generationFailureSentence(stage?: GenerationStage | null): string {
   switch (stage) {
     case 'queued': return 'This run stopped while preparing research.';
@@ -361,7 +435,9 @@ export default function ReportDetailPage() {
           ? localFailedGenerationFixture
           : reportId === LOCAL_EVIDENCE_SAFETY_FIXTURE_ID
             ? localEvidenceSafetyFixture
-            : undefined
+            : reportId === LOCAL_EVIDENCE_COVERAGE_FIXTURE_ID
+              ? localEvidenceCoverageFixture
+              : undefined
     : undefined;
 
   return fixtureReport ? (
@@ -438,7 +514,7 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
   });
 
   const handleDownload = () => {
-    if (!report?.markdown_content) return;
+    if (!report?.markdown_content || !report.eligible_for_handoff) return;
     const filename = `${report.tool_name.replace(/[^a-zA-Z0-9]/g, '_')}_report.md`;
     downloadAsFile(report.markdown_content, filename, 'text/markdown');
   };
@@ -543,7 +619,8 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
               </button>
             </div>
           </section>
-          {report.generation_error_code === 'evidence_inadmissible' && report.evidence_admissibility ? (
+          {['evidence_inadmissible', 'evidence_incomplete'].includes(report.generation_error_code ?? '')
+            && report.evidence_admissibility ? (
             <div className="mt-6 rounded-xl border border-zinc-200 bg-white p-5 text-left">
               <SourceEvidence
                 heading="Evidence gate audit"
@@ -673,20 +750,33 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
               {report.processing_time_ms ? <span>{formatProcessingTime(report.processing_time_ms)} generation</span> : null}
             </p>
           </div>
-          <div className="flex shrink-0 gap-2">
-            <button type="button" onClick={handleDownload} disabled={!report.markdown_content} className={secondaryButtonClass}>
-              <ArrowDownTrayIcon className="h-4 w-4" aria-hidden="true" />
-              Download markdown
-            </button>
-            <button
-              type="button"
-              onClick={handleDelete}
-              disabled={isFixtureRecord || deleteMutation.isPending}
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-red-200 bg-white px-4 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-300 disabled:pointer-events-none disabled:opacity-50"
-            >
-              <TrashIcon className="h-4 w-4" aria-hidden="true" />
-              Delete record
-            </button>
+          <div className="shrink-0">
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleDownload}
+                disabled={!report.markdown_content || !report.eligible_for_handoff}
+                aria-describedby={!report.eligible_for_handoff ? 'handoff-eligibility-note' : undefined}
+                className={secondaryButtonClass}
+              >
+                <ArrowDownTrayIcon className="h-4 w-4" aria-hidden="true" />
+                Download markdown
+              </button>
+              <button
+                type="button"
+                onClick={handleDelete}
+                disabled={isFixtureRecord || deleteMutation.isPending}
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-red-200 bg-white px-4 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-300 disabled:pointer-events-none disabled:opacity-50"
+              >
+                <TrashIcon className="h-4 w-4" aria-hidden="true" />
+                Delete record
+              </button>
+            </div>
+            {!report.eligible_for_handoff ? (
+              <p id="handoff-eligibility-note" className="mt-2 max-w-xs text-right text-sm leading-5 text-amber-800">
+                Handoff stays disabled until the current evidence-safe evaluation is accepted.
+              </p>
+            ) : null}
           </div>
         </div>
 

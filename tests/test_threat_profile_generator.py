@@ -399,7 +399,9 @@ def test_generation_separates_web_research_from_structured_synthesis(
     assert "https://example.com/report" in synthesis_prompt
     assert "Example Threat uses remote access capabilities" in synthesis_prompt
     assert '"sourceId": "S1"' in synthesis_prompt
-    assert '"claimAttribution"' in synthesis_prompt
+    assert '"claimAttribution"' not in synthesis_prompt
+    assert '"evidenceRole": "direct_evidence"' in synthesis_prompt
+    assert "the application derives schema-4 claim selectors" in synthesis_prompt
     synthesis_response = next(response for response in messages.responses if response.parsed)
     assert synthesis_response.usage.input_tokens == 60
     assert synthesis_response.usage.output_tokens == 100
@@ -507,8 +509,8 @@ def test_generation_retries_one_invalid_claim_map_without_weakening_attestation(
     assert correction_content[0]["cache_control"] == {"type": "ephemeral"}
     correction_text = correction_content[1]["text"]
     assert "CORRECTION ATTEMPT AFTER A FAILED EVIDENCE CONTRACT" in correction_text
-    assert "Every claimAttribution sourceId MUST appear" in correction_text
-    assert "claimField and claimIndex MUST select" in correction_text
+    assert "Every high-risk item sourceId MUST appear" in correction_text
+    assert "Every high-risk array item MUST be an object" in correction_text
     assert requests[1]["provider"] == requests[0]["provider"]
     assert "fallback_models" not in requests[0]
     assert "fallback_models" not in requests[1]
@@ -602,7 +604,7 @@ def test_generation_lets_the_evidence_gate_explain_incomplete_schema_four_covera
     assert result["evidenceAdmissibility"]["status"] == "passed"
     assert len(requests) == 2
     correction_text = requests[1]["messages"][0]["content"][1]["text"]
-    assert "CORRECTION ATTEMPT AFTER A FAILED OPERATIONAL EVIDENCE GATE" in correction_text
+    assert "CORRECTION ATTEMPT AFTER A FAILED EVIDENCE GATE" in correction_text
     assert "riskFactors[1] requires exactly one schema-4 attribution record" in correction_text
     assert "FAILED EVIDENCE CONTRACT" not in correction_text
 

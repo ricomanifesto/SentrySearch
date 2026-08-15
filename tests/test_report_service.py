@@ -218,6 +218,24 @@ def test_actionable_filter_uses_current_evaluation_disposition_without_backfill(
     assert "reviewable" in compiled
 
 
+def test_handoff_filter_requires_current_acceptance_and_passed_evidence():
+    filters = ReportFilters(eligible_for_handoff=True)
+    compiled = " ".join(
+        str(
+            expression.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        for expression in ReportStorageService._report_filter_expressions(filters)
+    )
+
+    assert "reports.status = 'completed'" in compiled
+    assert "reports.evidence_admissibility_status = 'passed'" in compiled
+    assert "report_disposition_events.disposition" in compiled
+    assert "accepted" in compiled
+
+
 def test_fresh_evaluation_vintage_returns_to_unreviewed_without_deleting_history():
     report = Report(
         id="ad0a93e1-4d27-4388-83f0-c1c8fa688a2e",

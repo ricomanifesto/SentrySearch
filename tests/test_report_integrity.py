@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -12,13 +13,16 @@ from src.core.source_ledger import (
     claim_attribution_status,
     materialize_claim_attribution,
     materialize_cited_sources,
+    materialize_embedded_claim_evidence,
 )
+from src.core.generation_failures import EvidenceCoverageError
 from src.core.validation_criteria import SECTION_CRITERIA, build_section_evaluation_prompt
 from src.core.validation_criteria import ConsistencyEvaluation
 from src.core.section_validator import SectionValidator
 from src.core import section_validator as section_validator_module
 from src.core.markdown_generator import generate_markdown
 from src.domain.reports import (
+    AnalystDisposition,
     ClaimAttributionStatus,
     EvidenceAdmissibilityStatus,
     EvaluationStatus,
@@ -29,6 +33,7 @@ from src.domain.reports import (
     derive_review_status,
     evaluation_conflict_count,
     is_judgment_eligible,
+    is_handoff_eligible,
     is_reuse_eligible,
 )
 from src.storage.models import Report
@@ -185,7 +190,8 @@ def test_claim_attribution_v3_materializes_explicit_structured_selectors():
         access_date="2026-08-15",
     )
 
-    assert [claim["claim"] for claim in profile["claimAttribution"]["claims"]] == [
+    derived_claims = cast(list[dict[str, Any]], profile["claimAttribution"]["claims"])
+    assert [claim["claim"] for claim in derived_claims] == [
         "Remote access",
         "Injected Beacon payload",
         "Periodic callbacks",
@@ -207,6 +213,84 @@ def test_claim_attribution_v3_materializes_explicit_structured_selectors():
     profile["claimAttribution"]["claims"][0]["claimField"] = "behavioralIndicators"
     with pytest.raises(SourceLedgerError, match="selector is invalid"):
         materialize_claim_attribution(profile)
+
+
+def test_embedded_high_risk_evidence_derives_the_schema_four_ledger():
+    profile = {
+        "webSearchSources": {
+            "primarySources": [{"sourceId": "S1", "url": "https://example.com/report"}]
+        },
+        "threatIntelligence": {
+            "riskAssessment": {
+                "riskFactors": [
+                    {
+                        "value": "Remote access",
+                        "evidenceRole": "direct_evidence",
+                        "sourceIds": ["S1"],
+                    }
+                ]
+            }
+        },
+        "forensicArtifacts": {
+            "fileSystemArtifacts": [
+                {
+                    "value": "payload.dll",
+                    "evidenceRole": "direct_evidence",
+                    "sourceIds": ["S1"],
+                }
+            ]
+        },
+        "detectionAndMitigation": {
+            "behavioralIndicators": [
+                {
+                    "value": "Unexpected service creation",
+                    "evidenceRole": "direct_evidence",
+                    "sourceIds": ["S1"],
+                }
+            ]
+        },
+        "mitigationAndResponse": {
+            "responseActions": [
+                {
+                    "value": "Isolate affected hosts",
+                    "evidenceRole": "direct_evidence",
+                    "sourceIds": ["S1"],
+                }
+            ]
+        },
+    }
+
+    materialize_embedded_claim_evidence(profile)
+
+    assert profile["threatIntelligence"]["riskAssessment"]["riskFactors"] == ["Remote access"]
+    assert profile["forensicArtifacts"]["fileSystemArtifacts"] == ["payload.dll"]
+    assert profile["claimAttribution"]["schemaVersion"] == "4"
+    assert profile["claimAttribution"]["generationShape"] == "embedded_evidence_items"
+    embedded_claims = cast(list[dict[str, Any]], profile["claimAttribution"]["claims"])
+    assert [claim["claim"] for claim in embedded_claims] == [
+        "Remote access",
+        "payload.dll",
+        "Unexpected service creation",
+        "Isolate affected hosts",
+    ]
+    assert_claim_attribution_consistent(profile)
+
+
+def test_plain_high_risk_values_without_a_legacy_ledger_fail_as_incomplete_generation():
+    profile = {
+        "threatIntelligence": {"riskAssessment": {"riskFactors": ["Remote access"]}},
+        "forensicArtifacts": {},
+        "detectionAndMitigation": {},
+        "mitigationAndResponse": {},
+    }
+
+    with pytest.raises(EvidenceCoverageError) as captured:
+        materialize_embedded_claim_evidence(profile)
+
+    assert captured.value.assessment["status"] == "unassessed"
+    assert captured.value.assessment["blockingFindings"] == [
+        "No high-risk item carried embedded evidence."
+    ]
 
 
 def test_source_ledger_refuses_to_finalize_a_divergent_reference_list():
@@ -311,6 +395,20 @@ def test_judgment_eligibility_is_derived_from_the_complete_evaluation_lifecycle(
         evaluation_status=EvaluationStatus.COMPLETED,
         quality_score=4.2,
         evidence_admissibility_status=EvidenceAdmissibilityStatus.UNASSESSED,
+    )
+    assert is_handoff_eligible(
+        report_status=ReportStatus.COMPLETED,
+        evaluation_status=EvaluationStatus.COMPLETED,
+        quality_score=4.2,
+        evidence_admissibility_status=EvidenceAdmissibilityStatus.PASSED,
+        analyst_disposition=AnalystDisposition.ACCEPTED,
+    )
+    assert not is_handoff_eligible(
+        report_status=ReportStatus.COMPLETED,
+        evaluation_status=EvaluationStatus.COMPLETED,
+        quality_score=4.2,
+        evidence_admissibility_status=EvidenceAdmissibilityStatus.PASSED,
+        analyst_disposition=AnalystDisposition.UNREVIEWED,
     )
 
 
