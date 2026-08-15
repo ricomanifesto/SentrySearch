@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from src.core.section_validator import SectionValidator
+from src.core.source_ledger import CLAIM_CLASS_SECTIONS
 from src.core.threat_profile_schema import EVIDENCE_ENHANCEMENT_MODELS
 from src.core.validation_criteria import SECTION_CRITERIA, select_profile_sections
 
@@ -190,6 +191,12 @@ class ParallelSectionValidator(SectionValidator):
         """Propose and evaluate section enhancements without mutating shared state."""
 
         candidates: list[tuple[float, int, str]] = []
+        attribution = profile.get("claimAttribution")
+        claim_bound_sections = (
+            frozenset(CLAIM_CLASS_SECTIONS.values())
+            if isinstance(attribution, dict) and attribution.get("schemaVersion") == "2"
+            else frozenset()
+        )
         for index, (section_name, validation) in enumerate(
             validation_results["section_validations"].items()
         ):
@@ -198,6 +205,7 @@ class ParallelSectionValidator(SectionValidator):
                 isinstance(score, (int, float))
                 and 0 <= score < SECTION_CRITERIA[section_name].minimum_score
                 and (not evidence_text or section_name in EVIDENCE_ENHANCEMENT_MODELS)
+                and section_name not in claim_bound_sections
             ):
                 candidates.append((float(score), index, section_name))
         sections_to_enhance = [section_name for _, _, section_name in sorted(candidates)[:5]]

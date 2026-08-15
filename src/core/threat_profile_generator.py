@@ -29,7 +29,11 @@ from src.core.generation_failures import (
     EvidenceUnavailableError,
     ProfileOutputError,
 )
-from src.core.source_ledger import SourceLedgerError, attach_source_ids
+from src.core.source_ledger import (
+    SourceLedgerError,
+    assert_claim_attribution_consistent,
+    attach_source_ids,
+)
 from src.domain.model_routes import ModelRouteProvenance, ModelRoutePurpose
 from src.domain.reports import GenerationProgress, GenerationStage
 
@@ -44,6 +48,9 @@ RESEARCH_FOCUSES = (
 )
 
 UNKNOWN_CLAIM_SOURCE_ERROR = "Threat profile claim attribution references an unknown source ID"
+INCONSISTENT_CLAIM_ATTRIBUTION_ERROR = (
+    "Current reports require claim attribution schema v2 for all high-risk claim classes"
+)
 ATTRIBUTION_CORRECTION_ATTEMPTS = 1
 
 
@@ -59,6 +66,7 @@ webSearchSources.primarySources ledger. Return a complete corrected JSON object.
 - Every claimAttribution sourceId MUST appear in webSearchSources.primarySources.
 - Every primary sourceId and URL MUST be copied exactly from the attested source catalog.
 - If a catalog source supports a claim, include that source in primarySources before citing it.
+- Every attributed claim MUST be copied exactly from its named structured section.
 - Do not invent, renumber, infer, or silently remove evidence.
 """
 
@@ -577,11 +585,12 @@ END ATTESTED SOURCE CATALOG"""
                     raise ProfileOutputError("Structured profile output was invalid") from error
                 try:
                     attest_profile_sources(json_data, response.web_search_sources)
+                    assert_claim_attribution_consistent(json_data)
                 except ValueError as error:
-                    can_correct = (
-                        attempt < ATTRIBUTION_CORRECTION_ATTEMPTS
-                        and str(error) == UNKNOWN_CLAIM_SOURCE_ERROR
-                    )
+                    can_correct = attempt < ATTRIBUTION_CORRECTION_ATTEMPTS and str(error) in {
+                        UNKNOWN_CLAIM_SOURCE_ERROR,
+                        INCONSISTENT_CLAIM_ATTRIBUTION_ERROR,
+                    }
                     if not can_correct:
                         raise EvidenceAttestationError(
                             "Profile evidence attestation failed"

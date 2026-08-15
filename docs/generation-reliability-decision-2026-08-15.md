@@ -49,3 +49,11 @@ the same attested dossier and an explicit ledger invariant. The retry applies
 only to the exact unknown-source-ID failure. Other source, URL, schema, and
 attestation failures remain fail-closed, and a second mismatch remains terminal.
 Provider routing and the existing truncation retry are unchanged.
+
+The repeat witness passed the source-ID boundary and later failed the persist
+gate because an attributed claim no longer appeared verbatim in its named
+section. The evaluator may propose improvements, but it must not rewrite a
+section after claim attribution has signed that section's evidence. Current
+claim-bearing sections are therefore evaluation-only, and the same single
+correction attempt now covers an initially inconsistent claim map. The final
+persist gate remains authoritative.

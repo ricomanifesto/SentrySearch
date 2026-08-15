@@ -397,8 +397,9 @@ def test_generation_separates_web_research_from_structured_synthesis(
     ]
 
 
-def test_generation_retries_one_unknown_claim_source_id_without_weakening_attestation(
-    monkeypatch, threat_profile_data
+@pytest.mark.parametrize("invalid_attribution", ["unknown_source", "claim_text"])
+def test_generation_retries_one_invalid_claim_map_without_weakening_attestation(
+    monkeypatch, threat_profile_data, invalid_attribution
 ):
     monkeypatch.setattr(
         "src.core.threat_profile_generator.create_model_client",
@@ -435,7 +436,12 @@ def test_generation_retries_one_unknown_claim_source_id_without_weakening_attest
     monkeypatch.setattr(generator, "_research_evidence", lambda _tool_name: research_response)
 
     invalid_profile = deepcopy(threat_profile_data)
-    invalid_profile["claimAttribution"]["claims"][0]["sourceIds"] = ["S99"]
+    if invalid_attribution == "unknown_source":
+        invalid_profile["claimAttribution"]["claims"][0]["sourceIds"] = ["S99"]
+    else:
+        invalid_profile["claimAttribution"]["claims"][0][
+            "claim"
+        ] = "A claim absent from the signed threat-intelligence section"
     profiles = [invalid_profile, threat_profile_data]
     requests: list[dict] = []
     synthesis_responses: list[SimpleNamespace] = []
@@ -479,6 +485,9 @@ def test_generation_retries_one_unknown_claim_source_id_without_weakening_attest
         requests[1]["messages"][0]["content"]
     )
     assert "Every claimAttribution sourceId MUST appear" in (requests[1]["messages"][0]["content"])
+    assert "Every attributed claim MUST be copied exactly" in (
+        requests[1]["messages"][0]["content"]
+    )
     assert requests[1]["provider"] == requests[0]["provider"]
     assert requests[1]["fallback_models"] == requests[0]["fallback_models"]
     assert progress_updates[-3].message == ("Reconciling claim evidence with the source ledger...")
@@ -489,3 +498,35 @@ def test_generation_retries_one_unknown_claim_source_id_without_weakening_attest
     assert synthesis_responses[-1].usage.output_tokens == 44
     assert synthesis_responses[-1].usage.web_search_calls == 1
     assert synthesis_responses[-1].usage.total_tokens == 67
+
+
+def test_quality_enhancement_never_rewrites_claim_bound_sections(monkeypatch, threat_profile_data):
+    validator = ParallelSectionValidator(client=None)
+    enhanced_sections: list[str] = []
+
+    def enhance(section_name, section_content, tool_name, evidence_text):
+        enhanced_sections.append(section_name)
+        return {**section_content, "enhancementMarker": tool_name}
+
+    monkeypatch.setattr(validator, "_enhance_section_from_attested_evidence", enhance)
+    monkeypatch.setattr(
+        validator,
+        "validate_section",
+        lambda _section_name, _content: {"scores": {"overall": 5.0}},
+    )
+    results = {
+        "section_validations": {
+            "threatIntelligence": {"scores": {"overall": 0.0}},
+            "technicalDetails": {"scores": {"overall": 0.0}},
+        }
+    }
+
+    enhancements = validator._enhance_sections_parallel(
+        results,
+        deepcopy(threat_profile_data),
+        "Example Threat",
+        evidence_text="Attested evidence",
+    )
+
+    assert enhanced_sections == ["technicalDetails"]
+    assert set(enhancements) == {"technicalDetails"}
