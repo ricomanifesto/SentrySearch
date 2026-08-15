@@ -889,7 +889,11 @@ END ATTESTED OPERATIONAL SOURCE CATALOG"""
                         # analysis. Gemini otherwise consumes the correction budget
                         # on thinking tokens before emitting the four required items.
                         reasoning={"max_tokens": 0},
-                        strict_response_schema=True,
+                        # Let the domain parser repair JSON syntax before applying
+                        # the same strict Pydantic and evidence checks. Gemini can
+                        # return repairable JSON text even when the provider-side
+                        # schema mode marks the completion invalid.
+                        strict_response_schema=False,
                         session_id=synthesis_session_id,
                         messages=[
                             {
