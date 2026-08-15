@@ -27,6 +27,7 @@ const expectations = [
   { name: 'uses the shared content quality vocabulary', source: reportsPage, pattern: /label: 'Content quality'/ },
   { name: 'shows reader-facing readiness beside content quality', source: reportsPage, pattern: /getReviewStatusLabel\(report\.review_status\)/ },
   { name: 'shows analyst judgment separately from machine readiness', source: reportsPage, pattern: /getAnalystDispositionLabel\(report\.analyst_disposition\)/ },
+  { name: 'shows analyst judgment only when the backend marks the vintage eligible', source: reportsPage, pattern: /report\.eligible_for_judgment \? \([\s\S]*getAnalystDispositionLabel/ },
   { name: 'declares the report review queue controls contract', source: reportsPage, pattern: /data-contract="Reports\.ReviewQueueControls\.v1"/ },
   { name: 'uses a canonical review queue controls collection', source: reportsPage, pattern: /const reviewQueueControls/ },
   { name: 'renders queue controls from the canonical collection', source: reportsPage, pattern: /reviewQueueControls\.map/ },

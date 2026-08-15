@@ -16,6 +16,14 @@ function sentenceList(values: string[]): string {
   return `${values.slice(0, -1).join(', ')}, and ${values.at(-1)}`;
 }
 
+export function getRecordedConflictCount(
+  assessment: Record<string, unknown> | null | undefined,
+): number {
+  if (!assessment?.consistency || typeof assessment.consistency !== 'object') return 0;
+  const consistency = assessment.consistency as Record<string, unknown>;
+  return stringList(consistency.inconsistencies).length;
+}
+
 export function getReviewAttentionSummary(
   assessment: Record<string, unknown> | null | undefined,
   sourceCount: number,

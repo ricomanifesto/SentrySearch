@@ -62,6 +62,7 @@ class ReportResponse(BaseModel):
     evaluated_at: datetime | None = None
     review_status: ReviewStatus = ReviewStatus.NEEDS_EVALUATION
     analyst_disposition: AnalystDisposition = AnalystDisposition.UNREVIEWED
+    eligible_for_judgment: bool = False
     content_preview: str | None = None
 
 

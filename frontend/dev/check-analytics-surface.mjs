@@ -123,6 +123,10 @@ const expectations = [
     pattern: /getAnalystDispositionLabel\(activity\.analyst_disposition\)/,
   },
   {
+    name: 'shows analyst disposition only for backend-eligible report vintages',
+    pattern: /activity\.eligible_for_judgment \? \([\s\S]*getAnalystDispositionLabel/,
+  },
+  {
     name: 'uses triage language for empty threat coverage',
     pattern: /Coverage appears after reports classify threat patterns/,
   },

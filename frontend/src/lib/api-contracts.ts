@@ -35,6 +35,7 @@ export interface Report {
   evaluated_at?: string | null;
   review_status: ReviewStatus;
   analyst_disposition: AnalystDisposition;
+  eligible_for_judgment: boolean;
   content_preview?: string | null;
 }
 
@@ -175,6 +176,7 @@ export interface AnalyticsDashboard {
     evaluation_status: EvaluationStatus;
     review_status: ReviewStatus;
     analyst_disposition: AnalystDisposition;
+    eligible_for_judgment: boolean;
     status: ReportStatus;
   }>;
 }
@@ -231,6 +233,7 @@ export interface AnalyticsData {
     evaluation_status: EvaluationStatus;
     review_status: ReviewStatus;
     analyst_disposition: AnalystDisposition;
+    eligible_for_judgment: boolean;
     status: ReportStatus;
   }>;
 }

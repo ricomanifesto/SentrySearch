@@ -41,6 +41,7 @@ const localReportDetailFixture: ReportDetail = {
   evaluation_error_code: 'evaluator_unavailable',
   evaluation_attempts: 1,
   review_status: 'needs_evaluation',
+  eligible_for_judgment: false,
   classification_status: 'recorded',
   quality_assessment: null,
   research_route: {
@@ -152,6 +153,7 @@ const localFailedGenerationFixture: ReportDetail = {
   evaluation_status: 'unrecorded',
   evaluation_attempts: 0,
   review_status: 'generation_failed',
+  eligible_for_judgment: false,
   classification_status: 'unrecorded',
   quality_score: null,
   quality_assessment: null,

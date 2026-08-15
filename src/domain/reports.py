@@ -196,6 +196,36 @@ def coerce_evaluation_status(
     return EvaluationStatus.COMPLETED if quality_score is not None else EvaluationStatus.UNRECORDED
 
 
+def is_judgment_eligible(
+    *,
+    report_status: ReportStatus | str,
+    evaluation_status: EvaluationStatus | str | None,
+    quality_score: float | None,
+) -> bool:
+    """Return whether the current evaluation vintage can receive analyst judgment."""
+
+    status = ReportStatus(report_status)
+    evaluator = coerce_evaluation_status(evaluation_status, quality_score=quality_score)
+    return (
+        status is ReportStatus.COMPLETED
+        and evaluator is EvaluationStatus.COMPLETED
+        and quality_score is not None
+    )
+
+
+def evaluation_conflict_count(quality_assessment: Mapping[str, Any] | None) -> int:
+    """Count explicit cross-section conflicts without inferring legacy evidence."""
+
+    assessment = quality_assessment or {}
+    consistency = assessment.get("consistency")
+    if not isinstance(consistency, Mapping):
+        return 0
+    inconsistencies = consistency.get("inconsistencies")
+    if not isinstance(inconsistencies, list):
+        return 0
+    return sum(isinstance(value, str) and bool(value.strip()) for value in inconsistencies)
+
+
 def derive_review_status(
     *,
     report_status: ReportStatus | str,

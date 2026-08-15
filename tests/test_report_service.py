@@ -364,6 +364,51 @@ def test_disposition_append_records_the_current_evaluation_vintage():
     assert result["is_current"] is True
 
 
+def test_accepting_recorded_conflicts_requires_an_analyst_note():
+    report = Report(
+        id="ad0a93e1-4d27-4388-83f0-c1c8fa688a2e",
+        tool_name="Havoc",
+        status="completed",
+        evaluation_status="completed",
+        evaluation_attempts=3,
+        quality_score=4.0,
+        quality_assessment={
+            "consistency": {"inconsistencies": ["Timeline conflicts with metadata."]}
+        },
+    )
+
+    class FakeQuery:
+        def filter(self, *args):
+            return self
+
+        def with_for_update(self):
+            return self
+
+        def first(self):
+            return report
+
+    class FakeSession:
+        def query(self, *args):
+            return FakeQuery()
+
+    class FakeDatabaseManager:
+        @contextmanager
+        def get_session(self):
+            yield FakeSession()
+
+    service = ReportStorageService.__new__(ReportStorageService)
+    service.db_manager = cast(Any, FakeDatabaseManager())
+
+    with pytest.raises(ValueError, match="recorded conflicts requires an analyst note"):
+        service.append_report_disposition(
+            str(report.id),
+            disposition=AnalystDisposition.ACCEPTED,
+            note=None,
+            reviewer_user_id="analyst-user",
+            owner_user_id="analyst-user",
+        )
+
+
 def test_legacy_classification_reconciliation_keeps_unknown_reasons_distinct():
     service = ReportStorageService.__new__(ReportStorageService)
 

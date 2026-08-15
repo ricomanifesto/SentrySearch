@@ -11,6 +11,7 @@ import {
   getAnalystDispositionClasses,
   getAnalystDispositionLabel,
 } from '@/lib/analyst-disposition';
+import { getRecordedConflictCount } from '@/lib/review-attention';
 import { formatDate } from '@/lib/utils';
 
 type AnalystDispositionPanelProps = {
@@ -58,12 +59,14 @@ export function AnalystDispositionPanel({
   onRecord,
   onReevaluate,
 }: AnalystDispositionPanelProps) {
-  const currentSelection = report.current_disposition?.disposition ?? 'accepted';
-  const [selected, setSelected] = React.useState<StoredAnalystDisposition>(currentSelection);
+  const currentSelection = report.current_disposition?.disposition ?? '';
+  const [selected, setSelected] = React.useState<StoredAnalystDisposition | ''>(currentSelection);
   const [note, setNote] = React.useState('');
-  const canReview = report.evaluation_status === 'completed' && report.quality_score != null;
+  const conflictCount = getRecordedConflictCount(report.quality_assessment);
+  const conflictNoteRequired = selected === 'accepted' && conflictCount > 0;
+  const missingRequiredNote = conflictNoteRequired && note.trim().length === 0;
 
-  if (!canReview) return null;
+  if (!report.eligible_for_judgment) return null;
 
   return (
     <section
@@ -108,11 +111,17 @@ export function AnalystDispositionPanel({
       </fieldset>
 
       <label className="mt-4 block">
-        <span className="text-sm font-medium text-zinc-800">Reviewer note <span className="font-normal text-zinc-500">(optional)</span></span>
+        <span className="text-sm font-medium text-zinc-800">
+          Reviewer note{' '}
+          <span className="font-normal text-zinc-500">
+            {conflictNoteRequired ? `(required to accept ${conflictCount} recorded conflict${conflictCount === 1 ? '' : 's'})` : '(optional)'}
+          </span>
+        </span>
         <textarea
           value={note}
           onChange={(event) => setNote(event.target.value)}
           maxLength={1000}
+          aria-required={conflictNoteRequired}
           disabled={disabled || pending}
           rows={3}
           placeholder="Name the evidence checked, remaining uncertainty, or required revision."
@@ -123,8 +132,10 @@ export function AnalystDispositionPanel({
       <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
         <button
           type="button"
-          disabled={disabled || pending}
-          onClick={() => onRecord(selected, note)}
+          disabled={disabled || pending || !selected || missingRequiredNote}
+          onClick={() => {
+            if (selected && !missingRequiredNote) onRecord(selected, note);
+          }}
           className="inline-flex h-10 items-center justify-center rounded-lg bg-zinc-950 px-4 text-sm font-medium text-white hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50"
         >
           {pending ? 'Recording judgment…' : 'Record judgment'}
@@ -144,6 +155,11 @@ export function AnalystDispositionPanel({
       {failed ? (
         <p className="mt-3 text-sm text-red-700" role="alert">
           The judgment was not recorded. The existing audit history is unchanged.
+        </p>
+      ) : null}
+      {conflictNoteRequired ? (
+        <p className="mt-3 text-sm text-amber-800">
+          Name why reuse is justified while the recorded conflicts remain unresolved.
         </p>
       ) : null}
 

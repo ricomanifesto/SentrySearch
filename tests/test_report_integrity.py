@@ -22,6 +22,8 @@ from src.domain.reports import (
     ReportStatus,
     ReviewStatus,
     derive_review_status,
+    evaluation_conflict_count,
+    is_judgment_eligible,
 )
 from src.storage.models import Report
 from src.storage.report_service import ReportStorageService
@@ -175,6 +177,34 @@ def test_review_readiness_separates_generation_evaluation_and_analyst_attention(
         )
         is ReviewStatus.NEEDS_ATTENTION
     )
+
+
+def test_judgment_eligibility_is_derived_from_the_complete_evaluation_lifecycle():
+    assert is_judgment_eligible(
+        report_status=ReportStatus.COMPLETED,
+        evaluation_status=EvaluationStatus.COMPLETED,
+        quality_score=4.2,
+    )
+    assert not is_judgment_eligible(
+        report_status=ReportStatus.FAILED,
+        evaluation_status=EvaluationStatus.COMPLETED,
+        quality_score=4.2,
+    )
+    assert not is_judgment_eligible(
+        report_status=ReportStatus.COMPLETED,
+        evaluation_status=EvaluationStatus.FAILED,
+        quality_score=None,
+    )
+
+
+def test_conflict_count_uses_only_explicit_cross_section_inconsistencies():
+    assert (
+        evaluation_conflict_count(
+            {"consistency": {"inconsistencies": ["Timeline mismatch.", "", "Header mismatch."]}}
+        )
+        == 2
+    )
+    assert evaluation_conflict_count({"recommendations": ["Investigate further."]}) == 0
 
 
 def test_nested_generated_classification_and_saved_preview_survive_storage_projection():

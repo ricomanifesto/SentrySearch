@@ -350,9 +350,11 @@ function ReportReviewRecord({ report }: { report: Report }) {
             <span className={`rounded-md px-2 py-1 text-sm font-medium ${getReviewStatusClasses(report.review_status)}`}>
               {getReviewStatusLabel(report.review_status)}
             </span>
-            <span className={`rounded-md px-2 py-1 text-sm font-medium ${getAnalystDispositionClasses(report.analyst_disposition)}`}>
-              {getAnalystDispositionLabel(report.analyst_disposition)}
-            </span>
+            {report.eligible_for_judgment ? (
+              <span className={`rounded-md px-2 py-1 text-sm font-medium ${getAnalystDispositionClasses(report.analyst_disposition)}`}>
+                {getAnalystDispositionLabel(report.analyst_disposition)}
+              </span>
+            ) : null}
             {report.category ? (
               <span className="rounded-md bg-zinc-100 px-2 py-1 text-sm text-zinc-700">{formatTaxonomyLabel(report.category)}</span>
             ) : null}

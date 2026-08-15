@@ -267,9 +267,11 @@ export default function AnalyticsPage() {
                           <span className="capitalize text-zinc-500">
                             {activity.review_status.replace(/_/g, ' ')}
                           </span>
-                          <span className={`rounded-md px-2 py-0.5 font-medium ${getAnalystDispositionClasses(activity.analyst_disposition)}`}>
-                            {getAnalystDispositionLabel(activity.analyst_disposition)}
-                          </span>
+                          {activity.eligible_for_judgment ? (
+                            <span className={`rounded-md px-2 py-0.5 font-medium ${getAnalystDispositionClasses(activity.analyst_disposition)}`}>
+                              {getAnalystDispositionLabel(activity.analyst_disposition)}
+                            </span>
+                          ) : null}
                         </div>
                       </li>
                     ))}

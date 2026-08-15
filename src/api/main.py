@@ -55,6 +55,7 @@ from src.domain.reports import (
     ReviewStatus,
     coerce_evaluation_status,
     derive_review_status,
+    is_judgment_eligible,
 )
 
 logger = logging.getLogger(__name__)
@@ -188,6 +189,7 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
     sources = get_report_sources(report)
     evaluation_status = get_evaluation_status(report)
     assessment = get_quality_assessment(report)
+    report_status = get_report_status(report)
     return {
         "id": report["id"],
         "tool_name": report["tool_name"],
@@ -203,7 +205,7 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
         "quality_score": quality_score,
         "created_at": report["created_at"],
         "processing_time_ms": report.get("processing_time_ms") or 0,
-        "status": get_report_status(report),
+        "status": report_status,
         "generation_stage": get_generation_stage(report),
         "generation_failure_stage": report.get("generation_failure_stage"),
         "generation_error_code": report.get("generation_error_code"),
@@ -222,6 +224,11 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
         ),
         "analyst_disposition": AnalystDisposition(
             report.get("analyst_disposition") or AnalystDisposition.UNREVIEWED.value
+        ),
+        "eligible_for_judgment": is_judgment_eligible(
+            report_status=report_status,
+            evaluation_status=evaluation_status,
+            quality_score=quality_score,
         ),
         "content_preview": report.get("content_preview"),
     }
@@ -1143,6 +1150,9 @@ async def get_analytics(
                     "evaluation_status": get_evaluation_status(report),
                     "review_status": report_response_fields(report)["review_status"],
                     "analyst_disposition": report_response_fields(report)["analyst_disposition"],
+                    "eligible_for_judgment": report_response_fields(report)[
+                        "eligible_for_judgment"
+                    ],
                     "status": get_report_status(report),
                 }
             )
@@ -1275,6 +1285,7 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
                     "evaluation_status": get_evaluation_status(r),
                     "review_status": report_response_fields(r)["review_status"],
                     "analyst_disposition": report_response_fields(r)["analyst_disposition"],
+                    "eligible_for_judgment": report_response_fields(r)["eligible_for_judgment"],
                     "status": get_report_status(r),
                 }
                 for r in recent_activity

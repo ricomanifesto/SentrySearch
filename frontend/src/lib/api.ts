@@ -153,6 +153,7 @@ class SentrySearchAPI {
       evaluation_attempts: report.evaluation_attempts ?? 0,
       review_status: report.review_status ?? (report.quality_score == null ? 'needs_evaluation' : 'needs_attention'),
       analyst_disposition: report.analyst_disposition ?? 'unreviewed',
+      eligible_for_judgment: report.eligible_for_judgment === true,
       classification_status: report.classification_status ?? 'unrecorded',
       claim_attribution_status: report.claim_attribution_status ?? 'legacy',
       claim_attributions: report.claim_attributions ?? [],

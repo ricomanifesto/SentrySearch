@@ -6,6 +6,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pagePath = resolve(here, '../src/app/export/page.tsx');
 const source = await readFile(pagePath, 'utf8');
 const exportBuilder = await readFile(resolve(here, '../src/lib/report-export.ts'), 'utf8');
+const exportReadiness = await readFile(resolve(here, '../src/lib/export-readiness.ts'), 'utf8');
 
 const expectations = [
   { name: 'keeps the export route behind the auth boundary', pattern: /<AuthGuard>/ },
@@ -16,6 +17,13 @@ const expectations = [
   { name: 'offers the canonical source ledger as an export layer', pattern: /label: 'Source evidence'[\s\S]*include_sources/ },
   { name: 'uses content quality vocabulary for export constraints', pattern: /Minimum content quality/ },
   { name: 'defaults handoff exports to accepted records', pattern: /analyst_dispositions: \['accepted'\]/ },
+  { name: 'derives package readiness from the resolved matching count', pattern: /getExportScopeState\(/ },
+  { name: 'names the zero-result scope as zero records', source: exportReadiness, pattern: /packageScope: '0 records'/ },
+  { name: 'states that an empty package has nothing ready', source: exportReadiness, pattern: /readinessStatus: 'Nothing ready'/ },
+  { name: 'uses an unavailable action label for an empty package', source: exportReadiness, pattern: /actionLabel: 'No package to prepare'/ },
+  { name: 'disables package preparation when nothing is ready', pattern: /disabled=\{exportMutation\.isPending \|\| !exportScope\.canPrepare\}/ },
+  { name: 'keeps every scope constraint in the preview query', pattern: /date_range_days: config\.date_range_days[\s\S]*threat_types: config\.threat_types[\s\S]*min_quality_score: config\.min_quality_score/ },
+  { name: 'keeps preview failures distinct from empty results', pattern: /The handoff scope could not be loaded[\s\S]*No package will be prepared/ },
   { name: 'makes lifecycle scope explicit in the package controls', pattern: /label: 'Lifecycle scope'/ },
   { name: 'shows review state on every selectable export record', pattern: /getReviewStatusLabel\(record\.reviewStatus\)/ },
   { name: 'shows analyst disposition on every selectable export record', pattern: /getAnalystDispositionLabel\(record\.analystDisposition\)/ },
@@ -43,7 +51,7 @@ const expectations = [
   { name: 'supports selecting all visible reports', pattern: /handleSelectAll/ },
   { name: 'uses accessible export pending semantics', pattern: /role="status"[\s\S]*Preparing export package for download/ },
   { name: 'uses accessible export error semantics', pattern: /role="alert"[\s\S]*The export package could not be prepared/ },
-  { name: 'uses product-specific package action copy', pattern: /Prepare package/ },
+  { name: 'uses product-specific package action copy', source: exportReadiness, pattern: /actionLabel: 'Prepare package'/ },
   { name: 'guards the route against horizontal mobile overflow', pattern: /overflow-x-hidden/ },
   { name: 'keeps layout containers shrink-safe', pattern: /min-w-0/ },
   { name: 'does not render raw export errors', absentPattern: /error\.message|error\?\.message/ },

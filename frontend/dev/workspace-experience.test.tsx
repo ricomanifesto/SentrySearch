@@ -11,6 +11,7 @@ import { getReportSectionLinks, splitReportContent } from '../src/lib/report-con
 import { getReviewAttentionSummary } from '../src/lib/review-attention';
 import { getGenerationFailurePresentation } from '../src/lib/generation-failure';
 import { buildReportExport } from '../src/lib/report-export';
+import { getExportScopeState } from '../src/lib/export-readiness';
 import {
   reportQueryFromSearchParams,
   reportQuerySearchParams,
@@ -279,4 +280,90 @@ test('analyst judgment is presented as an append-only evaluation-vintage event',
   assert.match(html, /Sources and contradictions checked/);
   assert.match(html, /current vintage/);
   assert.match(html, /Re-run evaluation/);
+});
+
+test('an unreviewed evaluation never arrives with an analyst judgment selected', () => {
+  const html = renderToStaticMarkup(
+    <AnalystDispositionPanel
+      report={{ ...SAMPLE_REPORT, current_disposition: null, analyst_disposition: 'unreviewed' }}
+      onRecord={() => undefined}
+      onReevaluate={() => undefined}
+    />,
+  );
+
+  assert.doesNotMatch(html, /checked="" value="accepted"/);
+  assert.doesNotMatch(html, /checked="" value="needs_revision"/);
+  assert.doesNotMatch(html, /checked="" value="rejected"/);
+  assert.match(html, /<button[^>]*disabled=""[^>]*>Record judgment<\/button>/);
+});
+
+test('accepting recorded conflicts requires a proportional analyst note', () => {
+  const html = renderToStaticMarkup(
+    <AnalystDispositionPanel
+      report={{
+        ...SAMPLE_REPORT,
+        analyst_disposition: 'accepted',
+        current_disposition: {
+          id: 'event-conflicted-accept',
+          disposition: 'accepted',
+          note: 'Earlier rationale.',
+          evaluation_attempt: 1,
+          created_at: '2026-08-14T12:00:00.000Z',
+          is_current: true,
+        },
+        quality_assessment: {
+          consistency: { inconsistencies: ['Timeline mismatch.', 'Header mismatch.'] },
+        },
+      }}
+      onRecord={() => undefined}
+      onReevaluate={() => undefined}
+    />,
+  );
+
+  assert.match(html, /required to accept 2 recorded conflicts/);
+  assert.match(html, /aria-required="true"/);
+  assert.match(html, /why reuse is justified/);
+  assert.match(html, /<button[^>]*disabled=""[^>]*>Record judgment<\/button>/);
+});
+
+test('ineligible report vintages expose no analyst judgment control', () => {
+  const html = renderToStaticMarkup(
+    <AnalystDispositionPanel
+      report={{ ...SAMPLE_REPORT, eligible_for_judgment: false, evaluation_status: 'failed', quality_score: null }}
+      onRecord={() => undefined}
+      onReevaluate={() => undefined}
+    />,
+  );
+
+  assert.equal(html, '');
+});
+
+test('an empty export scope is named and cannot prepare a package', () => {
+  const state = getExportScopeState({
+    loading: false,
+    failed: false,
+    matchingCount: 0,
+    selectedCount: 0,
+    maxReports: 1000,
+  });
+
+  assert.equal(state.packageScope, '0 records');
+  assert.equal(state.queueStatus, '0 records');
+  assert.equal(state.readinessStatus, 'Nothing ready');
+  assert.equal(state.actionLabel, 'No package to prepare');
+  assert.equal(state.canPrepare, false);
+});
+
+test('a bounded matching export scope reports the records it can package', () => {
+  const state = getExportScopeState({
+    loading: false,
+    failed: false,
+    matchingCount: 7,
+    selectedCount: 0,
+    maxReports: 5,
+  });
+
+  assert.equal(state.recordCount, 5);
+  assert.equal(state.packageScope, '5 records matching');
+  assert.equal(state.canPrepare, true);
 });

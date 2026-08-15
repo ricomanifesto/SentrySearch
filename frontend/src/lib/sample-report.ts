@@ -18,6 +18,7 @@ export const SAMPLE_REPORT: ReportDetail = {
   evaluated_at: '2026-08-13T12:03:00.000Z',
   review_status: 'reviewable',
   analyst_disposition: 'unreviewed',
+  eligible_for_judgment: true,
   current_disposition: null,
   disposition_history: [],
   quality_assessment: {

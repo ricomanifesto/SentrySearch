@@ -848,6 +848,7 @@ def test_report_responses_default_null_quality_score(monkeypatch):
     assert response["reports"][0].processing_time_ms == 0
     assert response["reports"][0].category == "unknown"
     assert response["reports"][0].threat_type == "unknown"
+    assert response["reports"][0].eligible_for_judgment is False
 
 
 def test_report_detail_defaults_null_quality_score(monkeypatch):

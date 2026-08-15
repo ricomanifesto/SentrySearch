@@ -89,6 +89,11 @@ const expectations = [
     pattern: /Generate your first report to start the review queue/,
   },
   {
+    name: 'shows analyst judgment only for backend-eligible report vintages',
+    source: dashboard,
+    pattern: /report\.eligible_for_judgment \? \([\s\S]*getAnalystDispositionLabel/,
+  },
+  {
     name: 'keeps report-load failures distinct from an empty review queue',
     source: dashboard,
     pattern: /Couldn&apos;t load your reports/,

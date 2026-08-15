@@ -14,6 +14,7 @@ import { formatDate, downloadAsFile } from '@/lib/utils';
 import { AuthGuard } from '@/components/AuthGuard';
 import { getReviewStatusClasses, getReviewStatusLabel } from '@/lib/report-status';
 import { getAnalystDispositionClasses, getAnalystDispositionLabel } from '@/lib/analyst-disposition';
+import { getExportScopeState } from '@/lib/export-readiness';
 
 type ExportEvidenceRecord = {
   id: string;
@@ -48,6 +49,15 @@ const packageContentOptions = [
   { key: 'include_metadata' as const, label: 'Processing metadata', description: 'Timestamps, content-quality scores, lifecycle states, analyst judgments, and route details.' },
   { key: 'include_sources' as const, label: 'Source evidence', description: 'Canonical source records with URLs, access dates, and key findings.' },
   { key: 'include_tags' as const, label: 'Search context', description: 'Search tags and categorization markers.' },
+];
+
+const scopeConfigKeys: Array<keyof ExportConfig> = [
+  'review_statuses',
+  'analyst_dispositions',
+  'date_range_days',
+  'threat_types',
+  'min_quality_score',
+  'max_reports',
 ];
 
 const handoffStateOptions = [
@@ -117,11 +127,22 @@ export default function ExportPage() {
   });
   const [selectedReports, setSelectedReports] = useState<string[]>([]);
 
-  const { data: reportsData, isLoading } = useQuery({
-    queryKey: ['reports', 'export-preview', config.review_statuses, config.analyst_dispositions],
+  const { data: reportsData, isLoading, error: reportsError } = useQuery({
+    queryKey: [
+      'reports',
+      'export-preview',
+      config.review_statuses,
+      config.analyst_dispositions,
+      config.date_range_days,
+      config.threat_types,
+      config.min_quality_score,
+    ],
     queryFn: () => api.searchReports({
       review_statuses: config.review_statuses,
       analyst_dispositions: config.analyst_dispositions,
+      date_range_days: config.date_range_days,
+      threat_types: config.threat_types,
+      min_quality_score: config.min_quality_score,
     }, 1, 50),
   });
 
@@ -153,6 +174,9 @@ export default function ExportPage() {
 
   const handleConfigChange = (key: keyof ExportConfig, value: string | boolean | string[] | number | undefined) => {
     setConfig((prev) => ({ ...prev, [key]: value }));
+    if (scopeConfigKeys.includes(key)) {
+      setSelectedReports([]);
+    }
   };
 
   const handleReportSelection = (reportId: string, selected: boolean) => {
@@ -168,6 +192,7 @@ export default function ExportPage() {
   };
 
   const handleExport = () => {
+    if (!exportScope.canPrepare) return;
     exportMutation.mutate({
       ...config,
       selected_reports: selectedReports.length > 0 ? selectedReports : undefined,
@@ -177,9 +202,13 @@ export default function ExportPage() {
   const getFormatPreview = () => formatOptions.find((f) => f.value === config.format)?.description || '';
 
   const selectedFormat = formatOptions.find((f) => f.value === config.format);
-  const packageScope = selectedReports.length > 0
-    ? `${selectedReports.length} selected report${selectedReports.length === 1 ? '' : 's'}`
-    : 'All matching reports';
+  const exportScope = getExportScopeState({
+    loading: isLoading,
+    failed: Boolean(reportsError),
+    matchingCount: reportsData?.pagination.total ?? 0,
+    selectedCount: selectedReports.length,
+    maxReports: config.max_reports,
+  });
   const includedEvidenceLabels = packageContentOptions.filter((option) => Boolean(config[option.key])).map((option) => option.label);
   const packageScopeControls: PackageScopeControl[] = [
     {
@@ -227,16 +256,20 @@ export default function ExportPage() {
     },
     {
       label: 'Scope boundary',
-      value: packageScope,
+      value: exportScope.packageScope,
       description: config.max_reports ? `Capped at ${config.max_reports} records before packaging.` : 'No record cap applied before packaging.',
     },
   ];
   const packageReadinessRows: PackageReadinessRow[] = [
-    { label: 'File package', status: selectedFormat?.label ?? config.format.toUpperCase(), description: `${getFormatPreview()} ready for download when generated.` },
+    {
+      label: 'File package',
+      status: exportScope.readinessStatus === 'Ready' ? selectedFormat?.label ?? config.format.toUpperCase() : exportScope.readinessStatus,
+      description: exportScope.readinessStatus === 'Ready' ? `${getFormatPreview()} ${exportScope.readinessDescription.toLowerCase()}` : exportScope.readinessDescription,
+    },
     {
       label: 'Evidence queue',
-      status: selectedReports.length > 0 ? `${selectedReports.length} selected` : 'All matching',
-      description: selectedReports.length > 0 ? 'Only selected report records will be packaged.' : 'The current scope will package every matching report record.',
+      status: exportScope.queueStatus,
+      description: exportScope.queueDescription,
     },
     {
       label: 'Scope constraints',
@@ -351,7 +384,7 @@ export default function ExportPage() {
                       Visible reports matching the handoff scope, with analyst disposition, readiness, content quality, and threat markers.
                     </p>
                   </div>
-                  <button type="button" onClick={handleSelectAll} className="inline-flex h-9 shrink-0 items-center justify-center rounded-lg border border-zinc-300 bg-white px-3 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50">
+                  <button type="button" onClick={handleSelectAll} disabled={isLoading || Boolean(reportsError) || !reportsData?.reports.length} className="inline-flex h-9 shrink-0 items-center justify-center rounded-lg border border-zinc-300 bg-white px-3 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 disabled:pointer-events-none disabled:opacity-50">
                     {selectedReports.length === reportsData?.reports.length ? 'Clear selection' : 'Select visible'}
                   </button>
                 </div>
@@ -361,6 +394,13 @@ export default function ExportPage() {
                       {[...Array(5)].map((_, i) => (
                         <div key={i} className="h-16 animate-pulse rounded-lg bg-zinc-100" />
                       ))}
+                    </div>
+                  ) : reportsError ? (
+                    <div className="rounded-lg border border-red-200 bg-red-50 px-5 py-8 text-center" role="alert">
+                      <p className="text-sm font-medium text-red-900">The handoff scope could not be loaded</p>
+                      <p className="mx-auto mt-1 max-w-md text-sm leading-6 text-red-700">
+                        No package will be prepared until the matching records are available again.
+                      </p>
                     </div>
                   ) : reportsData?.reports.length ? (
                     <div className="max-h-96 space-y-3 overflow-y-auto">
@@ -429,11 +469,11 @@ export default function ExportPage() {
               <button
                 type="button"
                 onClick={handleExport}
-                disabled={exportMutation.isPending}
+                disabled={exportMutation.isPending || !exportScope.canPrepare}
                 className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-zinc-950 px-5 text-base font-medium text-white transition-colors hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50"
               >
                 <ArrowDownTrayIcon className="h-5 w-5" aria-hidden="true" />
-                {exportMutation.isPending ? 'Preparing package…' : 'Prepare package'}
+                {exportMutation.isPending ? 'Preparing package…' : exportScope.actionLabel}
               </button>
             </div>
           </div>

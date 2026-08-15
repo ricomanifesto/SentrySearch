@@ -24,6 +24,8 @@ from src.domain.reports import (
     SortOrder,
     coerce_evaluation_status,
     derive_review_status,
+    evaluation_conflict_count,
+    is_judgment_eligible,
 )
 from src.core.source_ledger import (
     assert_claim_attribution_consistent,
@@ -1185,12 +1187,22 @@ class ReportStorageService:
                     float(report.quality_score) if report.quality_score is not None else None
                 ),
             )
-            if (
-                report.status != ReportStatus.COMPLETED.value
-                or evaluation_status is not EvaluationStatus.COMPLETED
-                or report.quality_score is None
+            if not is_judgment_eligible(
+                report_status=report.status or ReportStatus.COMPLETED.value,
+                evaluation_status=evaluation_status,
+                quality_score=(
+                    float(report.quality_score) if report.quality_score is not None else None
+                ),
             ):
                 raise ValueError("Only completed, evaluated reports can be dispositioned")
+            if (
+                normalized is AnalystDisposition.ACCEPTED
+                and evaluation_conflict_count(report.quality_assessment) > 0
+                and clean_note is None
+            ):
+                raise ValueError(
+                    "Accepting a report with recorded conflicts requires an analyst note"
+                )
 
             event = ReportDispositionEvent(
                 report_id=report.id,
