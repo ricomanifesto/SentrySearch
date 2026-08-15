@@ -601,9 +601,6 @@ def attest_profile_sources(
                 f"{declared_domain!r} != {hostname!r}"
             )
 
-    source_ids = [str(source.get("sourceId") or "").strip() for source in claimed_sources]
-    if any(not source_id for source_id in source_ids) or len(set(source_ids)) != len(source_ids):
-        raise ValueError("Threat profile primary source IDs must be non-empty and unique")
     evidence_ids_by_url = {
         normalized: str(source.get("sourceId") or "").strip()
         for source in web_search_sources
@@ -611,8 +608,14 @@ def attest_profile_sources(
     }
     for source in claimed_sources:
         normalized = _normalize_url(str(source.get("url", "")))
-        if evidence_ids_by_url.get(normalized) != source.get("sourceId"):
+        canonical_source_id = evidence_ids_by_url.get(normalized)
+        if not canonical_source_id:
             raise ValueError("Threat profile source ID does not match its attested URL")
+        source["sourceId"] = canonical_source_id
+
+    source_ids = [str(source.get("sourceId") or "").strip() for source in claimed_sources]
+    if any(not source_id for source_id in source_ids) or len(set(source_ids)) != len(source_ids):
+        raise ValueError("Threat profile primary source IDs must be non-empty and unique")
 
     attribution = profile.get("claimAttribution")
     claims = attribution.get("claims") if isinstance(attribution, dict) else None

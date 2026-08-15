@@ -241,6 +241,14 @@ def test_attest_profile_sources_accepts_only_hosted_search_evidence(threat_profi
             [{"sourceId": "S1", "url": "https://example.com/report", "title": "Example report"}],
         )
 
+    mismatched_id = deepcopy(threat_profile_data)
+    mismatched_id["webSearchSources"]["primarySources"][0]["sourceId"] = "S9"
+    attest_profile_sources(
+        mismatched_id,
+        [{"sourceId": "S1", "url": "https://example.com/report", "title": "Example report"}],
+    )
+    assert mismatched_id["webSearchSources"]["primarySources"][0]["sourceId"] == "S1"
+
     wrong_domain = deepcopy(threat_profile_data)
     wrong_domain["webSearchSources"]["primarySources"][0]["domain"] = "other.example"
     with pytest.raises(ValueError, match="domain does not match"):
