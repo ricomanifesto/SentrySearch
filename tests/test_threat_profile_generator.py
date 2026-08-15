@@ -133,6 +133,27 @@ def test_parse_threat_profile_response_accepts_parsed_or_deferred_json(threat_pr
     )
     assert parse_threat_profile_response(deferred) == threat_profile_data
 
+    incomplete = deepcopy(threat_profile_data)
+    incomplete["threatIntelligence"]["riskAssessment"]["riskFactors"].append(
+        {
+            "value": "Unsupported model claim",
+            "evidenceRole": "direct_evidence",
+            "sourceIds": ["S1"],
+            "supportingEvidence": [],
+        }
+    )
+    filtered = parse_threat_profile_response(
+        SimpleNamespace(
+            parsed=None,
+            content=[SimpleNamespace(type="text", text=json.dumps(incomplete))],
+        )
+    )
+    assert all(
+        item != "Unsupported model claim"
+        and not (isinstance(item, dict) and item.get("value") == "Unsupported model claim")
+        for item in filtered["threatIntelligence"]["riskAssessment"]["riskFactors"]
+    )
+
     with pytest.raises(ValueError, match="threat profile JSON"):
         parse_threat_profile_response(SimpleNamespace(parsed=None, content=[]))
 
@@ -487,6 +508,8 @@ def test_generation_separates_web_research_from_structured_synthesis(
     assert '"hashes": []' in synthesis_prompt
     assert '"detectionMethods": []' in synthesis_prompt
     assert "omit the item instead of returning a partially populated object" in synthesis_prompt
+    assert "technicalDetails.persistence" in synthesis_prompt
+    assert "commandAndControl.beaconingPatterns.indicators" in synthesis_prompt
     assert synthesis_prompt.count('"Exact supporting sourceId"') == 0
     assert "the application derives schema-5 claim selectors" in synthesis_prompt
     synthesis_response = next(response for response in messages.responses if response.parsed)

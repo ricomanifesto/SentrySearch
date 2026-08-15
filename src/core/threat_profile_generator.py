@@ -112,6 +112,9 @@ one complete corrected JSON object, with no prose or Markdown outside it.
 - Keep every required object and array from the original template.
 - Every high-risk array item must remain an embedded evidence object; never
   replace it with a plain string to satisfy the schema.
+- Only the high-risk arrays named in the synthesis instructions accept embedded
+  evidence objects. Keep technicalDetails lists, command-and-control indicators,
+  aliases, commands, queries, and other ordinary arrays in their template shape.
 - Do not invent, infer, renumber, or weaken evidence to repair structure.
 
 VALIDATION ISSUES:
@@ -589,6 +592,7 @@ CRITICAL INSTRUCTIONS FOR OUTPUT:
 14. Documentation, reserved, special-use, training, tabletop, and fictional infrastructure MUST NOT appear in operational IOC fields or target-specific actions
 15. Do not emit claimAttribution; the application derives schema-5 claim selectors and verifies every excerpt against the captured source snapshot
 16. Use an empty array when attested evidence does not support a high-risk field; never copy a template placeholder into the output
+17. ONLY riskFactors, the forensic-artifact arrays, IOC arrays, behavioralIndicators, and mitigation-and-response arrays accept embedded evidence objects. Keep technicalDetails.persistence, technicalDetails.capabilities, commandAndControl.beaconingPatterns.indicators, commandAndControl.commonCommands, and every other ordinary array as strings or objects exactly as shown in the template
 
 For each supported high-risk item, append exactly this embedded evidence shape to
 the relevant empty array. If any source ID or verbatim excerpt is unavailable,

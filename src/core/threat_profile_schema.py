@@ -2,10 +2,84 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+logger = logging.getLogger(__name__)
+
+_EMBEDDED_EVIDENCE_PATHS = (
+    ("threatIntelligence", "riskAssessment", "riskFactors"),
+    ("forensicArtifacts", "fileSystemArtifacts"),
+    ("forensicArtifacts", "registryArtifacts"),
+    ("forensicArtifacts", "networkArtifacts"),
+    ("forensicArtifacts", "memoryArtifacts"),
+    ("forensicArtifacts", "logArtifacts"),
+    ("detectionAndMitigation", "iocs", "hashes"),
+    ("detectionAndMitigation", "iocs", "domains"),
+    ("detectionAndMitigation", "iocs", "ips"),
+    ("detectionAndMitigation", "iocs", "urls"),
+    ("detectionAndMitigation", "iocs", "filenames"),
+    ("detectionAndMitigation", "behavioralIndicators"),
+    ("mitigationAndResponse", "preventiveMeasures"),
+    ("mitigationAndResponse", "detectionMethods"),
+    ("mitigationAndResponse", "responseActions"),
+    ("mitigationAndResponse", "recoveryGuidance"),
+)
+
+
+def _drop_incomplete_embedded_evidence(profile: dict[str, Any]) -> int:
+    """Remove model claims that lack the complete evidence identity they assert."""
+
+    dropped = 0
+    for path in _EMBEDDED_EVIDENCE_PATHS:
+        value: Any = profile
+        for key in path:
+            if not isinstance(value, dict):
+                value = None
+                break
+            value = value.get(key)
+        if not isinstance(value, list):
+            continue
+
+        retained: list[Any] = []
+        for item in value:
+            if not isinstance(item, dict):
+                retained.append(item)
+                continue
+            role = item.get("evidenceRole")
+            source_ids = item.get("sourceIds")
+            support = item.get("supportingEvidence")
+            if role == "direct_evidence":
+                support_ids = (
+                    [entry.get("sourceId") for entry in support]
+                    if isinstance(support, list)
+                    and all(isinstance(entry, dict) for entry in support)
+                    else []
+                )
+                excerpts_complete = isinstance(support, list) and all(
+                    str(entry.get("excerpt") or "").strip()
+                    for entry in support
+                    if isinstance(entry, dict)
+                )
+                complete = (
+                    isinstance(source_ids, list)
+                    and bool(source_ids)
+                    and support_ids == source_ids
+                    and excerpts_complete
+                )
+                if not complete:
+                    dropped += 1
+                    continue
+            elif role == "general_practice" and (source_ids or support):
+                dropped += 1
+                continue
+            retained.append(item)
+        value[:] = retained
+    return dropped
 
 
 class StrictModel(BaseModel):
@@ -343,7 +417,16 @@ def parse_threat_profile_response(response: Any) -> dict[str, Any]:
     ]
     if not text_parts:
         raise ValueError("Model response did not include threat profile JSON")
-    profile = ThreatProfile.model_validate_json("\n".join(text_parts))
+    payload = json.loads("\n".join(text_parts))
+    if not isinstance(payload, dict):
+        raise ValueError("Model response threat profile JSON must be an object")
+    dropped = _drop_incomplete_embedded_evidence(payload)
+    if dropped:
+        logger.warning(
+            "Discarded %d incomplete embedded evidence item(s) before profile validation",
+            dropped,
+        )
+    profile = ThreatProfile.model_validate(payload)
     return profile.model_dump(mode="json", by_alias=True)
 
 
