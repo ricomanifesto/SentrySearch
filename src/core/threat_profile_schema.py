@@ -327,13 +327,23 @@ EVIDENCE_ENHANCEMENT_MODELS: dict[str, type[StrictModel]] = {
 
 
 def parse_threat_profile_response(response: Any) -> dict[str, Any]:
-    """Return a validated profile from the model client's parsed payload."""
+    """Return a validated profile from parsed or deferred JSON output."""
 
     parsed = getattr(response, "parsed", None)
-    if parsed is None:
-        raise ValueError("Model response did not include a parsed threat profile")
+    if parsed is not None:
+        profile = (
+            parsed if isinstance(parsed, ThreatProfile) else ThreatProfile.model_validate(parsed)
+        )
+        return profile.model_dump(mode="json", by_alias=True)
 
-    profile = parsed if isinstance(parsed, ThreatProfile) else ThreatProfile.model_validate(parsed)
+    text_parts = [
+        str(getattr(part, "text", ""))
+        for part in (getattr(response, "content", None) or [])
+        if getattr(part, "type", None) == "text" and str(getattr(part, "text", "")).strip()
+    ]
+    if not text_parts:
+        raise ValueError("Model response did not include threat profile JSON")
+    profile = ThreatProfile.model_validate_json("\n".join(text_parts))
     return profile.model_dump(mode="json", by_alias=True)
 
 

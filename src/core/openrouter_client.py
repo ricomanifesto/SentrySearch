@@ -227,6 +227,7 @@ class ModelClient:
         """Generate a message through OpenRouter's Chat Completions API."""
         tools = self._normalize_tools(kwargs.get("tools"))
         response_format = kwargs.get("response_format")
+        strict_response_schema = bool(kwargs.get("strict_response_schema", True))
         route_purpose = (
             ModelRoutePurpose(kwargs["route_purpose"])
             if kwargs.get("route_purpose") is not None
@@ -261,7 +262,7 @@ class ModelClient:
         if response_format is not None:
             request["response_format"] = self._structured_output_config(
                 response_format,
-                strict_schema=bool(kwargs.get("strict_response_schema", True)),
+                strict_schema=strict_response_schema,
             )
         provider = dict(kwargs.get("provider") or {})
         if tools or response_format is not None:
@@ -335,7 +336,14 @@ class ModelClient:
                         continue
                     raise last_empty_error
 
-                parsed = self._parse_structured_output(text, response_format)
+                # JSON mode deliberately leaves domain validation to the caller.
+                # Large Gemini schemas use this path so the generator can give one
+                # near-valid response a bounded, evidence-preserving correction pass.
+                parsed = (
+                    None
+                    if response_format is not None and not strict_response_schema
+                    else self._parse_structured_output(text, response_format)
+                )
             except ModelClientError as error:
                 self._record_failed_attempt(
                     route_purpose,

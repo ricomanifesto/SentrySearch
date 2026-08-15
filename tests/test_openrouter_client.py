@@ -447,7 +447,8 @@ def test_model_client_uses_json_mode_and_preserves_prompt_cache_breakpoint():
     )
 
     request_body = json.loads(requests[0].content)
-    assert result.parsed.value == "structured"
+    assert result.parsed is None
+    assert result.content[-1].text == '{"value":"structured"}'
     assert request_body["response_format"] == {"type": "json_object"}
     assert request_body["messages"][0]["content"] == [
         {
@@ -713,6 +714,19 @@ def test_model_client_marks_invalid_structured_output_retryable():
             messages=[{"role": "user", "content": "hello"}],
             response_format=StructuredResult,
         )
+
+
+def test_model_client_defers_json_mode_validation_to_domain_correction_loop():
+    client = model_client([(200, chat_response('{"value": 7}'), {})])
+
+    response = client.messages.create(
+        messages=[{"role": "user", "content": "hello"}],
+        response_format=StructuredResult,
+        strict_response_schema=False,
+    )
+
+    assert response.parsed is None
+    assert response.content[-1].text == '{"value": 7}'
 
 
 def test_model_client_marks_cancelled_response_retryable():

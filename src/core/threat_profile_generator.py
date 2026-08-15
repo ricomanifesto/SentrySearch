@@ -18,6 +18,7 @@ from src.core.model_retry import RetryPolicy, RetryingModelRequests
 from typing import Dict, Any, Callable
 from datetime import datetime
 import time
+from pydantic import ValidationError
 from src.core.parallel_section_validator import ParallelSectionValidator
 from src.core.trace_exporter import get_trace_exporter
 from src.core.performance_metrics import PerformanceTracker
@@ -65,7 +66,7 @@ RESEARCH_FOCUSES = (
 UNKNOWN_CLAIM_SOURCE_ERROR = "Threat profile claim attribution references an unknown source ID"
 INVALID_CLAIM_SELECTOR_ERROR = "Current claim attribution selector is invalid"
 INCONSISTENT_CLAIM_ATTRIBUTION_ERROR = "Report claim attribution is inconsistent"
-ATTRIBUTION_CORRECTION_ATTEMPTS = 1
+SYNTHESIS_CORRECTION_ATTEMPTS = 1
 SYNTHESIS_RETRY_POLICY = RetryPolicy(max_attempts=1)
 
 
@@ -84,6 +85,37 @@ complete corrected JSON object.
 - Preserve evidenceRole: direct_evidence requires source IDs; general_practice is
   allowed only for uncited generic mitigation guidance.
 - Do not invent, renumber, infer, or silently remove evidence.
+"""
+
+
+def _profile_output_correction_prompt(error: Exception) -> str:
+    """Describe bounded structural defects without replaying model-owned values."""
+
+    if isinstance(error, ValidationError):
+        issues = [
+            {
+                "path": ".".join(str(part) for part in item.get("loc", ())),
+                "type": str(item.get("type", "invalid")),
+                "message": str(item.get("msg", "Invalid value")),
+            }
+            for item in error.errors(include_url=False, include_input=False)[:12]
+        ]
+        issue_text = json.dumps(issues, separators=(",", ":"))
+    else:
+        issue_text = str(error).strip()[:1_200] or "The JSON object was invalid."
+
+    return f"""CORRECTION ATTEMPT AFTER A FAILED STRUCTURED OUTPUT CONTRACT:
+The previous JSON object did not match the required threat-profile shape. Return
+one complete corrected JSON object, with no prose or Markdown outside it.
+
+- Preserve only claims and source excerpts supported by the attested dossier.
+- Keep every required object and array from the original template.
+- Every high-risk array item must remain an embedded evidence object; never
+  replace it with a plain string to satisfy the schema.
+- Do not invent, infer, renumber, or weaken evidence to repair structure.
+
+VALIDATION ISSUES:
+{issue_text}
 """
 
 
@@ -587,7 +619,7 @@ END ATTESTED SOURCE CATALOG"""
             }
             request_content = [cached_prompt_block]
             synthesis_session_id = f"sentrysearch-synthesis-{uuid4().hex}"
-            for attempt in range(ATTRIBUTION_CORRECTION_ATTEMPTS + 1):
+            for attempt in range(SYNTHESIS_CORRECTION_ATTEMPTS + 1):
                 response = self._request_model(
                     # The client already owns the deterministic primary/fallback
                     # sequence. Repeating that entire sequence here multiplied one
@@ -626,8 +658,26 @@ END ATTESTED SOURCE CATALOG"""
                 )
                 try:
                     json_data = parse_threat_profile_response(response)
-                except (ValueError, TypeError) as error:
-                    raise ProfileOutputError("Structured profile output was invalid") from error
+                except (ValidationError, ValueError, TypeError) as error:
+                    if attempt >= SYNTHESIS_CORRECTION_ATTEMPTS:
+                        raise ProfileOutputError("Structured profile output was invalid") from error
+                    logger.warning(
+                        "Structured synthesis failed local profile validation; "
+                        "requesting one bounded correction"
+                    )
+                    emit_progress(
+                        0.76,
+                        GenerationStage.VALIDATING,
+                        "Repairing the structured report contract...",
+                    )
+                    request_content = [
+                        cached_prompt_block,
+                        {
+                            "type": "text",
+                            "text": f"\n\n{_profile_output_correction_prompt(error)}",
+                        },
+                    ]
+                    continue
                 try:
                     if isinstance(json_data.get("claimAttribution"), dict):
                         assessment = {
@@ -665,7 +715,7 @@ END ATTESTED SOURCE CATALOG"""
                     # assertion as a final invariant without hiding that diagnosis.
                     assert_claim_attribution_consistent(json_data)
                 except (EvidenceAdmissibilityError, EvidenceCoverageError) as error:
-                    if attempt >= ATTRIBUTION_CORRECTION_ATTEMPTS:
+                    if attempt >= SYNTHESIS_CORRECTION_ATTEMPTS:
                         raise
                     coverage_failure = isinstance(error, EvidenceCoverageError)
                     logger.warning(
@@ -691,7 +741,7 @@ END ATTESTED SOURCE CATALOG"""
                     ]
                     continue
                 except ValueError as error:
-                    can_correct = attempt < ATTRIBUTION_CORRECTION_ATTEMPTS and str(error) in {
+                    can_correct = attempt < SYNTHESIS_CORRECTION_ATTEMPTS and str(error) in {
                         UNKNOWN_CLAIM_SOURCE_ERROR,
                         INVALID_CLAIM_SELECTOR_ERROR,
                         INCONSISTENT_CLAIM_ATTRIBUTION_ERROR,

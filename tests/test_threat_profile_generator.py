@@ -122,13 +122,19 @@ def test_threat_profile_schema_requires_source_backed_sections(threat_profile_da
         ThreatProfile.model_validate(invalid)
 
 
-def test_parse_threat_profile_response_requires_sdk_parsed_payload(threat_profile_data):
+def test_parse_threat_profile_response_accepts_parsed_or_deferred_json(threat_profile_data):
     response = SimpleNamespace(parsed=ThreatProfile.model_validate(threat_profile_data))
 
     assert parse_threat_profile_response(response) == threat_profile_data
 
-    with pytest.raises(ValueError, match="parsed threat profile"):
-        parse_threat_profile_response(SimpleNamespace(parsed=None))
+    deferred = SimpleNamespace(
+        parsed=None,
+        content=[SimpleNamespace(type="text", text=json.dumps(threat_profile_data))],
+    )
+    assert parse_threat_profile_response(deferred) == threat_profile_data
+
+    with pytest.raises(ValueError, match="threat profile JSON"):
+        parse_threat_profile_response(SimpleNamespace(parsed=None, content=[]))
 
 
 def test_attest_profile_sources_accepts_only_hosted_search_evidence(threat_profile_data):
@@ -496,7 +502,7 @@ def test_generation_separates_web_research_from_structured_synthesis(
 
 @pytest.mark.parametrize(
     "invalid_evidence",
-    ["unknown_source", "nonverbatim_excerpt", "parallel_map"],
+    ["unknown_source", "nonverbatim_excerpt", "parallel_map", "schema_shape"],
 )
 def test_generation_retries_one_invalid_embedded_item_without_weakening_attestation(
     monkeypatch, threat_profile_data, invalid_evidence
@@ -542,6 +548,9 @@ def test_generation_retries_one_invalid_embedded_item_without_weakening_attestat
     valid_profile = generated_embedded_profile(threat_profile_data)
     if invalid_evidence == "parallel_map":
         invalid_profile = deepcopy(threat_profile_data)
+    elif invalid_evidence == "schema_shape":
+        invalid_profile = deepcopy(valid_profile)
+        del invalid_profile["coreMetadata"]["name"]
     else:
         invalid_profile = deepcopy(valid_profile)
         first_item = invalid_profile["threatIntelligence"]["riskAssessment"]["riskFactors"][0]
@@ -559,7 +568,11 @@ def test_generation_retries_one_invalid_embedded_item_without_weakening_attestat
         profile = profiles[len(requests) - 1]
         response = SimpleNamespace(
             content=[SimpleNamespace(type="text", text=json.dumps(profile))],
-            parsed=ThreatProfile.model_validate(profile),
+            parsed=(
+                None
+                if invalid_evidence == "schema_shape" and len(requests) == 1
+                else ThreatProfile.model_validate(profile)
+            ),
             web_search_sources=[],
             tool_events=[],
             response_id=f"synthesis-{len(requests)}",
@@ -593,9 +606,14 @@ def test_generation_retries_one_invalid_embedded_item_without_weakening_attestat
     assert correction_content[0] == initial_content[0]
     assert correction_content[0]["cache_control"] == {"type": "ephemeral"}
     correction_text = correction_content[1]["text"]
-    assert "CORRECTION ATTEMPT AFTER A FAILED EVIDENCE GATE" in correction_text
-    assert "copy one short verbatim excerpt" in correction_text
-    assert "supportingEvidence" in correction_text
+    if invalid_evidence == "schema_shape":
+        assert "CORRECTION ATTEMPT AFTER A FAILED STRUCTURED OUTPUT CONTRACT" in correction_text
+        assert "coreMetadata.name" in correction_text
+        assert "embedded evidence object" in correction_text
+    else:
+        assert "CORRECTION ATTEMPT AFTER A FAILED EVIDENCE GATE" in correction_text
+        assert "copy one short verbatim excerpt" in correction_text
+        assert "supportingEvidence" in correction_text
     assert requests[1]["provider"] == requests[0]["provider"]
     assert "fallback_models" not in requests[0]
     assert "fallback_models" not in requests[1]
@@ -605,9 +623,12 @@ def test_generation_retries_one_invalid_embedded_item_without_weakening_attestat
     assert requests[0]["session_id"].startswith("sentrysearch-synthesis-")
     assert requests[0]["strict_response_schema"] is False
     assert requests[1]["strict_response_schema"] is False
-    assert any(
-        update.message == "Completing high-risk evidence identity..." for update in progress_updates
+    expected_correction_message = (
+        "Repairing the structured report contract..."
+        if invalid_evidence == "schema_shape"
+        else "Completing high-risk evidence identity..."
     )
+    assert any(update.message == expected_correction_message for update in progress_updates)
     assert progress_updates[-1].stage is GenerationStage.FINALIZING
     assert requests[0]["response_format"] is ThreatProfile
     assert requests[1]["response_format"] is ThreatProfile
