@@ -7,77 +7,81 @@
   </picture>
 </div>
 
-SentrySearch turns scattered threat research into source-backed security profiles for malware, attack tools, and targeted technologies, with persistent reports, report-library search, and detection guidance in one workspace.
+SentrySearch researches a malware family, attack tool, or exposed technology and saves the result as a source-backed threat profile.
 
-**Live app:** [sentry-search.vercel.app](https://sentry-search.vercel.app)
+**[Open SentrySearch](https://sentry-search.vercel.app)**
 
-## What It Does
+## What You Can Do
 
-SentrySearch generates structured threat intelligence profiles from a user-supplied topic, then stores and indexes those reports for later retrieval. It is built for cases where the research target is specific: a malware family, attack tool, targeted technology, or threat-relevant keyword.
+- Generate a report with threat context, detection guidance, mitigations, and source evidence.
+- Search saved reports by target, category, threat type, date, tags, review state, and quality score.
+- Re-run a failed quality evaluation without repeating the research step.
+- Review report volume, quality, threat distribution, and model-route performance.
+- Export selected reports as evidence packages.
 
-## Core Capabilities
+Reports and analytics are private to the signed-in workspace.
 
-- **Threat analysis:** generates technical profiles with threat landscape context and detection guidance.
-- **Report-library search:** filters each authenticated workspace by saved target, category, threat type, date, tags, and quality.
-- **Report management:** stores generated reports with review readiness, source evidence, quality scores, and processing metadata.
-- **Evaluation recovery:** retries an unavailable quality evaluator against the saved profile without repeating research or synthesis.
-- **Evidence export:** packages narratives, canonical source records, lifecycle state, and route attestation for handoff.
-- **User isolation:** scopes report access and analytics to the authenticated workspace.
+## How Generation Works
 
-## Usage
+The default generator is `google/gemma-4-26b-a4b-it:free`; the default evaluator is `google/gemma-4-31b-it:free`. SentrySearch calls both through OpenRouter's Chat Completions API and pins routing to Google AI Studio. If a free route is unavailable, it retries the paid route for the same model.
 
-Visit [sentry-search.vercel.app](https://sentry-search.vercel.app), create an account, and generate a threat intelligence report for any malware, attack tool, or technology. Report generation requests `google/gemma-4-26b-a4b-it:free` through OpenRouter's native Chat Completions API with hosted web search and strict Pydantic validation. When that pinned route is unavailable, the application retries the paid variant of the same Gemma model in a deterministic order. Completed records persist the requested, selected, and actual generation and evaluation routes; the report page discloses deviations and analytics separates fallback-built reports from primary-route reports.
+The generator can use OpenRouter's hosted web search. Its output must contain the required threat-profile fields defined with Pydantic before it is saved. Each report records the model requested by the app, the route selected for the request, and the model reported by the provider. The report page shows when a fallback route was used.
 
-## Local Setup
+## Run It Locally
 
-Backend dependencies are managed with `uv` from `pyproject.toml` and `uv.lock`. Frontend dependencies are installed from `frontend/package-lock.json`.
+You need Python 3.11, [`uv`](https://docs.astral.sh/uv/), Node.js 20.9 or newer, npm, PostgreSQL, and Supabase project credentials.
+
+Start the FastAPI backend:
 
 ```bash
-# Backend
 uv sync --locked
 cp .env.example .env
 uv run python run_api.py
+```
 
-# Frontend, in a second terminal
+Start the Next.js frontend in a second terminal:
+
+```bash
 cd frontend
 npm ci
 cp .env.example .env.local
 npm run dev
 ```
 
-The local FastAPI server defaults to `http://localhost:8001`. The frontend uses `NEXT_PUBLIC_API_URL=http://localhost:8001` in local development.
+The API listens on `http://localhost:8001`; the frontend listens on `http://localhost:3000`. Keep `NEXT_PUBLIC_API_URL=http://localhost:8001` in both environment files.
 
-## Local Validation
+The example files list every required variable. OpenRouter is needed for live generation, Supabase for authentication, PostgreSQL for report metadata and search, and S3 for report files and exports.
 
-Run the local setup gate before touching live services:
+## Validation Without Live Services
 
 ```bash
 uv sync --locked
 uv run python dev/check_local_setup.py
 ```
 
-This verifies the local environment, documentation and frontend URL contract, backend linting and formatting, type checks, pytest, FastAPI imports, API docs rendering, health endpoint behavior, and protected report creation without Supabase credentials. It does not call OpenRouter, Supabase, AWS, Railway, Vercel, Cloudflare, or local PostgreSQL.
+This checks the environment contract, Python formatting, linting, types, tests, FastAPI imports, API documentation, health endpoints, and authentication boundaries. It does not call OpenRouter, Supabase, AWS, Railway, Vercel, Cloudflare, or a local PostgreSQL server.
 
-Frontend validation requires `frontend/node_modules`:
+Run the frontend checks after installing its locked dependencies:
 
 ```bash
 cd frontend
-npm run test:experience
 npm run check:surface-coverage
+npm run test:experience
 npm run lint
 npm run build
 ```
 
 ## Architecture
 
-- **Frontend:** Next.js, TypeScript, Tailwind CSS, deployed on Vercel.
-- **Backend:** FastAPI, SQLAlchemy, Pydantic, deployed on Railway.
-- **Auth:** Supabase JWT authentication.
-- **Data:** PostgreSQL stores report metadata, one canonical source ledger, and search indexes; S3 stores markdown reports and artifacts.
-- **Connected search:** PostgreSQL powers the authenticated report-library filters exposed by the product.
-- **AI:** A direct OpenRouter Chat Completions client executes the configured model and bounded hosted web search, maps typed provider errors, records successful model/provider routes, and validates strict Pydantic structured output.
+- **Web app:** Next.js 16, React 19, TypeScript, and Tailwind CSS on Vercel.
+- **API:** FastAPI, SQLAlchemy, and Pydantic on Railway.
+- **Authentication:** Supabase verifies users and scopes every report query to its workspace.
+- **Storage:** PostgreSQL holds report metadata, search fields, source records, and lifecycle state. S3 holds Markdown reports and trace files.
+- **Model access:** A small OpenRouter client handles generation, web search, evaluation, retry rules, error mapping, and route records.
+
+The legacy experimental retrieval modules have been removed. Search in the current product means authenticated search over saved PostgreSQL report records.
 
 ## Related Projects
 
-- [SentryDigest](https://github.com/ricomanifesto/SentryDigest) - security feed aggregation and briefing output
-- [SentryInsight](https://github.com/ricomanifesto/SentryInsight) - exploitation-focused threat reporting
+- [SentryDigest](https://github.com/ricomanifesto/SentryDigest) collects and archives security news.
+- [SentryInsight](https://github.com/ricomanifesto/SentryInsight) publishes exploitation-focused reports from that news.

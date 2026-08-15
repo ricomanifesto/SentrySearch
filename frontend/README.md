@@ -1,41 +1,20 @@
 # SentrySearch Frontend
 
-Next.js frontend for the SentrySearch threat intelligence platform.
+This directory contains the SentrySearch web app. Public pages explain the product and show a sample report. Signed-in pages provide report generation, review, search, export, analytics, and account settings.
 
-## Features
+## Run It
 
-- Modern, responsive UI with Tailwind CSS
-- App Router rendering with Next.js 16
-- Real-time search and filtering
-- Analytics dashboard
-- Optimistic updates with React Query
-- Mobile-responsive design
-
-## Quick Start
-
-### Prerequisites
-
-- Node.js 20.9+ and npm
-- SentrySearch API server running on `http://localhost:8001`
-
-### Installation
+You need Node.js 20.9 or newer and a SentrySearch API running on `http://localhost:8001`.
 
 ```bash
-# Install the locked dependencies
 npm ci
-
-# Copy environment config
 cp .env.example .env.local
-
-# Start development server
 npm run dev
 ```
 
-The application will be available at `http://localhost:3000`.
+Open `http://localhost:3000`.
 
-### Configuration
-
-Update `.env.local` with your API server URL:
+Set these values in `.env.local`:
 
 ```bash
 NEXT_PUBLIC_API_URL=http://localhost:8001
@@ -44,36 +23,38 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
 NEXT_PUBLIC_TURNSTILE_SITE_KEY=your_public_turnstile_site_key
 ```
 
-## Technology Stack
+Supabase provides sign-in and session handling. Cloudflare Turnstile protects account creation. All browser calls to protected API routes include the current Supabase access token.
 
-- **Framework**: Next.js 16 with App Router
-- **Styling**: Tailwind CSS
-- **State Management**: React Query (TanStack Query)
-- **HTTP Client**: Axios
-- **Icons**: Heroicons
-- **Typography**: Native system font stack
-- **Deployment**: Vercel (optimized)
+## Main Routes
 
-## Development
+- `/` and `/sample`: public product overview and sample report.
+- `/auth/*`: sign-up, sign-in, password reset, and recovery.
+- `/generate`: create a threat profile.
+- `/reports` and `/reports/[id]`: search, filter, inspect, retry evaluation, and delete saved reports.
+- `/export`: prepare report evidence packages.
+- `/analytics`: review volume, quality, threat mix, activity, and model-route performance.
+- `/settings`: manage workspace preferences.
+
+## Checks
 
 ```bash
-npm run dev          # Start development server
-npm run build        # Build for production
-npm run start        # Start production server
-npm run lint         # Run ESLint
-npm run test:experience # Render and policy regression tests
-npm run check:surface-coverage # Route and surface contract checks
+npm run check:surface-coverage
+npm run test:experience
+npm run lint
+npm run build
 ```
 
-## API Integration
+`check:surface-coverage` verifies that each product route keeps its required content and controls. `test:experience` covers authentication transitions, error messages, report rendering, and shared workspace behavior.
 
-The frontend connects to the SentrySearch FastAPI backend through a typed API client. Make sure the API server is running before starting the frontend.
+## Stack
 
-## Deployment on Vercel
+- Next.js 16 with the App Router
+- React 19 and TypeScript
+- Tailwind CSS 4
+- TanStack Query for server state
+- Axios for API requests
+- Supabase for browser authentication
 
-1. Connect your GitHub repository to Vercel
-2. Set environment variables in Vercel dashboard:
-   ```
-   NEXT_PUBLIC_API_URL=https://your-api-domain.com
-   ```
-3. Deploy automatically on push to main branch
+## Vercel
+
+Deploy this directory as the Vercel project root and add the four public environment variables shown above. Production builds run `npm run build` and write the Next.js output to `.next`.
