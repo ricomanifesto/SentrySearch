@@ -37,6 +37,9 @@ DEFAULT_MODEL = "google/gemma-4-26b-a4b-it:free"
 DEFAULT_GENERATION_FALLBACK_MODEL = "google/gemma-4-26b-a4b-it"
 DEFAULT_GENERATION_PROVIDER = "google-ai-studio"
 MODEL_ENV_VAR = "SENTRYSEARCH_MODEL"
+DEFAULT_SYNTHESIS_MODEL = "google/gemini-2.5-flash"
+DEFAULT_SYNTHESIS_PROVIDER = "google-ai-studio"
+SYNTHESIS_MODEL_ENV_VAR = "SENTRYSEARCH_SYNTHESIS_MODEL"
 DEFAULT_EVALUATION_MODEL = "google/gemma-4-31b-it:free"
 DEFAULT_EVALUATION_FALLBACK_MODEL = "google/gemma-4-31b-it"
 DEFAULT_EVALUATION_PROVIDER = "google-ai-studio"
@@ -136,10 +139,26 @@ def research_request_options(model_name: str | None = None) -> dict[str, Any]:
     return _generation_request_options(ModelRoutePurpose.RESEARCH, model_name)
 
 
-def synthesis_request_options(model_name: str | None = None) -> dict[str, Any]:
-    """Return routing for report-authoring and enhancement calls."""
+def resolve_synthesis_model_name(model_name: str | None = None) -> str:
+    """Return the independently configurable structured-authoring model ID."""
 
-    return _generation_request_options(ModelRoutePurpose.SYNTHESIS, model_name)
+    return (model_name or os.getenv(SYNTHESIS_MODEL_ENV_VAR, DEFAULT_SYNTHESIS_MODEL)).strip()
+
+
+def synthesis_request_options(model_name: str | None = None) -> dict[str, Any]:
+    """Return deterministic routing for report-authoring and enhancement calls."""
+
+    resolved_model = resolve_synthesis_model_name(model_name)
+    options: dict[str, Any] = {
+        "model": resolved_model,
+        "route_purpose": ModelRoutePurpose.SYNTHESIS.value,
+    }
+    if resolved_model == DEFAULT_SYNTHESIS_MODEL:
+        options["provider"] = {
+            "only": [DEFAULT_SYNTHESIS_PROVIDER],
+            "allow_fallbacks": False,
+        }
+    return options
 
 
 def resolve_evaluation_model_name(model_name: str | None = None) -> str:
@@ -227,6 +246,7 @@ class ModelClient:
             "parallel_tool_calls",
             "tool_choice",
             "stop_server_tools_when",
+            "session_id",
         ):
             if kwargs.get(optional_key) is not None:
                 request[optional_key] = kwargs[optional_key]
@@ -249,7 +269,7 @@ class ModelClient:
         last_empty_error: ModelClientError | None = None
         for attempt in range(EMPTY_RESPONSE_RETRIES):
             attempt_request = dict(request)
-            if attempt:
+            if attempt and not attempt_request.get("session_id"):
                 attempt_request["session_id"] = f"sentrysearch-empty-retry-{uuid4().hex}"
             response, selected_model = self._post_with_model_fallbacks(
                 attempt_request,

@@ -302,7 +302,7 @@ def test_generation_separates_web_research_from_structured_synthesis(
                     web_search_sources=[],
                     tool_events=[],
                     response_id="synthesis-response",
-                    model="google/gemma-4-26b-a4b-it:free",
+                    model="google/gemini-2.5-flash",
                     provider="TestProvider",
                     usage=SimpleNamespace(
                         input_tokens=30,
@@ -343,7 +343,16 @@ def test_generation_separates_web_research_from_structured_synthesis(
         "request_count": 0,
         "attempts": [],
     }
-    assert result["_synthesis_route"] == result["_research_route"]
+    assert result["_synthesis_route"] == {
+        "requested_models": ["google/gemini-2.5-flash"],
+        "requested_providers": ["google-ai-studio"],
+        "selected_models": [],
+        "actual_models": [],
+        "providers": [],
+        "used_fallback": False,
+        "request_count": 0,
+        "attempts": [],
+    }
     assert "_generation_route" not in result
     assert result["_evaluation_route"]["requested_models"] == ["google/gemma-4-31b-it:free"]
     assert result["_evaluation_route"]["requested_providers"] == ["google-ai-studio"]
@@ -372,9 +381,11 @@ def test_generation_separates_web_research_from_structured_synthesis(
         "only": ["google-ai-studio"],
         "allow_fallbacks": False,
     }
-    assert synthesis_request["fallback_models"] == ["google/gemma-4-26b-a4b-it"]
+    assert synthesis_request["model"] == "google/gemini-2.5-flash"
+    assert "fallback_models" not in synthesis_request
     assert synthesis_request["route_purpose"] == "synthesis"
     assert synthesis_request["max_tokens"] == 32768
+    assert synthesis_request["session_id"].startswith("sentrysearch-synthesis-")
     assert "tools" not in synthesis_request
     assert "https://example.com/report" in synthesis_request["messages"][0]["content"]
     assert "Example Threat uses remote access capabilities" in (
@@ -453,7 +464,7 @@ def test_generation_retries_one_invalid_claim_map_without_weakening_attestation(
             web_search_sources=[],
             tool_events=[],
             response_id=f"synthesis-{len(requests)}",
-            model="google/gemma-4-26b-a4b-it:free",
+            model="google/gemini-2.5-flash",
             provider="TestProvider",
             usage=SimpleNamespace(
                 input_tokens=10,
@@ -485,7 +496,12 @@ def test_generation_retries_one_invalid_claim_map_without_weakening_attestation(
     assert "Every claimAttribution sourceId MUST appear" in (requests[1]["messages"][0]["content"])
     assert "claimField and claimIndex MUST select" in (requests[1]["messages"][0]["content"])
     assert requests[1]["provider"] == requests[0]["provider"]
-    assert requests[1]["fallback_models"] == requests[0]["fallback_models"]
+    assert "fallback_models" not in requests[0]
+    assert "fallback_models" not in requests[1]
+    assert requests[0]["model"] == "google/gemini-2.5-flash"
+    assert requests[1]["model"] == "google/gemini-2.5-flash"
+    assert requests[0]["session_id"] == requests[1]["session_id"]
+    assert requests[0]["session_id"].startswith("sentrysearch-synthesis-")
     assert progress_updates[-3].message == ("Reconciling claim evidence with the source ledger...")
     assert progress_updates[-1].stage is GenerationStage.FINALIZING
     assert requests[0]["response_format"] is ThreatProfile

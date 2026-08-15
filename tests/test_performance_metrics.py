@@ -52,6 +52,40 @@ def test_performance_tracker_measures_contract_tools_usage_and_cost(tmp_path):
     assert summary["avg_web_search_calls"] == 2
 
 
+def test_performance_tracker_prices_gemini_prompt_cache_usage(tmp_path):
+    tracker = PerformanceTracker(str(tmp_path / "metrics.jsonl"))
+    tracker.start_request(
+        "Example Threat",
+        model="google/gemini-2.5-flash",
+        cache_enabled=True,
+    )
+    response = SimpleNamespace(
+        usage=SimpleNamespace(
+            input_tokens=1_000,
+            output_tokens=100,
+            cached_tokens=200,
+            cache_write_tokens=300,
+            reasoning_tokens=0,
+            total_tokens=1_100,
+            web_search_calls=0,
+        ),
+        tool_events=[],
+        web_search_sources=[],
+    )
+
+    tracker.record_api_response(response)
+    metrics = tracker.finish_request()
+
+    assert metrics is not None
+    assert metrics.cache_enabled is True
+    assert metrics.cache_hit is True
+    assert metrics.input_cost == pytest.approx(0.00015)
+    assert metrics.output_cost == pytest.approx(0.00025)
+    assert metrics.cache_read_cost == pytest.approx(0.000006)
+    assert metrics.cache_write_cost == pytest.approx(0.000115, abs=1e-9)
+    assert metrics.total_cost == pytest.approx(0.000521, abs=1e-9)
+
+
 def test_performance_tracker_keeps_request_state_local_to_context(tmp_path):
     tracker = PerformanceTracker(str(tmp_path / "metrics.jsonl"))
     first_context = copy_context()

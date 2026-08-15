@@ -76,6 +76,17 @@ class PerformanceTracker:
             "long_cache_read": 0.0,
             "web_search_per_1k_calls": 7.0,
         },
+        "google/gemini-2.5-flash": {
+            "input": 0.30,
+            "output": 2.50,
+            "cache_write": 0.383333,
+            "cache_read": 0.03,
+            "long_input": 0.30,
+            "long_output": 2.50,
+            "long_cache_write": 0.383333,
+            "long_cache_read": 0.03,
+            "web_search_per_1k_calls": 7.0,
+        },
         "meta-llama/llama-3.3-70b-instruct": {
             "input": 0.10,
             "output": 0.32,

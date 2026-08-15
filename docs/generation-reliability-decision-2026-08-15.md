@@ -114,3 +114,24 @@ is permitted only after the first returned a parseable profile and that profile
 failed the named claim-evidence contract. Provider exhaustion, truncation at
 the fixed ceiling, and invalid structured output no longer replay the entire
 route sequence at the application layer.
+
+## Structured-output route witness
+
+Common-target record `c0a444d9-b074-4dc6-8e30-2cbb016de1dd` exercised that
+single sequence and still failed after about 13 minutes with a typed invalid
+structured-output cause. The authenticated operations view grouped both recent
+invalid-output records under synthesis, fallback routing, and the same UTC
+failure window. This makes the current Gemma authoring route, rather than the
+target or evaluator, the winning explanation for the remaining failure.
+
+Research stays on its working free-first Gemma route. Structured synthesis moves
+to `google/gemini-2.5-flash`, pinned to Google AI Studio, because that route
+supports the required JSON-schema contract without the paid same-family fallback
+that failed both witnesses. Evaluation remains independently routed.
+
+The one permitted evidence-correction pass reuses a stable per-report
+`session_id` and preserves the original dossier and schema as an exact prompt
+prefix. This allows Gemini's provider-side implicit prompt cache to reuse that
+prefix when available, while cache-token telemetry records whether reuse really
+occurred. Identical-response caching is deliberately disabled: replaying a
+successful HTTP response would also replay the same contract-invalid output.

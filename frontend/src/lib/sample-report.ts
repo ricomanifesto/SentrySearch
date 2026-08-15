@@ -151,10 +151,10 @@ export const SAMPLE_REPORT: ReportDetail = {
     request_count: 3,
   },
   synthesis_route: {
-    requested_models: ['google/gemma-4-26b-a4b-it:free'],
+    requested_models: ['google/gemini-2.5-flash'],
     requested_providers: ['google-ai-studio'],
-    selected_models: ['google/gemma-4-26b-a4b-it:free'],
-    actual_models: ['google/gemma-4-26b-a4b-it:free'],
+    selected_models: ['google/gemini-2.5-flash'],
+    actual_models: ['google/gemini-2.5-flash'],
     providers: ['google-ai-studio'],
     used_fallback: false,
     request_count: 1,

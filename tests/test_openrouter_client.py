@@ -8,6 +8,7 @@ from src.core.openrouter_client import (
     DEFAULT_EVALUATION_MODEL,
     DEFAULT_MODEL,
     DEFAULT_OPENROUTER_BASE_URL,
+    DEFAULT_SYNTHESIS_MODEL,
     ModelClient,
     ModelClientError,
     ModelRateLimitError,
@@ -16,6 +17,7 @@ from src.core.openrouter_client import (
     research_request_options,
     resolve_evaluation_model_name,
     resolve_model_name,
+    resolve_synthesis_model_name,
     synthesis_request_options,
 )
 from src.core.threat_profile_schema import ThreatProfile
@@ -85,25 +87,30 @@ def model_client(outcomes, requests=None):
     )
 
 
-def test_defaults_use_free_gemma_models(monkeypatch):
+def test_defaults_use_split_google_models(monkeypatch):
     monkeypatch.delenv("SENTRYSEARCH_MODEL", raising=False)
+    monkeypatch.delenv("SENTRYSEARCH_SYNTHESIS_MODEL", raising=False)
     monkeypatch.delenv("SENTRYSEARCH_EVALUATION_MODEL", raising=False)
 
     assert DEFAULT_MODEL == "google/gemma-4-26b-a4b-it:free"
+    assert DEFAULT_SYNTHESIS_MODEL == "google/gemini-2.5-flash"
     assert DEFAULT_EVALUATION_MODEL == "google/gemma-4-31b-it:free"
     assert DEFAULT_OPENROUTER_BASE_URL == "https://openrouter.ai/api/v1"
     assert resolve_model_name() == "google/gemma-4-26b-a4b-it:free"
+    assert resolve_synthesis_model_name() == "google/gemini-2.5-flash"
     assert resolve_evaluation_model_name() == "google/gemma-4-31b-it:free"
 
 
-def test_evaluation_model_can_be_overridden_independently(monkeypatch):
-    monkeypatch.setenv("SENTRYSEARCH_MODEL", "example/generator")
+def test_authoring_models_can_be_overridden_independently(monkeypatch):
+    monkeypatch.setenv("SENTRYSEARCH_MODEL", "example/researcher")
+    monkeypatch.setenv("SENTRYSEARCH_SYNTHESIS_MODEL", "example/author")
     monkeypatch.setenv("SENTRYSEARCH_EVALUATION_MODEL", "example/evaluator")
 
-    assert resolve_model_name() == "example/generator"
+    assert resolve_model_name() == "example/researcher"
+    assert resolve_synthesis_model_name() == "example/author"
     assert resolve_evaluation_model_name() == "example/evaluator"
     assert synthesis_request_options() == {
-        "model": "example/generator",
+        "model": "example/author",
         "route_purpose": "synthesis",
     }
     assert evaluation_request_options() == {
@@ -112,22 +119,26 @@ def test_evaluation_model_can_be_overridden_independently(monkeypatch):
     }
 
 
-def test_default_generation_model_is_pinned_to_google_ai_studio(monkeypatch):
+def test_default_authoring_models_are_pinned_to_google_ai_studio(monkeypatch):
     monkeypatch.delenv("SENTRYSEARCH_MODEL", raising=False)
+    monkeypatch.delenv("SENTRYSEARCH_SYNTHESIS_MODEL", raising=False)
 
-    expected_authoring_route = {
+    assert research_request_options() == {
         "model": "google/gemma-4-26b-a4b-it:free",
-        "route_purpose": "synthesis",
+        "route_purpose": "research",
         "fallback_models": ["google/gemma-4-26b-a4b-it"],
         "provider": {
             "only": ["google-ai-studio"],
             "allow_fallbacks": False,
         },
     }
-    assert synthesis_request_options() == expected_authoring_route
-    assert research_request_options() == {
-        **expected_authoring_route,
-        "route_purpose": "research",
+    assert synthesis_request_options() == {
+        "model": "google/gemini-2.5-flash",
+        "route_purpose": "synthesis",
+        "provider": {
+            "only": ["google-ai-studio"],
+            "allow_fallbacks": False,
+        },
     }
 
 
@@ -157,6 +168,7 @@ def test_model_client_posts_native_openrouter_chat_completion():
         messages=[{"role": "user", "content": "Analyze Cobalt Strike"}],
         max_tokens=16_384,
         temperature=0.3,
+        session_id="sentrysearch-synthesis-test",
         tools=[{"type": "web_search"}],
     )
 
@@ -176,6 +188,7 @@ def test_model_client_posts_native_openrouter_chat_completion():
         "max_tokens": 16_384,
         "stream": False,
         "temperature": 0.3,
+        "session_id": "sentrysearch-synthesis-test",
         "tools": [
             {
                 "type": "openrouter:web_search",
@@ -326,7 +339,10 @@ def test_model_client_falls_back_when_pinned_primary_cannot_serve_synthesis():
 
 def test_model_client_keeps_research_synthesis_and_evaluation_provenance_separate():
     generation_body = chat_response("generated report")
-    synthesis_body = chat_response("authored report")
+    synthesis_body = chat_response(
+        "authored report",
+        model="google/gemini-2.5-flash",
+    )
     evaluation_body = chat_response(
         "evaluation",
         model="google/gemma-4-31b-it:free",
@@ -345,7 +361,7 @@ def test_model_client_keeps_research_synthesis_and_evaluation_provenance_separat
         messages=[{"role": "user", "content": "Research"}],
     )
     client.messages.create(
-        model="google/gemma-4-26b-a4b-it:free",
+        model="google/gemini-2.5-flash",
         route_purpose="synthesis",
         messages=[{"role": "user", "content": "Author"}],
     )
@@ -361,7 +377,7 @@ def test_model_client_keeps_research_synthesis_and_evaluation_provenance_separat
     )
     synthesis = client.route_provenance(
         ModelRoutePurpose.SYNTHESIS,
-        requested_model="google/gemma-4-26b-a4b-it:free",
+        requested_model="google/gemini-2.5-flash",
     )
     evaluation = client.route_provenance(
         ModelRoutePurpose.EVALUATION,
@@ -370,7 +386,7 @@ def test_model_client_keeps_research_synthesis_and_evaluation_provenance_separat
 
     assert research.actual_models == ("google/gemma-4-26b-a4b-it:free",)
     assert research.request_count == 1
-    assert synthesis.actual_models == ("google/gemma-4-26b-a4b-it:free",)
+    assert synthesis.actual_models == ("google/gemini-2.5-flash",)
     assert synthesis.request_count == 1
     assert evaluation.actual_models == ("google/gemma-4-31b-it:free",)
     assert evaluation.request_count == 1
@@ -570,6 +586,31 @@ def test_model_client_retries_length_response_with_a_larger_bounded_budget(monke
     assert [json.loads(request.content)["max_tokens"] for request in requests] == [2_000, 4_000]
     assert "session_id" not in json.loads(requests[0].content)
     assert json.loads(requests[1].content)["session_id"].startswith("sentrysearch-empty-retry-")
+
+
+def test_model_client_preserves_caller_session_across_bounded_output_retry(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda *_args: None)
+    requests = []
+    client = model_client(
+        [
+            (200, chat_response('{"value":', finish_reason="length"), {}),
+            (200, chat_response('{"value":"recovered"}'), {}),
+        ],
+        requests,
+    )
+
+    result = client.messages.create(
+        messages=[{"role": "user", "content": "hello"}],
+        response_format=StructuredResult,
+        max_tokens=2_000,
+        session_id="sentrysearch-synthesis-stable",
+    )
+
+    assert result.parsed.value == "recovered"
+    assert [json.loads(request.content)["session_id"] for request in requests] == [
+        "sentrysearch-synthesis-stable",
+        "sentrysearch-synthesis-stable",
+    ]
 
 
 def test_model_client_rejects_repeated_incomplete_length_responses(monkeypatch):

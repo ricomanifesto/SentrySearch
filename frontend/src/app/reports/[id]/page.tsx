@@ -54,12 +54,12 @@ const localReportDetailFixture: ReportDetail = {
     request_count: 3,
   },
   synthesis_route: {
-    requested_models: ['google/gemma-4-26b-a4b-it:free'],
+    requested_models: ['google/gemini-2.5-flash'],
     requested_providers: ['google-ai-studio'],
-    selected_models: ['google/gemma-4-26b-a4b-it'],
-    actual_models: ['google/gemma-4-26b-a4b-it'],
-    providers: ['Parasail'],
-    used_fallback: true,
+    selected_models: ['google/gemini-2.5-flash'],
+    actual_models: ['google/gemini-2.5-flash'],
+    providers: ['google-ai-studio'],
+    used_fallback: false,
     request_count: 1,
   },
   evaluation_route: {

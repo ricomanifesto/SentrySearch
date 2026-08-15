@@ -3,6 +3,7 @@
 import os
 import json
 import logging
+from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
 from src.core.openrouter_client import (
@@ -10,6 +11,7 @@ from src.core.openrouter_client import (
     evaluation_request_options,
     research_request_options,
     resolve_model_name,
+    resolve_synthesis_model_name,
     synthesis_request_options,
 )
 from src.core.model_retry import RetryPolicy, RetryingModelRequests
@@ -286,9 +288,9 @@ Return a compact but technically dense evidence dossier. Include concrete findin
             if self.enable_metrics and self.performance_tracker:
                 self.performance_tracker.start_request(
                     query=tool_name,
-                    model=resolve_model_name(),
+                    model=resolve_synthesis_model_name(),
                     prompt_type="threat_intel_main",
-                    cache_enabled=False,  # Baseline measurement
+                    cache_enabled=True,
                 )
 
             emit_progress(
@@ -553,7 +555,7 @@ END ATTESTED SOURCE CATALOG"""
 
             # Record prompt details for metrics
             if self.enable_metrics and self.performance_tracker:
-                self.performance_tracker.record_prompt_details(prompt, cache_enabled=False)
+                self.performance_tracker.record_prompt_details(prompt, cache_enabled=True)
 
             logger.debug("Sending isolated structured synthesis request to OpenRouter...")
             logger.debug(f"Prompt size: {len(prompt)} characters")
@@ -564,6 +566,7 @@ END ATTESTED SOURCE CATALOG"""
             response: SimpleNamespace | None = None
             json_data: dict[str, Any] | None = None
             request_prompt = prompt
+            synthesis_session_id = f"sentrysearch-synthesis-{uuid4().hex}"
             for attempt in range(ATTRIBUTION_CORRECTION_ATTEMPTS + 1):
                 response = self._request_model(
                     # The client already owns the deterministic primary/fallback
@@ -573,11 +576,15 @@ END ATTESTED SOURCE CATALOG"""
                     # correction attempt below.
                     retry_policy=SYNTHESIS_RETRY_POLICY,
                     **synthesis_request_options(),
-                    # The full profile is returned as a single JSON object. Gemma's
-                    # free route supports 32,768 completion tokens; using that ceiling
-                    # keeps evidence-dense profiles from being truncated mid-JSON.
+                    # The full profile is returned as a single JSON object. The app
+                    # keeps a 32,768-token ceiling so evidence-dense profiles have room
+                    # without turning an incomplete response into an unbounded retry.
                     max_tokens=32768,
                     temperature=0.3,
+                    # Gemini can reuse the unchanged dossier prefix during the one
+                    # bounded evidence-correction pass. A stable session also keeps
+                    # that pass on the provider route that succeeded.
+                    session_id=synthesis_session_id,
                     messages=[{"role": "user", "content": request_prompt}],
                     response_format=ThreatProfile,
                 )
@@ -658,7 +665,6 @@ END ATTESTED SOURCE CATALOG"""
                 time_to_first_token = api_end_time - api_start_time  # Approximate
                 self.performance_tracker.record_api_response(
                     response,
-                    cache_hit=False,  # Baseline - no caching
                     time_to_first_token=time_to_first_token,
                 )
 
