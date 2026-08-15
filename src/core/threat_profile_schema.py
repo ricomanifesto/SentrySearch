@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from copy import deepcopy
 from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
@@ -499,20 +500,20 @@ def parse_threat_profile_response(response: Any) -> dict[str, Any]:
     """Return a validated profile from parsed or deferred JSON output."""
 
     parsed = getattr(response, "parsed", None)
-    if parsed is not None:
-        profile = (
-            parsed if isinstance(parsed, ThreatProfile) else ThreatProfile.model_validate(parsed)
-        )
+    if isinstance(parsed, ThreatProfile):
+        profile = parsed
         return profile.model_dump(mode="json", by_alias=True)
-
-    text_parts = [
-        str(getattr(part, "text", ""))
-        for part in (getattr(response, "content", None) or [])
-        if getattr(part, "type", None) == "text" and str(getattr(part, "text", "")).strip()
-    ]
-    if not text_parts:
-        raise ValueError("Model response did not include threat profile JSON")
-    payload = _load_model_json("\n".join(text_parts))
+    if isinstance(parsed, dict):
+        payload = deepcopy(parsed)
+    else:
+        text_parts = [
+            str(getattr(part, "text", ""))
+            for part in (getattr(response, "content", None) or [])
+            if getattr(part, "type", None) == "text" and str(getattr(part, "text", "")).strip()
+        ]
+        if not text_parts:
+            raise ValueError("Model response did not include threat profile JSON")
+        payload = _load_model_json("\n".join(text_parts))
     dropped_campaigns = _drop_incomplete_campaigns(payload)
     if dropped_campaigns:
         logger.warning(
