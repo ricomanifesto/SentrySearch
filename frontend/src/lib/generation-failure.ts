@@ -58,7 +58,7 @@ export function getGenerationFailurePresentation(
     case 'evidence_incomplete':
       return {
         heading: 'The generated evidence coverage was incomplete',
-        detail: 'The model output did not attach a complete source role and source identity to every stored high-risk item, so no report was finalized.',
+        detail: 'The model output did not attach a complete source role, source identity, and verbatim captured support to every high-risk item, so no report was finalized.',
         retryLabel: 'Start another run',
         targetExonerated: true,
       };

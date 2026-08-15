@@ -25,6 +25,11 @@ def build_threat_profile_data(source_url: str = "https://example.com/report") ->
                     "relevanceScore": "High",
                     "contentType": "Report",
                     "keyFindings": "Observed behavior and mitigations.",
+                    "evidenceSnapshotStatus": "captured",
+                    "evidenceSnapshotSha256": "a" * 64,
+                    "evidenceSnapshotCapturedAt": "2026-08-15T12:00:00+00:00",
+                    "evidenceSnapshotFinalUrl": None,
+                    "evidencePageAge": None,
                 }
             ],
             "searchStrategy": "Searched primary sources.",
@@ -32,7 +37,7 @@ def build_threat_profile_data(source_url: str = "https://example.com/report") ->
             "sourceReliability": "Primary source.",
         },
         "claimAttribution": {
-            "schemaVersion": "4",
+            "schemaVersion": "5",
             "claims": [
                 {
                     "claimClass": "threat_activity",
@@ -41,6 +46,13 @@ def build_threat_profile_data(source_url: str = "https://example.com/report") ->
                     "claimIndex": 0,
                     "evidenceRole": "direct_evidence",
                     "sourceIds": ["S1"],
+                    "supportingEvidence": [
+                        {
+                            "sourceId": "S1",
+                            "excerpt": "Captured support",
+                            "snapshotSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        }
+                    ],
                 },
                 {
                     "claimClass": "forensic_artifact",
@@ -49,6 +61,13 @@ def build_threat_profile_data(source_url: str = "https://example.com/report") ->
                     "claimIndex": 0,
                     "evidenceRole": "direct_evidence",
                     "sourceIds": ["S1"],
+                    "supportingEvidence": [
+                        {
+                            "sourceId": "S1",
+                            "excerpt": "Captured support",
+                            "snapshotSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        }
+                    ],
                 },
                 {
                     "claimClass": "forensic_artifact",
@@ -57,6 +76,13 @@ def build_threat_profile_data(source_url: str = "https://example.com/report") ->
                     "claimIndex": 0,
                     "evidenceRole": "direct_evidence",
                     "sourceIds": ["S1"],
+                    "supportingEvidence": [
+                        {
+                            "sourceId": "S1",
+                            "excerpt": "Captured support",
+                            "snapshotSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        }
+                    ],
                 },
                 {
                     "claimClass": "forensic_artifact",
@@ -65,6 +91,13 @@ def build_threat_profile_data(source_url: str = "https://example.com/report") ->
                     "claimIndex": 0,
                     "evidenceRole": "direct_evidence",
                     "sourceIds": ["S1"],
+                    "supportingEvidence": [
+                        {
+                            "sourceId": "S1",
+                            "excerpt": "Captured support",
+                            "snapshotSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        }
+                    ],
                 },
                 {
                     "claimClass": "detection_indicator",
@@ -73,6 +106,13 @@ def build_threat_profile_data(source_url: str = "https://example.com/report") ->
                     "claimIndex": 0,
                     "evidenceRole": "direct_evidence",
                     "sourceIds": ["S1"],
+                    "supportingEvidence": [
+                        {
+                            "sourceId": "S1",
+                            "excerpt": "Captured support",
+                            "snapshotSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        }
+                    ],
                 },
                 {
                     "claimClass": "detection_indicator",
@@ -81,6 +121,13 @@ def build_threat_profile_data(source_url: str = "https://example.com/report") ->
                     "claimIndex": 0,
                     "evidenceRole": "direct_evidence",
                     "sourceIds": ["S1"],
+                    "supportingEvidence": [
+                        {
+                            "sourceId": "S1",
+                            "excerpt": "Captured support",
+                            "snapshotSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        }
+                    ],
                 },
                 {
                     "claimClass": "mitigation_action",
@@ -89,6 +136,7 @@ def build_threat_profile_data(source_url: str = "https://example.com/report") ->
                     "claimIndex": 0,
                     "evidenceRole": "general_practice",
                     "sourceIds": [],
+                    "supportingEvidence": [],
                 },
                 {
                     "claimClass": "mitigation_action",
@@ -97,6 +145,13 @@ def build_threat_profile_data(source_url: str = "https://example.com/report") ->
                     "claimIndex": 0,
                     "evidenceRole": "direct_evidence",
                     "sourceIds": ["S1"],
+                    "supportingEvidence": [
+                        {
+                            "sourceId": "S1",
+                            "excerpt": "Captured support",
+                            "snapshotSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        }
+                    ],
                 },
                 {
                     "claimClass": "mitigation_action",
@@ -105,6 +160,13 @@ def build_threat_profile_data(source_url: str = "https://example.com/report") ->
                     "claimIndex": 0,
                     "evidenceRole": "direct_evidence",
                     "sourceIds": ["S1"],
+                    "supportingEvidence": [
+                        {
+                            "sourceId": "S1",
+                            "excerpt": "Captured support",
+                            "snapshotSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        }
+                    ],
                 },
                 {
                     "claimClass": "mitigation_action",
@@ -113,6 +175,7 @@ def build_threat_profile_data(source_url: str = "https://example.com/report") ->
                     "claimIndex": 0,
                     "evidenceRole": "general_practice",
                     "sourceIds": [],
+                    "supportingEvidence": [],
                 },
             ],
         },

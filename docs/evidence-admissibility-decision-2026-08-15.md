@@ -28,3 +28,17 @@ Schema-2 and schema-3 reports stay `unassessed`. The system does not infer sourc
 - Reader-experience tests prove named source quarantine, exact blocking findings, coverage-versus-safety failure language, disabled ineligible download, export disclosure, and historical-acceptance precedence.
 - The development-only `local-evidence-safety-fixture` preserves the Noodle RAT failure shape: a 4.40 content score, a TEST-NET-2 address, a training source, and a blocked operational-readiness state.
 - Production canary 1 of 3 completed after commit `ae76ea0`: fresh Noodle RAT record `0e20b16f-4dff-4181-b169-40a7231a027a` persisted `generationShape: embedded_evidence_items`, schema-4 attribution for 43 claims across all four high-risk classes, and a passed evidence assessment with zero safety or coverage findings. Evaluation completed at 4.57 with a `reviewable` state. The record remains unjudged, so handoff stays disabled until an analyst explicitly accepts that evaluation vintage.
+
+## Append-only correction — source content was not yet examined
+
+The record above was a successful schema-4 shape canary, not a successful safety canary. A reader review found that source S8 was a Noodle RAT training/game artifact whose neutral GitHub URL and title did not contain the markers used by the original source classifier. The application had not fetched source content, so `source.no-non-operational-marker` meant only that no marker appeared in URL/title metadata. S8 then supported ten high-risk claims, while the evaluator assigned 4.57 and `reviewable`. The record must not count toward the cleanup trigger for embedded-evidence compatibility.
+
+The correction is additive and fail closed:
+
+- New research catalogs capture bounded public text content before synthesis. Only a captured, fingerprinted page that passes deterministic intent checks may be `operational`; unavailable or ambiguous content is `context_only`, and training/game/simulation content remains named as excluded evidence.
+- Claim-attribution schema 5 requires one short verbatim captured excerpt per direct source ID. Finalization verifies each excerpt by exact substring against the captured snapshot and stores its SHA-256. Source identity alone no longer proves support.
+- IOC-population recommendations are checked against admitted captured content. Suggestions with no concrete source value move to `unverified_recommendations` and force `needs_attention` rather than inheriting a high evaluator score.
+- Schema-4 retained records remain readable but project as `unassessed` for reuse. No legacy support excerpt or source intent is inferred.
+- The renderer applies attribution edits against the original markdown in longest-claim-first, non-overlapping order, so inserted citation syntax cannot become input to a later replacement.
+
+The new release oracle is three successful schema-5 production canaries: one common target, one mid-coverage target, and one deliberately obscure target. Each must persist captured source fingerprints and exact support excerpts, name every exclusion, keep unsupported evaluator advice out of verified recommendations, render non-overlapping citations, and complete the disposition/reload/export loop. An obscure run that lacks evidence is successful only when it terminates with the typed evidence-scarcity outcome; it must not manufacture completeness.

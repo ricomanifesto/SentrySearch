@@ -111,6 +111,7 @@ test('links explicit claim attribution to source identity without duplicating th
   assert.match(narrative, /href="#source-S1"/);
   assert.match(sources, /id="source-S1"/);
   assert.match(sources, /legacy attribution schema 3/);
+  assert.match(sources, /1 recorded source/);
   assert.match(sources, /Operational evidence admissibility was not assessed/);
   assert.equal((sources.match(/Example analysis/g) ?? []).length, 1);
 });
@@ -199,6 +200,63 @@ test('places forensic-artifact citations outside inline code', () => {
 
   assert.match(narrative, /<code[^>]*>payload\.dll<\/code> <a href="#source-S1"/);
   assert.doesNotMatch(narrative, /<code[^>]*>[^<]*S1/);
+});
+
+test('does not inject claim citations into fenced detection rules', () => {
+  const narrative = renderToStaticMarkup(
+    <ReportNarrative
+      markdown={[
+        '## Detection rule',
+        '',
+        '```sigma',
+        'Image: payload.dll',
+        '```',
+      ].join('\n')}
+      claimAttributions={[
+        {
+          claim_class: 'forensic_artifact',
+          claim: 'payload.dll',
+          source_ids: ['S1'],
+        },
+      ]}
+    />,
+  );
+
+  assert.match(narrative, /<code[^>]*class="language-sigma"[^>]*>Image: payload\.dll/);
+  assert.doesNotMatch(narrative, /href="#source-S1"/);
+});
+
+test('attributes overlapping claims once without rescanning inserted citations', () => {
+  const narrative = renderToStaticMarkup(
+    <ReportNarrative
+      markdown={[
+        '## Forensic artifacts',
+        '',
+        '- `Process hollowing and injection artifacts`',
+        '- Process hollowing and injection',
+      ].join('\n')}
+      claimAttributions={[
+        {
+          claim_class: 'forensic_artifact',
+          claim: 'Process hollowing and injection artifacts',
+          source_ids: ['S8'],
+        },
+        {
+          claim_class: 'detection_indicator',
+          claim: 'Process hollowing and injection',
+          source_ids: ['S8'],
+        },
+      ]}
+    />,
+  );
+
+  assert.equal((narrative.match(/href="#source-S8"/g) ?? []).length, 2);
+  assert.match(
+    narrative,
+    /<code[^>]*>Process hollowing and injection artifacts<\/code> <a href="#source-S8"/,
+  );
+  assert.match(narrative, /<li[^>]*>Process hollowing and injection <a href="#source-S8"/);
+  assert.doesNotMatch(narrative, /<code[^>]*>[^<]*\[S8\]/);
 });
 
 test('labels canonical sample evidence as a captured snapshot', () => {

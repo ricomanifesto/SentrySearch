@@ -16,6 +16,83 @@ from src.core.threat_profile_schema import (
     attest_profile_sources,
     parse_threat_profile_response,
 )
+from src.core.source_ledger import CLAIM_CLASS_SELECTORS
+
+
+def generated_embedded_profile(profile: dict) -> dict:
+    """Convert the retained profile fixture into the current model-output shape."""
+
+    generated = deepcopy(profile)
+    attribution = generated.pop("claimAttribution")
+    for claim in attribution["claims"]:
+        selected = generated
+        for field_name in CLAIM_CLASS_SELECTORS[claim["claimClass"]][claim["claimField"]]:
+            selected = selected[field_name]
+        claim_index = claim["claimIndex"]
+        value = selected[claim_index]
+        source_ids = list(claim["sourceIds"])
+        selected[claim_index] = {
+            "value": value,
+            "evidenceRole": claim["evidenceRole"],
+            "sourceIds": source_ids,
+            "supportingEvidence": [
+                {"sourceId": source_id, "excerpt": value} for source_id in source_ids
+            ],
+        }
+    return generated
+
+
+@pytest.fixture(autouse=True)
+def captured_research_sources(monkeypatch):
+    """Keep generator tests deterministic at the new source-capture boundary."""
+
+    def capture(sources):
+        return [
+            {
+                **dict(source),
+                "contentSnapshot": {
+                    "status": "captured",
+                    "capturedAt": "2026-08-15T12:00:00+00:00",
+                    "finalUrl": source["url"],
+                    "contentType": "text/plain",
+                    "sha256": "a" * 64,
+                    "text": (
+                        "Remote access. example.exe. HTTPS callbacks. Process creation. "
+                        "Unexpected service creation. Application control. Monitor service creation. "
+                        "Isolate affected host. Rebuild compromised systems. "
+                        "Example Threat malware analysis and mitigation."
+                    ),
+                    "pageAge": source.get("page_age"),
+                },
+            }
+            for source in sources
+        ]
+
+    monkeypatch.setattr(
+        "src.core.threat_profile_generator.capture_source_snapshots",
+        capture,
+    )
+    monkeypatch.setattr(
+        "src.core.threat_profile_generator.research_source_observations",
+        lambda sources: [
+            {
+                "sourceId": source.get("sourceId"),
+                "title": source.get("title", "Example report"),
+                "url": source.get("url"),
+                "domain": "example.com",
+                "purpose": "operational",
+                "disposition": "admitted",
+                "reason": "Captured test source.",
+                "ruleId": "source.captured-operational-content",
+                "snapshotStatus": "captured",
+                "snapshotSha256": "a" * 64,
+                "snapshotCapturedAt": "2026-08-15T12:00:00+00:00",
+                "snapshotFinalUrl": source.get("url"),
+                "pageAge": source.get("page_age"),
+            }
+            for source in sources
+        ],
+    )
 
 
 def test_threat_profile_schema_preserves_public_field_names(threat_profile_data):
@@ -301,9 +378,10 @@ def test_generation_separates_web_research_from_structured_synthesis(
                 )
 
             else:
+                generated_profile = generated_embedded_profile(threat_profile_data)
                 response = SimpleNamespace(
-                    content=[SimpleNamespace(type="text", text=json.dumps(threat_profile_data))],
-                    parsed=ThreatProfile.model_validate(threat_profile_data),
+                    content=[SimpleNamespace(type="text", text=json.dumps(generated_profile))],
+                    parsed=ThreatProfile.model_validate(generated_profile),
                     web_search_sources=[],
                     tool_events=[],
                     response_id="synthesis-response",
@@ -335,9 +413,8 @@ def test_generation_separates_web_research_from_structured_synthesis(
         "Example Threat", progress_callback=progress_updates.append
     )
 
-    assert {
-        key: value for key, value in result.items() if not key.startswith("_")
-    } == threat_profile_data
+    assert result["claimAttribution"]["schemaVersion"] == "5"
+    assert result["claimAttribution"]["generationShape"] == "embedded_evidence_items"
     assert result["_research_route"] == {
         "requested_models": ["google/gemma-4-26b-a4b-it:free"],
         "requested_providers": ["google-ai-studio"],
@@ -401,7 +478,7 @@ def test_generation_separates_web_research_from_structured_synthesis(
     assert '"sourceId": "S1"' in synthesis_prompt
     assert '"claimAttribution"' not in synthesis_prompt
     assert '"evidenceRole": "direct_evidence"' in synthesis_prompt
-    assert "the application derives schema-4 claim selectors" in synthesis_prompt
+    assert "the application derives schema-5 claim selectors" in synthesis_prompt
     synthesis_response = next(response for response in messages.responses if response.parsed)
     assert synthesis_response.usage.input_tokens == 60
     assert synthesis_response.usage.output_tokens == 100
@@ -417,9 +494,12 @@ def test_generation_separates_web_research_from_structured_synthesis(
     ]
 
 
-@pytest.mark.parametrize("invalid_attribution", ["unknown_source", "claim_selector"])
-def test_generation_retries_one_invalid_claim_map_without_weakening_attestation(
-    monkeypatch, threat_profile_data, invalid_attribution
+@pytest.mark.parametrize(
+    "invalid_evidence",
+    ["unknown_source", "nonverbatim_excerpt", "parallel_map"],
+)
+def test_generation_retries_one_invalid_embedded_item_without_weakening_attestation(
+    monkeypatch, threat_profile_data, invalid_evidence
 ):
     monkeypatch.setattr(
         "src.core.threat_profile_generator.assess_profile_evidence",
@@ -459,12 +539,18 @@ def test_generation_retries_one_invalid_claim_map_without_weakening_attestation(
     )
     monkeypatch.setattr(generator, "_research_evidence", lambda _tool_name: research_response)
 
-    invalid_profile = deepcopy(threat_profile_data)
-    if invalid_attribution == "unknown_source":
-        invalid_profile["claimAttribution"]["claims"][0]["sourceIds"] = ["S99"]
+    valid_profile = generated_embedded_profile(threat_profile_data)
+    if invalid_evidence == "parallel_map":
+        invalid_profile = deepcopy(threat_profile_data)
     else:
-        invalid_profile["claimAttribution"]["claims"][0]["claimField"] = "behavioralIndicators"
-    profiles = [invalid_profile, threat_profile_data]
+        invalid_profile = deepcopy(valid_profile)
+        first_item = invalid_profile["threatIntelligence"]["riskAssessment"]["riskFactors"][0]
+        if invalid_evidence == "unknown_source":
+            first_item["sourceIds"] = ["S99"]
+            first_item["supportingEvidence"][0]["sourceId"] = "S99"
+        else:
+            first_item["supportingEvidence"][0]["excerpt"] = "Not present in captured content"
+    profiles = [invalid_profile, valid_profile]
     requests: list[dict] = []
     synthesis_responses: list[SimpleNamespace] = []
 
@@ -499,18 +585,17 @@ def test_generation_retries_one_invalid_claim_map_without_weakening_attestation(
         "Example Threat", progress_callback=progress_updates.append
     )
 
-    assert {
-        key: value for key, value in result.items() if not key.startswith("_")
-    } == threat_profile_data
+    assert result["claimAttribution"]["schemaVersion"] == "5"
+    assert result["claimAttribution"]["generationShape"] == "embedded_evidence_items"
     assert len(requests) == 2
     initial_content = requests[0]["messages"][0]["content"]
     correction_content = requests[1]["messages"][0]["content"]
     assert correction_content[0] == initial_content[0]
     assert correction_content[0]["cache_control"] == {"type": "ephemeral"}
     correction_text = correction_content[1]["text"]
-    assert "CORRECTION ATTEMPT AFTER A FAILED EVIDENCE CONTRACT" in correction_text
-    assert "Every high-risk item sourceId MUST appear" in correction_text
-    assert "Every high-risk array item MUST be an object" in correction_text
+    assert "CORRECTION ATTEMPT AFTER A FAILED EVIDENCE GATE" in correction_text
+    assert "copy one short verbatim excerpt" in correction_text
+    assert "supportingEvidence" in correction_text
     assert requests[1]["provider"] == requests[0]["provider"]
     assert "fallback_models" not in requests[0]
     assert "fallback_models" not in requests[1]
@@ -520,7 +605,9 @@ def test_generation_retries_one_invalid_claim_map_without_weakening_attestation(
     assert requests[0]["session_id"].startswith("sentrysearch-synthesis-")
     assert requests[0]["strict_response_schema"] is False
     assert requests[1]["strict_response_schema"] is False
-    assert progress_updates[-3].message == ("Reconciling claim evidence with the source ledger...")
+    assert any(
+        update.message == "Completing high-risk evidence identity..." for update in progress_updates
+    )
     assert progress_updates[-1].stage is GenerationStage.FINALIZING
     assert requests[0]["response_format"] is ThreatProfile
     assert requests[1]["response_format"] is ThreatProfile
@@ -532,7 +619,7 @@ def test_generation_retries_one_invalid_claim_map_without_weakening_attestation(
     assert synthesis_responses[-1].usage.total_tokens == 67
 
 
-def test_generation_lets_the_evidence_gate_explain_incomplete_schema_four_coverage(
+def test_generation_lets_the_evidence_gate_explain_mixed_legacy_coverage(
     monkeypatch, threat_profile_data
 ):
     monkeypatch.setattr(
@@ -543,7 +630,7 @@ def test_generation_lets_the_evidence_gate_explain_incomplete_schema_four_covera
     generator.enable_quality_control = False
 
     source_url = "https://research.vendor-security.com/report"
-    valid_profile = deepcopy(threat_profile_data)
+    valid_profile = generated_embedded_profile(threat_profile_data)
     valid_profile["webSearchSources"]["primarySources"][0].update(
         {"url": source_url, "domain": "research.vendor-security.com"}
     )
@@ -605,7 +692,9 @@ def test_generation_lets_the_evidence_gate_explain_incomplete_schema_four_covera
     assert len(requests) == 2
     correction_text = requests[1]["messages"][0]["content"][1]["text"]
     assert "CORRECTION ATTEMPT AFTER A FAILED EVIDENCE GATE" in correction_text
-    assert "riskFactors[1] requires exactly one schema-4 attribution record" in correction_text
+    assert (
+        "High-risk fields mix embedded evidence items with legacy string values" in correction_text
+    )
     assert "FAILED EVIDENCE CONTRACT" not in correction_text
 
 

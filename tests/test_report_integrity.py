@@ -215,10 +215,32 @@ def test_claim_attribution_v3_materializes_explicit_structured_selectors():
         materialize_claim_attribution(profile)
 
 
-def test_embedded_high_risk_evidence_derives_the_schema_four_ledger():
+def test_embedded_high_risk_evidence_derives_the_schema_five_ledger():
+    captured_text = "Remote access payload.dll Unexpected service creation Isolate affected hosts"
+    evidence_sources = [
+        {
+            "sourceId": "S1",
+            "url": "https://example.com/report",
+            "contentSnapshot": {
+                "status": "captured",
+                "text": captured_text,
+                "sha256": "a" * 64,
+            },
+        }
+    ]
+
+    def support(excerpt: str) -> list[dict[str, str]]:
+        return [{"sourceId": "S1", "excerpt": excerpt}]
+
     profile = {
         "webSearchSources": {
-            "primarySources": [{"sourceId": "S1", "url": "https://example.com/report"}]
+            "primarySources": [
+                {
+                    "sourceId": "S1",
+                    "url": "https://example.com/report",
+                    "evidenceSnapshotSha256": "a" * 64,
+                }
+            ]
         },
         "threatIntelligence": {
             "riskAssessment": {
@@ -227,6 +249,7 @@ def test_embedded_high_risk_evidence_derives_the_schema_four_ledger():
                         "value": "Remote access",
                         "evidenceRole": "direct_evidence",
                         "sourceIds": ["S1"],
+                        "supportingEvidence": support("Remote access"),
                     }
                 ]
             }
@@ -237,6 +260,7 @@ def test_embedded_high_risk_evidence_derives_the_schema_four_ledger():
                     "value": "payload.dll",
                     "evidenceRole": "direct_evidence",
                     "sourceIds": ["S1"],
+                    "supportingEvidence": support("payload.dll"),
                 }
             ]
         },
@@ -246,6 +270,7 @@ def test_embedded_high_risk_evidence_derives_the_schema_four_ledger():
                     "value": "Unexpected service creation",
                     "evidenceRole": "direct_evidence",
                     "sourceIds": ["S1"],
+                    "supportingEvidence": support("Unexpected service creation"),
                 }
             ]
         },
@@ -255,16 +280,17 @@ def test_embedded_high_risk_evidence_derives_the_schema_four_ledger():
                     "value": "Isolate affected hosts",
                     "evidenceRole": "direct_evidence",
                     "sourceIds": ["S1"],
+                    "supportingEvidence": support("Isolate affected hosts"),
                 }
             ]
         },
     }
 
-    materialize_embedded_claim_evidence(profile)
+    materialize_embedded_claim_evidence(profile, evidence_sources)
 
     assert profile["threatIntelligence"]["riskAssessment"]["riskFactors"] == ["Remote access"]
     assert profile["forensicArtifacts"]["fileSystemArtifacts"] == ["payload.dll"]
-    assert profile["claimAttribution"]["schemaVersion"] == "4"
+    assert profile["claimAttribution"]["schemaVersion"] == "5"
     assert profile["claimAttribution"]["generationShape"] == "embedded_evidence_items"
     embedded_claims = cast(list[dict[str, Any]], profile["claimAttribution"]["claims"])
     assert [claim["claim"] for claim in embedded_claims] == [
@@ -273,7 +299,88 @@ def test_embedded_high_risk_evidence_derives_the_schema_four_ledger():
         "Unexpected service creation",
         "Isolate affected hosts",
     ]
+    assert embedded_claims[0]["supportingEvidence"] == [
+        {
+            "sourceId": "S1",
+            "excerpt": "Remote access",
+            "snapshotSha256": "a" * 64,
+        }
+    ]
     assert_claim_attribution_consistent(profile)
+
+
+def test_embedded_evidence_rejects_a_paraphrased_support_excerpt():
+    profile = {
+        "threatIntelligence": {
+            "riskAssessment": {
+                "riskFactors": [
+                    {
+                        "value": "Remote access",
+                        "evidenceRole": "direct_evidence",
+                        "sourceIds": ["S1"],
+                        "supportingEvidence": [
+                            {"sourceId": "S1", "excerpt": "Paraphrased support"}
+                        ],
+                    }
+                ]
+            }
+        },
+        "forensicArtifacts": {},
+        "detectionAndMitigation": {},
+        "mitigationAndResponse": {},
+    }
+    evidence_sources = [
+        {
+            "sourceId": "S1",
+            "contentSnapshot": {
+                "status": "captured",
+                "text": "Exact captured support only",
+                "sha256": "a" * 64,
+            },
+        }
+    ]
+
+    with pytest.raises(EvidenceCoverageError) as captured:
+        materialize_embedded_claim_evidence(profile, evidence_sources)
+
+    assert any("not verbatim in S1" in finding for finding in captured.value.findings)
+
+
+def test_embedded_evidence_rejects_an_exact_but_unrelated_support_excerpt():
+    profile = {
+        "threatIntelligence": {
+            "riskAssessment": {
+                "riskFactors": [
+                    {
+                        "value": "Remote access",
+                        "evidenceRole": "direct_evidence",
+                        "sourceIds": ["S1"],
+                        "supportingEvidence": [
+                            {"sourceId": "S1", "excerpt": "Published security report"}
+                        ],
+                    }
+                ]
+            }
+        },
+        "forensicArtifacts": {},
+        "detectionAndMitigation": {},
+        "mitigationAndResponse": {},
+    }
+    evidence_sources = [
+        {
+            "sourceId": "S1",
+            "contentSnapshot": {
+                "status": "captured",
+                "text": "Published security report",
+                "sha256": "a" * 64,
+            },
+        }
+    ]
+
+    with pytest.raises(EvidenceCoverageError) as captured:
+        materialize_embedded_claim_evidence(profile, evidence_sources)
+
+    assert any("no lexical claim anchor" in finding for finding in captured.value.findings)
 
 
 def test_plain_high_risk_values_without_a_legacy_ledger_fail_as_incomplete_generation():

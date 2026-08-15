@@ -958,6 +958,7 @@ def test_report_response_handoff_requires_current_acceptance_and_passed_evidence
             "status": "completed",
             "evaluation_status": "completed",
             "quality_score": 4.2,
+            "claim_attribution_version": "5",
             "evidence_admissibility_status": "passed",
             "analyst_disposition": "accepted",
             "web_sources": [{"url": "https://example.com/report"}],
@@ -966,6 +967,29 @@ def test_report_response_handoff_requires_current_acceptance_and_passed_evidence
 
     assert fields["eligible_for_acceptance"] is True
     assert fields["eligible_for_handoff"] is True
+
+
+def test_schema_four_record_cannot_inherit_a_passed_current_safety_attestation():
+    fields = api_main.report_response_fields(
+        {
+            "id": "retained-schema-four",
+            "tool_name": "Noodle RAT",
+            "category": "malware",
+            "threat_type": "remote_access_trojan",
+            "created_at": datetime.now(timezone.utc),
+            "status": "completed",
+            "evaluation_status": "completed",
+            "quality_score": 4.57,
+            "claim_attribution_version": "4",
+            "evidence_admissibility_status": "passed",
+            "analyst_disposition": "unreviewed",
+            "web_sources": [{"url": "https://example.com/report"}],
+        }
+    )
+
+    assert fields["evidence_admissibility_status"] == "unassessed"
+    assert fields["review_status"] == "needs_attention"
+    assert fields["eligible_for_acceptance"] is False
 
 
 def test_report_detail_returns_persisted_model_route_provenance(monkeypatch):

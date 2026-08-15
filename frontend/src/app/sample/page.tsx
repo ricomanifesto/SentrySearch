@@ -53,7 +53,8 @@ export default function SampleReport() {
           </p>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500">
             This sample is intentionally shorter than a generated report and omits the full
-            research methodology, raw extraction record, and evaluator appendix.
+            research methodology, raw extraction record, and evaluator appendix. It is a retained
+            schema-4 fixture, so current snapshot-verified admissibility is intentionally unassessed.
           </p>
         </header>
 

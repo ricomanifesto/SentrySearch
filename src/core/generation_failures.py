@@ -13,6 +13,10 @@ class EvidenceUnavailableError(RuntimeError):
     generation_error_code = GenerationErrorCode.EVIDENCE_UNAVAILABLE
     retryable = False
 
+    def __init__(self, message: str, *, assessment: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.assessment = dict(assessment or {})
+
 
 class EvidenceAttestationError(RuntimeError):
     """Raised when generated claims or sources fail the evidence contract."""

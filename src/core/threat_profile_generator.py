@@ -37,6 +37,7 @@ from src.core.evidence_admissibility import (
     assess_profile_evidence,
     classify_research_sources,
     evidence_correction_prompt,
+    research_source_observations,
 )
 from src.core.source_ledger import (
     SourceLedgerError,
@@ -46,6 +47,8 @@ from src.core.source_ledger import (
     materialize_embedded_claim_evidence,
     materialize_cited_sources,
 )
+from src.core.source_snapshot import capture_source_snapshots
+from src.core.recommendation_integrity import validate_quality_recommendations
 from src.domain.model_routes import ModelRouteProvenance, ModelRoutePurpose
 from src.domain.reports import GenerationProgress, GenerationStage
 
@@ -328,9 +331,40 @@ Return a compact but technically dense evidence dossier. Include concrete findin
                 raise EvidenceUnavailableError("OpenRouter web search returned no source evidence")
 
             try:
-                research_sources = classify_research_sources(attach_source_ids(research_sources))
+                research_sources = capture_source_snapshots(attach_source_ids(research_sources))
+                research_sources = classify_research_sources(research_sources)
             except SourceLedgerError as error:
                 raise EvidenceAttestationError("Research source catalog was invalid") from error
+
+            source_observations = research_source_observations(research_sources)
+            if not any(
+                observation["purpose"] == "operational" for observation in source_observations
+            ):
+                assessment = {
+                    "schemaVersion": "1",
+                    "status": "unassessed",
+                    "sourceObservations": source_observations,
+                    "indicatorObservations": [],
+                    "blockingFindings": [
+                        "No captured source passed operational-intent verification."
+                    ],
+                    "summary": {
+                        "operationalSources": 0,
+                        "contextSources": sum(
+                            item["purpose"] == "context_only" for item in source_observations
+                        ),
+                        "excludedSources": sum(
+                            item["purpose"] == "excluded_non_operational"
+                            for item in source_observations
+                        ),
+                        "safetyFindings": 0,
+                        "coverageFindings": 1,
+                    },
+                }
+                raise EvidenceUnavailableError(
+                    "Research produced no captured operational evidence",
+                    assessment=assessment,
+                )
 
             source_catalog = json.dumps(research_sources, indent=2, sort_keys=True)
 
@@ -432,31 +466,31 @@ Based on your comprehensive research findings, create a detailed profile in the 
       "overallRisk": "High/Medium/Low",
       "impactRating": "Impact assessment",
       "likelihoodRating": "Likelihood assessment",
-      "riskFactors": [{{"value": "Key risk factor", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}]
+      "riskFactors": [{{"value": "Key risk factor", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}]
     }}
   }},
   "forensicArtifacts": {{
-    "fileSystemArtifacts": [{{"value": "File path or name", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}],
-    "registryArtifacts": [{{"value": "Registry key", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}],
-    "networkArtifacts": [{{"value": "Network artifact", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}],
-    "memoryArtifacts": [{{"value": "Memory artifact", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}],
-    "logArtifacts": [{{"value": "Log pattern", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}]
+    "fileSystemArtifacts": [{{"value": "File path or name", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}],
+    "registryArtifacts": [{{"value": "Registry key", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}],
+    "networkArtifacts": [{{"value": "Network artifact", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}],
+    "memoryArtifacts": [{{"value": "Memory artifact", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}],
+    "logArtifacts": [{{"value": "Log pattern", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}]
   }},
   "detectionAndMitigation": {{
     "iocs": {{
-      "hashes": [{{"value": "Complete file hash", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}],
-      "domains": [{{"value": "Malicious domain", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}],
-      "ips": [{{"value": "Malicious IP address", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}],
-      "urls": [{{"value": "Malicious URL", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}],
-      "filenames": [{{"value": "Malicious filename", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}]
+      "hashes": [{{"value": "Complete file hash", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}],
+      "domains": [{{"value": "Malicious domain", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}],
+      "ips": [{{"value": "Malicious IP address", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}],
+      "urls": [{{"value": "Malicious URL", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}],
+      "filenames": [{{"value": "Malicious filename", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}]
     }},
-    "behavioralIndicators": [{{"value": "Behavioral pattern for detection", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}]
+    "behavioralIndicators": [{{"value": "Behavioral pattern for detection", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}]
   }},
   "mitigationAndResponse": {{
-    "preventiveMeasures": [{{"value": "Generic prevention recommendation", "evidenceRole": "general_practice", "sourceIds": []}}],
-    "detectionMethods": [{{"value": "Detection method", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}],
-    "responseActions": [{{"value": "Incident response action", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"]}}],
-    "recoveryGuidance": [{{"value": "Generic recovery step", "evidenceRole": "general_practice", "sourceIds": []}}]
+    "preventiveMeasures": [{{"value": "Generic prevention recommendation", "evidenceRole": "general_practice", "sourceIds": [], "supportingEvidence": []}}],
+    "detectionMethods": [{{"value": "Detection method", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}],
+    "responseActions": [{{"value": "Incident response action", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}],
+    "recoveryGuidance": [{{"value": "Generic recovery step", "evidenceRole": "general_practice", "sourceIds": [], "supportingEvidence": []}}]
   }},
   "referencesAndIntelligenceSharing": {{
     "sources": [
@@ -515,13 +549,13 @@ CRITICAL INSTRUCTIONS FOR OUTPUT:
 6. primarySources and referencesAndIntelligenceSharing.sources MUST each contain at least one real URL from the attested source catalog
 7. Cross-reference claims across multiple attested sources when possible
 8. If the attested research is limited, acknowledge this limitation in the relevant sections
-9. Every item in riskFactors, every forensic-artifact array, every IOC array, behavioralIndicators, and every mitigation-and-response array MUST be an object with value, evidenceRole, and sourceIds; never emit a plain string in those arrays
+9. Every item in riskFactors, every forensic-artifact array, every IOC array, behavioralIndicators, and every mitigation-and-response array MUST be an object with value, evidenceRole, sourceIds, and supportingEvidence; never emit a plain string in those arrays
 10. Preserve each sourceId exactly as supplied and use only those IDs inside the high-risk item it supports
-11. Use evidenceRole direct_evidence with one or more exact sourceIds for every target-specific fact, artifact, indicator, detection, or response action
-12. evidenceRole general_practice is allowed only for generic mitigation guidance; it MUST use an empty sourceIds list and MUST NOT assert a target-specific fact
+11. Use evidenceRole direct_evidence with one or more exact sourceIds for every target-specific fact, artifact, indicator, detection, or response action. For each sourceId, supportingEvidence MUST contain one object with the same sourceId and a short excerpt copied verbatim from that source's contentSnapshot.text
+12. evidenceRole general_practice is allowed only for generic mitigation guidance; it MUST use empty sourceIds and supportingEvidence lists and MUST NOT assert a target-specific fact
 13. Sources marked context_only or excluded_non_operational in the source catalog MUST NOT appear in primarySources or support high-risk items
 14. Documentation, reserved, special-use, training, tabletop, and fictional infrastructure MUST NOT appear in operational IOC fields or target-specific actions
-15. Do not emit claimAttribution; the application derives schema-4 claim selectors deterministically from the embedded evidence on each high-risk item
+15. Do not emit claimAttribution; the application derives schema-5 claim selectors and verifies every excerpt against the captured source snapshot
 16. Use an empty array when attested evidence does not support a high-risk field; never copy a template placeholder into the output
 
 Remember: Accuracy and source verification are more important than completeness.
@@ -595,7 +629,29 @@ END ATTESTED SOURCE CATALOG"""
                 except (ValueError, TypeError) as error:
                     raise ProfileOutputError("Structured profile output was invalid") from error
                 try:
-                    materialize_embedded_claim_evidence(json_data)
+                    if isinstance(json_data.get("claimAttribution"), dict):
+                        assessment = {
+                            "schemaVersion": "1",
+                            "status": "unassessed",
+                            "sourceObservations": source_observations,
+                            "indicatorObservations": [],
+                            "blockingFindings": [
+                                "New generation emitted a parallel claim-attribution map instead of embedded evidence items."
+                            ],
+                            "summary": {
+                                "safetyFindings": 0,
+                                "coverageFindings": 1,
+                            },
+                        }
+                        raise EvidenceCoverageError(
+                            "Generated report used the retained parallel evidence shape",
+                            findings=assessment["blockingFindings"],
+                            assessment=assessment,
+                        )
+                    materialize_embedded_claim_evidence(
+                        json_data,
+                        response.web_search_sources,
+                    )
                     materialize_claim_attribution(json_data)
                     materialize_cited_sources(
                         json_data,
@@ -742,6 +798,17 @@ END ATTESTED SOURCE CATALOG"""
                     tool_name,
                     evidence_text=(f"{research_text}\n\nATTESTED SOURCE CATALOG\n{source_catalog}"),
                 )
+                validate_quality_recommendations(
+                    validation_results,
+                    response.web_search_sources,
+                    json_data,
+                )
+                # Evaluation may enhance non-claim-bound prose. Re-run the
+                # application-owned safety gate over that final reader-visible
+                # profile so post-gate model edits cannot introduce unsafe
+                # infrastructure or invalidate the source contract.
+                assess_profile_evidence(json_data, response.web_search_sources)
+                assert_claim_attribution_consistent(json_data)
 
                 if self.enable_tracing and self.trace_exporter:
                     self.trace_exporter.log_quality_metrics(validation_results)

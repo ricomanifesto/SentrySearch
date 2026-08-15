@@ -125,14 +125,14 @@ const expectations = [
     pattern: /claim_class: 'threat_activity'[\s\S]*claim_class: 'forensic_artifact'[\s\S]*claim_class: 'detection_indicator'[\s\S]*claim_class: 'mitigation_action'/,
   },
   {
-    name: 'teaches current claim attribution schema 4',
+    name: 'labels the retained schema-4 teaching fixture honestly',
     source: sampleReport,
     pattern: /claim_attribution_version: '4'[\s\S]*schemaVersion: '4'/,
   },
   {
-    name: 'teaches the current deterministic evidence-admissibility contract',
+    name: 'does not upgrade the retained fixture to current admissibility by assertion',
     source: sampleReport,
-    pattern: /evidence_admissibility_status: 'passed'[\s\S]*schema_version: '1'/,
+    pattern: /evidence_admissibility_status: 'unassessed'[\s\S]*schema_version: '1'[\s\S]*status: 'unassessed'/,
   },
   {
     name: 'teaches explicit claim selectors instead of duplicated model prose',

@@ -115,6 +115,11 @@ export interface ReportSource {
   evidence_disposition?: EvidenceDisposition | null;
   evidence_reason?: string | null;
   evidence_rule_id?: string | null;
+  evidence_snapshot_status?: 'captured' | 'unavailable' | null;
+  evidence_snapshot_sha256?: string | null;
+  evidence_snapshot_captured_at?: string | null;
+  evidence_snapshot_final_url?: string | null;
+  evidence_page_age?: string | null;
 }
 
 export type SourcePurpose = 'operational' | 'context_only' | 'excluded_non_operational';
@@ -129,6 +134,11 @@ export interface EvidenceSourceObservation {
   disposition: EvidenceDisposition;
   reason: string;
   rule_id: string;
+  snapshot_status?: 'captured' | 'unavailable';
+  snapshot_sha256?: string | null;
+  snapshot_captured_at?: string | null;
+  snapshot_final_url?: string | null;
+  page_age?: string | null;
 }
 
 export interface EvidenceIndicatorObservation {
@@ -154,6 +164,11 @@ export interface ClaimAttributionEntry {
   claim: string;
   evidence_role?: 'direct_evidence' | 'general_practice' | null;
   source_ids: string[];
+  supporting_evidence?: Array<{
+    source_id: string;
+    excerpt: string;
+    snapshot_sha256: string;
+  }>;
 }
 
 export interface ReportCreateRequest {

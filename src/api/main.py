@@ -26,7 +26,11 @@ from src.core.generation_failures import (
     ProfileOutputError,
     build_generation_failure,
 )
-from src.core.source_ledger import SourceLedgerError, canonicalize_profile_sources
+from src.core.source_ledger import (
+    CLAIM_ATTRIBUTION_SCHEMA_VERSION,
+    SourceLedgerError,
+    canonicalize_profile_sources,
+)
 from src.auth.supabase_auth import AuthenticatedUser, verify_jwt_token
 from src.api.contracts import (
     AnalystDispositionCreate,
@@ -228,6 +232,12 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
         )
     except ValueError:
         evidence_status = EvidenceAdmissibilityStatus.BLOCKED
+    attribution_version = str(report.get("claim_attribution_version") or "").strip() or None
+    if (
+        evidence_status is EvidenceAdmissibilityStatus.PASSED
+        and attribution_version != CLAIM_ATTRIBUTION_SCHEMA_VERSION
+    ):
+        evidence_status = EvidenceAdmissibilityStatus.UNASSESSED
     analyst_disposition = AnalystDisposition(
         report.get("analyst_disposition") or AnalystDisposition.UNREVIEWED.value
     )
@@ -242,7 +252,7 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
         "claim_attribution_status": ClaimAttributionStatus(
             report.get("claim_attribution_status") or ClaimAttributionStatus.LEGACY.value
         ),
-        "claim_attribution_version": report.get("claim_attribution_version"),
+        "claim_attribution_version": attribution_version,
         "evidence_admissibility_status": evidence_status,
         "evidence_admissibility_version": report.get("evidence_admissibility_version")
         or (
@@ -342,6 +352,23 @@ def get_report_sources(report: Dict[str, Any]) -> List[ReportSource]:
                 ),
                 evidence_reason=(source.get("evidence_reason") or source.get("evidenceReason")),
                 evidence_rule_id=(source.get("evidence_rule_id") or source.get("evidenceRuleId")),
+                evidence_snapshot_status=(
+                    source.get("evidence_snapshot_status") or source.get("evidenceSnapshotStatus")
+                ),
+                evidence_snapshot_sha256=(
+                    source.get("evidence_snapshot_sha256") or source.get("evidenceSnapshotSha256")
+                ),
+                evidence_snapshot_captured_at=(
+                    source.get("evidence_snapshot_captured_at")
+                    or source.get("evidenceSnapshotCapturedAt")
+                ),
+                evidence_snapshot_final_url=(
+                    source.get("evidence_snapshot_final_url")
+                    or source.get("evidenceSnapshotFinalUrl")
+                ),
+                evidence_page_age=(
+                    source.get("evidence_page_age") or source.get("evidencePageAge")
+                ),
             )
         )
     return normalized
@@ -367,6 +394,15 @@ def get_claim_attributions(report: Dict[str, Any]) -> List[ClaimAttributionEntry
                 claim=str(claim.get("claim") or ""),
                 evidence_role=claim.get("evidenceRole"),
                 source_ids=[str(source_id) for source_id in claim.get("sourceIds") or []],
+                supporting_evidence=[
+                    {
+                        "source_id": str(support.get("sourceId") or ""),
+                        "excerpt": str(support.get("excerpt") or ""),
+                        "snapshot_sha256": str(support.get("snapshotSha256") or ""),
+                    }
+                    for support in claim.get("supportingEvidence") or []
+                    if isinstance(support, dict)
+                ],
             )
         )
     return normalized

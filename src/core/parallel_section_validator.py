@@ -195,7 +195,8 @@ class ParallelSectionValidator(SectionValidator):
         attribution = profile.get("claimAttribution")
         claim_bound_sections = (
             frozenset(CLAIM_CLASS_SECTIONS.values())
-            if isinstance(attribution, dict) and attribution.get("schemaVersion") in {"2", "3", "4"}
+            if isinstance(attribution, dict)
+            and attribution.get("schemaVersion") in {"2", "3", "4", "5"}
             else frozenset()
         )
         for index, (section_name, validation) in enumerate(

@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from src.core.openrouter_client import create_model_client, evaluation_request_options
 from src.core.parallel_section_validator import ParallelSectionValidator
+from src.core.recommendation_integrity import validate_quality_recommendations
 from src.domain.model_routes import ModelRouteProvenance, ModelRoutePurpose
 
 
@@ -58,6 +59,15 @@ def evaluate_saved_report(profile: Mapping[str, Any]) -> SavedReportEvaluation:
         clean_profile,
         tool_name=None,
         evidence_text=None,
+    )
+    source_block = clean_profile.get("webSearchSources")
+    primary_sources = (
+        source_block.get("primarySources") if isinstance(source_block, Mapping) else []
+    )
+    validate_quality_recommendations(
+        assessment,
+        primary_sources if isinstance(primary_sources, list) else [],
+        clean_profile,
     )
     clean_profile["_quality_assessment"] = assessment
     return SavedReportEvaluation(

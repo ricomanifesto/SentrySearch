@@ -125,6 +125,14 @@ export function ReviewStatusBanner({
               </ul>
             </div>
           ) : null}
+          {attention.unverifiedRecommendations.length > 0 ? (
+            <div className="mt-3">
+              <p className="text-sm font-medium text-zinc-900">Unverified evaluator suggestions</p>
+              <ul className="mt-1 list-disc space-y-1 pl-5 text-sm leading-6 text-zinc-700">
+                {attention.unverifiedRecommendations.map((recommendation) => <li key={recommendation}>{recommendation}</li>)}
+              </ul>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </section>

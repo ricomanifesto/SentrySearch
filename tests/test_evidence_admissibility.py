@@ -19,6 +19,13 @@ OPERATIONAL_SOURCE = {
     "sourceId": "S1",
     "url": "https://research.vendor-security.com/report",
     "title": "Vendor threat analysis",
+    "contentSnapshot": {
+        "status": "captured",
+        "capturedAt": "2026-08-15T12:00:00+00:00",
+        "sha256": "a" * 64,
+        "text": "Captured support for observed threat behavior and mitigations.",
+        "pageAge": "2026-08-14",
+    },
 }
 
 
@@ -37,6 +44,13 @@ def _append_claim(
             "claim": claim,
             "evidenceRole": "direct_evidence",
             "sourceIds": ["S1"],
+            "supportingEvidence": [
+                {
+                    "sourceId": "S1",
+                    "excerpt": "Captured support",
+                    "snapshotSha256": "a" * 64,
+                }
+            ],
         }
     )
 
@@ -61,6 +75,85 @@ def test_source_purpose_names_training_and_special_use_context():
     assert sources[0]["evidenceRuleId"] == "source.training-scenario"
     assert sources[1]["evidencePurpose"] == SourcePurpose.CONTEXT_ONLY.value
     assert sources[1]["evidenceRuleId"] == "source.special-use-reference"
+
+
+def test_source_without_captured_content_is_never_admitted_by_default():
+    [source] = classify_research_sources(
+        [
+            {
+                "sourceId": "S1",
+                "url": "https://research.vendor-security.com/report",
+                "title": "Vendor threat analysis",
+            }
+        ]
+    )
+
+    assert source["evidencePurpose"] == SourcePurpose.CONTEXT_ONLY.value
+    assert source["evidenceDisposition"] == EvidenceDisposition.CONTEXT_REQUIRED.value
+    assert source["evidenceRuleId"] == "source.intent-unverified"
+
+
+def test_captured_content_without_operational_security_intent_stays_context_only():
+    [source] = classify_research_sources(
+        [
+            {
+                "sourceId": "S1",
+                "url": "https://documents.vendor-security.com/notes",
+                "title": "Project notes",
+                "contentSnapshot": {
+                    "status": "captured",
+                    "capturedAt": "2026-08-15T12:00:00+00:00",
+                    "sha256": "c" * 64,
+                    "text": "A general project schedule and meeting notes.",
+                },
+            }
+        ]
+    )
+
+    assert source["evidencePurpose"] == SourcePurpose.CONTEXT_ONLY.value
+    assert source["evidenceRuleId"] == "source.intent-ambiguous"
+
+
+def test_one_generic_security_word_does_not_establish_operational_intent():
+    [source] = classify_research_sources(
+        [
+            {
+                "sourceId": "S1",
+                "url": "https://documents.vendor-security.com/overview",
+                "title": "Security overview",
+                "contentSnapshot": {
+                    "status": "captured",
+                    "capturedAt": "2026-08-15T12:00:00+00:00",
+                    "sha256": "d" * 64,
+                    "text": "This document discusses threat awareness for all employees.",
+                },
+            }
+        ]
+    )
+
+    assert source["evidencePurpose"] == SourcePurpose.CONTEXT_ONLY.value
+    assert source["evidenceRuleId"] == "source.intent-ambiguous"
+
+
+def test_training_language_in_captured_content_excludes_a_neutral_github_url():
+    [source] = classify_research_sources(
+        [
+            {
+                "sourceId": "S8",
+                "url": "https://github.com/example/security/blob/main/noodle-rat.qmd",
+                "title": "Noodle RAT details",
+                "contentSnapshot": {
+                    "status": "captured",
+                    "capturedAt": "2026-08-15T12:00:00+00:00",
+                    "sha256": "b" * 64,
+                    "text": "Advanced Noodle RAT training guide for game-based security education.",
+                },
+            }
+        ]
+    )
+
+    assert source["evidencePurpose"] == SourcePurpose.EXCLUDED_NON_OPERATIONAL.value
+    assert source["evidenceRuleId"] == "source.training-scenario"
 
 
 def test_training_source_remains_named_when_not_used_operationally(threat_profile_data):
@@ -169,7 +262,7 @@ def test_reserved_or_malformed_indicators_fail_closed(
     assert observation["ruleId"] == rule_id
 
 
-def test_schema_four_requires_every_high_risk_field_item(threat_profile_data):
+def test_schema_five_requires_every_high_risk_field_item(threat_profile_data):
     profile = deepcopy(threat_profile_data)
     profile["claimAttribution"]["claims"] = profile["claimAttribution"]["claims"][:-1]
 

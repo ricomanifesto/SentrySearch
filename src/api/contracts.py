@@ -90,6 +90,11 @@ class ReportSource(BaseModel):
     )
     evidence_reason: str | None = None
     evidence_rule_id: str | None = None
+    evidence_snapshot_status: Literal["captured", "unavailable"] | None = None
+    evidence_snapshot_sha256: str | None = None
+    evidence_snapshot_captured_at: str | None = None
+    evidence_snapshot_final_url: str | None = None
+    evidence_page_age: str | None = None
 
 
 class EvidenceSourceObservation(BaseModel):
@@ -101,6 +106,13 @@ class EvidenceSourceObservation(BaseModel):
     disposition: Literal["admitted", "context_required", "excluded", "rejected"]
     reason: str
     rule_id: str = Field(validation_alias="ruleId")
+    snapshot_status: Literal["captured", "unavailable"] = Field(
+        default="unavailable", validation_alias="snapshotStatus"
+    )
+    snapshot_sha256: str | None = Field(default=None, validation_alias="snapshotSha256")
+    snapshot_captured_at: str | None = Field(default=None, validation_alias="snapshotCapturedAt")
+    snapshot_final_url: str | None = Field(default=None, validation_alias="snapshotFinalUrl")
+    page_age: str | None = Field(default=None, validation_alias="pageAge")
 
 
 class EvidenceIndicatorObservation(BaseModel):
@@ -146,6 +158,7 @@ class ClaimAttributionEntry(BaseModel):
     claim: str
     evidence_role: Literal["direct_evidence", "general_practice"] | None = None
     source_ids: list[str] = Field(default_factory=list)
+    supporting_evidence: list[dict[str, str]] = Field(default_factory=list)
 
 
 class AnalystDispositionEvent(BaseModel):

@@ -182,6 +182,26 @@ test('needs-attention banner names the actual conflicts and recommendations', ()
   assert.match(html, /Verify the dated observation/);
 });
 
+test('unsupported evaluator advice is named instead of presented as verified guidance', () => {
+  const attention = getReviewAttentionSummary({
+    summary: { passed_sections: 8 },
+    unverified_recommendations: [
+      {
+        recommendation: 'Populate IPs from the source ledger.',
+        reason: 'The suggestion does not name a concrete admitted source-backed ips value.',
+      },
+    ],
+  }, 3);
+  const html = renderToStaticMarkup(
+    <ReviewStatusBanner status="needs_attention" attention={attention} />,
+  );
+
+  assert.match(html, /1 unsupported evaluator suggestion/);
+  assert.match(html, /Unverified evaluator suggestions/);
+  assert.match(html, /Populate IPs from the source ledger/);
+  assert.match(html, /does not name a concrete admitted source-backed ips value/);
+});
+
 test('recorded judgment owns operational readiness without erasing machine conflicts', () => {
   const needsRevision = getReviewAttentionSummary({
     consistency: { inconsistencies: ['Timeline conflicts with metadata.'] },
@@ -270,12 +290,12 @@ test('downloaded exports carry the canonical evidence ledger and route attestati
 
   assert.equal(record.web_sources.length, SAMPLE_REPORT.web_sources.length);
   assert.equal(record.web_sources[0].url, SAMPLE_REPORT.web_sources[0].url);
-  assert.equal(record.review_status, 'reviewable');
+  assert.equal(record.review_status, 'needs_attention');
   assert.equal(record.analyst_disposition, 'unreviewed');
   assert.equal(record.eligible_for_handoff, false);
-  assert.equal(record.evidence_admissibility_status, 'passed');
+  assert.equal(record.evidence_admissibility_status, 'unassessed');
   assert.equal(record.evidence_admissibility.schema_version, '1');
-  assert.equal(record.evidence_admissibility.source_observations.length, 3);
+  assert.equal(record.evidence_admissibility.source_observations.length, 0);
   assert.deepEqual(record.disposition_history, []);
   assert.ok(Object.hasOwn(record, 'generation_route'));
   assert.ok(Object.hasOwn(record, 'research_route'));

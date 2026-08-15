@@ -23,9 +23,9 @@ class SourceLedgerError(ValueError):
     retryable = False
 
 
-CLAIM_ATTRIBUTION_SCHEMA_VERSION = "4"
+CLAIM_ATTRIBUTION_SCHEMA_VERSION = "5"
 CLAIM_ATTRIBUTION_GENERATION_SHAPE = "embedded_evidence_items"
-SUPPORTED_CLAIM_ATTRIBUTION_VERSIONS = frozenset({"2", "3", CLAIM_ATTRIBUTION_SCHEMA_VERSION})
+SUPPORTED_CLAIM_ATTRIBUTION_VERSIONS = frozenset({"2", "3", "4", CLAIM_ATTRIBUTION_SCHEMA_VERSION})
 HIGH_RISK_CLAIM_CLASSES = frozenset(
     {
         "threat_activity",
@@ -69,6 +69,36 @@ CLAIM_CLASS_SELECTORS = {
 
 
 _MARKDOWN_LINK = re.compile(r"\]\((https?://[^)\s]+)\)")
+_SUPPORT_TOKEN = re.compile(r"[a-z0-9][a-z0-9._/-]{2,}")
+_SUPPORT_STOPWORDS = frozenset(
+    {
+        "and",
+        "are",
+        "for",
+        "from",
+        "into",
+        "that",
+        "the",
+        "this",
+        "through",
+        "using",
+        "with",
+    }
+)
+
+
+def _support_has_claim_anchor(claim: str, excerpt: str) -> bool:
+    claim_tokens = {
+        token
+        for token in _SUPPORT_TOKEN.findall(claim.casefold())
+        if token not in _SUPPORT_STOPWORDS
+    }
+    excerpt_tokens = {
+        token
+        for token in _SUPPORT_TOKEN.findall(excerpt.casefold())
+        if token not in _SUPPORT_STOPWORDS
+    }
+    return bool(claim_tokens & excerpt_tokens)
 
 
 def _normalized_http_url(value: object) -> str:
@@ -137,7 +167,7 @@ def materialize_claim_attribution(profile: dict[str, Any]) -> None:
     """Copy model-selected structured values into the reader-visible claim map."""
 
     attribution = profile.get("claimAttribution")
-    if not isinstance(attribution, dict) or attribution.get("schemaVersion") not in {"3", "4"}:
+    if not isinstance(attribution, dict) or attribution.get("schemaVersion") not in {"3", "4", "5"}:
         return
     claims = attribution.get("claims")
     if not isinstance(claims, list):
@@ -148,14 +178,27 @@ def materialize_claim_attribution(profile: dict[str, Any]) -> None:
         claim["claim"] = _selected_claim_value(profile, claim)
 
 
-def materialize_embedded_claim_evidence(profile: dict[str, Any]) -> None:
-    """Derive schema-4 attribution from evidence attached to high-risk items."""
+def materialize_embedded_claim_evidence(
+    profile: dict[str, Any],
+    evidence_sources: Iterable[Mapping[str, Any]] = (),
+) -> None:
+    """Derive schema-5 attribution and verify support against captured source text."""
 
     claims: list[dict[str, Any]] = []
     embedded_count = 0
     string_count = 0
     findings: list[str] = []
     selected_lists: list[tuple[str, str, list[Any]]] = []
+    snapshots_by_id: dict[str, tuple[str, str]] = {}
+    for source in evidence_sources:
+        source_id = str(source.get("sourceId") or "").strip()
+        snapshot = source.get("contentSnapshot")
+        if not source_id or not isinstance(snapshot, Mapping):
+            continue
+        snapshot_text = str(snapshot.get("text") or "")
+        snapshot_sha256 = str(snapshot.get("sha256") or "").strip()
+        if snapshot.get("status") == "captured" and snapshot_text and snapshot_sha256:
+            snapshots_by_id[source_id] = (snapshot_text, snapshot_sha256)
 
     for claim_class, fields in CLAIM_CLASS_SELECTORS.items():
         for claim_field, field_path in fields.items():
@@ -197,12 +240,53 @@ def materialize_embedded_claim_evidence(profile: dict[str, Any]) -> None:
                 if isinstance(raw_source_ids, list)
                 else []
             )
+            raw_support = item.get("supportingEvidence")
+            supports = raw_support if isinstance(raw_support, list) else []
+            verified_support: list[dict[str, str]] = []
+            support_ids: list[str] = []
+            for support in supports:
+                if not isinstance(support, Mapping):
+                    findings.append(
+                        f"{claim_field}[{claim_index}] contains an invalid support record."
+                    )
+                    continue
+                source_id = str(support.get("sourceId") or "").strip()
+                excerpt = str(support.get("excerpt") or "").strip()
+                snapshot = snapshots_by_id.get(source_id)
+                if not source_id or not excerpt or snapshot is None:
+                    findings.append(
+                        f"{claim_field}[{claim_index}] support is not tied to a captured source."
+                    )
+                    continue
+                snapshot_text, snapshot_sha256 = snapshot
+                if excerpt not in snapshot_text:
+                    findings.append(
+                        f"{claim_field}[{claim_index}] support excerpt is not verbatim in {source_id}."
+                    )
+                    continue
+                if not _support_has_claim_anchor(value, excerpt):
+                    findings.append(
+                        f"{claim_field}[{claim_index}] support excerpt in {source_id} has no lexical claim anchor."
+                    )
+                    continue
+                support_ids.append(source_id)
+                verified_support.append(
+                    {
+                        "sourceId": source_id,
+                        "excerpt": excerpt,
+                        "snapshotSha256": snapshot_sha256,
+                    }
+                )
             if not value:
                 findings.append(f"{claim_field}[{claim_index}] has no reader-visible value.")
                 continue
-            if role == "direct_evidence" and not source_ids:
-                findings.append(f"{claim_field}[{claim_index}] lacks direct source identity.")
-            elif role == "general_practice" and (claim_class != "mitigation_action" or source_ids):
+            if role == "direct_evidence" and (not source_ids or source_ids != support_ids):
+                findings.append(
+                    f"{claim_field}[{claim_index}] lacks verified captured support for every source."
+                )
+            elif role == "general_practice" and (
+                claim_class != "mitigation_action" or source_ids or supports
+            ):
                 findings.append(
                     f"{claim_field}[{claim_index}] uses general practice outside uncited mitigation guidance."
                 )
@@ -217,6 +301,7 @@ def materialize_embedded_claim_evidence(profile: dict[str, Any]) -> None:
                     "claimIndex": len(normalized_values) - 1,
                     "evidenceRole": role,
                     "sourceIds": source_ids,
+                    "supportingEvidence": verified_support,
                 }
             )
         values[:] = normalized_values
@@ -329,6 +414,13 @@ def claim_attribution_status(
         for source in primary_sources
         if isinstance(source, Mapping) and str(source.get("sourceId") or "").strip()
     }
+    known_snapshot_hashes = {
+        str(source.get("sourceId") or "")
+        .strip(): str(source.get("evidenceSnapshotSha256") or "")
+        .strip()
+        for source in primary_sources
+        if isinstance(source, Mapping) and str(source.get("sourceId") or "").strip()
+    }
     observed_classes: set[str] = set()
     observed_selectors: list[tuple[str, str, int]] = []
     for claim in claims:
@@ -339,7 +431,7 @@ def claim_attribution_status(
         if not claim_text or not isinstance(source_ids, list):
             return ClaimAttributionStatus.UNATTRIBUTED, version
         evidence_role = str(claim.get("evidenceRole") or "")
-        if version == "4":
+        if version in {"4", "5"}:
             if evidence_role == "direct_evidence" and not source_ids:
                 return ClaimAttributionStatus.UNATTRIBUTED, version
             if evidence_role == "general_practice" and (
@@ -353,7 +445,32 @@ def claim_attribution_status(
         if any(str(source_id) not in known_ids for source_id in source_ids):
             return ClaimAttributionStatus.UNATTRIBUTED, version
         claim_class = str(claim.get("claimClass") or "")
-        if version in {"3", CLAIM_ATTRIBUTION_SCHEMA_VERSION}:
+        if version == "5":
+            supports = claim.get("supportingEvidence")
+            if not isinstance(supports, list):
+                return ClaimAttributionStatus.UNATTRIBUTED, version
+            support_ids = [
+                str(support.get("sourceId") or "").strip()
+                for support in supports
+                if isinstance(support, Mapping)
+                and str(support.get("sourceId") or "").strip()
+                and str(support.get("excerpt") or "").strip()
+                and str(support.get("snapshotSha256") or "").strip()
+            ]
+            if any(
+                not isinstance(support, Mapping)
+                or str(support.get("snapshotSha256") or "").strip()
+                != known_snapshot_hashes.get(str(support.get("sourceId") or "").strip())
+                for support in supports
+            ):
+                return ClaimAttributionStatus.UNATTRIBUTED, version
+            if evidence_role == "direct_evidence" and support_ids != [
+                str(source_id) for source_id in source_ids
+            ]:
+                return ClaimAttributionStatus.UNATTRIBUTED, version
+            if evidence_role == "general_practice" and supports:
+                return ClaimAttributionStatus.UNATTRIBUTED, version
+        if version in {"3", "4", CLAIM_ATTRIBUTION_SCHEMA_VERSION}:
             try:
                 selected_claim = _selected_claim_value(profile, claim)
             except SourceLedgerError:
@@ -378,7 +495,7 @@ def claim_attribution_status(
         observed_classes.add(claim_class)
     if not HIGH_RISK_CLAIM_CLASSES.issubset(observed_classes):
         return ClaimAttributionStatus.UNATTRIBUTED, version
-    if version == CLAIM_ATTRIBUTION_SCHEMA_VERSION:
+    if version in {"4", CLAIM_ATTRIBUTION_SCHEMA_VERSION}:
         expected_selectors: list[tuple[str, str, int]] = []
         for expected_class, fields in CLAIM_CLASS_SELECTORS.items():
             for field_name, field_path in fields.items():

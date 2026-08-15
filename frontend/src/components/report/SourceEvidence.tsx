@@ -37,16 +37,18 @@ export function SourceEvidence({
           {heading}
         </h2>
         <span className="text-sm text-zinc-500">
-          {sources.length} operational {sources.length === 1 ? 'source' : 'sources'}
+          {sources.length}{' '}
+          {evidenceAdmissibility?.status === 'passed' ? 'operational' : 'recorded'}{' '}
+          {sources.length === 1 ? 'source' : 'sources'}
         </span>
       </div>
 
       {attributionStatus === 'attributed' ? (
         <p className="mt-2 text-sm leading-6 text-emerald-700">
-          {attributionVersion === '4'
+          {attributionVersion === '5'
             ? evidenceAdmissibility?.status === 'passed'
-              ? 'Every stored high-risk field item is covered by admissible attribution schema 4.'
-              : 'Attribution schema 4 records an evidence role for every stored high-risk field item; admissibility is reported separately below.'
+              ? 'Every stored high-risk field item is covered by snapshot-verified attribution schema 5.'
+              : 'Attribution schema 5 records captured support for every stored high-risk field item; admissibility is reported separately below.'
             : `Selected high-risk claims link to this source ledger through legacy attribution schema ${attributionVersion ?? '2'}.`}
         </p>
       ) : attributionStatus === 'unattributed' ? (
@@ -130,6 +132,12 @@ export function SourceEvidence({
                       <span>{source.content_type}</span>
                       <span>Relevance {source.relevance_score}</span>
                       <span>{dateLabel} {source.access_date}</span>
+                      {source.evidence_snapshot_status === 'captured' ? (
+                        <span>Captured content verified</span>
+                      ) : null}
+                      {source.evidence_page_age ? (
+                        <span>Source page age {source.evidence_page_age}</span>
+                      ) : null}
                     </p>
                   </div>
                 </div>

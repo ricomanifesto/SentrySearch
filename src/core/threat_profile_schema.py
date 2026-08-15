@@ -34,6 +34,23 @@ class PrimarySource(StrictModel):
     relevance_score: str = Field(alias="relevanceScore")
     content_type: str = Field(alias="contentType")
     key_findings: str = Field(alias="keyFindings")
+    evidence_snapshot_status: Literal["captured", "unavailable"] | None = Field(
+        default=None, alias="evidenceSnapshotStatus"
+    )
+    evidence_snapshot_sha256: str | None = Field(default=None, alias="evidenceSnapshotSha256")
+    evidence_snapshot_captured_at: str | None = Field(
+        default=None, alias="evidenceSnapshotCapturedAt"
+    )
+    evidence_snapshot_final_url: str | None = Field(default=None, alias="evidenceSnapshotFinalUrl")
+    evidence_page_age: str | None = Field(default=None, alias="evidencePageAge")
+
+
+class EvidenceSupport(StrictModel):
+    """Verbatim captured text that supports one claim at one named source."""
+
+    source_id: str = Field(alias="sourceId", min_length=1)
+    excerpt: str = Field(min_length=1, max_length=600)
+    snapshot_sha256: str | None = Field(default=None, alias="snapshotSha256")
 
 
 class ClaimAttributionEntry(StrictModel):
@@ -65,20 +82,24 @@ class ClaimAttributionEntry(StrictModel):
     claim_index: int = Field(alias="claimIndex", ge=0)
     evidence_role: Literal["direct_evidence", "general_practice"] = Field(alias="evidenceRole")
     source_ids: list[str] = Field(alias="sourceIds")
+    supporting_evidence: list[EvidenceSupport] = Field(alias="supportingEvidence")
 
     @model_validator(mode="after")
     def validate_evidence_role(self) -> "ClaimAttributionEntry":
-        if self.evidence_role == "direct_evidence" and not self.source_ids:
+        support_ids = [support.source_id for support in self.supporting_evidence]
+        if self.evidence_role == "direct_evidence" and (
+            not self.source_ids or support_ids != self.source_ids
+        ):
             raise ValueError("Direct evidence claims require at least one source ID")
         if self.evidence_role == "general_practice" and (
-            self.claim_class != "mitigation_action" or self.source_ids
+            self.claim_class != "mitigation_action" or self.source_ids or self.supporting_evidence
         ):
             raise ValueError("General practice is only valid for uncited mitigation guidance")
         return self
 
 
 class ClaimAttribution(StrictModel):
-    schema_version: Literal["4"] = Field(alias="schemaVersion")
+    schema_version: Literal["5"] = Field(alias="schemaVersion")
     claims: list[ClaimAttributionEntry] = Field(min_length=1)
 
 
@@ -88,10 +109,24 @@ class EvidenceClaimItem(StrictModel):
     value: str = Field(min_length=1)
     evidence_role: Literal["direct_evidence", "general_practice"] = Field(alias="evidenceRole")
     source_ids: list[str] = Field(alias="sourceIds")
+    supporting_evidence: list[EvidenceSupport] = Field(alias="supportingEvidence")
+
+    @model_validator(mode="after")
+    def validate_support(self) -> "EvidenceClaimItem":
+        support_ids = [support.source_id for support in self.supporting_evidence]
+        if self.evidence_role == "direct_evidence" and (
+            not self.source_ids or support_ids != self.source_ids
+        ):
+            raise ValueError("Direct evidence items require one verbatim excerpt per source ID")
+        if self.evidence_role == "general_practice" and (
+            self.source_ids or self.supporting_evidence
+        ):
+            raise ValueError("General-practice items cannot claim captured source support")
+        return self
 
 
 # TODO(embedded-evidence-v1): Remove string-valued generation compatibility after
-# three successful production canaries use embedded high-risk evidence.
+# three successful production canaries persist schema-5 snapshot-verified evidence.
 EvidenceClaimValue = EvidenceClaimItem | str
 
 
@@ -379,8 +414,8 @@ def attest_profile_sources(
 
     attribution = profile.get("claimAttribution")
     claims = attribution.get("claims") if isinstance(attribution, dict) else None
-    if not isinstance(attribution, dict) or attribution.get("schemaVersion") != "4":
-        raise ValueError("Threat profile claim attribution must use schema version 4")
+    if not isinstance(attribution, dict) or attribution.get("schemaVersion") != "5":
+        raise ValueError("Threat profile claim attribution must use schema version 5")
     if not isinstance(claims, list):
         raise ValueError("Threat profile claim attribution is incomplete")
     required_classes = {
@@ -396,13 +431,19 @@ def attest_profile_sources(
             raise ValueError("Threat profile claim attribution contains an invalid claim")
         observed_classes.add(str(claim.get("claimClass") or ""))
         cited_ids = claim.get("sourceIds")
+        supporting_evidence = claim.get("supportingEvidence")
         evidence_role = claim.get("evidenceRole")
         if not isinstance(cited_ids, list):
             raise ValueError("Threat profile claim attribution contains invalid source IDs")
         if evidence_role == "direct_evidence" and not cited_ids:
             raise ValueError("Threat profile claim attribution contains an uncited claim")
+        if evidence_role == "direct_evidence" and (
+            not isinstance(supporting_evidence, list)
+            or [support.get("sourceId") for support in supporting_evidence] != cited_ids
+        ):
+            raise ValueError("Threat profile claim attribution lacks verified support excerpts")
         if evidence_role == "general_practice" and (
-            claim.get("claimClass") != "mitigation_action" or cited_ids
+            claim.get("claimClass") != "mitigation_action" or cited_ids or supporting_evidence
         ):
             raise ValueError("Threat profile general-practice attribution is invalid")
         if any(str(source_id) not in known_source_ids for source_id in cited_ids):

@@ -31,6 +31,7 @@ from src.domain.reports import (
     is_reuse_eligible,
 )
 from src.core.source_ledger import (
+    CLAIM_ATTRIBUTION_SCHEMA_VERSION,
     assert_claim_attribution_consistent,
     assert_markdown_source_ledger_consistent,
     assert_source_ledger_consistent,
@@ -65,6 +66,17 @@ class ReportStorageService:
         except (TypeError, ValueError):
             status = EvidenceAdmissibilityStatus.BLOCKED
         version = str(assessment.get("schemaVersion") or "").strip() or None
+        attribution = threat_data.get("claimAttribution") if isinstance(threat_data, dict) else None
+        attribution_version = (
+            str(attribution.get("schemaVersion") or "").strip()
+            if isinstance(attribution, dict)
+            else None
+        )
+        if (
+            status is EvidenceAdmissibilityStatus.PASSED
+            and attribution_version != CLAIM_ATTRIBUTION_SCHEMA_VERSION
+        ):
+            status = EvidenceAdmissibilityStatus.UNASSESSED
         return assessment, status, version
 
     @staticmethod
@@ -698,6 +710,7 @@ class ReportStorageService:
             "review_updates": 0,
             "classification_updates": 0,
             "claim_attribution_updates": 0,
+            "evidence_contract_updates": 0,
         }
         try:
             with self.db_manager.get_session() as session:
@@ -742,6 +755,16 @@ class ReportStorageService:
                         report.claim_attribution_version,
                     ):
                         summary["claim_attribution_updates"] += 1
+
+                    if (
+                        report.evidence_admissibility_status
+                        == EvidenceAdmissibilityStatus.PASSED.value
+                        and attribution_version != CLAIM_ATTRIBUTION_SCHEMA_VERSION
+                    ):
+                        report.evidence_admissibility_status = (
+                            EvidenceAdmissibilityStatus.UNASSESSED.value
+                        )
+                        summary["evidence_contract_updates"] += 1
 
                     previous_review_status = report.review_status
                     self._refresh_review_status(report)

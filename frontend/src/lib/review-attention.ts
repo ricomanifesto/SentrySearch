@@ -9,12 +9,24 @@ export type ReviewAttentionSummary = {
   evidenceFindings: string[];
   conflicts: string[];
   recommendations: string[];
+  unverifiedRecommendations: string[];
 };
 
 function stringList(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     : [];
+}
+
+function unverifiedRecommendationList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const record = item as Record<string, unknown>;
+    const recommendation = typeof record.recommendation === 'string' ? record.recommendation.trim() : '';
+    const reason = typeof record.reason === 'string' ? record.reason.trim() : '';
+    return recommendation ? [`${recommendation}${reason ? ` — ${reason}` : ''}`] : [];
+  });
 }
 
 function sentenceList(values: string[]): string {
@@ -49,11 +61,12 @@ export function getReviewAttentionSummary(
         evidenceFindings,
         conflicts: [],
         recommendations: [],
+        unverifiedRecommendations: [],
       };
     }
     return sourceCount > 0
       ? null
-      : { headline: 'No structured source evidence is attached.', evidenceFindings: [], conflicts: [], recommendations: [] };
+      : { headline: 'No structured source evidence is attached.', evidenceFindings: [], conflicts: [], recommendations: [], unverifiedRecommendations: [] };
   }
   const summary = assessment.summary && typeof assessment.summary === 'object'
     ? assessment.summary as Record<string, unknown>
@@ -66,6 +79,9 @@ export function getReviewAttentionSummary(
     ...stringList(assessment.recommendations),
     ...stringList(consistency.recommendations),
   ].filter((value, index, values) => values.indexOf(value) === index).slice(0, 5);
+  const unverifiedRecommendations = unverifiedRecommendationList(
+    assessment.unverified_recommendations,
+  );
   const failed = Number(summary.failed_sections ?? 0);
   const unavailable = Number(summary.unavailable_sections ?? 0);
   const enhance = Number(summary.enhance_sections ?? 0);
@@ -77,6 +93,9 @@ export function getReviewAttentionSummary(
     sourceCount < 1 ? 'no operational source evidence' : '',
     evidenceStatus === 'blocked' ? `${evidenceFindings.length || 1} deterministic evidence blocker${evidenceFindings.length === 1 ? '' : 's'}` : '',
     evidenceStatus === 'unassessed' ? 'no deterministic evidence-admissibility record' : '',
+    unverifiedRecommendations.length
+      ? `${unverifiedRecommendations.length} unsupported evaluator suggestion${unverifiedRecommendations.length === 1 ? '' : 's'}`
+      : '',
   ].filter(Boolean);
   return reasons.length > 0
     ? {
@@ -94,6 +113,7 @@ export function getReviewAttentionSummary(
         evidenceFindings,
         conflicts,
         recommendations,
+        unverifiedRecommendations,
       }
     : null;
 }

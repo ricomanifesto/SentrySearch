@@ -48,15 +48,37 @@ _TRAINING_URL_MARKERS = (
 _TRAINING_TEXT_MARKERS = (
     "tabletop exercise",
     "training exercise",
+    "training guide",
     "scenario card",
+    "scenario facilitator",
     "fictional scenario",
     "simulation exercise",
+    "game-based security education",
+    "malware and monsters",
 )
 _CONTEXT_URL_MARKERS = (
     "rfc-editor.org/rfc/rfc5737",
     "rfc-editor.org/rfc/rfc3849",
     "iana.org/assignments/iana-ipv4-special-registry",
     "iana.org/assignments/iana-ipv6-special-registry",
+)
+_OPERATIONAL_TEXT_MARKERS = (
+    "adversary",
+    "attack",
+    "command and control",
+    "cve-",
+    "cybersecurity",
+    "detection",
+    "exploit",
+    "forensic",
+    "incident response",
+    "indicator",
+    "intrusion",
+    "malware",
+    "mitigation",
+    "security advisory",
+    "threat",
+    "vulnerability",
 )
 _RESERVED_EXAMPLE_HOSTS = frozenset(
     {
@@ -117,6 +139,15 @@ def _source_observation(source: Mapping[str, Any]) -> dict[str, Any]:
     hostname = (parsed.hostname or "").casefold()
     url_text = url.casefold()
     title_text = title.casefold()
+    snapshot = source.get("contentSnapshot")
+    snapshot = snapshot if isinstance(snapshot, Mapping) else {}
+    snapshot_status = str(snapshot.get("status") or "unavailable").strip()
+    snapshot_text = str(snapshot.get("text") or "").casefold()
+    snapshot_sha256 = str(snapshot.get("sha256") or "").strip() or None
+    page_age = str(snapshot.get("pageAge") or source.get("page_age") or "").strip() or None
+    operational_markers = {
+        marker for marker in _OPERATIONAL_TEXT_MARKERS if marker in f"{title_text} {snapshot_text}"
+    }
 
     if _host_is_reserved_example(hostname):
         purpose = SourcePurpose.EXCLUDED_NON_OPERATIONAL
@@ -124,7 +155,7 @@ def _source_observation(source: Mapping[str, Any]) -> dict[str, Any]:
         rule_id = "source.reserved-example-host"
         reason = "Reserved example infrastructure cannot support operational intelligence."
     elif any(marker in url_text for marker in _TRAINING_URL_MARKERS) or any(
-        marker in title_text for marker in _TRAINING_TEXT_MARKERS
+        marker in f"{title_text} {snapshot_text}" for marker in _TRAINING_TEXT_MARKERS
     ):
         purpose = SourcePurpose.EXCLUDED_NON_OPERATIONAL
         disposition = EvidenceDisposition.EXCLUDED
@@ -135,11 +166,21 @@ def _source_observation(source: Mapping[str, Any]) -> dict[str, Any]:
         disposition = EvidenceDisposition.CONTEXT_REQUIRED
         rule_id = "source.special-use-reference"
         reason = "Special-use address documentation provides context, not threat-specific evidence."
+    elif snapshot_status != "captured" or not snapshot_text or not snapshot_sha256:
+        purpose = SourcePurpose.CONTEXT_ONLY
+        disposition = EvidenceDisposition.CONTEXT_REQUIRED
+        rule_id = "source.intent-unverified"
+        reason = "Source content was not captured, so its operational intent could not be verified."
+    elif len(operational_markers) < 2:
+        purpose = SourcePurpose.CONTEXT_ONLY
+        disposition = EvidenceDisposition.CONTEXT_REQUIRED
+        rule_id = "source.intent-ambiguous"
+        reason = "Captured content did not establish enough operational security context."
     else:
         purpose = SourcePurpose.OPERATIONAL
         disposition = EvidenceDisposition.ADMITTED
-        rule_id = "source.no-non-operational-marker"
-        reason = "No deterministic non-operational source marker was detected."
+        rule_id = "source.captured-operational-content"
+        reason = "Captured source content passed deterministic non-operational intent checks."
 
     return {
         "sourceId": str(source.get("sourceId") or source.get("source_id") or "").strip(),
@@ -150,6 +191,11 @@ def _source_observation(source: Mapping[str, Any]) -> dict[str, Any]:
         "disposition": disposition.value,
         "reason": reason,
         "ruleId": rule_id,
+        "snapshotStatus": snapshot_status,
+        "snapshotSha256": snapshot_sha256,
+        "snapshotCapturedAt": snapshot.get("capturedAt"),
+        "snapshotFinalUrl": snapshot.get("finalUrl"),
+        "pageAge": page_age,
     }
 
 
@@ -168,10 +214,23 @@ def classify_research_sources(
                 "evidenceDisposition": observation["disposition"],
                 "evidenceReason": observation["reason"],
                 "evidenceRuleId": observation["ruleId"],
+                "evidenceSnapshotStatus": observation["snapshotStatus"],
+                "evidenceSnapshotSha256": observation["snapshotSha256"],
+                "evidenceSnapshotCapturedAt": observation["snapshotCapturedAt"],
+                "evidenceSnapshotFinalUrl": observation["snapshotFinalUrl"],
+                "evidencePageAge": observation["pageAge"],
             }
         )
         classified.append(item)
     return classified
+
+
+def research_source_observations(
+    sources: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Publish the deterministic source-intent record without model inference."""
+
+    return [_source_observation(source) for source in sources]
 
 
 def _network_candidates(value: str) -> list[IPv4Network | IPv6Network]:
@@ -366,7 +425,7 @@ def assess_profile_evidence(
     """Attach an application-owned safety record and fail closed on unsafe evidence."""
 
     classified_sources = classify_research_sources(research_sources)
-    source_observations = [_source_observation(source) for source in classified_sources]
+    source_observations = research_source_observations(classified_sources)
     sources_by_id = {
         observation["sourceId"]: observation
         for observation in source_observations
@@ -377,8 +436,8 @@ def assess_profile_evidence(
 
     attribution = profile.get("claimAttribution")
     claims = attribution.get("claims") if isinstance(attribution, Mapping) else None
-    if not isinstance(attribution, Mapping) or attribution.get("schemaVersion") != "4":
-        coverage_findings.append("Operational claim coverage does not use attribution schema 4.")
+    if not isinstance(attribution, Mapping) or attribution.get("schemaVersion") != "5":
+        coverage_findings.append("Operational claim coverage does not use attribution schema 5.")
         claims = []
     if not isinstance(claims, list):
         coverage_findings.append("Operational claim coverage is missing.")
@@ -399,6 +458,7 @@ def assess_profile_evidence(
 
         role = str(claim.get("evidenceRole") or "")
         source_ids = [str(value) for value in claim.get("sourceIds") or []]
+        supports = claim.get("supportingEvidence")
         if role == "general_practice":
             if selector[0] != "mitigation_action" or source_ids:
                 coverage_findings.append(
@@ -407,6 +467,17 @@ def assess_profile_evidence(
             continue
         if role != "direct_evidence" or not source_ids:
             coverage_findings.append("An operational claim lacks direct evidence.")
+            continue
+        if (
+            not isinstance(supports, list)
+            or [
+                str(support.get("sourceId") or "")
+                for support in supports
+                if isinstance(support, Mapping)
+            ]
+            != source_ids
+        ):
+            coverage_findings.append("An operational claim lacks verified support excerpts.")
             continue
         for source_id in source_ids:
             observation = sources_by_id.get(source_id)
@@ -424,7 +495,7 @@ def assess_profile_evidence(
         matches = claims_by_selector.get(selector, [])
         if len(matches) != 1:
             coverage_findings.append(
-                f"{claim_field}[{claim_index}] requires exactly one schema-4 attribution record."
+                f"{claim_field}[{claim_index}] requires exactly one schema-5 attribution record."
             )
 
     expected_selectors = {
@@ -497,6 +568,11 @@ def assess_profile_evidence(
             source["evidenceDisposition"] = observation["disposition"]
             source["evidenceReason"] = observation["reason"]
             source["evidenceRuleId"] = observation["ruleId"]
+            source["evidenceSnapshotStatus"] = observation["snapshotStatus"]
+            source["evidenceSnapshotSha256"] = observation["snapshotSha256"]
+            source["evidenceSnapshotCapturedAt"] = observation["snapshotCapturedAt"]
+            source["evidenceSnapshotFinalUrl"] = observation["snapshotFinalUrl"]
+            source["evidencePageAge"] = observation["pageAge"]
             if observation["purpose"] != SourcePurpose.OPERATIONAL.value:
                 safety_findings.append(
                     f"Primary source {observation['sourceId']} is not operational evidence."
@@ -580,10 +656,14 @@ Deterministic findings:
   infrastructure from operational indicators and target-specific actions.
 - Do not include or cite sources marked context_only or excluded_non_operational
   in any high-risk operational claim.
-- Every high-risk array item MUST carry value, evidenceRole, and sourceIds; do
+- Every high-risk array item MUST carry value, evidenceRole, sourceIds, and
+  supportingEvidence; do
   not emit a parallel claimAttribution map.
 - Use evidenceRole direct_evidence with exact source IDs for supported items.
+- For every direct source ID, copy one short verbatim excerpt from that source's
+  captured content into supportingEvidence. Never paraphrase an excerpt.
 - Use evidenceRole general_practice with no source IDs only for generic mitigation
-  guidance that does not assert a target-specific fact.
+  guidance that does not assert a target-specific fact; supportingEvidence must
+  also be empty.
 - Do not replace rejected values with invented alternatives.
 """

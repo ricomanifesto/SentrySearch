@@ -337,6 +337,8 @@ def derive_review_status(
     assessment = quality_assessment or {}
     summary = assessment.get("summary")
     summary = summary if isinstance(summary, Mapping) else {}
+    if assessment.get("unverified_recommendations"):
+        return ReviewStatus.NEEDS_ATTENTION
     if assessment.get("critical_issues") or assessment.get("needs_improvement") is True:
         return ReviewStatus.NEEDS_ATTENTION
     if int(summary.get("passed_sections") or 0) == 0:
