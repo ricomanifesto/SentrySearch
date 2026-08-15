@@ -98,9 +98,19 @@ def _apply_embedded_evidence_correction(
 ) -> None:
     """Replace only high-risk generated arrays with one bounded correction."""
 
-    profile["threatIntelligence"]["riskAssessment"]["riskFactors"] = [correction["riskFactor"]]
-    forensic = dict(correction["forensicArtifact"])
-    forensic_field = forensic.pop("claimField")
+    def complete_item(raw_item: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+        item = dict(raw_item)
+        claim_field = item.pop("claimField", None)
+        item["sourceIds"] = (
+            [support["sourceId"] for support in item["supportingEvidence"]]
+            if item["evidenceRole"] == "direct_evidence"
+            else []
+        )
+        return item, claim_field
+
+    risk_factor, _ = complete_item(correction["riskFactor"])
+    profile["threatIntelligence"]["riskAssessment"]["riskFactors"] = [risk_factor]
+    forensic, forensic_field = complete_item(correction["forensicArtifact"])
     profile["forensicArtifacts"] = {
         field: [forensic] if field == forensic_field else []
         for field in (
@@ -111,8 +121,7 @@ def _apply_embedded_evidence_correction(
             "logArtifacts",
         )
     }
-    indicator = dict(correction["detectionIndicator"])
-    indicator_field = indicator.pop("claimField")
+    indicator, indicator_field = complete_item(correction["detectionIndicator"])
     profile["detectionAndMitigation"] = {
         "iocs": {
             field: [indicator] if field == indicator_field else []
@@ -120,8 +129,7 @@ def _apply_embedded_evidence_correction(
         },
         "behavioralIndicators": ([indicator] if indicator_field == "behavioralIndicators" else []),
     }
-    mitigation = dict(correction["mitigationAction"])
-    mitigation_field = mitigation.pop("claimField")
+    mitigation, mitigation_field = complete_item(correction["mitigationAction"])
     profile["mitigationAndResponse"] = {
         field: [mitigation] if field == mitigation_field else []
         for field in (
@@ -180,8 +188,9 @@ detectionIndicator, and mitigationAction. The last three also require a
 claimField chosen from the schema enum so the application can place the item in
 the complete report. Those objects represent one risk factor, one forensic
 artifact, one detection indicator, and one mitigation action. Every item carries
-value, evidenceRole, sourceIds, and supportingEvidence. Use only source IDs and
-exact excerpts from the operational catalog below. You must reuse at least one
+value, evidenceRole, and supportingEvidence. The application derives sourceIds
+from those evidence entries. Use only source IDs and exact excerpts from the
+operational catalog below. You must reuse at least one
 exact nontrivial token from every supporting excerpt, even when the claim is
 rewritten. Accuracy is more important than quantity.
 - copy one short verbatim excerpt for every direct source ID. Never paraphrase an

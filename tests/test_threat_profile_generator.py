@@ -49,10 +49,15 @@ def generated_embedded_profile(profile: dict) -> dict:
 def generated_evidence_correction(profile: dict) -> dict:
     """Project the fixture's embedded arrays into the bounded correction shape."""
 
+    def without_source_ids(item: dict) -> dict:
+        projected = deepcopy(item)
+        projected.pop("sourceIds")
+        return projected
+
     def first_item(fields: dict, names: tuple[str, ...]) -> tuple[str, dict]:
         for name in names:
             if fields[name]:
-                return name, deepcopy(fields[name][0])
+                return name, without_source_ids(fields[name][0])
         raise AssertionError("Fixture must include every required evidence class")
 
     forensic_field, forensic_item = first_item(
@@ -78,7 +83,9 @@ def generated_evidence_correction(profile: dict) -> dict:
         ("preventiveMeasures", "detectionMethods", "responseActions", "recoveryGuidance"),
     )
     return {
-        "riskFactor": deepcopy(profile["threatIntelligence"]["riskAssessment"]["riskFactors"][0]),
+        "riskFactor": without_source_ids(
+            profile["threatIntelligence"]["riskAssessment"]["riskFactors"][0]
+        ),
         "forensicArtifact": {"claimField": forensic_field, **forensic_item},
         "detectionIndicator": {"claimField": indicator_field, **indicator_item},
         "mitigationAction": {"claimField": mitigation_field, **mitigation_item},
@@ -88,13 +95,16 @@ def generated_evidence_correction(profile: dict) -> dict:
 def test_evidence_correction_schema_requires_each_claim_class(threat_profile_data):
     profile = generated_embedded_profile(threat_profile_data)
     correction = generated_evidence_correction(profile)
+    schema = EmbeddedEvidenceCorrection.model_json_schema()
 
-    assert EmbeddedEvidenceCorrection.model_json_schema()["required"] == [
+    assert schema["required"] == [
         "riskFactor",
         "forensicArtifact",
         "detectionIndicator",
         "mitigationAction",
     ]
+    assert '"sourceIds"' not in json.dumps(schema)
+    assert '"supportingEvidence"' in json.dumps(schema)
     for field in tuple(correction):
         incomplete = deepcopy(correction)
         incomplete.pop(field)

@@ -316,7 +316,23 @@ class EvidenceClaimItem(StrictModel):
         return self
 
 
-class EmbeddedForensicCorrectionItem(EvidenceClaimItem):
+class EmbeddedCorrectionClaimItem(StrictModel):
+    """One bounded correction claim whose source IDs are derived from support."""
+
+    value: str = Field(min_length=1)
+    evidence_role: Literal["direct_evidence", "general_practice"] = Field(alias="evidenceRole")
+    supporting_evidence: list[EvidenceSupport] = Field(alias="supportingEvidence")
+
+    @model_validator(mode="after")
+    def validate_support(self) -> "EmbeddedCorrectionClaimItem":
+        if self.evidence_role == "direct_evidence" and not self.supporting_evidence:
+            raise ValueError("Direct evidence corrections require a verbatim excerpt")
+        if self.evidence_role == "general_practice" and self.supporting_evidence:
+            raise ValueError("General-practice corrections cannot claim captured support")
+        return self
+
+
+class EmbeddedForensicCorrectionItem(EmbeddedCorrectionClaimItem):
     """One forensic artifact plus its destination in the complete profile."""
 
     claim_field: Literal[
@@ -328,7 +344,7 @@ class EmbeddedForensicCorrectionItem(EvidenceClaimItem):
     ] = Field(alias="claimField")
 
 
-class EmbeddedIndicatorCorrectionItem(EvidenceClaimItem):
+class EmbeddedIndicatorCorrectionItem(EmbeddedCorrectionClaimItem):
     """One detection indicator plus its destination in the complete profile."""
 
     claim_field: Literal[
@@ -341,7 +357,7 @@ class EmbeddedIndicatorCorrectionItem(EvidenceClaimItem):
     ] = Field(alias="claimField")
 
 
-class EmbeddedMitigationCorrectionItem(EvidenceClaimItem):
+class EmbeddedMitigationCorrectionItem(EmbeddedCorrectionClaimItem):
     """One mitigation action plus its destination in the complete profile."""
 
     claim_field: Literal[
@@ -355,7 +371,7 @@ class EmbeddedMitigationCorrectionItem(EvidenceClaimItem):
 class EmbeddedEvidenceCorrection(StrictModel):
     """Small correction artifact for high-risk fields only."""
 
-    risk_factor: EvidenceClaimItem = Field(alias="riskFactor")
+    risk_factor: EmbeddedCorrectionClaimItem = Field(alias="riskFactor")
     forensic_artifact: EmbeddedForensicCorrectionItem = Field(alias="forensicArtifact")
     detection_indicator: EmbeddedIndicatorCorrectionItem = Field(alias="detectionIndicator")
     mitigation_action: EmbeddedMitigationCorrectionItem = Field(alias="mitigationAction")
