@@ -510,7 +510,7 @@ class ReferencesAndIntelligenceSharing(StrictModel):
     sources: list[ReferenceSource] = Field(min_length=1)
     mitre_attack_mapping: str = Field(alias="mitreAttackMapping")
     cve_references: str = Field(alias="cveReferences")
-    additional_references: list[str] = Field(alias="additionalReferences")
+    additional_references: list[str] = Field(default_factory=list, alias="additionalReferences")
 
 
 class Integration(StrictModel):

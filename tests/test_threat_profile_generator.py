@@ -112,6 +112,15 @@ def test_evidence_correction_schema_requires_each_claim_class(threat_profile_dat
             EmbeddedEvidenceCorrection.model_validate(incomplete)
 
 
+def test_structured_profile_defaults_absent_optional_references(threat_profile_data):
+    profile = generated_embedded_profile(threat_profile_data)
+    profile["referencesAndIntelligenceSharing"].pop("additionalReferences")
+
+    parsed = ThreatProfile.model_validate(profile)
+
+    assert parsed.references_and_intelligence_sharing.additional_references == []
+
+
 def test_structured_synthesis_catalog_exposes_only_captured_operational_sources():
     sources = [
         {
