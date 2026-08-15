@@ -68,7 +68,7 @@ export function ReviewStatusBanner({
   return (
     <section
       data-contract="Report.ReviewStatus.v1"
-      className={`mt-6 rounded-xl border px-5 py-4 ${tone}`}
+      className={`mt-8 border-l-4 py-1 pl-5 pr-4 ${tone}`}
       role={active ? 'status' : undefined}
       aria-live={active ? 'polite' : undefined}
     >

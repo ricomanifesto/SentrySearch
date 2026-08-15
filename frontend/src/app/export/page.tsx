@@ -293,17 +293,17 @@ export default function ExportPage() {
           </div>
 
           <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-3">
-            <div className="min-w-0 space-y-6 lg:col-span-2">
-              <section className="rounded-xl border border-zinc-200 bg-white p-5">
+            <div className="min-w-0 space-y-10 lg:col-span-2">
+              <section className="border-t border-zinc-200 pt-6">
                 <h2 className="text-base font-semibold text-zinc-950">Package format</h2>
-                <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <div className="mt-4 divide-y divide-zinc-200 border-y border-zinc-200">
                   {formatOptions.map((format) => {
                     const isSelected = config.format === format.value;
                     return (
                       <label
                         key={format.value}
-                        className={`block min-w-0 cursor-pointer rounded-lg border p-4 text-left transition-colors ${
-                          isSelected ? 'border-blue-600 bg-blue-50' : 'border-zinc-200 bg-white hover:border-zinc-300'
+                        className={`block min-w-0 cursor-pointer border-l-4 py-4 pl-4 pr-3 text-left transition-colors ${
+                          isSelected ? 'border-blue-600 bg-blue-50' : 'border-transparent hover:bg-zinc-100'
                         }`}
                       >
                         <input
@@ -323,14 +323,14 @@ export default function ExportPage() {
                 </div>
               </section>
 
-              <section className="rounded-xl border border-zinc-200 bg-white p-5">
+              <section className="border-t border-zinc-200 pt-6">
                 <h2 className="text-base font-semibold text-zinc-950">Package contents</h2>
-                <div className="mt-4 space-y-3">
+                <div className="mt-4 divide-y divide-zinc-200 border-y border-zinc-200">
                   {packageContentOptions.map((option) => (
                     <label
                       key={option.key}
-                      className={`flex min-w-0 cursor-pointer items-start justify-between gap-4 rounded-lg border p-4 transition-colors ${
-                        config[option.key] ? 'border-blue-200 bg-blue-50' : 'border-zinc-200 bg-white hover:border-zinc-300'
+                      className={`flex min-w-0 cursor-pointer items-start justify-between gap-4 border-l-4 py-4 pl-4 pr-3 transition-colors ${
+                        config[option.key] ? 'border-blue-600 bg-blue-50' : 'border-transparent hover:bg-zinc-100'
                       }`}
                     >
                       <span className="min-w-0">
@@ -348,7 +348,7 @@ export default function ExportPage() {
                 </div>
               </section>
 
-              <section data-contract="Export.PackageScopeControls.v1" className="rounded-xl border border-zinc-200 bg-white p-5">
+              <section data-contract="Export.PackageScopeControls.v1" className="border-t border-zinc-200 pt-6">
                 <h2 className="text-base font-semibold text-zinc-950">Handoff constraints</h2>
                 <p className="mt-1 text-sm leading-6 text-zinc-500">
                   Constrain the package by analyst judgment, lifecycle truth, evidence window, threat family, and content-quality floor.
@@ -377,7 +377,7 @@ export default function ExportPage() {
                 </div>
               </section>
 
-              <section className="rounded-xl border border-zinc-200 bg-white p-5">
+              <section className="border-t border-zinc-200 pt-6">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0">
                     <h2 className="text-base font-semibold text-zinc-950">Report selection</h2>
@@ -404,7 +404,7 @@ export default function ExportPage() {
                       </p>
                     </div>
                   ) : reportsData?.reports.length ? (
-                    <div className="max-h-96 space-y-3 overflow-y-auto">
+                    <div className="max-h-96 divide-y divide-zinc-200 overflow-y-auto border-y border-zinc-200">
                       {reportsData?.reports.map((report) => (
                         <ExportEvidenceQueueRecord
                           key={report.id}
@@ -426,8 +426,8 @@ export default function ExportPage() {
               </section>
             </div>
 
-            <div className="min-w-0 space-y-6">
-              <section data-contract="Export.PackageManifest.v1" className="rounded-xl border border-zinc-200 bg-white p-5">
+            <div className="min-w-0 space-y-10">
+              <section data-contract="Export.PackageManifest.v1" className="border-t border-zinc-200 pt-6">
                 <h2 className="text-base font-semibold text-zinc-950">Handoff summary</h2>
                 <div className="mt-4 space-y-3">
                   {packageManifestRows.map((row) => (
@@ -442,7 +442,7 @@ export default function ExportPage() {
                 </div>
               </section>
 
-              <section data-contract="Export.PackageReadiness.v1" className="rounded-xl border border-zinc-200 bg-white p-5">
+              <section data-contract="Export.PackageReadiness.v1" className="border-t border-zinc-200 pt-6">
                 <h2 className="text-base font-semibold text-zinc-950">Package readiness</h2>
                 <div className="mt-4 space-y-3">
                   {packageReadinessRows.map((row) => (
@@ -498,8 +498,8 @@ function ExportEvidenceQueueRecord({
   return (
     <label
       data-contract="Export.EvidenceQueueRecord.v1"
-      className={`flex min-w-0 cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors ${
-        isSelected ? 'border-blue-600 bg-blue-50' : 'border-zinc-200 bg-white hover:border-zinc-300'
+      className={`flex min-w-0 cursor-pointer items-start gap-3 border-l-4 py-3 pl-3 pr-2 transition-colors ${
+        isSelected ? 'border-blue-600 bg-blue-50' : 'border-transparent hover:bg-zinc-100'
       }`}
     >
       <input

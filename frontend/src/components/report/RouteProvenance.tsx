@@ -53,7 +53,7 @@ export function RouteProvenance({
   return (
     <section
       data-contract="Report.RouteProvenance.v2"
-      className="mt-6 rounded-xl border border-amber-200 bg-amber-50 p-5"
+      className="mt-8 border-l-4 border-amber-500 pl-5"
     >
       <h2 className="text-base font-semibold text-amber-900">Routing provenance</h2>
       <p className="mt-1 text-sm leading-6 text-amber-700">

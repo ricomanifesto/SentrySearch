@@ -21,7 +21,6 @@ import { formatTaxonomyLabel, getQualityLabel } from '@/lib/report-query';
 import { getReportSectionLinks, splitReportContent } from '@/lib/report-content';
 import { getReviewAttentionSummary } from '@/lib/review-attention';
 import { getGenerationFailurePresentation } from '@/lib/generation-failure';
-import { getReviewStatusDescription, getReviewStatusLabel } from '@/lib/report-status';
 import { AuthGuard } from '@/components/AuthGuard';
 import { ReportNarrative } from '@/components/report/ReportNarrative';
 import { SourceEvidence } from '@/components/report/SourceEvidence';
@@ -658,11 +657,6 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
 
   const recordSummarySignals = [
     {
-      label: 'Operational readiness',
-      value: getReviewStatusLabel(report.review_status),
-      detail: getReviewStatusDescription(report.review_status),
-    },
-    {
       label: 'Content quality',
       value: qualityScore == null ? qualityLabel : `${qualityScore.toFixed(2)} / 5.00`,
       detail: qualityLabel,
@@ -793,10 +787,10 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
 
         <dl
           data-contract="Report.RecordSummarySignals.v1"
-          className="mt-6 grid gap-px overflow-hidden rounded-xl border border-zinc-200 bg-zinc-200 sm:grid-cols-2 xl:grid-cols-5"
+          className="mt-8 grid gap-6 border-y border-zinc-200 py-6 sm:grid-cols-2 xl:grid-cols-4"
         >
           {recordSummarySignals.map((signal) => (
-            <div key={signal.label} className="min-w-0 bg-white px-4 py-4">
+            <div key={signal.label} className="min-w-0">
               <dt className="text-sm text-zinc-500">{signal.label}</dt>
               <dd className="mt-1 truncate text-base font-semibold capitalize text-zinc-950">{signal.value}</dd>
               <dd className="mt-0.5 text-sm text-zinc-500">{signal.detail}</dd>
@@ -837,7 +831,7 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
         </nav>
 
         {sectionLinks.length > 0 ? (
-          <details className="mt-6 rounded-xl border border-zinc-200 bg-white px-5 py-4">
+          <details className="mt-8 border-y border-zinc-200 py-4">
             <summary className="cursor-pointer text-sm font-medium text-zinc-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
               Report outline · {sectionLinks.length} sections
             </summary>
@@ -852,7 +846,7 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
         ) : null}
 
         <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem]">
-          <section id="intelligence-narrative" className="order-last min-w-0 scroll-mt-6 rounded-xl border border-zinc-200 bg-white p-6 lg:order-first">
+          <section id="intelligence-narrative" className="order-last min-w-0 scroll-mt-6 border-t border-zinc-200 pt-6 lg:order-first">
             <p className="text-base font-semibold text-zinc-950">Intelligence narrative</p>
             {report.markdown_content ? (
               <ReportNarrative
@@ -870,7 +864,7 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
           </section>
 
           <aside id="source-evidence" className="order-first min-w-0 scroll-mt-6 space-y-4 lg:order-last">
-            <section className="rounded-xl border border-zinc-200 bg-white p-5">
+            <section className="border-t border-zinc-200 pt-5">
               <SourceEvidence
                 sources={report.web_sources}
                 attributionStatus={report.claim_attribution_status}
@@ -878,7 +872,7 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
                 evidenceAdmissibility={report.evidence_admissibility}
               />
             </section>
-            <section data-contract="Report.SourceReviewChecklist.v1" className="rounded-xl border border-zinc-200 bg-white p-5">
+            <section data-contract="Report.SourceReviewChecklist.v1" className="border-t border-zinc-200 pt-5">
               <h2 className="text-base font-semibold text-zinc-950">Review readiness</h2>
               <p className="mt-1 text-sm leading-6 text-zinc-500">
                 Use these signals to review the narrative, sources, and extraction data.
@@ -901,7 +895,7 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
         </div>
 
         {contentParts.appendices ? (
-          <details id="evaluation-appendix" className="mt-8 scroll-mt-6 rounded-xl border border-zinc-200 bg-white p-6">
+          <details id="evaluation-appendix" className="mt-10 scroll-mt-6 border-y border-zinc-200 py-6">
             <summary className="cursor-pointer text-base font-semibold text-zinc-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
               Evaluation details
             </summary>
@@ -913,7 +907,7 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
         ) : null}
 
         {report.threat_data && (
-          <details className="mt-8 rounded-xl border border-zinc-200 bg-white p-6">
+          <details className="mt-10 border-y border-zinc-200 py-6">
             <summary className="cursor-pointer text-base font-semibold text-zinc-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
               Structured extraction data
             </summary>

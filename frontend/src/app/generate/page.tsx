@@ -110,7 +110,7 @@ function GenerateWorkspace() {
           </header>
 
           <div className="mt-10 grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_20rem]">
-            <form onSubmit={handleSubmit} className="rounded-xl border border-zinc-200 bg-white p-6">
+            <form onSubmit={handleSubmit} className="border-t border-zinc-200 pt-6">
               <label htmlFor="tool_name" className="block text-sm font-medium text-zinc-800">
                 Target
               </label>
@@ -165,8 +165,8 @@ function GenerateWorkspace() {
               </button>
             </form>
 
-            <aside className="space-y-6">
-              <section data-contract="Generate.TargetSeedLibrary.v1" className="rounded-xl border border-zinc-200 bg-white p-5">
+            <aside className="space-y-8">
+              <section data-contract="Generate.TargetSeedLibrary.v1" className="border-t border-zinc-200 pt-6">
                 <h2 className="text-base font-semibold text-zinc-950">Try a target</h2>
                 <div className="mt-4 space-y-4">
                   {targetGroups.map((group) => (
@@ -180,7 +180,7 @@ function GenerateWorkspace() {
                             type="button"
                             onClick={() => setFormData((prev) => ({ ...prev, tool_name: example }))}
                             disabled={isLoading}
-                            className="rounded-md border border-zinc-200 bg-white px-2.5 py-1.5 text-sm font-medium text-zinc-700 transition-colors hover:border-zinc-300 hover:bg-zinc-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="rounded-md bg-zinc-100 px-2.5 py-1.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             {example}
                           </button>
@@ -191,7 +191,7 @@ function GenerateWorkspace() {
                 </div>
               </section>
 
-              <section data-contract="Generate.ReportIncludes.v1" className="rounded-xl border border-zinc-200 bg-white p-5">
+              <section data-contract="Generate.ReportIncludes.v1" className="border-t border-zinc-200 pt-6">
                 <h2 className="text-base font-semibold text-zinc-950">What each report includes</h2>
                 <ul className="mt-4 space-y-3">
                   {reportIncludes.map((item) => (

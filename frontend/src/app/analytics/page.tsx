@@ -160,10 +160,10 @@ export default function AnalyticsPage() {
 
           <dl
             data-contract="Analytics.MetricSignalStrip.v1"
-            className="mt-8 grid gap-px overflow-hidden rounded-xl border border-zinc-200 bg-zinc-200 sm:grid-cols-2 xl:grid-cols-4"
+            className="mt-10 grid gap-6 border-y border-zinc-200 py-6 sm:grid-cols-2 xl:grid-cols-4"
           >
             {metricSignals.map((metric) => (
-              <div key={metric.label} className="min-w-0 bg-white px-5 py-5">
+              <div key={metric.label} className="min-w-0">
                 <dt className="text-sm text-zinc-500">{metric.label}</dt>
                 <dd className="mt-1 text-2xl font-semibold text-zinc-950">{metric.value}</dd>
                 <dd className="mt-0.5 text-sm leading-6 text-zinc-500">{metric.detail}</dd>
@@ -173,15 +173,15 @@ export default function AnalyticsPage() {
 
           <section
             data-contract="Analytics.GenerationRouteComparison.v1"
-            className="mt-8 min-w-0 rounded-xl border border-zinc-200 bg-white p-5"
+            className="mt-10 min-w-0 border-t border-zinc-200 pt-6"
           >
             <h2 className="text-base font-semibold text-zinc-950">Generation route comparison</h2>
             <p className="mt-1 text-sm leading-6 text-zinc-500">
               Compare completed reports by the synthesis route that authored them. Older aggregate provenance stays separate rather than implying an unrecorded role.
             </p>
-            <div className="mt-4 grid gap-px overflow-hidden rounded-lg border border-zinc-200 bg-zinc-200 md:grid-cols-2 xl:grid-cols-4">
+            <div className="mt-5 grid gap-x-8 gap-y-5 md:grid-cols-2 xl:grid-cols-4">
               {routePerformance.map((route) => (
-                <dl key={route.route} className="min-w-0 bg-white p-4">
+                <dl key={route.route} className="min-w-0 border-t border-zinc-200 pt-4">
                   <dt className="text-sm font-medium text-zinc-700">{routeLabels[route.route]}</dt>
                   <dd className="mt-1 text-2xl font-semibold text-zinc-950">{route.report_count}</dd>
                   <dd className="mt-2 text-sm leading-6 text-zinc-500">
@@ -202,7 +202,7 @@ export default function AnalyticsPage() {
 
           <section
             data-contract="Analytics.GenerationFailureEvidence.v1"
-            className="mt-8 min-w-0 rounded-xl border border-zinc-200 bg-white p-5"
+            className="mt-10 min-w-0 border-t border-zinc-200 pt-6"
           >
             <h2 className="text-base font-semibold text-zinc-950">Generation failure evidence</h2>
             <p className="mt-1 text-sm leading-6 text-zinc-500">
@@ -240,8 +240,8 @@ export default function AnalyticsPage() {
             )}
           </section>
 
-          <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-2">
-            <section className="min-w-0 rounded-xl border border-zinc-200 bg-white p-5">
+          <div className="mt-10 grid grid-cols-1 gap-x-10 gap-y-10 lg:grid-cols-2">
+            <section className="min-w-0 border-t border-zinc-200 pt-6">
               <h2 className="text-base font-semibold text-zinc-950">Review timeline</h2>
               <p className="mt-1 text-sm text-zinc-500">Recent report activity in this window.</p>
               <div className="mt-4">
@@ -292,7 +292,7 @@ export default function AnalyticsPage() {
               </div>
             </section>
 
-            <section className="min-w-0 rounded-xl border border-zinc-200 bg-white p-5">
+            <section className="min-w-0 border-t border-zinc-200 pt-6">
               <h2 className="text-base font-semibold text-zinc-950">Threat coverage map</h2>
               <p className="mt-1 text-sm text-zinc-500">Threat distribution across saved reports.</p>
               <div className="mt-4">
@@ -309,7 +309,7 @@ export default function AnalyticsPage() {
                             <div className="h-2 w-24 rounded-full bg-zinc-200">
                               <div className="h-2 rounded-full bg-blue-600" style={{ width: `${percentage}%` }} />
                             </div>
-                            <span className="w-8 text-right font-mono text-sm text-zinc-950">{count}</span>
+                            <span className="w-8 text-right text-sm font-medium tabular-nums text-zinc-950">{count}</span>
                           </div>
                         </div>
                       );

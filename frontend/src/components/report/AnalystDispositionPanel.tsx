@@ -72,7 +72,7 @@ export function AnalystDispositionPanel({
   return (
     <section
       data-contract="Report.AnalystDisposition.v1"
-      className="mt-6 rounded-xl border border-zinc-200 bg-white p-5"
+      className="mt-8 border-t border-zinc-200 pt-6"
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
@@ -86,12 +86,12 @@ export function AnalystDispositionPanel({
         </span>
       </div>
 
-      <fieldset className="mt-5 grid gap-3 lg:grid-cols-3" disabled={disabled || pending}>
+      <fieldset className="mt-5 divide-y divide-zinc-200 border-y border-zinc-200" disabled={disabled || pending}>
         <legend className="sr-only">Disposition for evaluation {report.evaluation_attempts}</legend>
         {choices.map((choice) => (
           <label
             key={choice.value}
-            className={`rounded-lg border p-4 ${choice.value === 'accepted' && acceptanceBlocked ? 'cursor-not-allowed border-zinc-200 bg-zinc-50 opacity-60' : 'cursor-pointer'} ${selected === choice.value ? 'border-blue-600 bg-blue-50' : 'border-zinc-200 bg-white'}`}
+            className={`block border-l-4 py-4 pl-4 pr-3 ${choice.value === 'accepted' && acceptanceBlocked ? 'cursor-not-allowed border-transparent bg-zinc-50 opacity-60' : 'cursor-pointer'} ${selected === choice.value ? 'border-blue-600 bg-blue-50' : 'border-transparent'}`}
           >
             <span className="flex items-start gap-3">
               <input
@@ -175,9 +175,9 @@ export function AnalystDispositionPanel({
           <summary className="cursor-pointer text-sm font-medium text-zinc-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
             Judgment history · {report.disposition_history.length}
           </summary>
-          <ol className="mt-3 space-y-3">
+          <ol className="mt-3 divide-y divide-zinc-200 border-y border-zinc-200">
             {[...report.disposition_history].reverse().map((event) => (
-              <li key={event.id} className="rounded-lg border border-zinc-200 p-3">
+              <li key={event.id} className="py-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className={`rounded-md px-2 py-0.5 text-sm font-medium ${getAnalystDispositionClasses(event.disposition)}`}>
                     {dispositionEventLabel(event)}

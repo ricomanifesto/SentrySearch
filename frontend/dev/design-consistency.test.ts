@@ -11,6 +11,17 @@ const layout = source('../src/app/layout.tsx');
 const css = source('../src/app/globals.css');
 const landing = source('../src/app/page.tsx');
 const sample = source('../src/app/sample/page.tsx');
+const dashboard = source('../src/app/dashboard/page.tsx');
+const reports = source('../src/app/reports/page.tsx');
+const reportDetail = source('../src/app/reports/[id]/page.tsx');
+const generate = source('../src/app/generate/page.tsx');
+const analytics = source('../src/app/analytics/page.tsx');
+const exportPage = source('../src/app/export/page.tsx');
+const dashboardSignals = source('../src/components/DashboardBriefingSignals.tsx');
+const activityFeed = source('../src/components/ActivityFeed.tsx');
+const reviewStatus = source('../src/components/report/ReviewStatusBanner.tsx');
+const routeProvenance = source('../src/components/report/RouteProvenance.tsx');
+const analystDisposition = source('../src/components/report/AnalystDispositionPanel.tsx');
 const sourceEvidence = source('../src/components/report/SourceEvidence.tsx');
 const handoffUrl = new URL('../src/components/WorkspaceHandoff.tsx', import.meta.url);
 const handoff = existsSync(handoffUrl) ? source('../src/components/WorkspaceHandoff.tsx') : '';
@@ -67,4 +78,38 @@ test('does not retain unused starter assets or a parallel component palette', ()
       `${relativePath} should be removed`,
     );
   }
+});
+
+test('uses open workspace composition instead of bordered cards inside bordered cards', () => {
+  assert.match(dashboardSignals, /border-y border-zinc-200 py-6/);
+  assert.doesNotMatch(dashboardSignals, /gap-px overflow-hidden rounded-xl/);
+  assert.match(dashboard, /min-w-0 border-t border-zinc-200 pt-6/);
+  assert.doesNotMatch(dashboard, /font-mono/);
+
+  assert.match(activityFeed, /divide-y divide-zinc-200/);
+  assert.doesNotMatch(activityFeed, /items-start gap-3 rounded-lg border border-zinc-100/);
+
+  assert.match(reports, /Reports\.ReviewQueueControls\.v1[\s\S]*border-y border-zinc-200 py-5/);
+  assert.match(reports, /Reports\.FailedRunLane\.v1[\s\S]*border-l-4 border-red-500 pl-5/);
+  assert.doesNotMatch(reports, /gap-px overflow-hidden rounded-lg border border-zinc-200/);
+
+  assert.match(generate, /<form[\s\S]*border-t border-zinc-200 pt-6/);
+  assert.match(generate, /Generate\.TargetSeedLibrary\.v1[\s\S]*border-t border-zinc-200 pt-6/);
+
+  assert.match(analytics, /Analytics\.MetricSignalStrip\.v1[\s\S]*border-y border-zinc-200 py-6/);
+  assert.doesNotMatch(analytics, /gap-px overflow-hidden rounded/);
+  assert.doesNotMatch(analytics, /font-mono/);
+
+  assert.match(exportPage, /Package format[\s\S]*divide-y divide-zinc-200/);
+  assert.match(exportPage, /Export\.PackageManifest\.v1[\s\S]*border-t border-zinc-200 pt-6/);
+});
+
+test('keeps report status and judgment hierarchy strong without nesting generic panels', () => {
+  assert.match(reviewStatus, /border-l-4/);
+  assert.doesNotMatch(reviewStatus, /rounded-xl border px-5 py-4/);
+  assert.match(routeProvenance, /border-l-4 border-amber-500 pl-5/);
+  assert.match(analystDisposition, /border-t border-zinc-200 pt-6/);
+  assert.doesNotMatch(analystDisposition, /rounded-xl border border-zinc-200 bg-white p-5/);
+  assert.match(reportDetail, /Report\.RecordSummarySignals\.v1[\s\S]*border-y border-zinc-200 py-6/);
+  assert.doesNotMatch(reportDetail, /gap-px overflow-hidden rounded-xl border border-zinc-200/);
 });

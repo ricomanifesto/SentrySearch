@@ -116,8 +116,8 @@ export default function Dashboard() {
 
           <DashboardBriefingSignals analytics={analytics} isLoading={analyticsLoading} />
 
-          <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.85fr)_minmax(0,0.85fr)]">
-            <section className="rounded-xl border border-zinc-200 bg-white p-5">
+          <div className="mt-10 grid grid-cols-1 gap-x-8 gap-y-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.85fr)_minmax(0,0.85fr)]">
+            <section className="min-w-0 border-t border-zinc-200 pt-6">
               <div className="flex items-center justify-between gap-3">
                 <h2 className="text-base font-semibold text-zinc-950">Review queue</h2>
                 <Link href="/reports?review_state=all" className="text-sm font-medium text-blue-700 hover:underline">
@@ -200,7 +200,7 @@ export default function Dashboard() {
               </div>
             </section>
 
-            <section data-contract="Dashboard.ThreatCoverageMap.v1" className="rounded-xl border border-zinc-200 bg-white p-5">
+            <section data-contract="Dashboard.ThreatCoverageMap.v1" className="min-w-0 border-t border-zinc-200 pt-6">
               <h2 className="text-base font-semibold text-zinc-950">Coverage map</h2>
               <p className="mt-1 text-sm text-zinc-500">Threat patterns represented in saved reports.</p>
               <div className="mt-4">
@@ -219,7 +219,7 @@ export default function Dashboard() {
                           <div className="h-2 w-16 rounded-full bg-zinc-200">
                             <div className="h-2 rounded-full bg-blue-600" style={{ width: `${row.coveragePercent}%` }} />
                           </div>
-                          <span className="w-8 text-right font-mono text-sm text-zinc-950">{row.count}</span>
+                          <span className="w-8 text-right text-sm font-medium tabular-nums text-zinc-950">{row.count}</span>
                         </div>
                       </div>
                     ))}

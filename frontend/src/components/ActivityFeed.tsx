@@ -94,7 +94,7 @@ export function ActivityFeed({ userId, limit = 10, showHeader = true, compact = 
 
   if (error) {
     return (
-      <section data-contract="Dashboard.ActivityTrail.v1" className="rounded-xl border border-red-200 bg-red-50 p-5">
+      <section data-contract="Dashboard.ActivityTrail.v1" className="min-w-0 border-l-4 border-red-500 pl-5">
         <h2 className="text-base font-semibold text-red-900">Activity trail</h2>
         <p className="mt-2 text-sm leading-6 text-red-700">
           Activity trail is unavailable right now. Continue with saved reports while the workspace events reconnect.
@@ -104,7 +104,7 @@ export function ActivityFeed({ userId, limit = 10, showHeader = true, compact = 
   }
 
   return (
-    <section data-contract="Dashboard.ActivityTrail.v1" className="min-w-0 rounded-xl border border-zinc-200 bg-white p-5">
+    <section data-contract="Dashboard.ActivityTrail.v1" className="min-w-0 border-t border-zinc-200 pt-6">
       {showHeader && (
         <div>
           <h2 className="text-base font-semibold text-zinc-950">Activity trail</h2>
@@ -127,12 +127,12 @@ export function ActivityFeed({ userId, limit = 10, showHeader = true, compact = 
             </p>
           </div>
         ) : (
-          <div className="space-y-2">
+          <div className="divide-y divide-zinc-200">
             {activityTrailRows.slice(0, limit).map((activity) => {
               const Icon = activity.Icon;
               return (
-                <div key={activity.id} className="flex min-w-0 items-start gap-3 rounded-lg border border-zinc-100 px-3 py-3">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-zinc-100 text-zinc-600">
+                <div key={activity.id} className="flex min-w-0 items-start gap-3 py-3 first:pt-0">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-zinc-100 text-zinc-600">
                     <Icon aria-hidden="true" className="h-4 w-4" />
                   </div>
                   <div className="min-w-0 flex-1">

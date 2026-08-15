@@ -195,7 +195,7 @@ function ReportsWorkspace() {
             </Link>
           </div>
 
-          <section data-contract="Reports.ReviewQueueControls.v1" className="mt-8 rounded-xl border border-zinc-200 bg-white p-5">
+          <section data-contract="Reports.ReviewQueueControls.v1" className="mt-10 border-y border-zinc-200 py-5">
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
               <label className="relative block">
                 <span className="sr-only">Search reports</span>
@@ -344,12 +344,12 @@ function ReportsWorkspace() {
 
 function FailedRunLane({ groups }: { groups: FailedRunGroup[] }) {
   return (
-    <section data-contract="Reports.FailedRunLane.v1" className="rounded-xl border border-red-200 bg-red-50 p-5 sm:p-6">
+    <section data-contract="Reports.FailedRunLane.v1" className="border-l-4 border-red-500 pl-5">
       <h2 className="text-base font-semibold text-red-950">Failed generation attempts</h2>
       <p className="mt-1 text-sm leading-6 text-red-800">
         Repeated failures are grouped by target on this page so retry work does not crowd out completed intelligence.
       </p>
-      <div className="mt-4 space-y-3">
+      <div className="mt-4 divide-y divide-red-200 border-y border-red-200">
         {groups.map((group) => {
           const latest = group.reports[0];
           const failure = getGenerationFailurePresentation(
@@ -357,7 +357,7 @@ function FailedRunLane({ groups }: { groups: FailedRunGroup[] }) {
             latest.generation_retryable,
           );
           return (
-            <article key={group.target.toLocaleLowerCase()} className="rounded-lg border border-red-200 bg-white p-4">
+            <article key={group.target.toLocaleLowerCase()} className="py-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
                   <Link href={`/reports/${latest.id}`} className="font-semibold text-zinc-950 hover:text-blue-700">
@@ -453,10 +453,10 @@ function ReportReviewRecord({ report }: { report: Report }) {
 
       <dl
         data-contract="Reports.ReviewRecordSignals.v1"
-        className="mt-4 grid gap-px overflow-hidden rounded-lg border border-zinc-200 bg-zinc-200 sm:grid-cols-3"
+        className="mt-4 grid gap-6 border-t border-zinc-200 pt-4 sm:grid-cols-3"
       >
         {reportRecordSignals.map((signal) => (
-          <div key={signal.label} className="bg-white px-3 py-3">
+          <div key={signal.label}>
             <dt className="text-sm text-zinc-500">{signal.label}</dt>
             <dd className="mt-1 text-sm font-medium text-zinc-950">{signal.value}</dd>
             <dd className="mt-0.5 text-sm leading-5 text-zinc-500">{signal.detail}</dd>
