@@ -91,18 +91,7 @@ complete corrected JSON object.
 def _profile_output_correction_prompt(error: Exception) -> str:
     """Describe bounded structural defects without replaying model-owned values."""
 
-    if isinstance(error, ValidationError):
-        issues = [
-            {
-                "path": ".".join(str(part) for part in item.get("loc", ())),
-                "type": str(item.get("type", "invalid")),
-                "message": str(item.get("msg", "Invalid value")),
-            }
-            for item in error.errors(include_url=False, include_input=False)[:12]
-        ]
-        issue_text = json.dumps(issues, separators=(",", ":"))
-    else:
-        issue_text = str(error).strip()[:1_200] or "The JSON object was invalid."
+    issue_text = _profile_output_issue_text(error)
 
     return f"""CORRECTION ATTEMPT AFTER A FAILED STRUCTURED OUTPUT CONTRACT:
 The previous JSON object did not match the required threat-profile shape. Return
@@ -120,6 +109,24 @@ one complete corrected JSON object, with no prose or Markdown outside it.
 VALIDATION ISSUES:
 {issue_text}
 """
+
+
+def _profile_output_issue_text(error: Exception) -> str:
+    """Return source-private structural diagnostics for correction and logs."""
+
+    if isinstance(error, ValidationError):
+        issues = [
+            {
+                "path": ".".join(str(part) for part in item.get("loc", ())),
+                "type": str(item.get("type", "invalid")),
+                "message": str(item.get("msg", "Invalid value")),
+            }
+            for item in error.errors(include_url=False, include_input=False)[:12]
+        ]
+        issue_text = json.dumps(issues, separators=(",", ":"))
+    else:
+        issue_text = str(error).strip()[:1_200] or "The JSON object was invalid."
+    return issue_text
 
 
 class ThreatProfileGenerator(RetryingModelRequests):
@@ -669,10 +676,15 @@ END ATTESTED SOURCE CATALOG"""
                     json_data = parse_threat_profile_response(response)
                 except (ValidationError, ValueError, TypeError) as error:
                     if attempt >= SYNTHESIS_CORRECTION_ATTEMPTS:
+                        logger.error(
+                            "Structured synthesis failed final local profile validation: %s",
+                            _profile_output_issue_text(error),
+                        )
                         raise ProfileOutputError("Structured profile output was invalid") from error
                     logger.warning(
                         "Structured synthesis failed local profile validation; "
-                        "requesting one bounded correction"
+                        "requesting one bounded correction: %s",
+                        _profile_output_issue_text(error),
                     )
                     emit_progress(
                         0.76,

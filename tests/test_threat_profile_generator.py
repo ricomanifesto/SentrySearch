@@ -154,6 +154,34 @@ def test_parse_threat_profile_response_accepts_parsed_or_deferred_json(threat_pr
         for item in filtered["threatIntelligence"]["riskAssessment"]["riskFactors"]
     )
 
+    wrapped_plain_values = deepcopy(threat_profile_data)
+    wrapped_plain_values["technicalDetails"]["persistence"] = [
+        {
+            "value": "Service",
+            "evidenceRole": "direct_evidence",
+            "sourceIds": ["S1"],
+            "supportingEvidence": [{"sourceId": "S1", "excerpt": "Unexpected service creation"}],
+        }
+    ]
+    wrapped_plain_values["commandAndControl"]["beaconingPatterns"][0]["indicators"] = [
+        {
+            "value": "Repeated outbound HTTPS",
+            "evidenceRole": "direct_evidence",
+            "sourceIds": ["S1"],
+            "supportingEvidence": [{"sourceId": "S1", "excerpt": "HTTPS callbacks"}],
+        }
+    ]
+    normalized = parse_threat_profile_response(
+        SimpleNamespace(
+            parsed=None,
+            content=[SimpleNamespace(type="text", text=json.dumps(wrapped_plain_values))],
+        )
+    )
+    assert normalized["technicalDetails"]["persistence"] == ["Service"]
+    assert normalized["commandAndControl"]["beaconingPatterns"][0]["indicators"] == [
+        "Repeated outbound HTTPS"
+    ]
+
     with pytest.raises(ValueError, match="threat profile JSON"):
         parse_threat_profile_response(SimpleNamespace(parsed=None, content=[]))
 

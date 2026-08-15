@@ -30,6 +30,61 @@ _EMBEDDED_EVIDENCE_PATHS = (
     ("mitigationAndResponse", "recoveryGuidance"),
 )
 
+_PLAIN_STRING_LIST_PATHS = (
+    ("toolOverview", "knownAliases"),
+    ("technicalDetails", "operatingSystems"),
+    ("technicalDetails", "dependencies"),
+    ("technicalDetails", "persistence"),
+    ("technicalDetails", "capabilities"),
+    ("commandAndControl", "beaconingPatterns", "*", "indicators"),
+    ("commandAndControl", "commonCommands"),
+    ("threatIntelligence", "entities", "campaigns", "*", "targetSectors"),
+    ("referencesAndIntelligenceSharing", "additionalReferences"),
+    ("integration", "threatHuntingQueries"),
+    ("lineage", "variants"),
+    ("lineage", "relationships"),
+    ("operationalGuidance", "validationCriteria"),
+)
+
+_EVIDENCE_WRAPPER_KEYS = {
+    "value",
+    "evidenceRole",
+    "sourceIds",
+    "supportingEvidence",
+}
+
+
+def _lists_at_path(value: Any, path: tuple[str, ...]) -> list[list[Any]]:
+    """Resolve plain-list paths, including list-item wildcards."""
+
+    values = [value]
+    for key in path:
+        resolved: list[Any] = []
+        for candidate in values:
+            if key == "*" and isinstance(candidate, list):
+                resolved.extend(candidate)
+            elif isinstance(candidate, dict) and key in candidate:
+                resolved.append(candidate[key])
+        values = resolved
+    return [candidate for candidate in values if isinstance(candidate, list)]
+
+
+def _unwrap_evidence_objects_from_plain_lists(profile: dict[str, Any]) -> int:
+    """Restore non-claim string arrays when a model over-applies evidence wrappers."""
+
+    unwrapped = 0
+    for path in _PLAIN_STRING_LIST_PATHS:
+        for values in _lists_at_path(profile, path):
+            for index, item in enumerate(values):
+                if (
+                    isinstance(item, dict)
+                    and set(item).issubset(_EVIDENCE_WRAPPER_KEYS)
+                    and isinstance(item.get("value"), str)
+                ):
+                    values[index] = item["value"]
+                    unwrapped += 1
+    return unwrapped
+
 
 def _drop_incomplete_embedded_evidence(profile: dict[str, Any]) -> int:
     """Remove model claims that lack the complete evidence identity they assert."""
@@ -420,6 +475,12 @@ def parse_threat_profile_response(response: Any) -> dict[str, Any]:
     payload = json.loads("\n".join(text_parts))
     if not isinstance(payload, dict):
         raise ValueError("Model response threat profile JSON must be an object")
+    unwrapped = _unwrap_evidence_objects_from_plain_lists(payload)
+    if unwrapped:
+        logger.warning(
+            "Unwrapped %d evidence object(s) from non-claim string arrays before profile validation",
+            unwrapped,
+        )
     dropped = _drop_incomplete_embedded_evidence(payload)
     if dropped:
         logger.warning(
