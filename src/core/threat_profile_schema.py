@@ -316,12 +316,19 @@ class EvidenceClaimItem(StrictModel):
         return self
 
 
+class EmbeddedCorrectionSupport(StrictModel):
+    """One bounded verbatim span for a correction-only evidence item."""
+
+    source_id: str = Field(alias="sourceId", min_length=1)
+    excerpt: str = Field(min_length=1, max_length=600)
+
+
 class EmbeddedCorrectionClaimItem(StrictModel):
     """One bounded correction claim whose source IDs are derived from support."""
 
     value: str = Field(min_length=1)
     evidence_role: Literal["direct_evidence", "general_practice"] = Field(alias="evidenceRole")
-    supporting_evidence: list[EvidenceSupport] = Field(alias="supportingEvidence")
+    supporting_evidence: list[EmbeddedCorrectionSupport] = Field(alias="supportingEvidence")
 
     @model_validator(mode="after")
     def validate_support(self) -> "EmbeddedCorrectionClaimItem":

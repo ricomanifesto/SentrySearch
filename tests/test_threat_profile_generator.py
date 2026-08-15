@@ -105,6 +105,7 @@ def test_evidence_correction_schema_requires_each_claim_class(threat_profile_dat
     ]
     assert '"sourceIds"' not in json.dumps(schema)
     assert '"supportingEvidence"' in json.dumps(schema)
+    assert '"maxLength": 600' in json.dumps(schema)
     for field in tuple(correction):
         incomplete = deepcopy(correction)
         incomplete.pop(field)
