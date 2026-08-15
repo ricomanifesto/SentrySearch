@@ -715,8 +715,14 @@ Deterministic findings:
 - Use evidenceRole direct_evidence with exact source IDs for supported items.
 - For every direct source ID, copy one short verbatim excerpt from that source's
   captured content into supportingEvidence. Never paraphrase an excerpt.
+- Make every direct-evidence value reuse at least one exact nontrivial token from
+  every supporting excerpt so the application can verify the claim-to-source
+  anchor deterministically. Omit an item rather than paraphrasing unsupported text.
 - Use evidenceRole general_practice with no source IDs only for generic mitigation
   guidance that does not assert a target-specific fact; supportingEvidence must
   also be empty.
+- The corrected report must retain at least one verified threat-activity item in
+  riskFactors, one forensic artifact, one detection indicator, and one mitigation
+  action. Do not invent evidence to fill a missing class.
 - Do not replace rejected values with invented alternatives.
 """

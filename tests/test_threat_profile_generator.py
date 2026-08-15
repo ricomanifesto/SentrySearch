@@ -595,6 +595,8 @@ def test_generation_separates_web_research_from_structured_synthesis(
     assert "commandAndControl.beaconingPatterns.indicators" in synthesis_prompt
     assert synthesis_prompt.count('"Exact supporting sourceId"') == 0
     assert "the application derives schema-5 claim selectors" in synthesis_prompt
+    assert "reuse at least one exact nontrivial token" in synthesis_prompt
+    assert "at least one verified item in each high-risk claim class" in synthesis_prompt
     synthesis_response = next(response for response in messages.responses if response.parsed)
     assert synthesis_response.usage.input_tokens == 60
     assert synthesis_response.usage.output_tokens == 100
@@ -724,6 +726,8 @@ def test_generation_retries_one_invalid_embedded_item_without_weakening_attestat
         assert "CORRECTION ATTEMPT AFTER A FAILED EVIDENCE GATE" in correction_text
         assert "copy one short verbatim excerpt" in correction_text
         assert "supportingEvidence" in correction_text
+        assert "reuse at least one exact nontrivial token" in correction_text
+        assert "one detection indicator" in correction_text
     assert requests[1]["provider"] == requests[0]["provider"]
     assert "fallback_models" not in requests[0]
     assert "fallback_models" not in requests[1]

@@ -602,6 +602,8 @@ CRITICAL INSTRUCTIONS FOR OUTPUT:
 15. Do not emit claimAttribution; the application derives schema-5 claim selectors and verifies every excerpt against the captured source snapshot
 16. Use an empty array when attested evidence does not support a high-risk field; never copy a template placeholder into the output
 17. ONLY riskFactors, the forensic-artifact arrays, IOC arrays, behavioralIndicators, and mitigation-and-response arrays accept embedded evidence objects. Keep technicalDetails.persistence, technicalDetails.capabilities, commandAndControl.beaconingPatterns.indicators, commandAndControl.commonCommands, and every other ordinary array as strings or objects exactly as shown in the template
+18. Every direct-evidence value MUST reuse at least one exact nontrivial token from every supporting excerpt (for example a named behavior, filename, domain, IP, protocol, or control). If the value cannot be written as a concise reader-facing claim with that lexical overlap, omit it
+19. The completed report MUST retain at least one verified item in each high-risk claim class: threat activity in riskFactors, a forensic artifact, a detection indicator, and a mitigation action. Do not invent an item to satisfy this requirement
 
 For each supported high-risk item, append exactly this embedded evidence shape to
 the relevant empty array. If any source ID or verbatim excerpt is unavailable,
