@@ -530,6 +530,83 @@ def test_generation_retries_one_invalid_claim_map_without_weakening_attestation(
     assert synthesis_responses[-1].usage.total_tokens == 67
 
 
+def test_generation_lets_the_evidence_gate_explain_incomplete_schema_four_coverage(
+    monkeypatch, threat_profile_data
+):
+    monkeypatch.setattr(
+        "src.core.threat_profile_generator.create_model_client",
+        lambda: SimpleNamespace(),
+    )
+    generator = ThreatProfileGenerator(enable_tracing=False, enable_metrics=False)
+    generator.enable_quality_control = False
+
+    source_url = "https://research.vendor-security.com/report"
+    valid_profile = deepcopy(threat_profile_data)
+    valid_profile["webSearchSources"]["primarySources"][0].update(
+        {"url": source_url, "domain": "research.vendor-security.com"}
+    )
+    valid_profile["referencesAndIntelligenceSharing"]["sources"][0]["url"] = source_url
+    valid_profile["operationalGuidance"]["communityResources"][0]["url"] = source_url
+
+    invalid_profile = deepcopy(valid_profile)
+    invalid_profile["threatIntelligence"]["riskAssessment"]["riskFactors"].append(
+        "Unattributed extra risk"
+    )
+    profiles = [invalid_profile, valid_profile]
+    requests: list[dict] = []
+
+    research_response = SimpleNamespace(
+        content=[SimpleNamespace(type="text", text=f"Attested evidence from {source_url}")],
+        web_search_sources=[{"url": source_url, "title": "Vendor report"}],
+        tool_events=[],
+        response_id="research-response",
+        usage=SimpleNamespace(
+            input_tokens=3,
+            output_tokens=4,
+            cached_tokens=0,
+            cache_write_tokens=0,
+            reasoning_tokens=0,
+            web_search_calls=1,
+            total_tokens=7,
+        ),
+    )
+    monkeypatch.setattr(generator, "_research_evidence", lambda _tool_name: research_response)
+
+    def request_model(**kwargs):
+        requests.append(kwargs)
+        profile = profiles[len(requests) - 1]
+        return SimpleNamespace(
+            content=[SimpleNamespace(type="text", text=json.dumps(profile))],
+            parsed=ThreatProfile.model_validate(profile),
+            web_search_sources=[],
+            tool_events=[],
+            response_id=f"synthesis-{len(requests)}",
+            model="google/gemini-2.5-flash",
+            provider="TestProvider",
+            usage=SimpleNamespace(
+                input_tokens=10,
+                output_tokens=20,
+                cached_tokens=0,
+                cache_write_tokens=0,
+                reasoning_tokens=0,
+                web_search_calls=0,
+                total_tokens=30,
+            ),
+        )
+
+    monkeypatch.setattr(generator, "_request_model", request_model)
+
+    result = generator.get_threat_intelligence("Example Threat")
+
+    assert result["threatIntelligence"]["riskAssessment"]["riskFactors"] == ["Remote access"]
+    assert result["evidenceAdmissibility"]["status"] == "passed"
+    assert len(requests) == 2
+    correction_text = requests[1]["messages"][0]["content"][1]["text"]
+    assert "CORRECTION ATTEMPT AFTER A FAILED OPERATIONAL EVIDENCE GATE" in correction_text
+    assert "riskFactors[1] requires exactly one schema-4 attribution record" in correction_text
+    assert "FAILED EVIDENCE CONTRACT" not in correction_text
+
+
 def test_quality_enhancement_never_rewrites_claim_bound_sections(monkeypatch, threat_profile_data):
     validator = ParallelSectionValidator(client=None)
     enhanced_sections: list[str] = []

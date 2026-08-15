@@ -634,8 +634,12 @@ END ATTESTED SOURCE CATALOG"""
                         access_date=datetime.now().strftime("%Y-%m-%d"),
                     )
                     attest_profile_sources(json_data, response.web_search_sources)
-                    assert_claim_attribution_consistent(json_data)
                     assess_profile_evidence(json_data, response.web_search_sources)
+                    # The application-owned safety gate produces selector-specific
+                    # findings for the one bounded correction pass. Keep the older
+                    # ledger assertion as a final invariant, but do not let its
+                    # generic error hide the actionable schema-4 diagnosis.
+                    assert_claim_attribution_consistent(json_data)
                 except EvidenceAdmissibilityError as error:
                     if attempt >= ATTRIBUTION_CORRECTION_ATTEMPTS:
                         raise
