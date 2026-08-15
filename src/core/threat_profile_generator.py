@@ -34,6 +34,7 @@ from src.core.source_ledger import (
     assert_claim_attribution_consistent,
     attach_source_ids,
     materialize_claim_attribution,
+    materialize_cited_sources,
 )
 from src.domain.model_routes import ModelRouteProvenance, ModelRoutePurpose
 from src.domain.reports import GenerationProgress, GenerationStage
@@ -591,6 +592,11 @@ END ATTESTED SOURCE CATALOG"""
                     raise ProfileOutputError("Structured profile output was invalid") from error
                 try:
                     materialize_claim_attribution(json_data)
+                    materialize_cited_sources(
+                        json_data,
+                        response.web_search_sources,
+                        access_date=datetime.now().strftime("%Y-%m-%d"),
+                    )
                     attest_profile_sources(json_data, response.web_search_sources)
                     assert_claim_attribution_consistent(json_data)
                 except ValueError as error:

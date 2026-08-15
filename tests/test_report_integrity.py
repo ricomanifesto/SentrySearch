@@ -11,6 +11,7 @@ from src.core.source_ledger import (
     canonicalize_profile_sources,
     claim_attribution_status,
     materialize_claim_attribution,
+    materialize_cited_sources,
 )
 from src.core.validation_criteria import SECTION_CRITERIA, build_section_evaluation_prompt
 from src.core.validation_criteria import ConsistencyEvaluation
@@ -165,6 +166,22 @@ def test_claim_attribution_v3_materializes_explicit_structured_selectors():
     )
 
     materialize_claim_attribution(profile)
+    profile["claimAttribution"]["claims"][0]["sourceIds"] = ["S2"]
+
+    assert claim_attribution_status(profile) == (ClaimAttributionStatus.UNATTRIBUTED, "3")
+
+    materialize_cited_sources(
+        profile,
+        [
+            {"sourceId": "S1", "url": "https://example.com/report", "title": "Example"},
+            {
+                "sourceId": "S2",
+                "url": "https://example.com/campaign",
+                "title": "Campaign report",
+            },
+        ],
+        access_date="2026-08-15",
+    )
 
     assert [claim["claim"] for claim in profile["claimAttribution"]["claims"]] == [
         "Remote access",
@@ -172,6 +189,16 @@ def test_claim_attribution_v3_materializes_explicit_structured_selectors():
         "Periodic callbacks",
         "Isolate affected hosts",
     ]
+    assert profile["webSearchSources"]["primarySources"][1] == {
+        "sourceId": "S2",
+        "url": "https://example.com/campaign",
+        "title": "Campaign report",
+        "domain": "example.com",
+        "accessDate": "2026-08-15",
+        "relevanceScore": "Unknown",
+        "contentType": "Web source",
+        "keyFindings": "No separate finding summary recorded",
+    }
     assert claim_attribution_status(profile) == (ClaimAttributionStatus.ATTRIBUTED, "3")
     assert_claim_attribution_consistent(profile)
 

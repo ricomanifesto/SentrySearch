@@ -728,6 +728,10 @@ def run_report_generation(
     last_stage: GenerationStage | None = GenerationStage.QUEUED
     try:
         generator = ThreatProfileGenerator()
+        # The evidence-backed report is the core artifact. Persist it before the
+        # optional judge runs so evaluator latency or failure cannot hold the
+        # narrative and source ledger hostage.
+        generator.enable_quality_control = False
         stage_order = {
             GenerationStage.QUEUED: 0,
             GenerationStage.RESEARCHING: 1,
@@ -758,7 +762,7 @@ def run_report_generation(
         # get_threat_intelligence returns the raw profile; map it onto the storage
         # schema (narrative, structured extraction, quality, tags) the way the record
         # view expects, rather than persisting the bare profile.
-        quality_data = profile.get("_quality_assessment") or {}
+        quality_data: Dict[str, Any] = {}
         elapsed_ms = profile.get("_processing_time_ms") or int((time.monotonic() - start) * 1000)
         category, threat_type = report_service.categorize_tool(tool_name, profile)
         threat_data = {
@@ -772,7 +776,6 @@ def run_report_generation(
             preview = f"{preview[:237].rstrip()}..."
         rendered_profile = dict(threat_data)
         rendered_profile["_quality_assessment"] = quality_data
-        evaluation_succeeded = isinstance(quality_data.get("overall_score"), (int, float))
         report_data = {
             "id": report_id,
             "tool_name": tool_name,
@@ -785,15 +788,11 @@ def run_report_generation(
             "generation_route": profile.get("_generation_route"),
             "research_route": profile.get("_research_route"),
             "synthesis_route": profile.get("_synthesis_route"),
-            "evaluation_route": profile.get("_evaluation_route"),
-            "evaluation_status": (
-                EvaluationStatus.COMPLETED.value
-                if evaluation_succeeded
-                else EvaluationStatus.FAILED.value
-            ),
-            "evaluation_error_code": None if evaluation_succeeded else "evaluator_unavailable",
+            "evaluation_route": None,
+            "evaluation_status": EvaluationStatus.PENDING.value,
+            "evaluation_error_code": None,
             "evaluation_attempts": 1,
-            "evaluated_at": datetime.now(timezone.utc),
+            "evaluated_at": None,
             "web_sources": web_sources,
             "markdown_content": generate_markdown(rendered_profile),
             "trace_data": profile.get("_trace_data"),
@@ -806,6 +805,8 @@ def run_report_generation(
             raise
         except Exception as error:
             raise PersistenceFailureError("Generated report could not be persisted") from error
+
+        run_report_evaluation(report_id, user_id)
 
     except Exception as e:  # pragma: no cover - exercised via mark_report_failed test
         logger.exception("Background generation failed for report %s: %s", report_id, e)

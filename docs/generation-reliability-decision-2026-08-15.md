@@ -62,3 +62,22 @@ supporting source IDs; the application copies that exact stored value into the
 reader-visible claim map. This preserves model-selected evidence without fuzzy
 matching or inferred backfill. The evaluator may score signed sections but may
 not rewrite them, and the final persist gate remains authoritative.
+
+The first schema-3 witness still failed after its bounded correction because a
+claim cited a source from the attested research catalog that synthesis omitted
+from `primarySources`. Most of the observed runtime belonged to the second
+corrective synthesis, not the evaluator. The contract was rejecting an
+incomplete projection of known evidence rather than an invented source.
+
+The application now adds an omitted source to the canonical reader-visible
+ledger only when two facts are both explicit: a claim cites its source ID, and
+that exact ID exists in the attested research catalog. It copies the catalog's
+title and URL and labels any synthesis-owned metadata it cannot recover as
+unknown. IDs absent from the catalog still fail closed, and historical records
+are never backfilled by inference.
+
+The generated report is also finalized before quality evaluation begins. A
+successful synthesis therefore leaves a readable narrative, source ledger, and
+route record even if the optional judge is slow or unavailable. Evaluation
+continues as a separately recorded pending, completed, or failed operation and
+can be retried without regenerating the report.

@@ -259,6 +259,8 @@ def test_create_report_starts_background_job_without_synchronous_generation(monk
     generation_called = False
 
     class Generator:
+        enable_quality_control = True
+
         def get_threat_intelligence(self, tool_name: str, progress_callback=None):
             nonlocal generation_called
             generation_called = True
@@ -609,12 +611,18 @@ def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
 
     captured = {}
     captured_stages = []
+    evaluation_calls = []
 
     def finalize_report(report_id, report_data, user_id=None):
         captured.update(report_id=report_id, report_data=report_data, user_id=user_id)
         return report_id
 
     monkeypatch.setattr(api_main.report_service, "finalize_report", finalize_report)
+    monkeypatch.setattr(
+        api_main,
+        "run_report_evaluation",
+        lambda report_id, user_id: evaluation_calls.append((report_id, user_id)),
+    )
     monkeypatch.setattr(
         api_main.report_service,
         "update_generation_stage",
@@ -635,10 +643,12 @@ def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
     assert data["generation_route"] is None
     assert data["research_route"] == profile["_research_route"]
     assert data["synthesis_route"] == profile["_synthesis_route"]
-    assert data["evaluation_route"] == profile["_evaluation_route"]
-    assert data["quality_score"] == 4.1
-    assert data["evaluation_status"] == "completed"
+    assert data["evaluation_route"] is None
+    assert data["quality_score"] is None
+    assert data["quality_assessment"] is None
+    assert data["evaluation_status"] == "pending"
     assert data["evaluation_attempts"] == 1
+    assert data["evaluated_at"] is None
     assert data["processing_time_ms"] == 965000
     assert data["category"] == "malware"
     assert data["threat_type"] == "post_exploitation_framework"
@@ -656,6 +666,7 @@ def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
         ("report-9", "validating"),
         ("report-9", "finalizing"),
     ]
+    assert evaluation_calls == [("report-9", "analyst-user")]
 
 
 def test_background_generation_does_not_infer_stage_from_progress_copy():

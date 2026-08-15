@@ -142,6 +142,65 @@ def materialize_claim_attribution(profile: dict[str, Any]) -> None:
         claim["claim"] = _selected_claim_value(profile, claim)
 
 
+def materialize_cited_sources(
+    profile: dict[str, Any],
+    evidence_sources: Iterable[Mapping[str, Any]],
+    *,
+    access_date: str,
+) -> None:
+    """Add explicitly cited attested sources to the one reader-visible ledger."""
+
+    web = profile.get("webSearchSources")
+    attribution = profile.get("claimAttribution")
+    if not isinstance(web, dict) or not isinstance(attribution, Mapping):
+        raise SourceLedgerError("Current claim attribution source ledger is invalid")
+    primary_sources = web.get("primarySources")
+    claims = attribution.get("claims")
+    if not isinstance(primary_sources, list) or not isinstance(claims, list):
+        raise SourceLedgerError("Current claim attribution source ledger is invalid")
+
+    evidence_by_id = {
+        str(source.get("sourceId") or "").strip(): source
+        for source in evidence_sources
+        if str(source.get("sourceId") or "").strip()
+    }
+    visible_ids = {
+        str(source.get("sourceId") or "").strip()
+        for source in primary_sources
+        if isinstance(source, Mapping) and str(source.get("sourceId") or "").strip()
+    }
+    cited_ids: list[str] = []
+    for claim in claims:
+        if not isinstance(claim, Mapping):
+            continue
+        for source_id in claim.get("sourceIds") or []:
+            normalized_id = str(source_id).strip()
+            if normalized_id and normalized_id not in cited_ids:
+                cited_ids.append(normalized_id)
+
+    for source_id in cited_ids:
+        if source_id in visible_ids:
+            continue
+        evidence = evidence_by_id.get(source_id)
+        if evidence is None:
+            continue
+        url = _normalized_http_url(evidence.get("url"))
+        hostname = (urlsplit(url).hostname or "").lower()
+        primary_sources.append(
+            {
+                "sourceId": source_id,
+                "url": url,
+                "title": str(evidence.get("title") or hostname or "Unknown source"),
+                "domain": hostname,
+                "accessDate": access_date,
+                "relevanceScore": "Unknown",
+                "contentType": "Web source",
+                "keyFindings": "No separate finding summary recorded",
+            }
+        )
+        visible_ids.add(source_id)
+
+
 def claim_attribution_status(
     profile: Mapping[str, Any] | None,
 ) -> tuple[ClaimAttributionStatus, str | None]:
