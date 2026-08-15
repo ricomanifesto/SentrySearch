@@ -498,31 +498,31 @@ Based on your comprehensive research findings, create a detailed profile in the 
       "overallRisk": "High/Medium/Low",
       "impactRating": "Impact assessment",
       "likelihoodRating": "Likelihood assessment",
-      "riskFactors": [{{"value": "Key risk factor", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}]
+      "riskFactors": []
     }}
   }},
   "forensicArtifacts": {{
-    "fileSystemArtifacts": [{{"value": "File path or name", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}],
-    "registryArtifacts": [{{"value": "Registry key", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}],
-    "networkArtifacts": [{{"value": "Network artifact", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}],
-    "memoryArtifacts": [{{"value": "Memory artifact", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}],
-    "logArtifacts": [{{"value": "Log pattern", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}]
+    "fileSystemArtifacts": [],
+    "registryArtifacts": [],
+    "networkArtifacts": [],
+    "memoryArtifacts": [],
+    "logArtifacts": []
   }},
   "detectionAndMitigation": {{
     "iocs": {{
-      "hashes": [{{"value": "Complete file hash", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}],
-      "domains": [{{"value": "Malicious domain", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}],
-      "ips": [{{"value": "Malicious IP address", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}],
-      "urls": [{{"value": "Malicious URL", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}],
-      "filenames": [{{"value": "Malicious filename", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}]
+      "hashes": [],
+      "domains": [],
+      "ips": [],
+      "urls": [],
+      "filenames": []
     }},
-    "behavioralIndicators": [{{"value": "Behavioral pattern for detection", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}]
+    "behavioralIndicators": []
   }},
   "mitigationAndResponse": {{
-    "preventiveMeasures": [{{"value": "Generic prevention recommendation", "evidenceRole": "general_practice", "sourceIds": [], "supportingEvidence": []}}],
-    "detectionMethods": [{{"value": "Detection method", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}],
-    "responseActions": [{{"value": "Incident response action", "evidenceRole": "direct_evidence", "sourceIds": ["Exact supporting sourceId"], "supportingEvidence": [{{"sourceId": "Exact supporting sourceId", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}],
-    "recoveryGuidance": [{{"value": "Generic recovery step", "evidenceRole": "general_practice", "sourceIds": [], "supportingEvidence": []}}]
+    "preventiveMeasures": [],
+    "detectionMethods": [],
+    "responseActions": [],
+    "recoveryGuidance": []
   }},
   "referencesAndIntelligenceSharing": {{
     "sources": [
@@ -589,6 +589,11 @@ CRITICAL INSTRUCTIONS FOR OUTPUT:
 14. Documentation, reserved, special-use, training, tabletop, and fictional infrastructure MUST NOT appear in operational IOC fields or target-specific actions
 15. Do not emit claimAttribution; the application derives schema-5 claim selectors and verifies every excerpt against the captured source snapshot
 16. Use an empty array when attested evidence does not support a high-risk field; never copy a template placeholder into the output
+
+For each supported high-risk item, append exactly this embedded evidence shape to
+the relevant empty array. If any source ID or verbatim excerpt is unavailable,
+omit the item instead of returning a partially populated object:
+{{"value": "Supported claim", "evidenceRole": "direct_evidence", "sourceIds": ["S1"], "supportingEvidence": [{{"sourceId": "S1", "excerpt": "Exact verbatim span copied from contentSnapshot.text"}}]}}
 
 Remember: Accuracy and source verification are more important than completeness.
 

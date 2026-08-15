@@ -482,6 +482,12 @@ def test_generation_separates_web_research_from_structured_synthesis(
     assert '"sourceId": "S1"' in synthesis_prompt
     assert '"claimAttribution"' not in synthesis_prompt
     assert '"evidenceRole": "direct_evidence"' in synthesis_prompt
+    assert '"riskFactors": []' in synthesis_prompt
+    assert '"fileSystemArtifacts": []' in synthesis_prompt
+    assert '"hashes": []' in synthesis_prompt
+    assert '"detectionMethods": []' in synthesis_prompt
+    assert "omit the item instead of returning a partially populated object" in synthesis_prompt
+    assert synthesis_prompt.count('"Exact supporting sourceId"') == 0
     assert "the application derives schema-5 claim selectors" in synthesis_prompt
     synthesis_response = next(response for response in messages.responses if response.parsed)
     assert synthesis_response.usage.input_tokens == 60
