@@ -33,8 +33,7 @@ EMPTY_RESPONSE_RETRIES = 3
 EMPTY_RESPONSE_RETRY_DELAY = 1.5
 MAX_COMPLETION_TOKENS = 32_768
 
-DEFAULT_MODEL = "google/gemma-4-26b-a4b-it:free"
-DEFAULT_GENERATION_FALLBACK_MODEL = "google/gemma-4-26b-a4b-it"
+DEFAULT_MODEL = "google/gemini-2.5-flash"
 DEFAULT_GENERATION_PROVIDER = "google-ai-studio"
 MODEL_ENV_VAR = "SENTRYSEARCH_MODEL"
 DEFAULT_SYNTHESIS_MODEL = "google/gemini-2.5-flash"
@@ -131,7 +130,6 @@ def _generation_request_options(
         "route_purpose": purpose.value,
     }
     if resolved_model == DEFAULT_MODEL:
-        options["fallback_models"] = [DEFAULT_GENERATION_FALLBACK_MODEL]
         options["provider"] = {
             "only": [DEFAULT_GENERATION_PROVIDER],
             "allow_fallbacks": False,

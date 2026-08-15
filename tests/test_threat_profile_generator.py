@@ -370,7 +370,7 @@ def test_generation_separates_web_research_from_structured_synthesis(
                         }
                     ],
                     response_id="research-response",
-                    model="google/gemma-4-26b-a4b-it:free",
+                    model="google/gemini-2.5-flash",
                     provider="TestProvider",
                     usage=SimpleNamespace(
                         input_tokens=10,
@@ -422,7 +422,7 @@ def test_generation_separates_web_research_from_structured_synthesis(
     assert result["claimAttribution"]["schemaVersion"] == "5"
     assert result["claimAttribution"]["generationShape"] == "embedded_evidence_items"
     assert result["_research_route"] == {
-        "requested_models": ["google/gemma-4-26b-a4b-it:free"],
+        "requested_models": ["google/gemini-2.5-flash"],
         "requested_providers": ["google-ai-studio"],
         "selected_models": [],
         "actual_models": [],
@@ -455,9 +455,7 @@ def test_generation_separates_web_research_from_structured_synthesis(
         request["provider"] == {"only": ["google-ai-studio"], "allow_fallbacks": False}
         for request in research_requests
     )
-    assert all(
-        request["fallback_models"] == ["google/gemma-4-26b-a4b-it"] for request in research_requests
-    )
+    assert all("fallback_models" not in request for request in research_requests)
     assert all(request["route_purpose"] == "research" for request in research_requests)
     assert all("response_format" not in request for request in research_requests)
     research_prompts = "\n".join(request["messages"][0]["content"] for request in research_requests)

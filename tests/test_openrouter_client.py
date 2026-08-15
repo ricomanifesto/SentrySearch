@@ -93,11 +93,11 @@ def test_defaults_use_split_google_models(monkeypatch):
     monkeypatch.delenv("SENTRYSEARCH_SYNTHESIS_MODEL", raising=False)
     monkeypatch.delenv("SENTRYSEARCH_EVALUATION_MODEL", raising=False)
 
-    assert DEFAULT_MODEL == "google/gemma-4-26b-a4b-it:free"
+    assert DEFAULT_MODEL == "google/gemini-2.5-flash"
     assert DEFAULT_SYNTHESIS_MODEL == "google/gemini-2.5-flash"
     assert DEFAULT_EVALUATION_MODEL == "google/gemma-4-31b-it:free"
     assert DEFAULT_OPENROUTER_BASE_URL == "https://openrouter.ai/api/v1"
-    assert resolve_model_name() == "google/gemma-4-26b-a4b-it:free"
+    assert resolve_model_name() == "google/gemini-2.5-flash"
     assert resolve_synthesis_model_name() == "google/gemini-2.5-flash"
     assert resolve_evaluation_model_name() == "google/gemma-4-31b-it:free"
 
@@ -125,9 +125,8 @@ def test_default_authoring_models_are_pinned_to_google_ai_studio(monkeypatch):
     monkeypatch.delenv("SENTRYSEARCH_SYNTHESIS_MODEL", raising=False)
 
     assert research_request_options() == {
-        "model": "google/gemma-4-26b-a4b-it:free",
+        "model": "google/gemini-2.5-flash",
         "route_purpose": "research",
-        "fallback_models": ["google/gemma-4-26b-a4b-it"],
         "provider": {
             "only": ["google-ai-studio"],
             "allow_fallbacks": False,
