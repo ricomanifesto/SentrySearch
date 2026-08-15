@@ -680,6 +680,7 @@ def test_generation_separates_web_research_from_structured_synthesis(
     )
     assert all("fallback_models" not in request for request in research_requests)
     assert all(request["route_purpose"] == "research" for request in research_requests)
+    assert all(request["reasoning"] == {"max_tokens": 1024} for request in research_requests)
     assert all("response_format" not in request for request in research_requests)
     research_prompts = "\n".join(request["messages"][0]["content"] for request in research_requests)
     assert "architecture" in research_prompts

@@ -363,6 +363,9 @@ Return a compact but technically dense evidence dossier. Include concrete findin
                     **research_request_options(),
                     max_tokens=4096,
                     temperature=0.3,
+                    # Preserve a small planning budget without allowing Gemini's
+                    # hidden thinking to consume the evidence-dossier response.
+                    reasoning={"max_tokens": 1024},
                     messages=[{"role": "user", "content": prompt}],
                     tools=[{"type": "web_search"}],
                 ): index
