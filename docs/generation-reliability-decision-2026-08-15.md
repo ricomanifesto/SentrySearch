@@ -144,3 +144,51 @@ cache breakpoint. This allows Gemini's prompt cache to reuse that prefix when
 available, while cache-token telemetry records whether reuse really occurred.
 Identical-response caching is deliberately disabled: replaying a successful
 HTTP response would also replay the same contract-invalid output.
+
+## Post-adaptation production witnesses
+
+Three authenticated production runs exercised the deployed JSON-mode synthesis
+route across common, medium-specificity, and deliberately obscure targets.
+
+- Common target `Cobalt Strike`, record
+  `11c92a4a-bf4f-4e42-b0a1-27151aa8352c`, completed generation and evaluation
+  in 47.0 seconds. It scored 4.30, persisted attribution schema 3 with eight
+  inspectable sources, and recorded Gemini 2.5 Flash through Google AI Studio
+  as the healthy synthesis route. An analyst accepted evaluation vintage 1,
+  the unresolved-work count fell accordingly, and the exported package retained
+  that disposition event, its history, the source ledger, attribution status,
+  and synthesis route.
+- Medium-specificity target `SocGholish`, record
+  `a816cc33-017f-40c3-8f04-6b4338ab2aac`, completed in 44.5 seconds and scored
+  4.41. It persisted five inspectable sources and schema-3 claim links. Its one
+  cross-section conflict and five enhancement requests remained visible as
+  blockers, so the record stayed unresolved and no accept action was suggested.
+- Deliberately obscure target `Noodle RAT malware`, record
+  `877ee6dc-416e-48bf-8305-6d2480dc12a0`, reached structured validation and
+  failed closed. The saved record named evidence attestation as the cause and
+  validation as the terminal stage; the reader-facing failure said that claims
+  or sources could not be reconciled instead of blaming the target or implying
+  provider success.
+
+The authenticated analytics view now contains 44 terminal records: 21 completed
+and 23 failed, for 48% historical completion. The two new successful synthesis
+records form the first requested-route bucket, average 45.8 seconds, and are both
+scored. The accepted common record is the workspace's only resolved record; the
+medium record and obscure failure remain honestly unresolved.
+
+OpenRouter recorded exactly one Gemini synthesis request for each successful
+new report. Neither successful report needed the bounded evidence-correction
+pass, so these witnesses prove that the cacheable request shape is live but do
+not prove a cache read. A cache-hit claim requires a future run that actually
+performs the correction and reports cached-token usage. Until then, caching is
+an available optimization rather than part of the reliability verdict.
+
+## Result
+
+The original historical sample could not identify a failure cause. The new
+typed witnesses do: Gemma synthesis was the repeated invalid-output cluster,
+Gemini JSON-mode synthesis resolves the common and medium cases quickly, and
+the obscure case fails at the evidence boundary with a named, reader-visible
+cause. No additional retry or provider-routing change is justified by this
+window. Future changes should require a new repeated typed cluster or a failed
+reader-visible workflow, not another broad retry increase.
