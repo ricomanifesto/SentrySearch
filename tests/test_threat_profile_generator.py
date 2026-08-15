@@ -695,7 +695,7 @@ def test_generation_retries_one_invalid_embedded_item_without_weakening_attestat
     assert synthesis_responses[-1].usage.total_tokens == 67
 
 
-def test_generation_lets_the_evidence_gate_explain_mixed_legacy_coverage(
+def test_generation_discards_legacy_claim_when_embedded_class_coverage_remains(
     monkeypatch, threat_profile_data
 ):
     monkeypatch.setattr(
@@ -717,7 +717,6 @@ def test_generation_lets_the_evidence_gate_explain_mixed_legacy_coverage(
     invalid_profile["threatIntelligence"]["riskAssessment"]["riskFactors"].append(
         "Unattributed extra risk"
     )
-    profiles = [invalid_profile, valid_profile]
     requests: list[dict] = []
 
     research_response = SimpleNamespace(
@@ -739,10 +738,9 @@ def test_generation_lets_the_evidence_gate_explain_mixed_legacy_coverage(
 
     def request_model(**kwargs):
         requests.append(kwargs)
-        profile = profiles[len(requests) - 1]
         return SimpleNamespace(
-            content=[SimpleNamespace(type="text", text=json.dumps(profile))],
-            parsed=ThreatProfile.model_validate(profile),
+            content=[SimpleNamespace(type="text", text=json.dumps(invalid_profile))],
+            parsed=ThreatProfile.model_validate(invalid_profile),
             web_search_sources=[],
             tool_events=[],
             response_id=f"synthesis-{len(requests)}",
@@ -765,13 +763,7 @@ def test_generation_lets_the_evidence_gate_explain_mixed_legacy_coverage(
 
     assert result["threatIntelligence"]["riskAssessment"]["riskFactors"] == ["Remote access"]
     assert result["evidenceAdmissibility"]["status"] == "passed"
-    assert len(requests) == 2
-    correction_text = requests[1]["messages"][0]["content"][1]["text"]
-    assert "CORRECTION ATTEMPT AFTER A FAILED EVIDENCE GATE" in correction_text
-    assert (
-        "High-risk fields mix embedded evidence items with legacy string values" in correction_text
-    )
-    assert "FAILED EVIDENCE CONTRACT" not in correction_text
+    assert len(requests) == 1
 
 
 def test_quality_enhancement_never_rewrites_claim_bound_sections(monkeypatch, threat_profile_data):

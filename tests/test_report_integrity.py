@@ -375,6 +375,7 @@ def test_embedded_evidence_discards_unsupported_claim_when_all_classes_remain_co
             "riskAssessment": {
                 "riskFactors": [
                     supported("Remote access"),
+                    "Legacy risk without evidence",
                     {
                         **supported("Unsupported risk"),
                         "supportingEvidence": [

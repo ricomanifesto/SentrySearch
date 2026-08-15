@@ -223,7 +223,6 @@ def materialize_embedded_claim_evidence(
 
     claims: list[dict[str, Any]] = []
     embedded_count = 0
-    string_count = 0
     findings: list[str] = []
     discarded_findings: list[str] = []
     discarded_count = 0
@@ -253,23 +252,24 @@ def materialize_embedded_claim_evidence(
             for item in selected:
                 if isinstance(item, Mapping):
                     embedded_count += 1
-                elif str(item or "").strip():
-                    string_count += 1
 
     if embedded_count == 0 and isinstance(profile.get("claimAttribution"), Mapping):
         # Retained test and compatibility payloads can still supply the legacy
         # parallel ledger during the bounded migration window above.
         return
-    if embedded_count and string_count:
-        findings.append("High-risk fields mix embedded evidence items with legacy string values.")
-
     for claim_class, claim_field, values in selected_lists:
         normalized_values: list[str] = []
         for claim_index, item in enumerate(values):
             if not isinstance(item, Mapping):
                 value = str(item or "").strip()
                 if value:
-                    normalized_values.append(value)
+                    if embedded_count:
+                        discarded_findings.append(
+                            f"{claim_field}[{claim_index}] uses a legacy string without embedded evidence."
+                        )
+                        discarded_count += 1
+                    else:
+                        normalized_values.append(value)
                 continue
             value = str(item.get("value") or "").strip()
             role = str(item.get("evidenceRole") or "").strip()
