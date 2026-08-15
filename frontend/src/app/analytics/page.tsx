@@ -15,8 +15,9 @@ const timeRangeOptions = [
 ];
 
 const routeLabels = {
-  primary: 'Requested route',
-  fallback: 'Fallback route',
+  primary: 'Requested synthesis route',
+  fallback: 'Fallback synthesis route',
+  legacy_aggregate: 'Legacy aggregate route',
   unrecorded: 'Legacy / unrecorded',
 } as const;
 
@@ -173,9 +174,9 @@ export default function AnalyticsPage() {
           >
             <h2 className="text-base font-semibold text-zinc-950">Generation route comparison</h2>
             <p className="mt-1 text-sm leading-6 text-zinc-500">
-              Compare completed reports by the route that actually produced them. Older records stay visibly unrecorded.
+              Compare completed reports by the synthesis route that authored them. Older aggregate provenance stays separate rather than implying an unrecorded role.
             </p>
-            <div className="mt-4 grid gap-px overflow-hidden rounded-lg border border-zinc-200 bg-zinc-200 md:grid-cols-3">
+            <div className="mt-4 grid gap-px overflow-hidden rounded-lg border border-zinc-200 bg-zinc-200 md:grid-cols-2 xl:grid-cols-4">
               {routePerformance.map((route) => (
                 <dl key={route.route} className="min-w-0 bg-white p-4">
                   <dt className="text-sm font-medium text-zinc-700">{routeLabels[route.route]}</dt>
@@ -251,9 +252,13 @@ export default function AnalyticsPage() {
                           </p>
                           <p className="text-sm text-zinc-500">
                             {activity.created_at ? formatRelativeTime(activity.created_at) : 'Recently'}
-                            {activity.generation_used_fallback === true ? (
+                            {activity.generation_route_scope === 'legacy_aggregate' ? (
+                              <span className="ml-2 rounded-md bg-zinc-100 px-2 py-0.5 font-medium text-zinc-700">
+                                Legacy aggregate route
+                              </span>
+                            ) : activity.generation_route_scope === 'synthesis' && activity.generation_used_fallback === true ? (
                               <span className="ml-2 rounded-md bg-amber-50 px-2 py-0.5 font-medium text-amber-700">
-                                Fallback route
+                                Fallback synthesis route
                               </span>
                             ) : null}
                           </p>

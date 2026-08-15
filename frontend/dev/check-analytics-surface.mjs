@@ -104,7 +104,7 @@ const expectations = [
   },
   {
     name: 'separates requested fallback and legacy routes',
-    pattern: /primary: 'Requested route'[\s\S]*fallback: 'Fallback route'[\s\S]*unrecorded: 'Legacy \/ unrecorded'/,
+    pattern: /primary: 'Requested synthesis route'[\s\S]*fallback: 'Fallback synthesis route'[\s\S]*legacy_aggregate: 'Legacy aggregate route'[\s\S]*unrecorded: 'Legacy \/ unrecorded'/,
   },
   {
     name: 'compares quality and runtime without fabricating missing values',
@@ -112,7 +112,7 @@ const expectations = [
   },
   {
     name: 'marks fallback-built reports in recent activity',
-    pattern: /generation_used_fallback === true[\s\S]*Fallback route/,
+    pattern: /generation_route_scope === 'legacy_aggregate'[\s\S]*Legacy aggregate route[\s\S]*generation_route_scope === 'synthesis'[\s\S]*generation_used_fallback === true[\s\S]*Fallback synthesis route/,
   },
   {
     name: 'uses human-readable generation failure causes and stages',

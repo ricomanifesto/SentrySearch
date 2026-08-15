@@ -385,7 +385,7 @@ export default function ExportPage() {
                     </p>
                   </div>
                   <button type="button" onClick={handleSelectAll} disabled={isLoading || Boolean(reportsError) || !reportsData?.reports.length} className="inline-flex h-9 shrink-0 items-center justify-center rounded-lg border border-zinc-300 bg-white px-3 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 disabled:pointer-events-none disabled:opacity-50">
-                    {selectedReports.length === reportsData?.reports.length ? 'Clear selection' : 'Select visible'}
+                    {selectedReports.length > 0 && selectedReports.length === reportsData?.reports.length ? 'Clear selection' : 'Select visible'}
                   </button>
                 </div>
                 <div className="mt-4">

@@ -49,11 +49,13 @@ from src.domain.reports import (
     EvaluationStatus,
     GenerationErrorCode,
     GenerationProgress,
+    GenerationRouteScope,
     GenerationStage,
     ReportAnalyticsRecord,
     ReportStatus,
     ReviewStatus,
     coerce_evaluation_status,
+    derive_generation_route_scope,
     derive_review_status,
     is_judgment_eligible,
 )
@@ -387,16 +389,22 @@ def build_route_performance(records: List[ReportAnalyticsRecord]) -> List[Dict[s
     grouped: Dict[str, List[ReportAnalyticsRecord]] = {
         "primary": [],
         "fallback": [],
+        "legacy_aggregate": [],
         "unrecorded": [],
     }
     for record in records:
         if record.status is not ReportStatus.COMPLETED:
             continue
-        route = (
-            "fallback"
-            if record.generation_used_fallback is True
-            else "primary" if record.generation_used_fallback is False else "unrecorded"
-        )
+        if record.generation_route_scope is GenerationRouteScope.LEGACY_AGGREGATE:
+            route = "legacy_aggregate"
+        elif record.generation_route_scope is GenerationRouteScope.SYNTHESIS:
+            route = (
+                "fallback"
+                if record.generation_used_fallback is True
+                else "primary" if record.generation_used_fallback is False else "unrecorded"
+            )
+        else:
+            route = "unrecorded"
         grouped[route].append(record)
 
     results = []
@@ -1146,6 +1154,10 @@ async def get_analytics(
                     "threat_type": report.get("threat_type"),
                     "generation_used_fallback": generation_fallback_state(
                         report.get("synthesis_route") or report.get("generation_route")
+                    ),
+                    "generation_route_scope": derive_generation_route_scope(
+                        synthesis_route=report.get("synthesis_route"),
+                        generation_route=report.get("generation_route"),
                     ),
                     "evaluation_status": get_evaluation_status(report),
                     "review_status": report_response_fields(report)["review_status"],

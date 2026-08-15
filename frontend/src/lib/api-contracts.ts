@@ -9,6 +9,7 @@ export type ClassificationStatus = 'recorded' | 'reconciled' | 'unmapped' | 'unr
 export type ClaimAttributionStatus = 'attributed' | 'unattributed' | 'legacy';
 export type GenerationErrorCode = 'provider_rate_limited' | 'provider_unavailable' | 'provider_timeout' | 'model_output_invalid' | 'evidence_unavailable' | 'evidence_unattested' | 'persistence_failed' | 'unknown';
 export type GenerationStage = 'queued' | 'researching' | 'synthesizing' | 'validating' | 'finalizing' | 'completed' | 'failed';
+export type GenerationRouteScope = 'synthesis' | 'legacy_aggregate' | 'unrecorded';
 export type ReportSortField = 'created_at' | 'quality_score' | 'tool_name' | 'processing_time_ms';
 export type SortOrder = 'asc' | 'desc';
 
@@ -208,7 +209,7 @@ export interface AnalyticsData {
     processing_time_trends: Array<{ date: string; avg_time_ms: number }>;
   };
   route_performance: Array<{
-    route: 'primary' | 'fallback' | 'unrecorded';
+    route: 'primary' | 'fallback' | 'legacy_aggregate' | 'unrecorded';
     report_count: number;
     scored_report_count: number;
     runtime_recorded_count: number;
@@ -230,6 +231,7 @@ export interface AnalyticsData {
     created_at: string;
     threat_type?: string;
     generation_used_fallback: boolean | null;
+    generation_route_scope: GenerationRouteScope;
     evaluation_status: EvaluationStatus;
     review_status: ReviewStatus;
     analyst_disposition: AnalystDisposition;

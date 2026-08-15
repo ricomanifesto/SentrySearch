@@ -23,6 +23,7 @@ from src.domain.reports import (
     ReviewStatus,
     SortOrder,
     coerce_evaluation_status,
+    derive_generation_route_scope,
     derive_review_status,
     evaluation_conflict_count,
     is_judgment_eligible,
@@ -1436,6 +1437,10 @@ class ReportStorageService:
                         threat_type=row.threat_type,
                         generation_used_fallback=generation_fallback_state(
                             row.synthesis_route or row.generation_route
+                        ),
+                        generation_route_scope=derive_generation_route_scope(
+                            synthesis_route=row.synthesis_route,
+                            generation_route=row.generation_route,
                         ),
                         evaluation_status=coerce_evaluation_status(
                             row.evaluation_status,

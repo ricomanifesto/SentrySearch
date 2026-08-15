@@ -1165,6 +1165,7 @@ def test_route_performance_separates_primary_fallback_and_legacy_reports():
             status=ReportStatus.COMPLETED,
             threat_type="malware",
             generation_used_fallback=False,
+            generation_route_scope=api_main.GenerationRouteScope.SYNTHESIS,
         ),
         ReportAnalyticsRecord(
             created_at=start,
@@ -1173,6 +1174,7 @@ def test_route_performance_separates_primary_fallback_and_legacy_reports():
             status=ReportStatus.COMPLETED,
             threat_type="malware",
             generation_used_fallback=True,
+            generation_route_scope=api_main.GenerationRouteScope.SYNTHESIS,
         ),
         ReportAnalyticsRecord(
             created_at=start,
@@ -1181,6 +1183,7 @@ def test_route_performance_separates_primary_fallback_and_legacy_reports():
             status=ReportStatus.COMPLETED,
             threat_type="malware",
             generation_used_fallback=None,
+            generation_route_scope=api_main.GenerationRouteScope.LEGACY_AGGREGATE,
         ),
         ReportAnalyticsRecord(
             created_at=start,
@@ -1212,12 +1215,20 @@ def test_route_performance_separates_primary_fallback_and_legacy_reports():
             "avg_processing_time_ms": 3000.0,
         },
         {
-            "route": "unrecorded",
+            "route": "legacy_aggregate",
             "report_count": 1,
             "scored_report_count": 0,
             "runtime_recorded_count": 1,
             "avg_quality_score": None,
             "avg_processing_time_ms": 5000.0,
+        },
+        {
+            "route": "unrecorded",
+            "report_count": 0,
+            "scored_report_count": 0,
+            "runtime_recorded_count": 0,
+            "avg_quality_score": None,
+            "avg_processing_time_ms": None,
         },
     ]
 

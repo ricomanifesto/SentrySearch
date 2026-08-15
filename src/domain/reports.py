@@ -87,6 +87,14 @@ class GenerationStage(StrEnum):
     FAILED = "failed"
 
 
+class GenerationRouteScope(StrEnum):
+    """Precision available for analytics attribution of the authoring route."""
+
+    SYNTHESIS = "synthesis"
+    LEGACY_AGGREGATE = "legacy_aggregate"
+    UNRECORDED = "unrecorded"
+
+
 @dataclass(frozen=True, slots=True)
 class GenerationProgress:
     """Typed progress emitted by the report-generation pipeline."""
@@ -174,11 +182,24 @@ class ReportAnalyticsRecord:
     status: ReportStatus
     threat_type: str | None
     generation_used_fallback: bool | None = None
+    generation_route_scope: GenerationRouteScope = GenerationRouteScope.UNRECORDED
     evaluation_status: EvaluationStatus = EvaluationStatus.UNRECORDED
     quality_assessment: Mapping[str, Any] | None = None
     source_count: int = 0
     generation_error_code: GenerationErrorCode | None = None
     generation_failure_stage: GenerationStage | None = None
+
+
+def derive_generation_route_scope(
+    *, synthesis_route: object, generation_route: object
+) -> GenerationRouteScope:
+    """Name the most precise authoring-route provenance retained by a report."""
+
+    if isinstance(synthesis_route, Mapping) and synthesis_route:
+        return GenerationRouteScope.SYNTHESIS
+    if isinstance(generation_route, Mapping) and generation_route:
+        return GenerationRouteScope.LEGACY_AGGREGATE
+    return GenerationRouteScope.UNRECORDED
 
 
 def coerce_evaluation_status(

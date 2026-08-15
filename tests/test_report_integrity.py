@@ -19,8 +19,10 @@ from src.core.markdown_generator import generate_markdown
 from src.domain.reports import (
     ClaimAttributionStatus,
     EvaluationStatus,
+    GenerationRouteScope,
     ReportStatus,
     ReviewStatus,
+    derive_generation_route_scope,
     derive_review_status,
     evaluation_conflict_count,
     is_judgment_eligible,
@@ -205,6 +207,27 @@ def test_conflict_count_uses_only_explicit_cross_section_inconsistencies():
         == 2
     )
     assert evaluation_conflict_count({"recommendations": ["Investigate further."]}) == 0
+
+
+def test_generation_route_scope_never_promotes_a_legacy_aggregate_to_synthesis():
+    assert (
+        derive_generation_route_scope(
+            synthesis_route={"used_fallback": False},
+            generation_route={"used_fallback": True},
+        )
+        is GenerationRouteScope.SYNTHESIS
+    )
+    assert (
+        derive_generation_route_scope(
+            synthesis_route=None,
+            generation_route={"used_fallback": True},
+        )
+        is GenerationRouteScope.LEGACY_AGGREGATE
+    )
+    assert (
+        derive_generation_route_scope(synthesis_route=None, generation_route=None)
+        is GenerationRouteScope.UNRECORDED
+    )
 
 
 def test_nested_generated_classification_and_saved_preview_survive_storage_projection():
