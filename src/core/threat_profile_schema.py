@@ -316,6 +316,101 @@ class EvidenceClaimItem(StrictModel):
         return self
 
 
+class EmbeddedForensicEvidence(StrictModel):
+    file_system_artifacts: list[EvidenceClaimItem] = Field(alias="fileSystemArtifacts")
+    registry_artifacts: list[EvidenceClaimItem] = Field(alias="registryArtifacts")
+    network_artifacts: list[EvidenceClaimItem] = Field(alias="networkArtifacts")
+    memory_artifacts: list[EvidenceClaimItem] = Field(alias="memoryArtifacts")
+    log_artifacts: list[EvidenceClaimItem] = Field(alias="logArtifacts")
+
+    @model_validator(mode="after")
+    def require_one_artifact(self) -> "EmbeddedForensicEvidence":
+        if not any(
+            (
+                self.file_system_artifacts,
+                self.registry_artifacts,
+                self.network_artifacts,
+                self.memory_artifacts,
+                self.log_artifacts,
+            )
+        ):
+            raise ValueError("Evidence correction requires one forensic artifact")
+        return self
+
+
+class EmbeddedIndicatorEvidence(StrictModel):
+    hashes: list[EvidenceClaimItem]
+    domains: list[EvidenceClaimItem]
+    ips: list[EvidenceClaimItem]
+    urls: list[EvidenceClaimItem]
+    filenames: list[EvidenceClaimItem]
+    behavioral_indicators: list[EvidenceClaimItem] = Field(alias="behavioralIndicators")
+
+    @model_validator(mode="after")
+    def require_one_indicator(self) -> "EmbeddedIndicatorEvidence":
+        if not any(
+            (
+                self.hashes,
+                self.domains,
+                self.ips,
+                self.urls,
+                self.filenames,
+                self.behavioral_indicators,
+            )
+        ):
+            raise ValueError("Evidence correction requires one detection indicator")
+        return self
+
+
+class EmbeddedMitigationEvidence(StrictModel):
+    preventive_measures: list[EvidenceClaimItem] = Field(alias="preventiveMeasures")
+    detection_methods: list[EvidenceClaimItem] = Field(alias="detectionMethods")
+    response_actions: list[EvidenceClaimItem] = Field(alias="responseActions")
+    recovery_guidance: list[EvidenceClaimItem] = Field(alias="recoveryGuidance")
+
+    @model_validator(mode="after")
+    def require_one_action(self) -> "EmbeddedMitigationEvidence":
+        if not any(
+            (
+                self.preventive_measures,
+                self.detection_methods,
+                self.response_actions,
+                self.recovery_guidance,
+            )
+        ):
+            raise ValueError("Evidence correction requires one mitigation action")
+        return self
+
+
+class EmbeddedEvidenceCorrection(StrictModel):
+    """Small correction artifact for high-risk fields only."""
+
+    risk_factors: list[EvidenceClaimItem] = Field(alias="riskFactors", min_length=1)
+    forensic_artifacts: EmbeddedForensicEvidence = Field(alias="forensicArtifacts")
+    detection_indicators: EmbeddedIndicatorEvidence = Field(alias="detectionIndicators")
+    mitigation_actions: EmbeddedMitigationEvidence = Field(alias="mitigationActions")
+
+    @model_validator(mode="after")
+    def require_direct_non_mitigation_evidence(self) -> "EmbeddedEvidenceCorrection":
+        direct_items = [
+            *self.risk_factors,
+            *self.forensic_artifacts.file_system_artifacts,
+            *self.forensic_artifacts.registry_artifacts,
+            *self.forensic_artifacts.network_artifacts,
+            *self.forensic_artifacts.memory_artifacts,
+            *self.forensic_artifacts.log_artifacts,
+            *self.detection_indicators.hashes,
+            *self.detection_indicators.domains,
+            *self.detection_indicators.ips,
+            *self.detection_indicators.urls,
+            *self.detection_indicators.filenames,
+            *self.detection_indicators.behavioral_indicators,
+        ]
+        if any(item.evidence_role != "direct_evidence" for item in direct_items):
+            raise ValueError("Risk, forensic, and detection corrections require direct evidence")
+        return self
+
+
 # TODO(embedded-evidence-v1): Remove string-valued generation compatibility after
 # three successful production canaries persist schema-5 snapshot-verified evidence.
 EvidenceClaimValue = EvidenceClaimItem | str
@@ -552,6 +647,28 @@ def parse_threat_profile_response(response: Any) -> dict[str, Any]:
         )
     profile = ThreatProfile.model_validate(payload)
     return profile.model_dump(mode="json", by_alias=True)
+
+
+def parse_embedded_evidence_correction(response: Any) -> dict[str, Any]:
+    """Return one locally validated high-risk evidence correction."""
+
+    parsed = getattr(response, "parsed", None)
+    if isinstance(parsed, EmbeddedEvidenceCorrection):
+        correction = parsed
+    elif isinstance(parsed, dict):
+        correction = EmbeddedEvidenceCorrection.model_validate(deepcopy(parsed))
+    else:
+        text_parts = [
+            str(getattr(part, "text", ""))
+            for part in (getattr(response, "content", None) or [])
+            if getattr(part, "type", None) == "text" and str(getattr(part, "text", "")).strip()
+        ]
+        if not text_parts:
+            raise ValueError("Model response did not include embedded evidence JSON")
+        correction = EmbeddedEvidenceCorrection.model_validate(
+            _load_model_json("\n".join(text_parts))
+        )
+    return correction.model_dump(mode="json", by_alias=True)
 
 
 def attest_profile_sources(

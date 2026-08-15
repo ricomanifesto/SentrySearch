@@ -15,6 +15,7 @@ from src.core.threat_profile_generator import (
 )
 from src.domain.reports import GenerationProgress, GenerationStage
 from src.core.threat_profile_schema import (
+    EmbeddedEvidenceCorrection,
     ThreatProfile,
     attest_profile_sources,
     parse_threat_profile_response,
@@ -43,6 +44,20 @@ def generated_embedded_profile(profile: dict) -> dict:
             ],
         }
     return generated
+
+
+def generated_evidence_correction(profile: dict) -> dict:
+    """Project the fixture's embedded arrays into the bounded correction shape."""
+
+    return {
+        "riskFactors": profile["threatIntelligence"]["riskAssessment"]["riskFactors"],
+        "forensicArtifacts": profile["forensicArtifacts"],
+        "detectionIndicators": {
+            **profile["detectionAndMitigation"]["iocs"],
+            "behavioralIndicators": profile["detectionAndMitigation"]["behavioralIndicators"],
+        },
+        "mitigationActions": profile["mitigationAndResponse"],
+    }
 
 
 def test_structured_synthesis_catalog_exposes_only_captured_operational_sources():
@@ -728,17 +743,27 @@ def test_generation_retries_one_invalid_embedded_item_without_weakening_attestat
     profiles = [invalid_profile, valid_profile]
     requests: list[dict] = []
     synthesis_responses: list[SimpleNamespace] = []
+    profile_request_count = 0
 
     def request_model(**kwargs):
+        nonlocal profile_request_count
         requests.append(kwargs)
-        profile = profiles[len(requests) - 1]
-        response = SimpleNamespace(
-            content=[SimpleNamespace(type="text", text=json.dumps(profile))],
-            parsed=(
+        is_evidence_correction = kwargs["response_format"] is EmbeddedEvidenceCorrection
+        if is_evidence_correction:
+            payload = generated_evidence_correction(valid_profile)
+            parsed = EmbeddedEvidenceCorrection.model_validate(payload)
+        else:
+            profile = profiles[min(profile_request_count, len(profiles) - 1)]
+            profile_request_count += 1
+            payload = profile
+            parsed = (
                 None
-                if invalid_evidence == "schema_shape" and len(requests) == 1
+                if invalid_evidence == "schema_shape" and profile_request_count == 1
                 else ThreatProfile.model_validate(profile)
-            ),
+            )
+        response = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text=json.dumps(payload))],
+            parsed=parsed,
             web_search_sources=[],
             tool_events=[],
             response_id=f"synthesis-{len(requests)}",
@@ -769,14 +794,15 @@ def test_generation_retries_one_invalid_embedded_item_without_weakening_attestat
     assert len(requests) == 2
     initial_content = requests[0]["messages"][0]["content"]
     correction_content = requests[1]["messages"][0]["content"]
-    assert correction_content[0] == initial_content[0]
     assert correction_content[0]["cache_control"] == {"type": "ephemeral"}
-    correction_text = correction_content[1]["text"]
     if invalid_evidence == "schema_shape":
+        assert correction_content[0] == initial_content[0]
+        correction_text = correction_content[1]["text"]
         assert "CORRECTION ATTEMPT AFTER A FAILED STRUCTURED OUTPUT CONTRACT" in correction_text
         assert "coreMetadata.name" in correction_text
         assert "embedded evidence object" in correction_text
     else:
+        correction_text = correction_content[0]["text"]
         assert "CORRECTION ATTEMPT AFTER A FAILED EVIDENCE GATE" in correction_text
         assert "copy one short verbatim excerpt" in correction_text
         assert "supportingEvidence" in correction_text
@@ -790,7 +816,7 @@ def test_generation_retries_one_invalid_embedded_item_without_weakening_attestat
     assert requests[0]["session_id"] == requests[1]["session_id"]
     assert requests[0]["session_id"].startswith("sentrysearch-synthesis-")
     assert requests[0]["strict_response_schema"] is False
-    assert requests[1]["strict_response_schema"] is False
+    assert requests[1]["strict_response_schema"] is (invalid_evidence != "schema_shape")
     expected_correction_message = (
         "Repairing the structured report contract..."
         if invalid_evidence == "schema_shape"
@@ -799,13 +825,19 @@ def test_generation_retries_one_invalid_embedded_item_without_weakening_attestat
     assert any(update.message == expected_correction_message for update in progress_updates)
     assert progress_updates[-1].stage is GenerationStage.FINALIZING
     assert requests[0]["response_format"] is ThreatProfile
-    assert requests[1]["response_format"] is ThreatProfile
+    assert requests[1]["response_format"] is (
+        ThreatProfile if invalid_evidence == "schema_shape" else EmbeddedEvidenceCorrection
+    )
+    assert requests[1]["max_tokens"] == (65536 if invalid_evidence == "schema_shape" else 16384)
     assert requests[0]["retry_policy"].max_attempts == 1
     assert requests[1]["retry_policy"].max_attempts == 1
-    assert synthesis_responses[-1].usage.input_tokens == 23
-    assert synthesis_responses[-1].usage.output_tokens == 44
-    assert synthesis_responses[-1].usage.web_search_calls == 1
-    assert synthesis_responses[-1].usage.total_tokens == 67
+    aggregate_response = (
+        synthesis_responses[-1] if invalid_evidence == "schema_shape" else synthesis_responses[0]
+    )
+    assert aggregate_response.usage.input_tokens == 23
+    assert aggregate_response.usage.output_tokens == 44
+    assert aggregate_response.usage.web_search_calls == 1
+    assert aggregate_response.usage.total_tokens == 67
 
 
 def test_generation_discards_legacy_claim_when_embedded_class_coverage_remains(

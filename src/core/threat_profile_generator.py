@@ -3,6 +3,7 @@
 import os
 import json
 import logging
+from copy import deepcopy
 from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
@@ -24,8 +25,10 @@ from src.core.parallel_section_validator import ParallelSectionValidator
 from src.core.trace_exporter import get_trace_exporter
 from src.core.performance_metrics import PerformanceTracker
 from src.core.threat_profile_schema import (
+    EmbeddedEvidenceCorrection,
     ThreatProfile,
     attest_profile_sources,
+    parse_embedded_evidence_correction,
     parse_threat_profile_response,
 )
 from src.core.generation_failures import (
@@ -38,7 +41,6 @@ from src.core.generation_failures import (
 from src.core.evidence_admissibility import (
     assess_profile_evidence,
     classify_research_sources,
-    evidence_correction_prompt,
     quarantine_rejected_indicator_items,
     research_source_observations,
 )
@@ -89,6 +91,79 @@ def _operational_synthesis_sources(
         ):
             eligible.append(source)
     return eligible
+
+
+def _apply_embedded_evidence_correction(
+    profile: dict[str, Any], correction: dict[str, Any]
+) -> None:
+    """Replace only high-risk generated arrays with one bounded correction."""
+
+    profile["threatIntelligence"]["riskAssessment"]["riskFactors"] = correction["riskFactors"]
+    profile["forensicArtifacts"] = correction["forensicArtifacts"]
+    indicators = correction["detectionIndicators"]
+    profile["detectionAndMitigation"] = {
+        "iocs": {
+            field: indicators[field] for field in ("hashes", "domains", "ips", "urls", "filenames")
+        },
+        "behavioralIndicators": indicators["behavioralIndicators"],
+    }
+    profile["mitigationAndResponse"] = correction["mitigationActions"]
+
+
+def _materialize_and_validate_evidence(
+    profile: dict[str, Any], research_sources: list[dict[str, Any]]
+) -> None:
+    """Run the complete application-owned evidence gate on one candidate profile."""
+
+    excluded_indicators = quarantine_rejected_indicator_items(profile)
+    materialize_embedded_claim_evidence(
+        profile,
+        research_sources,
+        require_complete_classes=True,
+    )
+    materialize_claim_attribution(profile)
+    materialize_cited_sources(
+        profile,
+        research_sources,
+        access_date=datetime.now().strftime("%Y-%m-%d"),
+    )
+    attest_profile_sources(profile, research_sources)
+    assess_profile_evidence(
+        profile,
+        research_sources,
+        excluded_indicator_observations=excluded_indicators,
+    )
+    assert_claim_attribution_consistent(profile)
+
+
+def _embedded_evidence_correction_request(
+    tool_name: str,
+    source_catalog: str,
+    error: EvidenceAdmissibilityError | EvidenceCoverageError,
+) -> str:
+    """Request a small destination-shaped correction instead of another report."""
+
+    findings = "\n".join(f"- {finding}" for finding in error.findings[:12])
+    return f"""CORRECTION ATTEMPT AFTER A FAILED EVIDENCE GATE:
+Repair only the high-risk evidence arrays for {tool_name}; do not regenerate the
+rest of the report.
+
+Deterministic findings:
+{findings}
+
+Return only the JSON object required by the response schema. Every list item is
+an embedded evidence object with value, evidenceRole, sourceIds, and
+supportingEvidence. Use only source IDs and exact excerpts from the operational
+catalog below. Return one risk factor, one forensic artifact, one detection indicator,
+and one mitigation action before adding optional items. Every direct-evidence value must
+reuse at least one exact nontrivial token from every supporting excerpt. Accuracy is
+more important than quantity; use empty optional arrays rather than weak claims.
+- copy one short verbatim excerpt for every direct source ID. Never paraphrase an
+excerpt, invent a source, or replace rejected evidence with an alternative.
+
+BEGIN ATTESTED OPERATIONAL SOURCE CATALOG
+{source_catalog}
+END ATTESTED OPERATIONAL SOURCE CATALOG"""
 
 
 def _claim_attribution_correction_prompt() -> str:
@@ -728,6 +803,7 @@ END ATTESTED OPERATIONAL SOURCE CATALOG"""
                         },
                     ]
                     continue
+                unvalidated_json_data = deepcopy(json_data)
                 try:
                     if isinstance(json_data.get("claimAttribution"), dict):
                         assessment = {
@@ -748,35 +824,12 @@ END ATTESTED OPERATIONAL SOURCE CATALOG"""
                             findings=assessment["blockingFindings"],
                             assessment=assessment,
                         )
-                    excluded_indicators = quarantine_rejected_indicator_items(json_data)
-                    materialize_embedded_claim_evidence(
-                        json_data,
-                        response.web_search_sources,
-                        require_complete_classes=True,
-                    )
-                    materialize_claim_attribution(json_data)
-                    materialize_cited_sources(
-                        json_data,
-                        response.web_search_sources,
-                        access_date=datetime.now().strftime("%Y-%m-%d"),
-                    )
-                    attest_profile_sources(json_data, response.web_search_sources)
-                    assess_profile_evidence(
-                        json_data,
-                        response.web_search_sources,
-                        excluded_indicator_observations=excluded_indicators,
-                    )
-                    # The application-owned gate produces item-specific findings
-                    # for the one bounded correction pass. Keep the derived ledger
-                    # assertion as a final invariant without hiding that diagnosis.
-                    assert_claim_attribution_consistent(json_data)
+                    _materialize_and_validate_evidence(json_data, response.web_search_sources)
                 except (EvidenceAdmissibilityError, EvidenceCoverageError) as error:
-                    if attempt >= SYNTHESIS_CORRECTION_ATTEMPTS:
-                        raise
                     coverage_failure = isinstance(error, EvidenceCoverageError)
                     logger.warning(
                         "Structured synthesis failed the %s evidence gate; "
-                        "requesting one bounded correction",
+                        "requesting one bounded evidence-only correction",
                         "coverage" if coverage_failure else "operational safety",
                     )
                     emit_progress(
@@ -788,14 +841,51 @@ END ATTESTED OPERATIONAL SOURCE CATALOG"""
                             else "Removing inadmissible operational evidence..."
                         ),
                     )
-                    request_content = [
-                        cached_prompt_block,
-                        {
-                            "type": "text",
-                            "text": f"\n\n{evidence_correction_prompt(error)}",
-                        },
-                    ]
-                    continue
+                    correction_response = self._request_model(
+                        retry_policy=SYNTHESIS_RETRY_POLICY,
+                        **synthesis_request_options(),
+                        max_tokens=16_384,
+                        temperature=0.1,
+                        strict_response_schema=True,
+                        session_id=synthesis_session_id,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": _embedded_evidence_correction_request(
+                                            tool_name,
+                                            source_catalog,
+                                            error,
+                                        ),
+                                        "cache_control": {"type": "ephemeral"},
+                                    }
+                                ],
+                            }
+                        ],
+                        response_format=EmbeddedEvidenceCorrection,
+                    )
+                    synthesis_responses.append(correction_response)
+                    try:
+                        correction = parse_embedded_evidence_correction(correction_response)
+                    except (ValidationError, ValueError, TypeError) as correction_error:
+                        raise ProfileOutputError(
+                            "Structured evidence correction was invalid"
+                        ) from correction_error
+                    repaired_json_data = deepcopy(unvalidated_json_data)
+                    repaired_json_data.pop("claimAttribution", None)
+                    _apply_embedded_evidence_correction(repaired_json_data, correction)
+                    try:
+                        _materialize_and_validate_evidence(
+                            repaired_json_data,
+                            response.web_search_sources,
+                        )
+                    except ValueError as correction_error:
+                        raise EvidenceAttestationError(
+                            "Corrected profile evidence attestation failed"
+                        ) from correction_error
+                    json_data = repaired_json_data
                 except ValueError as error:
                     can_correct = attempt < SYNTHESIS_CORRECTION_ATTEMPTS and str(error) in {
                         UNKNOWN_CLAIM_SOURCE_ERROR,
