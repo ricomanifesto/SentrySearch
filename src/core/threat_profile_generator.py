@@ -43,6 +43,25 @@ RESEARCH_FOCUSES = (
     """Threat intelligence, campaigns, and source currency. Find recent authoritative reporting on threat actors, attribution confidence, campaigns, activity timeframes, target sectors, geography, relevant CVEs or exploitation, MITRE ATT&CK techniques, legitimate or dual-use context, and changes during the last 24 months. Use focused searches such as \"{tool_name} threat actors campaigns 2025 2026\", \"{tool_name} CISA MITRE advisory\", and \"{tool_name} recent exploitation vulnerabilities\".""",
 )
 
+UNKNOWN_CLAIM_SOURCE_ERROR = "Threat profile claim attribution references an unknown source ID"
+ATTRIBUTION_CORRECTION_ATTEMPTS = 1
+
+
+def _claim_attribution_correction_prompt(prompt: str) -> str:
+    """Repeat synthesis once with the exact failed evidence invariant made explicit."""
+
+    return f"""{prompt}
+
+CORRECTION ATTEMPT AFTER A FAILED EVIDENCE CONTRACT:
+The previous structured response cited a sourceId that was absent from its own
+webSearchSources.primarySources ledger. Return a complete corrected JSON object.
+
+- Every claimAttribution sourceId MUST appear in webSearchSources.primarySources.
+- Every primary sourceId and URL MUST be copied exactly from the attested source catalog.
+- If a catalog source supports a claim, include that source in primarySources before citing it.
+- Do not invent, renumber, infer, or silently remove evidence.
+"""
+
 
 class ThreatProfileGenerator(RetryingModelRequests):
     def __init__(
@@ -523,20 +542,67 @@ END ATTESTED SOURCE CATALOG"""
             logger.debug("Sending isolated structured synthesis request to OpenRouter...")
             logger.debug(f"Prompt size: {len(prompt)} characters")
 
-            response = self._request_model(
-                **synthesis_request_options(),
-                # The full profile is returned as a single JSON object. Gemma's
-                # free route supports 32,768 completion tokens; using that ceiling
-                # keeps evidence-dense profiles from being truncated mid-JSON.
-                max_tokens=32768,
-                temperature=0.3,
-                messages=[{"role": "user", "content": prompt}],
-                response_format=ThreatProfile,
-            )
-            response.web_search_sources = research_sources
-            response.tool_events = list(getattr(research_response, "tool_events", None) or [])
-            response.research_response_id = str(getattr(research_response, "response_id", "") or "")
-            for usage_field in (
+            emit_progress(0.7, GenerationStage.SYNTHESIZING, "Synthesizing report narrative...")
+
+            synthesis_responses: list[SimpleNamespace] = []
+            response: SimpleNamespace | None = None
+            json_data: dict[str, Any] | None = None
+            request_prompt = prompt
+            for attempt in range(ATTRIBUTION_CORRECTION_ATTEMPTS + 1):
+                response = self._request_model(
+                    **synthesis_request_options(),
+                    # The full profile is returned as a single JSON object. Gemma's
+                    # free route supports 32,768 completion tokens; using that ceiling
+                    # keeps evidence-dense profiles from being truncated mid-JSON.
+                    max_tokens=32768,
+                    temperature=0.3,
+                    messages=[{"role": "user", "content": request_prompt}],
+                    response_format=ThreatProfile,
+                )
+                response.web_search_sources = research_sources
+                response.tool_events = list(getattr(research_response, "tool_events", None) or [])
+                response.research_response_id = str(
+                    getattr(research_response, "response_id", "") or ""
+                )
+                synthesis_responses.append(response)
+
+                emit_progress(
+                    0.75,
+                    GenerationStage.VALIDATING,
+                    "Validating structured response...",
+                )
+                try:
+                    json_data = parse_threat_profile_response(response)
+                except (ValueError, TypeError) as error:
+                    raise ProfileOutputError("Structured profile output was invalid") from error
+                try:
+                    attest_profile_sources(json_data, response.web_search_sources)
+                except ValueError as error:
+                    can_correct = (
+                        attempt < ATTRIBUTION_CORRECTION_ATTEMPTS
+                        and str(error) == UNKNOWN_CLAIM_SOURCE_ERROR
+                    )
+                    if not can_correct:
+                        raise EvidenceAttestationError(
+                            "Profile evidence attestation failed"
+                        ) from error
+                    logger.warning(
+                        "Structured synthesis cited a source outside its primary ledger; "
+                        "requesting one bounded correction"
+                    )
+                    emit_progress(
+                        0.76,
+                        GenerationStage.VALIDATING,
+                        "Reconciling claim evidence with the source ledger...",
+                    )
+                    request_prompt = _claim_attribution_correction_prompt(prompt)
+                    continue
+                break
+
+            if response is None or json_data is None:  # pragma: no cover - loop invariant
+                raise ProfileOutputError("Structured profile output was unavailable")
+
+            usage_fields = (
                 "input_tokens",
                 "output_tokens",
                 "cached_tokens",
@@ -544,12 +610,16 @@ END ATTESTED SOURCE CATALOG"""
                 "reasoning_tokens",
                 "web_search_calls",
                 "total_tokens",
-            ):
+            )
+            for usage_field in usage_fields:
                 setattr(
                     response.usage,
                     usage_field,
                     int(getattr(research_response.usage, usage_field, 0) or 0)
-                    + int(getattr(response.usage, usage_field, 0) or 0),
+                    + sum(
+                        int(getattr(item.usage, usage_field, 0) or 0)
+                        for item in synthesis_responses
+                    ),
                 )
 
             # Record API response metrics
@@ -568,22 +638,6 @@ END ATTESTED SOURCE CATALOG"""
             )
             self.validator.web_search_sources.extend(initial_sources)
             logger.debug(f"Captured {len(initial_sources)} initial web search sources")
-
-            emit_progress(0.7, GenerationStage.SYNTHESIZING, "Processing response...")
-            emit_progress(
-                0.75,
-                GenerationStage.VALIDATING,
-                "Validating structured response...",
-            )
-
-            try:
-                json_data = parse_threat_profile_response(response)
-            except (ValueError, TypeError) as error:
-                raise ProfileOutputError("Structured profile output was invalid") from error
-            try:
-                attest_profile_sources(json_data, response.web_search_sources)
-            except ValueError as error:
-                raise EvidenceAttestationError("Profile evidence attestation failed") from error
 
             if self.enable_metrics and self.performance_tracker:
                 self.performance_tracker.record_contract_result(

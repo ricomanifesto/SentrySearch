@@ -395,3 +395,97 @@ def test_generation_separates_web_research_from_structured_synthesis(
         GenerationStage.VALIDATING,
         GenerationStage.FINALIZING,
     ]
+
+
+def test_generation_retries_one_unknown_claim_source_id_without_weakening_attestation(
+    monkeypatch, threat_profile_data
+):
+    monkeypatch.setattr(
+        "src.core.threat_profile_generator.create_model_client",
+        lambda: SimpleNamespace(),
+    )
+    generator = ThreatProfileGenerator(enable_tracing=False, enable_metrics=False)
+    generator.enable_quality_control = False
+
+    research_response = SimpleNamespace(
+        content=[
+            SimpleNamespace(
+                type="text",
+                text="Example evidence from https://example.com/report",
+            )
+        ],
+        web_search_sources=[
+            {
+                "url": "https://example.com/report",
+                "title": "Example report",
+            }
+        ],
+        tool_events=[],
+        response_id="research-response",
+        usage=SimpleNamespace(
+            input_tokens=3,
+            output_tokens=4,
+            cached_tokens=0,
+            cache_write_tokens=0,
+            reasoning_tokens=0,
+            web_search_calls=1,
+            total_tokens=7,
+        ),
+    )
+    monkeypatch.setattr(generator, "_research_evidence", lambda _tool_name: research_response)
+
+    invalid_profile = deepcopy(threat_profile_data)
+    invalid_profile["claimAttribution"]["claims"][0]["sourceIds"] = ["S99"]
+    profiles = [invalid_profile, threat_profile_data]
+    requests: list[dict] = []
+    synthesis_responses: list[SimpleNamespace] = []
+
+    def request_model(**kwargs):
+        requests.append(kwargs)
+        profile = profiles[len(requests) - 1]
+        response = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text=json.dumps(profile))],
+            parsed=ThreatProfile.model_validate(profile),
+            web_search_sources=[],
+            tool_events=[],
+            response_id=f"synthesis-{len(requests)}",
+            model="google/gemma-4-26b-a4b-it:free",
+            provider="TestProvider",
+            usage=SimpleNamespace(
+                input_tokens=10,
+                output_tokens=20,
+                cached_tokens=0,
+                cache_write_tokens=0,
+                reasoning_tokens=0,
+                web_search_calls=0,
+                total_tokens=30,
+            ),
+        )
+        synthesis_responses.append(response)
+        return response
+
+    monkeypatch.setattr(generator, "_request_model", request_model)
+    progress_updates: list[GenerationProgress] = []
+
+    result = generator.get_threat_intelligence(
+        "Example Threat", progress_callback=progress_updates.append
+    )
+
+    assert {
+        key: value for key, value in result.items() if not key.startswith("_")
+    } == threat_profile_data
+    assert len(requests) == 2
+    assert "CORRECTION ATTEMPT AFTER A FAILED EVIDENCE CONTRACT" in (
+        requests[1]["messages"][0]["content"]
+    )
+    assert "Every claimAttribution sourceId MUST appear" in (requests[1]["messages"][0]["content"])
+    assert requests[1]["provider"] == requests[0]["provider"]
+    assert requests[1]["fallback_models"] == requests[0]["fallback_models"]
+    assert progress_updates[-3].message == ("Reconciling claim evidence with the source ledger...")
+    assert progress_updates[-1].stage is GenerationStage.FINALIZING
+    assert requests[0]["response_format"] is ThreatProfile
+    assert requests[1]["response_format"] is ThreatProfile
+    assert synthesis_responses[-1].usage.input_tokens == 23
+    assert synthesis_responses[-1].usage.output_tokens == 44
+    assert synthesis_responses[-1].usage.web_search_calls == 1
+    assert synthesis_responses[-1].usage.total_tokens == 67

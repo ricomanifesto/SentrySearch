@@ -35,3 +35,17 @@ Use post-telemetry production witnesses as the next evidence boundary:
 4. Treat these witnesses as a release oracle, not as a statistically sufficient reliability baseline.
 
 A future retry or routing change requires typed evidence showing a repeatable route, stage, hour-rate, or target-class cluster.
+
+## First post-telemetry witness
+
+The first common-target witness reached structured validation and failed the
+claim-attribution contract because synthesis cited a source ID that was not in
+its own primary source ledger. The record persisted the validating stage and
+evidence-attestation cause, ruling out target obscurity and making the failure
+class reproducible at the contract boundary.
+
+This evidence justifies one narrow behavior change: retry synthesis once with
+the same attested dossier and an explicit ledger invariant. The retry applies
+only to the exact unknown-source-ID failure. Other source, URL, schema, and
+attestation failures remain fail-closed, and a second mismatch remains terminal.
+Provider routing and the existing truncation retry are unchanged.
