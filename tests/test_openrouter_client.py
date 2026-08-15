@@ -400,6 +400,7 @@ def test_model_client_sends_strict_schema_and_parses_chat_completion():
         messages=[{"role": "user", "content": "Return a value"}],
         response_format=StructuredResult,
         provider={"only": ["google-ai-studio"], "allow_fallbacks": False},
+        reasoning={"max_tokens": 0},
     )
 
     assert result.parsed == StructuredResult(value="ok")
@@ -416,6 +417,7 @@ def test_model_client_sends_strict_schema_and_parses_chat_completion():
         "require_parameters": True,
         "sort": "throughput",
     }
+    assert request_body["reasoning"] == {"max_tokens": 0}
 
 
 def test_model_client_uses_json_mode_and_preserves_prompt_cache_breakpoint():

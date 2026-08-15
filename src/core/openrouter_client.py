@@ -252,6 +252,7 @@ class ModelClient:
             "tool_choice",
             "stop_server_tools_when",
             "session_id",
+            "reasoning",
         ):
             if kwargs.get(optional_key) is not None:
                 request[optional_key] = kwargs[optional_key]

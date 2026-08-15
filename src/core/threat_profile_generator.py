@@ -872,6 +872,10 @@ END ATTESTED OPERATIONAL SOURCE CATALOG"""
                         **synthesis_request_options(),
                         max_tokens=4_096,
                         temperature=0,
+                        # This is constrained evidence extraction, not open-ended
+                        # analysis. Gemini otherwise consumes the correction budget
+                        # on thinking tokens before emitting the four required items.
+                        reasoning={"max_tokens": 0},
                         strict_response_schema=True,
                         session_id=synthesis_session_id,
                         messages=[

@@ -860,6 +860,9 @@ def test_generation_retries_one_invalid_embedded_item_without_weakening_attestat
     assert requests[0]["session_id"].startswith("sentrysearch-synthesis-")
     assert requests[0]["strict_response_schema"] is False
     assert requests[1]["strict_response_schema"] is (invalid_evidence != "schema_shape")
+    assert "reasoning" not in requests[0]
+    if invalid_evidence != "schema_shape":
+        assert requests[1]["reasoning"] == {"max_tokens": 0}
     expected_correction_message = (
         "Repairing the structured report contract..."
         if invalid_evidence == "schema_shape"
