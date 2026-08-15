@@ -154,10 +154,10 @@ Deterministic findings:
 Return only the JSON object required by the response schema. Every list item is
 an embedded evidence object with value, evidenceRole, sourceIds, and
 supportingEvidence. Use only source IDs and exact excerpts from the operational
-catalog below. Return one risk factor, one forensic artifact, one detection indicator,
-and one mitigation action before adding optional items. Every direct-evidence value must
-reuse at least one exact nontrivial token from every supporting excerpt. Accuracy is
-more important than quantity; use empty optional arrays rather than weak claims.
+catalog below. Return exactly four items: one risk factor; one forensic artifact;
+one detection indicator; and one mitigation action. Keep every other optional array empty. Every
+direct-evidence value must reuse at least one exact nontrivial token from every
+supporting excerpt. Accuracy is more important than quantity.
 - copy one short verbatim excerpt for every direct source ID. Never paraphrase an
 excerpt, invent a source, or replace rejected evidence with an alternative.
 
@@ -844,8 +844,8 @@ END ATTESTED OPERATIONAL SOURCE CATALOG"""
                     correction_response = self._request_model(
                         retry_policy=SYNTHESIS_RETRY_POLICY,
                         **synthesis_request_options(),
-                        max_tokens=16_384,
-                        temperature=0.1,
+                        max_tokens=4_096,
+                        temperature=0,
                         strict_response_schema=True,
                         session_id=synthesis_session_id,
                         messages=[

@@ -828,7 +828,10 @@ def test_generation_retries_one_invalid_embedded_item_without_weakening_attestat
     assert requests[1]["response_format"] is (
         ThreatProfile if invalid_evidence == "schema_shape" else EmbeddedEvidenceCorrection
     )
-    assert requests[1]["max_tokens"] == (65536 if invalid_evidence == "schema_shape" else 16384)
+    assert requests[1]["max_tokens"] == (65536 if invalid_evidence == "schema_shape" else 4096)
+    if invalid_evidence != "schema_shape":
+        assert "Return exactly four items" in correction_text
+        assert "Keep every other optional array empty" in correction_text
     assert requests[0]["retry_policy"].max_attempts == 1
     assert requests[1]["retry_policy"].max_attempts == 1
     aggregate_response = (
