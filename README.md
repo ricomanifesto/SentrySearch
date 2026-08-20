@@ -56,6 +56,27 @@ The API listens on `http://localhost:8001`; the frontend listens on `http://loca
 
 The example files list every required variable. OpenRouter is needed for live generation, Supabase for authentication, PostgreSQL for report metadata and search, and S3 for report files and exports.
 
+### Local durable-generation adapter
+
+The default API path still starts generation inside the web process. To exercise
+the durable adapter, start the local runtime API on `127.0.0.1:8080`, set
+`SENTRYRUNTIME_LOCAL_URL=http://127.0.0.1:8080`, and run the worker in another
+terminal:
+
+```bash
+uv run python -m dev.run_runtime_worker
+```
+
+With that opt-in set, creating a report commits the pending report and its
+runtime-dispatch intent together. The worker retries runtime submission using the
+report ID as its idempotency key, claims only `sentrysearch/generate_report/v1`,
+heartbeats the lease while generation runs, and keeps report artifacts in
+SentrySearch storage. Evaluation remains a product-owned follow-up with its
+existing retry endpoint. Use `--once` for one dispatch-and-claim cycle.
+
+The local runtime currently has no authentication boundary, so non-loopback URLs
+are rejected. Do not enable this path in a deployed environment.
+
 ## Validation Without Live Services
 
 ```bash
@@ -81,6 +102,7 @@ npm run build
 - **API:** FastAPI, SQLAlchemy, and Pydantic on Railway.
 - **Authentication:** Supabase verifies users and scopes every report query to its workspace.
 - **Storage:** PostgreSQL holds report metadata, search fields, source records, and lifecycle state. S3 holds Markdown reports and trace files.
+- **Durable execution:** An opt-in local adapter records transactional dispatch intents and delegates generation leases, retries, and recovery to the runtime while SentrySearch retains report ownership.
 - **Model access:** A small OpenRouter client handles generation, web search, evaluation, retry rules, error mapping, and route records.
 
 The legacy experimental retrieval modules have been removed. Search in the current product means authenticated search over saved PostgreSQL report records.

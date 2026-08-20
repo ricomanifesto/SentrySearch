@@ -97,6 +97,8 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS ix_report_disposition_events_report_id ON report_disposition_events (report_id)",
             "CREATE INDEX IF NOT EXISTS ix_report_disposition_events_disposition ON report_disposition_events (disposition)",
             "CREATE INDEX IF NOT EXISTS ix_report_disposition_events_current ON report_disposition_events (report_id, evaluation_attempt, created_at DESC)",
+            "CREATE TABLE IF NOT EXISTS report_runtime_dispatches (report_id UUID PRIMARY KEY REFERENCES reports(id) ON DELETE CASCADE, runtime_run_id UUID, state VARCHAR(20) NOT NULL DEFAULT 'pending', dispatch_attempts INTEGER NOT NULL DEFAULT 0, last_error_code VARCHAR(50), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+            "CREATE INDEX IF NOT EXISTS ix_report_runtime_dispatches_pending ON report_runtime_dispatches (state, created_at)",
         ]
         try:
             with self.engine.begin() as connection:

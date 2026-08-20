@@ -300,6 +300,40 @@ def test_create_report_starts_background_job_without_synchronous_generation(monk
     assert len(background_tasks.tasks) == 1
 
 
+def test_create_report_queues_runtime_dispatch_when_local_adapter_is_enabled(monkeypatch):
+    monkeypatch.setenv("SENTRYRUNTIME_LOCAL_URL", "http://127.0.0.1:8080")
+    created = {}
+
+    def create_pending_report(report_id, tool_name, user_id=None, runtime_dispatch=False):
+        created.update(
+            report_id=report_id,
+            tool_name=tool_name,
+            user_id=user_id,
+            runtime_dispatch=runtime_dispatch,
+        )
+        return report_id
+
+    monkeypatch.setattr(api_main.report_service, "create_pending_report", create_pending_report)
+    user = supabase_auth.AuthenticatedUser(
+        user_id="analyst-user",
+        email="analyst@example.com",
+        metadata={"role": "analyst"},
+    )
+    background_tasks = BackgroundTasks()
+
+    response = asyncio.run(
+        api_main.create_report(
+            api_main.ReportCreate(tool_name="Cobalt Strike"),
+            background_tasks,
+            user,
+        )
+    )
+
+    assert response["status"] == "generating"
+    assert created["runtime_dispatch"] is True
+    assert len(background_tasks.tasks) == 0
+
+
 def test_evaluation_retry_claims_saved_report_without_restarting_generation(monkeypatch):
     user = supabase_auth.AuthenticatedUser(
         user_id="analyst-user",
@@ -522,6 +556,27 @@ def test_background_generation_marks_failed_without_leaking_detail(monkeypatch):
     assert marked["error_code"] is GenerationErrorCode.MODEL_OUTPUT_INVALID
     assert marked["retryable"] is True
     assert marked["failure"]["schema_version"] == 1
+
+
+def test_report_artifact_generation_raises_for_runtime_without_marking_terminal(monkeypatch):
+    class FailingGenerator:
+        def get_threat_intelligence(self, tool_name: str, progress_callback=None):
+            return {"error": f"provider detail for {tool_name}"}
+
+    monkeypatch.setattr(api_main, "ThreatProfileGenerator", FailingGenerator)
+    monkeypatch.setattr(
+        api_main.report_service,
+        "mark_report_failed",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("runtime decides when the report becomes terminal")
+        ),
+    )
+
+    with pytest.raises(api_main.ReportGenerationExecutionError) as raised:
+        api_main.generate_report_artifact("report-1", "SecretTool", "analyst-user")
+
+    assert raised.value.generation_failure["error_code"] == "model_output_invalid"
+    assert "provider detail" not in str(raised.value)
 
 
 def test_background_generation_maps_profile_to_storage_schema(monkeypatch):

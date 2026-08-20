@@ -2,6 +2,7 @@
 
 from contextlib import asynccontextmanager
 import logging
+import os
 import time
 import uuid
 from urllib.parse import urlsplit
@@ -24,6 +25,7 @@ from src.core.markdown_generator import generate_markdown
 from src.core.generation_failures import (
     PersistenceFailureError,
     ProfileOutputError,
+    ReportGenerationExecutionError,
     build_generation_failure,
 )
 from src.core.source_ledger import (
@@ -47,6 +49,7 @@ from src.api.contracts import (
     SortDirection,
 )
 from src.domain.model_routes import generation_fallback_state
+from src.execution.runtime_client import validate_local_runtime_url
 from src.domain.reports import (
     AnalystDisposition,
     ClaimAttributionStatus,
@@ -69,6 +72,13 @@ from src.domain.reports import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def local_runtime_url() -> str | None:
+    """Return the opt-in loopback runtime URL for local adapter development."""
+
+    value = os.getenv("SENTRYRUNTIME_LOCAL_URL", "").strip()
+    return validate_local_runtime_url(value) if value else None
 
 
 def apply_schema_migrations() -> None:
@@ -816,19 +826,12 @@ async def retry_report_evaluation(
         raise internal_server_error("Failed to retry report evaluation", e)
 
 
-def run_report_generation(
+def generate_report_artifact(
     report_id: str,
     tool_name: str,
     user_id: str,
 ) -> None:
-    """Run a long report generation off the request path and persist the result.
-
-    Report generation takes several minutes — far longer than a single synchronous
-    HTTP request can stay open behind the platform edge. This runs as a background
-    task so the request returns immediately; the client polls the report until its
-    status leaves "generating". Failures are recorded on the row, never surfaced to
-    the caller, so a provider error can't leak details.
-    """
+    """Generate and persist the product artifact, raising a sanitized failure."""
     start = time.monotonic()
     generator: ThreatProfileGenerator | None = None
     last_stage: GenerationStage | None = GenerationStage.QUEUED
@@ -913,18 +916,31 @@ def run_report_generation(
         except Exception as error:
             raise PersistenceFailureError("Generated report could not be persisted") from error
 
-        run_report_evaluation(report_id, user_id)
+    except Exception as error:
+        summarize_route = (
+            getattr(generator, "route_provenance_for_stage", None)
+            if generator is not None
+            else None
+        )
+        route = summarize_route(last_stage) if callable(summarize_route) else None
+        failure = build_generation_failure(error, stage=last_stage, route=route)
+        raise ReportGenerationExecutionError(failure) from error
 
-    except Exception as e:  # pragma: no cover - exercised via mark_report_failed test
-        logger.exception("Background generation failed for report %s: %s", report_id, e)
+
+def run_report_generation(
+    report_id: str,
+    tool_name: str,
+    user_id: str,
+) -> None:
+    """Preserve the in-process background behavior during the runtime transition."""
+
+    try:
+        generate_report_artifact(report_id, tool_name, user_id)
+        run_report_evaluation(report_id, user_id)
+    except ReportGenerationExecutionError as error:
+        logger.exception("Background generation failed for report %s", report_id)
         try:
-            summarize_route = (
-                getattr(generator, "route_provenance_for_stage", None)
-                if generator is not None
-                else None
-            )
-            route = summarize_route(last_stage) if callable(summarize_route) else None
-            failure = build_generation_failure(e, stage=last_stage, route=route)
+            failure = error.generation_failure
             report_service.mark_report_failed(
                 report_id,
                 error_code=GenerationErrorCode(failure["error_code"]),
@@ -1000,27 +1016,39 @@ async def create_report(
     background_tasks: BackgroundTasks,
     user: AuthenticatedUser = Depends(verify_jwt_token),
 ):
-    """Start a threat intelligence report and return immediately.
+    """Schedule a threat intelligence report and return immediately.
 
-    Generation runs in the background; the response carries the new report id with
-    status "generating" so the client can poll the report until it completes.
+    The response carries the new report id with status "generating" so the client
+    can poll until the selected local or in-process execution path completes.
     """
     try:
+        runtime_url = local_runtime_url()
         report_id = str(uuid.uuid4())
-        report_service.create_pending_report(
-            report_id=report_id,
-            tool_name=report_request.tool_name,
-            user_id=user.id,
-        )
+        if runtime_url:
+            report_service.create_pending_report(
+                report_id=report_id,
+                tool_name=report_request.tool_name,
+                user_id=user.id,
+                runtime_dispatch=True,
+            )
+        else:
+            report_service.create_pending_report(
+                report_id=report_id,
+                tool_name=report_request.tool_name,
+                user_id=user.id,
+            )
     except Exception as e:
         raise internal_server_error("Failed to start report generation", e)
 
-    background_tasks.add_task(
-        run_report_generation,
-        report_id,
-        report_request.tool_name,
-        user.id,
-    )
+    if runtime_url is None:
+        # TODO(sentryruntime-cutover): Remove the in-process fallback after an
+        # authenticated runtime deployment and worker canary are both verified.
+        background_tasks.add_task(
+            run_report_generation,
+            report_id,
+            report_request.tool_name,
+            user.id,
+        )
 
     return {
         "report_id": report_id,

@@ -2,7 +2,18 @@
 Database models for SentrySearch report storage using SQLAlchemy
 """
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    Numeric,
+    String,
+    Text,
+)
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
@@ -144,6 +155,25 @@ class Report(Base):
             "is_flagged": self.is_flagged,
             "is_favorite": self.is_favorite,
         }
+
+
+class ReportRuntimeDispatch(Base):
+    """Durable intent to submit one report to the local execution runtime."""
+
+    __tablename__ = "report_runtime_dispatches"
+    __table_args__ = (Index("ix_report_runtime_dispatches_pending", "state", "created_at"),)
+
+    report_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("reports.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    runtime_run_id = Column(UUID(as_uuid=True))
+    state = Column(String(20), nullable=False, default="pending")
+    dispatch_attempts = Column(Integer, nullable=False, default=0)
+    last_error_code = Column(String(50))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class ReportDispositionEvent(Base):

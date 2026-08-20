@@ -59,6 +59,7 @@ def validate_auth_env_contract() -> None:
         require_contains(relative_path, "NEXT_PUBLIC_SUPABASE_URL=")
         require_contains(relative_path, "NEXT_PUBLIC_SUPABASE_ANON_KEY=")
     require_contains(".env.example", "SUPABASE_SERVICE_ROLE_KEY=")
+    require_contains(".env.example", "SENTRYRUNTIME_LOCAL_URL=")
 
 
 def validate_python_tooling_contract() -> None:

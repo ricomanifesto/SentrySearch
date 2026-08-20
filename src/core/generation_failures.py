@@ -68,6 +68,14 @@ class PersistenceFailureError(RuntimeError):
     retryable = True
 
 
+class ReportGenerationExecutionError(RuntimeError):
+    """Carry a sanitized generation failure from the artifact boundary."""
+
+    def __init__(self, failure: Mapping[str, Any]) -> None:
+        super().__init__("report generation failed")
+        self.generation_failure = dict(failure)
+
+
 def build_generation_failure(
     error: BaseException,
     *,

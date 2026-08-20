@@ -19,7 +19,7 @@ from src.domain.reports import (
     SortOrder,
 )
 from src.storage.report_service import ReportStorageService
-from src.storage.models import Report, ReportDispositionEvent
+from src.storage.models import Report, ReportDispositionEvent, ReportRuntimeDispatch
 from src.storage.database import DatabaseManager
 
 
@@ -143,6 +143,124 @@ def test_additive_migration_creates_model_route_columns():
     assert any(
         "CREATE TABLE IF NOT EXISTS report_disposition_events" in item for item in statements
     )
+    assert any(
+        "CREATE TABLE IF NOT EXISTS report_runtime_dispatches" in item for item in statements
+    )
+
+
+def test_pending_report_and_runtime_dispatch_are_added_before_one_commit():
+    added: list[Any] = []
+    commits = 0
+
+    class FakeSession:
+        def add(self, value: Any) -> None:
+            added.append(value)
+
+        def commit(self) -> None:
+            nonlocal commits
+            commits += 1
+
+    class FakeDatabaseManager:
+        @contextmanager
+        def get_session(self):
+            yield FakeSession()
+
+    service = ReportStorageService.__new__(ReportStorageService)
+    service.db_manager = cast(Any, FakeDatabaseManager())
+
+    service.create_pending_report(
+        "ad0a93e1-4d27-4388-83f0-c1c8fa688a2e",
+        "Cobalt Strike",
+        user_id="analyst-user",
+        runtime_dispatch=True,
+    )
+
+    assert len(added) == 2
+    assert isinstance(added[0], Report)
+    assert isinstance(added[1], ReportRuntimeDispatch)
+    assert added[1].report_id == added[0].id
+    assert commits == 1
+
+
+def test_runtime_dispatch_acknowledgement_records_run_id_and_attempt():
+    dispatch = ReportRuntimeDispatch(
+        report_id=uuid.UUID("ad0a93e1-4d27-4388-83f0-c1c8fa688a2e"),
+        state="pending",
+        dispatch_attempts=0,
+    )
+    commits = 0
+
+    class FakeQuery:
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return dispatch
+
+    class FakeSession:
+        def query(self, model):
+            assert model is ReportRuntimeDispatch
+            return FakeQuery()
+
+        def commit(self):
+            nonlocal commits
+            commits += 1
+
+    class FakeDatabaseManager:
+        @contextmanager
+        def get_session(self):
+            yield FakeSession()
+
+    service = ReportStorageService.__new__(ReportStorageService)
+    service.db_manager = cast(Any, FakeDatabaseManager())
+
+    assert service.mark_runtime_dispatch_submitted(
+        str(dispatch.report_id),
+        "11111111-1111-1111-1111-111111111111",
+    )
+    assert dispatch.state == "submitted"
+    assert str(dispatch.runtime_run_id) == "11111111-1111-1111-1111-111111111111"
+    assert dispatch.dispatch_attempts == 1
+    assert commits == 1
+
+
+def test_runtime_dispatch_failure_remains_pending_for_replay():
+    dispatch = ReportRuntimeDispatch(
+        report_id=uuid.UUID("ad0a93e1-4d27-4388-83f0-c1c8fa688a2e"),
+        state="pending",
+        dispatch_attempts=0,
+    )
+
+    class FakeQuery:
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return dispatch
+
+    class FakeSession:
+        def query(self, model):
+            assert model is ReportRuntimeDispatch
+            return FakeQuery()
+
+        def commit(self):
+            return None
+
+    class FakeDatabaseManager:
+        @contextmanager
+        def get_session(self):
+            yield FakeSession()
+
+    service = ReportStorageService.__new__(ReportStorageService)
+    service.db_manager = cast(Any, FakeDatabaseManager())
+
+    assert service.record_runtime_dispatch_failure(
+        str(dispatch.report_id),
+        "runtime_unavailable",
+    )
+    assert dispatch.state == "pending"
+    assert dispatch.dispatch_attempts == 1
+    assert dispatch.last_error_code == "runtime_unavailable"
 
 
 def test_report_filters_are_immutable_and_normalize_collections():

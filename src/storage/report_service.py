@@ -7,6 +7,7 @@ from typing import Dict, Any, List, Optional, Sequence, cast
 from datetime import datetime, timezone
 import hashlib
 import json
+import uuid
 from sqlalchemy import and_, asc, desc, func, or_, select
 
 from src.domain.reports import (
@@ -40,7 +41,7 @@ from src.core.source_ledger import (
 from src.domain.model_routes import generation_fallback_state
 
 from .database import db_manager
-from .models import Report, ReportDispositionEvent
+from .models import Report, ReportDispositionEvent, ReportRuntimeDispatch
 from .s3_manager import s3_manager
 
 logger = logging.getLogger(__name__)
@@ -910,7 +911,12 @@ class ReportStorageService:
             raise
 
     def create_pending_report(
-        self, report_id: str, tool_name: str, user_id: Optional[str] = None
+        self,
+        report_id: str,
+        tool_name: str,
+        user_id: Optional[str] = None,
+        *,
+        runtime_dispatch: bool = False,
     ) -> str:
         """Create a placeholder report row marked 'generating' for a background job.
 
@@ -938,6 +944,8 @@ class ReportStorageService:
                     search_tags=[],
                 )
                 session.add(report)
+                if runtime_dispatch:
+                    session.add(ReportRuntimeDispatch(report_id=report_id))
                 session.commit()
                 logger.info(f"Pending report created: {report_id}")
                 return str(report.id)
@@ -1080,6 +1088,57 @@ class ReportStorageService:
         except Exception as e:
             logger.error(f"Error finalizing report: {e}")
             raise
+
+    def get_pending_runtime_dispatches(self, *, limit: int = 20) -> List[str]:
+        """Return durable runtime intents that have not been acknowledged."""
+
+        with self.db_manager.get_session() as session:
+            dispatches = (
+                session.query(ReportRuntimeDispatch)
+                .filter(ReportRuntimeDispatch.state == "pending")
+                .order_by(ReportRuntimeDispatch.created_at.asc())
+                .limit(limit)
+                .all()
+            )
+            return [str(dispatch.report_id) for dispatch in dispatches]
+
+    def mark_runtime_dispatch_submitted(
+        self,
+        report_id: str,
+        runtime_run_id: str,
+    ) -> bool:
+        """Record the idempotent runtime response for one dispatch intent."""
+
+        with self.db_manager.get_session() as session:
+            dispatch = (
+                session.query(ReportRuntimeDispatch)
+                .filter(ReportRuntimeDispatch.report_id == report_id)
+                .first()
+            )
+            if dispatch is None:
+                return False
+            dispatch.runtime_run_id = uuid.UUID(runtime_run_id)
+            dispatch.state = "submitted"
+            dispatch.dispatch_attempts = int(dispatch.dispatch_attempts or 0) + 1
+            dispatch.last_error_code = None
+            session.commit()
+            return True
+
+    def record_runtime_dispatch_failure(self, report_id: str, error_code: str) -> bool:
+        """Keep an unavailable runtime intent pending while recording its attempt."""
+
+        with self.db_manager.get_session() as session:
+            dispatch = (
+                session.query(ReportRuntimeDispatch)
+                .filter(ReportRuntimeDispatch.report_id == report_id)
+                .first()
+            )
+            if dispatch is None or dispatch.state != "pending":
+                return False
+            dispatch.dispatch_attempts = int(dispatch.dispatch_attempts or 0) + 1
+            dispatch.last_error_code = error_code[:50]
+            session.commit()
+            return True
 
     def begin_report_evaluation(self, report_id: str, *, user_id: str) -> bool:
         """Atomically claim one evaluator-only retry for a completed owned report."""
