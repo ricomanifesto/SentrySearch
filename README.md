@@ -74,8 +74,20 @@ heartbeats the lease while generation runs, and keeps report artifacts in
 SentrySearch storage. Evaluation remains a product-owned follow-up with its
 existing retry endpoint. Use `--once` for one dispatch-and-claim cycle.
 
-The local runtime currently has no authentication boundary, so non-loopback URLs
-are rejected. Do not enable this path in a deployed environment.
+For a runtime started in token mode, set both `SENTRYRUNTIME_PRODUCER_TOKEN` and
+`SENTRYRUNTIME_WORKER_TOKEN` in the worker environment. Configure matching token
+digests in SentryRuntime with separate `producer` and `worker` roles, each scoped
+to `sentrysearch/generate_report/v1`. The dispatcher uses the producer token; the
+execution worker uses the worker token. A 401/403 during dispatch, claim, or final
+acknowledgment stops the process for operator correction; it is not retried as an
+outage. Leave both unset for the unauthenticated loopback demo.
+
+Non-loopback URLs remain rejected, even with tokens. Client-owned HTTP transport
+ignores environment proxies and never follows redirects. Do not enable this path
+in a deployed environment: report-write fencing, terminal-state reconciliation,
+evaluation recovery, authenticated transport, and controlled-canary validation
+remain prerequisites. Sequential replay tests do not prove overlapping-worker
+safety or recovery of every product-side terminal state.
 
 ## Validation Without Live Services
 

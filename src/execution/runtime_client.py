@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
@@ -17,6 +18,10 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 class RuntimeUnavailable(RuntimeError):
     """The local runtime could not accept a request."""
+
+
+class RuntimeAccessDenied(RuntimeError):
+    """Service credentials or scope need operator correction, not a retry."""
 
 
 @dataclass(frozen=True)
@@ -46,18 +51,22 @@ class RuntimeRun:
 
 
 class RuntimeClient:
-    """Call the unauthenticated runtime only through an explicit loopback URL."""
+    """Call a local runtime, optionally with scoped service credentials."""
 
     def __init__(
         self,
         base_url: str,
         *,
+        bearer_token: str | None = None,
         http_client: httpx.Client | None = None,
     ) -> None:
         self.base_url = validate_local_runtime_url(base_url)
+        validate_runtime_token(bearer_token)
+        self._headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
         self._owns_client = http_client is None
         self._client = http_client or httpx.Client(
             timeout=httpx.Timeout(5.0, connect=2.0),
+            trust_env=False,
         )
 
     def close(self) -> None:
@@ -152,19 +161,36 @@ class RuntimeClient:
 
     def _post(self, path: str, payload: dict[str, Any]) -> httpx.Response:
         try:
-            response = self._client.post(f"{self.base_url}{path}", json=payload)
+            response = self._client.post(
+                f"{self.base_url}{path}",
+                json=payload,
+                headers=self._headers,
+                follow_redirects=False,
+            )
         except httpx.RequestError as error:
             raise RuntimeUnavailable("local runtime request failed") from error
         if response.status_code >= httpx.codes.INTERNAL_SERVER_ERROR:
             raise RuntimeUnavailable("local runtime is unavailable")
+        if response.status_code in {httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN}:
+            raise RuntimeAccessDenied("runtime credentials or scope were rejected")
         return response
 
 
+def validate_runtime_token(value: str | None) -> None:
+    """Reject malformed bearer values without including secret material in errors."""
+
+    if value is not None and (
+        not 32 <= len(value) <= 512 or re.fullmatch(r"[A-Za-z0-9._~+/-]+=*", value) is None
+    ):
+        raise ValueError("runtime bearer token must contain 32-512 valid token characters")
+
+
 def validate_local_runtime_url(value: str) -> str:
-    """Return a normalized loopback URL or reject the unauthenticated boundary."""
+    """Keep execution local until the product adapter passes its cutover gates."""
 
     # TODO(sentryruntime-cutover): Replace the loopback-only URL with authenticated
-    # service configuration after runtime identity and transport are deployed.
+    # service configuration after report-write fencing, terminal reconciliation,
+    # authenticated transport, and the deployed canary are verified.
     normalized = value.strip().rstrip("/")
     parsed = urlsplit(normalized)
     if (

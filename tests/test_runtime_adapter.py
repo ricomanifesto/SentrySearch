@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -11,6 +12,136 @@ from src.core.generation_failures import EvidenceAttestationError
 from src.execution.dispatcher import dispatch_pending_reports
 from src.execution.runtime_client import RuntimeClient, RuntimeRun, RuntimeUnavailable
 from src.execution.worker import DurableGenerationWorker
+
+
+def test_runtime_client_sends_bearer_header_without_following_redirects():
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(307, headers={"Location": "http://127.0.0.1:9999/leak"})
+
+    with httpx.Client(transport=httpx.MockTransport(handle), follow_redirects=True) as http_client:
+        client = RuntimeClient(
+            "http://127.0.0.1:8080", bearer_token="p" * 40, http_client=http_client
+        )
+        with pytest.raises(httpx.HTTPStatusError):
+            client.submit_report("report-1")
+    assert len(requests) == 1
+    assert requests[0].headers["Authorization"] == "Bearer " + "p" * 40
+    assert "p" * 40 not in str(requests[0].url)
+    assert "p" * 40 not in requests[0].content.decode()
+
+
+@pytest.mark.parametrize("token", ["", "short", "x" * 513, "x" * 39 + "\n", "x" * 39 + " "])
+def test_runtime_client_rejects_malformed_tokens(token: str):
+    with pytest.raises(ValueError, match="token"):
+        RuntimeClient("http://127.0.0.1:8080", bearer_token=token)
+
+
+def test_runtime_client_auth_does_not_enable_remote_execution():
+    with pytest.raises(ValueError, match="loopback"):
+        RuntimeClient("https://runtime.example.com", bearer_token="p" * 40)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_runtime_access_errors_are_not_transient_outages(status: int):
+    from src.execution.runtime_client import RuntimeAccessDenied
+
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda _request: httpx.Response(status))
+    ) as http_client:
+        client = RuntimeClient("http://127.0.0.1:8080", http_client=http_client)
+        with pytest.raises(RuntimeAccessDenied, match="credentials or scope"):
+            client.submit_report("report-1")
+
+
+def test_owned_runtime_client_disables_environment_proxies(monkeypatch):
+    options: dict[str, Any] = {}
+
+    def factory(**kwargs: Any):
+        options.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("src.execution.runtime_client.httpx.Client", factory)
+    RuntimeClient("http://127.0.0.1:8080")
+    assert options["trust_env"] is False
+
+
+def test_local_worker_uses_distinct_dispatch_and_worker_credentials(monkeypatch):
+    from dev.run_runtime_worker import runtime_clients_from_environment
+
+    monkeypatch.setenv("SENTRYRUNTIME_LOCAL_URL", "http://127.0.0.1:8080")
+    monkeypatch.setenv("SENTRYRUNTIME_PRODUCER_TOKEN", "p" * 40)
+    monkeypatch.setenv("SENTRYRUNTIME_WORKER_TOKEN", "w" * 40)
+    calls: list[tuple[str, str | None]] = []
+
+    def factory(url: str, *, bearer_token: str | None):
+        calls.append((url, bearer_token))
+        return object()
+
+    monkeypatch.setattr("dev.run_runtime_worker.RuntimeClient", factory)
+    producer, worker = runtime_clients_from_environment()
+    assert producer is not worker
+    assert calls == [("http://127.0.0.1:8080", "p" * 40), ("http://127.0.0.1:8080", "w" * 40)]
+
+
+@pytest.mark.parametrize("missing", ["SENTRYRUNTIME_PRODUCER_TOKEN", "SENTRYRUNTIME_WORKER_TOKEN"])
+def test_local_worker_rejects_partial_credentials(monkeypatch, missing: str):
+    from dev.run_runtime_worker import runtime_clients_from_environment
+
+    monkeypatch.setenv("SENTRYRUNTIME_LOCAL_URL", "http://127.0.0.1:8080")
+    monkeypatch.setenv("SENTRYRUNTIME_PRODUCER_TOKEN", "p" * 40)
+    monkeypatch.setenv("SENTRYRUNTIME_WORKER_TOKEN", "w" * 40)
+    monkeypatch.delenv(missing)
+    with pytest.raises(ValueError, match="both"):
+        runtime_clients_from_environment()
+
+
+@pytest.mark.parametrize("rejection", [None, "dispatch", "claim"])
+def test_local_worker_wires_roles_and_stops_on_access_denial(monkeypatch, rejection):
+    from dev import run_runtime_worker
+    from src.execution.runtime_client import RuntimeAccessDenied
+
+    class Client:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    producer, runtime = Client(), Client()
+    claimed: list[bool] = []
+
+    class Worker:
+        def __init__(self, **kwargs):
+            assert kwargs["runtime"] is runtime
+
+        def run_once(self):
+            claimed.append(True)
+            if rejection == "claim":
+                raise RuntimeAccessDenied("credentials or scope")
+            return False
+
+    def dispatch(client, _reports):
+        assert client is producer
+        if rejection == "dispatch":
+            raise RuntimeAccessDenied("credentials or scope")
+        return 0
+
+    monkeypatch.setattr(
+        run_runtime_worker,
+        "parse_args",
+        lambda: SimpleNamespace(once=True, poll_seconds=2, lease_seconds=60),
+    )
+    monkeypatch.setattr(run_runtime_worker.signal, "signal", lambda *_args: None)
+    monkeypatch.setattr(
+        run_runtime_worker, "runtime_clients_from_environment", lambda: (producer, runtime)
+    )
+    monkeypatch.setattr(run_runtime_worker, "DurableGenerationWorker", Worker)
+    monkeypatch.setattr(run_runtime_worker, "dispatch_pending_reports", dispatch)
+    assert run_runtime_worker.main() == (1 if rejection else 0)
+    assert claimed == ([] if rejection == "dispatch" else [True])
+    assert producer.closed and runtime.closed
 
 
 def test_runtime_client_submits_and_claims_the_versioned_report_workflow():
