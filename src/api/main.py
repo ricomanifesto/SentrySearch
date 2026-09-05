@@ -815,11 +815,14 @@ async def retry_report_evaluation(
                 status_code=409,
                 detail="This report is not available for evaluation retry",
             )
-        background_tasks.add_task(run_report_evaluation, report_id, owner_id)
+        if not report_service.has_runtime_dispatch(report_id):
+            # TODO(sentryruntime-cutover): Remove this in-process evaluator path
+            # after legacy reports are migrated and deployed rollback is proven.
+            background_tasks.add_task(run_report_evaluation, report_id, owner_id)
         return {
             "report_id": report_id,
             "evaluation_status": EvaluationStatus.PENDING.value,
-            "message": "Evaluation retry started",
+            "message": "Evaluation retry queued",
         }
     except HTTPException:
         raise

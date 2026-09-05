@@ -127,6 +127,7 @@ class DurableGenerationWorker:
         reports: ReportPort,
         generate: Callable[[str, str, str, GenerationLease], None],
         after_complete: Callable[[str, str], None] | None = None,
+        on_runtime_ready: Callable[[], None] | None = None,
         worker_id: str,
         lease_seconds: int,
         heartbeat_interval_seconds: float | None = None,
@@ -137,6 +138,7 @@ class DurableGenerationWorker:
         self.reports = reports
         self.generate = generate
         self.after_complete = after_complete
+        self.on_runtime_ready = on_runtime_ready
         self.worker_id = worker_id
         self.lease_seconds = lease_seconds
         self.heartbeat_interval_seconds = (
@@ -161,6 +163,8 @@ class DurableGenerationWorker:
     def _run_once(self) -> bool:
 
         run = self.runtime.claim(self.worker_id, lease_seconds=self.lease_seconds)
+        if self.on_runtime_ready is not None:
+            self.on_runtime_ready()
         if run is None:
             return False
 

@@ -64,7 +64,7 @@ the durable adapter, start the local runtime API on `127.0.0.1:8080`, set
 terminal:
 
 ```bash
-uv run python -m dev.run_runtime_worker
+uv run python -m dev.run_runtime_worker --health-port 8081
 ```
 
 With that opt-in set, creating a report commits the pending report and its
@@ -76,6 +76,11 @@ use content-addressed keys and only the current writer can publish references.
 Evaluation remains a product-owned follow-up with its existing retry endpoint.
 The worker also reconciles terminal runs and reclaims interrupted evaluations.
 Use `--once` for one reconciliation, dispatch, claim, and recovery cycle.
+The supervisor serves loopback-only `/healthz`, `/readyz`, and `/status` probes.
+SIGTERM/SIGINT drain current work; phase or drain deadlines terminate the owned
+worker process and leave durable leases for recovery. Generation and evaluation
+default to 30-minute and 10-minute budgets. Runtime-managed manual evaluation
+retries queue for this worker instead of bypassing it through the API process.
 
 For a runtime started in token mode, set both `SENTRYRUNTIME_PRODUCER_TOKEN` and
 `SENTRYRUNTIME_WORKER_TOKEN` in the worker environment. Configure matching token
@@ -89,8 +94,9 @@ Non-loopback URLs remain rejected, even with tokens. Client-owned HTTP transport
 ignores environment proxies and never follows redirects. Do not enable this path
 in a deployed environment yet. Local PostgreSQL/HTTP tests cover overlapping
 writers, immutable artifact references, terminal-state reconciliation, and
-bounded evaluation recovery. Protected deployed transport, worker lifecycle,
-operational monitoring, migration/drain planning, and a controlled canary remain
+bounded evaluation recovery. Local process tests cover probes, drain, deadlines,
+and supervisor loss. Protected deployed transport, target-platform lifecycle and
+monitoring, migration/drain planning, and a controlled canary remain
 release gates. See [runtime consistency and recovery](docs/runtime-consistency.md)
 for the proof command, exact ownership boundary, and remaining limitations.
 

@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 import uuid
 
+EVALUATION_LEASE_SECONDS = 900
+
 
 class GenerationLeaseLost(RuntimeError):
     """The report is terminal, deleted, or owned by a newer generation attempt."""

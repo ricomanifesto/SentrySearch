@@ -776,3 +776,28 @@ def test_empty_quality_distribution_has_no_average_score():
 
     assert result["average"] is None
     assert result["total_scored"] == 0
+
+
+def test_runtime_backlog_uses_a_single_statement_and_stable_clock():
+    from types import SimpleNamespace
+
+    statements = []
+
+    class Session:
+        def execute(self, statement):
+            statements.append(str(statement))
+            return SimpleNamespace(
+                mappings=lambda: SimpleNamespace(one=lambda: {"pending_dispatches": 0})
+            )
+
+    class Database:
+        @contextmanager
+        def get_session(self):
+            yield Session()
+
+    service = ReportStorageService.__new__(ReportStorageService)
+    service.db_manager = cast(Any, Database())
+    assert service.get_runtime_backlog() == {"pending_dispatches": 0}
+    assert len(statements) == 1
+    assert "statement_timestamp()" in statements[0]
+    assert "clock_timestamp()" not in statements[0]

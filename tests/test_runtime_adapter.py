@@ -103,6 +103,7 @@ def test_local_worker_rejects_partial_credentials(monkeypatch, missing: str):
 def test_local_worker_wires_roles_and_stops_on_access_denial(monkeypatch, rejection):
     from dev import run_runtime_worker
     from src.execution.runtime_client import RuntimeAccessDenied
+    from src.execution.supervisor import WorkerSettings
 
     class Client:
         closed = False
@@ -123,28 +124,28 @@ def test_local_worker_wires_roles_and_stops_on_access_denial(monkeypatch, reject
                 raise RuntimeAccessDenied("credentials or scope")
             return False
 
-    def dispatch(client, _reports):
+    def dispatch(client, _reports, **_kwargs):
         assert client is producer
         if rejection == "dispatch":
             raise RuntimeAccessDenied("credentials or scope")
         return 0
 
-    monkeypatch.setattr(
-        run_runtime_worker,
-        "parse_args",
-        lambda: SimpleNamespace(once=True, poll_seconds=2, lease_seconds=60),
+    reports = SimpleNamespace(
+        get_runtime_backlog=lambda: {"pending_dispatches": 0},
+        get_pending_runtime_evaluations=lambda **_kwargs: [],
     )
-    monkeypatch.setattr(run_runtime_worker.signal, "signal", lambda *_args: None)
+    monkeypatch.setattr(
+        run_runtime_worker, "load_jobs", lambda: (reports, lambda *_args: None, lambda *_args: None)
+    )
     monkeypatch.setattr(
         run_runtime_worker, "runtime_clients_from_environment", lambda: (producer, runtime)
     )
     monkeypatch.setattr(run_runtime_worker, "DurableGenerationWorker", Worker)
     monkeypatch.setattr(run_runtime_worker, "dispatch_pending_reports", dispatch)
     monkeypatch.setattr(run_runtime_worker, "reconcile_runtime_reports", lambda *_args: 0)
-    monkeypatch.setattr(
-        run_runtime_worker.report_service, "get_pending_runtime_evaluations", lambda **_kwargs: []
-    )
-    assert run_runtime_worker.main() == (1 if rejection else 0)
+    assert run_runtime_worker.run_worker_loop(
+        WorkerSettings(once=True), threading.Event(), lambda _event: None
+    ) == (1 if rejection else 0)
     assert claimed == ([] if rejection == "dispatch" else [True])
     assert producer.closed and runtime.closed
 

@@ -334,7 +334,10 @@ def test_create_report_queues_runtime_dispatch_when_local_adapter_is_enabled(mon
     assert len(background_tasks.tasks) == 0
 
 
-def test_evaluation_retry_claims_saved_report_without_restarting_generation(monkeypatch):
+@pytest.mark.parametrize("runtime_managed", [False, True])
+def test_evaluation_retry_claims_saved_report_without_restarting_generation(
+    monkeypatch, runtime_managed
+):
     user = supabase_auth.AuthenticatedUser(
         user_id="analyst-user",
         email="analyst@example.com",
@@ -351,6 +354,12 @@ def test_evaluation_retry_claims_saved_report_without_restarting_generation(monk
     claims = []
     monkeypatch.setattr(
         api_main.report_service,
+        "has_runtime_dispatch",
+        lambda _report_id: runtime_managed,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        api_main.report_service,
         "begin_report_evaluation",
         lambda report_id, user_id: claims.append((report_id, user_id)) or True,
     )
@@ -365,7 +374,7 @@ def test_evaluation_retry_claims_saved_report_without_restarting_generation(monk
 
     assert response["evaluation_status"] == "pending"
     assert claims == [("report-1", "analyst-user")]
-    assert len(background_tasks.tasks) == 1
+    assert len(background_tasks.tasks) == (0 if runtime_managed else 1)
 
 
 def test_analyst_disposition_endpoint_appends_current_evaluation_judgment(monkeypatch):

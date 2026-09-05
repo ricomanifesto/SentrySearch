@@ -11,7 +11,7 @@ import uuid
 from sqlalchemy import and_, asc, desc, func, or_, select
 from sqlalchemy.orm import Session
 
-from src.domain.execution import GenerationLease, GenerationLeaseLost
+from src.domain.execution import EVALUATION_LEASE_SECONDS, GenerationLease, GenerationLeaseLost
 
 from src.domain.reports import (
     AnalystDisposition,
@@ -1225,6 +1225,56 @@ class ReportStorageService:
             )
             return [(str(row.report_id), str(row.runtime_run_id)) for row in rows]
 
+    def get_runtime_backlog(self) -> dict[str, int]:
+        """Sample aggregate product state in one statement, without report payloads."""
+        dispatches = select(func.count()).select_from(ReportRuntimeDispatch)
+        evaluations = (
+            select(func.count())
+            .select_from(Report)
+            .join(ReportRuntimeDispatch, ReportRuntimeDispatch.report_id == Report.id)
+            .where(
+                Report.status == ReportStatus.COMPLETED.value,
+                Report.evaluation_status == EvaluationStatus.PENDING.value,
+                Report.user_id.is_not(None),
+            )
+        )
+        ready = or_(
+            Report.evaluation_lease_expires_at.is_(None),
+            Report.evaluation_lease_expires_at <= func.statement_timestamp(),
+        )
+        statement = select(
+            dispatches.where(ReportRuntimeDispatch.state == "pending")
+            .scalar_subquery()
+            .label("pending_dispatches"),
+            dispatches.where(ReportRuntimeDispatch.state == "submitted")
+            .scalar_subquery()
+            .label("submitted_dispatches"),
+            evaluations.where(ready).scalar_subquery().label("ready_evaluations"),
+            evaluations.where(Report.evaluation_lease_expires_at > func.statement_timestamp())
+            .scalar_subquery()
+            .label("active_evaluations"),
+            dispatches.where(ReportRuntimeDispatch.last_error_code.is_not(None))
+            .scalar_subquery()
+            .label("dispatch_errors"),
+        )
+        with self.db_manager.get_session() as session:
+            return {
+                str(key): int(value)
+                for key, value in session.execute(statement).mappings().one().items()
+            }
+
+    def has_runtime_dispatch(self, report_id: str) -> bool:
+        """Execution ownership follows the durable intent, not the API environment."""
+        with self.db_manager.get_session() as session:
+            return (
+                session.scalar(
+                    select(ReportRuntimeDispatch.report_id).where(
+                        ReportRuntimeDispatch.report_id == report_id
+                    )
+                )
+                is not None
+            )
+
     def record_runtime_check_error(self, report_id: str, code: str) -> None:
         with self.db_manager.get_session() as session:
             dispatch = self._locked_dispatch(session, report_id)
@@ -1336,7 +1386,7 @@ class ReportStorageService:
             return [(str(report.id), str(report.user_id)) for report in rows]
 
     def claim_report_evaluation(
-        self, report_id: str, *, user_id: str, lease_seconds: int = 900
+        self, report_id: str, *, user_id: str, lease_seconds: int = EVALUATION_LEASE_SECONDS
     ) -> str | None:
         """Claim queued or interrupted evaluation, with two automatic recoveries."""
         if not 1 <= lease_seconds <= 3600:

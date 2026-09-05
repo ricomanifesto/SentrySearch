@@ -588,3 +588,145 @@ def test_additive_migration_backfills_existing_intents_and_evaluations(reports, 
         assert dispatch.state == "pending"
         assert dispatch.lease_version == 0
         assert dispatch.lease_owner is None
+
+
+def test_runtime_backlog_reports_counts_without_report_contents(reports, artifact):
+    from src.domain.execution import GenerationLease
+
+    service, _objects = reports
+    pending, evaluating, legacy = [str(uuid.uuid4()) for _ in range(3)]
+    for report_id in (pending, evaluating, legacy):
+        service.create_pending_report(
+            report_id, "Private tool name", "private-owner", runtime_dispatch=report_id != legacy
+        )
+    lease = GenerationLease(str(uuid.uuid4()), "worker", 1)
+    service.begin_runtime_attempt(evaluating, lease)
+    service.finalize_report(evaluating, artifact, generation_lease=lease)
+    service.finalize_report(legacy, artifact)
+    assert service.has_runtime_dispatch(pending)
+    assert service.has_runtime_dispatch(evaluating)
+    assert not service.has_runtime_dispatch(legacy)
+    service.record_runtime_dispatch_failure(pending, "runtime_unavailable")
+    assert service.get_runtime_backlog() == {
+        "pending_dispatches": 1,
+        "submitted_dispatches": 1,
+        "ready_evaluations": 1,
+        "active_evaluations": 0,
+        "dispatch_errors": 1,
+    }
+    assert service.claim_report_evaluation(evaluating, user_id="private-owner")
+    backlog = service.get_runtime_backlog()
+    assert backlog["ready_evaluations"] == 0
+    assert backlog["active_evaluations"] == 1
+    with service.db_manager.get_session() as session:
+        session.execute(
+            text("UPDATE reports SET evaluation_lease_expires_at=clock_timestamp() WHERE id=:id"),
+            {"id": evaluating},
+        )
+    backlog = service.get_runtime_backlog()
+    assert backlog["ready_evaluations"] == 1
+    assert backlog["active_evaluations"] == 0
+
+
+def deadline_evaluator_worker(settings, stop, emit):
+    """Run the real loop/storage with only the model call replaced by blocked work."""
+    from dev import run_runtime_worker as runner
+    from src.api import main as api
+    from unittest.mock import patch
+
+    manager = DatabaseManager.__new__(DatabaseManager)
+    manager.engine = create_engine(os.environ["SENTRYSEARCH_TEST_PRODUCT_URL"])
+    manager.SessionLocal = sessionmaker(bind=manager.engine, expire_on_commit=False)
+    service = ReportStorageService()
+    service.db_manager = manager
+
+    def unexpected_generation(*_args):
+        raise AssertionError("saved-evidence recovery must not generate")
+
+    def hung_judge(_profile):
+        emit({"event": "backlog", "counts": service.get_runtime_backlog()})
+        time.sleep(30)
+        raise AssertionError("evaluation deadline did not stop the judge")
+
+    with (
+        patch.object(api, "report_service", service),
+        patch.object(api, "evaluate_saved_report", hung_judge),
+        patch.object(
+            runner,
+            "load_jobs",
+            return_value=(service, unexpected_generation, api.run_report_evaluation),
+        ),
+    ):
+        return runner.run_worker_loop(settings, stop, emit)
+
+
+def test_evaluation_deadline_leaves_a_recoverable_product_lease(
+    reports, artifact, runtime_clients, monkeypatch
+):
+    from types import SimpleNamespace
+    from src.api import main as api
+    from src.domain.execution import GenerationLease
+    from src.execution.dispatcher import dispatch_pending_reports
+    from src.execution.supervisor import WorkerSettings, WorkerSupervisor
+
+    service, _objects = reports
+    producer, runtime = runtime_clients
+    report_id = str(uuid.uuid4())
+    service.create_pending_report(report_id, "Example", "owner", runtime_dispatch=True)
+    dispatch_pending_reports(producer, service)
+    run = runtime.claim("setup-worker", lease_seconds=60)
+    assert run
+    lease = GenerationLease(run.run_id, run.lease_owner, run.lease_version)
+    service.begin_runtime_attempt(report_id, lease)
+    service.finalize_report(report_id, artifact, generation_lease=lease)
+    runtime.complete(run.run_id, run.lease_owner, run.lease_version, {"report_id": report_id})
+    monkeypatch.setenv("SENTRYSEARCH_TEST_PRODUCT_URL", str(service.db_manager.engine.url))
+    supervisor = WorkerSupervisor(
+        WorkerSettings(once=True, evaluation_seconds=0.5), deadline_evaluator_worker
+    )
+    assert supervisor.run() == 124
+    assert supervisor.status.snapshot()["error_code"] == "evaluation_deadline_exceeded"
+    assert supervisor.status.snapshot()["backlog"]["counts"]["active_evaluations"] == 1
+    assert service.get_report(report_id)["status"] == "completed"
+    assert service.claim_report_evaluation(report_id, user_id="owner") is None
+    assert service.get_runtime_backlog()["active_evaluations"] == 1
+    with service.db_manager.get_session() as session:
+        session.execute(
+            text("UPDATE reports SET evaluation_lease_expires_at=clock_timestamp() WHERE id=:id"),
+            {"id": report_id},
+        )
+    calls = []
+
+    def judge(profile):
+        calls.append(True)
+        return SimpleNamespace(
+            succeeded=True,
+            profile=profile,
+            quality_assessment={"overall_score": 4.0},
+            evaluation_route={"request_count": 1},
+        )
+
+    monkeypatch.setattr(api, "report_service", service)
+    monkeypatch.setattr(api, "evaluate_saved_report", judge)
+    api.run_report_evaluation(report_id, "owner")
+    result = service.get_report(report_id)
+    assert calls == [True]
+    assert result["evaluation_status"] == "completed"
+    assert result["evaluation_attempts"] == 2
+    assert result["web_sources"] == artifact["web_sources"]
+    assert producer.get_run(run.run_id).state == "succeeded"
+
+    # Manual retry keeps durable ownership even when the API has no runtime URL.
+    import asyncio
+    from fastapi import BackgroundTasks
+    from src.auth.supabase_auth import AuthenticatedUser
+
+    monkeypatch.delenv("SENTRYRUNTIME_LOCAL_URL")
+    background = BackgroundTasks()
+    user = AuthenticatedUser(
+        user_id="owner", email="owner@example.com", metadata={"role": "analyst"}
+    )
+    response = asyncio.run(api.retry_report_evaluation(report_id, background, user))
+    assert response["evaluation_status"] == "pending"
+    assert background.tasks == []
+    assert service.get_pending_runtime_evaluations() == [(report_id, "owner")]
