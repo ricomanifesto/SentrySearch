@@ -88,6 +88,10 @@ class DatabaseManager:
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_error_code VARCHAR(50)",
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_attempts INTEGER DEFAULT 0",
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluated_at TIMESTAMPTZ",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_lease_id UUID",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_lease_expires_at TIMESTAMPTZ",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_recoveries INTEGER NOT NULL DEFAULT 0",
+            "CREATE INDEX IF NOT EXISTS ix_reports_pending_evaluations ON reports (evaluation_status, evaluation_lease_expires_at)",
             "ALTER TABLE reports ADD COLUMN IF NOT EXISTS content_preview TEXT",
             "CREATE INDEX IF NOT EXISTS ix_reports_review_status ON reports (review_status)",
             "CREATE INDEX IF NOT EXISTS ix_reports_classification_status ON reports (classification_status)",
@@ -99,6 +103,8 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS ix_report_disposition_events_current ON report_disposition_events (report_id, evaluation_attempt, created_at DESC)",
             "CREATE TABLE IF NOT EXISTS report_runtime_dispatches (report_id UUID PRIMARY KEY REFERENCES reports(id) ON DELETE CASCADE, runtime_run_id UUID, state VARCHAR(20) NOT NULL DEFAULT 'pending', dispatch_attempts INTEGER NOT NULL DEFAULT 0, last_error_code VARCHAR(50), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
             "CREATE INDEX IF NOT EXISTS ix_report_runtime_dispatches_pending ON report_runtime_dispatches (state, created_at)",
+            "ALTER TABLE report_runtime_dispatches ADD COLUMN IF NOT EXISTS lease_version BIGINT NOT NULL DEFAULT 0",
+            "ALTER TABLE report_runtime_dispatches ADD COLUMN IF NOT EXISTS lease_owner TEXT",
         ]
         try:
             with self.engine.begin() as connection:

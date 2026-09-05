@@ -9,7 +9,8 @@ from typing import Any, Protocol
 
 from src.core.generation_failures import build_generation_failure
 from src.domain.reports import ReportStatus
-from src.execution.runtime_client import RuntimeRun
+from src.domain.execution import GenerationLease, GenerationLeaseLost
+from src.execution.runtime_client import RuntimeAccessDenied, RuntimeLeaseFenced, RuntimeRun
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,8 @@ class RuntimePort(Protocol):
 
 
 class ReportPort(Protocol):
+    def begin_runtime_attempt(self, report_id: str, lease: GenerationLease) -> bool: ...
+
     def get_report(
         self,
         report_id: str,
@@ -59,6 +62,7 @@ class ReportPort(Protocol):
         error_code: str,
         retryable: bool,
         failure: dict[str, Any],
+        generation_lease: GenerationLease | None = None,
     ) -> bool: ...
 
 
@@ -78,6 +82,7 @@ class LeaseHeartbeat:
         self.lease_seconds = lease_seconds
         self.interval_seconds = interval_seconds
         self._stop = threading.Event()
+        self._failure: Exception | None = None
         self._thread = threading.Thread(
             target=self._heartbeat_until_stopped,
             name=f"runtime-heartbeat-{run.run_id}",
@@ -88,9 +93,13 @@ class LeaseHeartbeat:
         self._thread.start()
         return self
 
-    def __exit__(self, *_args: object) -> None:
+    def __exit__(self, exception_type: object, *_args: object) -> None:
         self._stop.set()
-        self._thread.join(timeout=self.interval_seconds + 1)
+        # RuntimeClient uses network timeouts. Do not close its transport while
+        # a heartbeat is still using it; this is not a whole-job deadline.
+        self._thread.join()
+        if self._failure is not None and exception_type is None:
+            raise self._failure
 
     def _heartbeat_until_stopped(self) -> None:
         while not self._stop.wait(self.interval_seconds):
@@ -101,6 +110,9 @@ class LeaseHeartbeat:
                     self.run.lease_version,
                     lease_seconds=self.lease_seconds,
                 )
+            except (RuntimeAccessDenied, RuntimeLeaseFenced) as error:
+                self._failure = error
+                return
             except Exception as error:  # pragma: no cover - defensive logging boundary
                 logger.warning("Runtime heartbeat failed for %s: %s", self.run.run_id, error)
 
@@ -113,7 +125,7 @@ class DurableGenerationWorker:
         *,
         runtime: RuntimePort,
         reports: ReportPort,
-        generate: Callable[[str, str, str], None],
+        generate: Callable[[str, str, str, GenerationLease], None],
         after_complete: Callable[[str, str], None] | None = None,
         worker_id: str,
         lease_seconds: int,
@@ -127,15 +139,26 @@ class DurableGenerationWorker:
         self.after_complete = after_complete
         self.worker_id = worker_id
         self.lease_seconds = lease_seconds
-        self.heartbeat_interval_seconds = heartbeat_interval_seconds or max(
-            1.0,
-            lease_seconds / 3,
+        self.heartbeat_interval_seconds = (
+            heartbeat_interval_seconds
+            if heartbeat_interval_seconds is not None
+            else max(
+                1.0,
+                lease_seconds / 3,
+            )
         )
-        if self.heartbeat_interval_seconds >= lease_seconds:
+        if not 0 < self.heartbeat_interval_seconds < lease_seconds:
             raise ValueError("heartbeat interval must be shorter than the lease")
 
     def run_once(self) -> bool:
         """Return true when a run was claimed, including an idempotent replay."""
+        try:
+            return self._run_once()
+        except (GenerationLeaseLost, RuntimeLeaseFenced):
+            logger.info("Generation attempt was fenced; leaving recovery to the current owner")
+            return True
+
+    def _run_once(self) -> bool:
 
         run = self.runtime.claim(self.worker_id, lease_seconds=self.lease_seconds)
         if run is None:
@@ -170,6 +193,9 @@ class DurableGenerationWorker:
         if not isinstance(tool_name, str) or not tool_name or not isinstance(user_id, str):
             self._fail_invalid_input(run, "report input is invalid")
             return True
+        lease = GenerationLease(run.run_id, run.lease_owner, run.lease_version)
+        if not self.reports.begin_runtime_attempt(report_id, lease):
+            return True
         try:
             with LeaseHeartbeat(
                 self.runtime,
@@ -177,10 +203,12 @@ class DurableGenerationWorker:
                 lease_seconds=self.lease_seconds,
                 interval_seconds=self.heartbeat_interval_seconds,
             ):
-                self.generate(report_id, tool_name, user_id)
+                self.generate(report_id, tool_name, user_id, lease)
             finalized = self.reports.get_report(report_id, include_content=False)
             if finalized is None or finalized.get("status") != ReportStatus.COMPLETED.value:
                 raise RuntimeError("generation returned without a completed report")
+        except (GenerationLeaseLost, RuntimeLeaseFenced, RuntimeAccessDenied):
+            raise
         except Exception as error:
             carried_failure = getattr(error, "generation_failure", None)
             failure = (
@@ -201,6 +229,7 @@ class DurableGenerationWorker:
                     error_code=str(failure["error_code"]),
                     retryable=bool(failure["retryable"]),
                     failure=failure,
+                    generation_lease=lease,
                 )
             return True
         self.runtime.complete(

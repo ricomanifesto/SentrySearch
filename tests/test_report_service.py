@@ -194,6 +194,9 @@ def test_runtime_dispatch_acknowledgement_records_run_id_and_attempt():
         def filter(self, *_args):
             return self
 
+        def with_for_update(self):
+            return self
+
         def first(self):
             return dispatch
 
@@ -233,6 +236,9 @@ def test_runtime_dispatch_failure_remains_pending_for_replay():
 
     class FakeQuery:
         def filter(self, *_args):
+            return self
+
+        def with_for_update(self):
             return self
 
         def first(self):
@@ -646,15 +652,21 @@ def test_failed_generation_preserves_the_last_observed_stage_for_recovery():
     )
 
     class FakeQuery:
+        def __init__(self, model):
+            self.model = model
+
         def filter(self, *args):
             return self
 
+        def with_for_update(self):
+            return self
+
         def first(self):
-            return report
+            return report if self.model is Report else None
 
     class FakeSession:
-        def query(self, *args):
-            return FakeQuery()
+        def query(self, model):
+            return FakeQuery(model)
 
         def commit(self):
             return None
@@ -690,15 +702,21 @@ def test_failed_evidence_gate_persists_its_named_audit_record():
     }
 
     class FakeQuery:
+        def __init__(self, model):
+            self.model = model
+
         def filter(self, *args):
             return self
 
+        def with_for_update(self):
+            return self
+
         def first(self):
-            return report
+            return report if self.model is Report else None
 
     class FakeSession:
-        def query(self, *args):
-            return FakeQuery()
+        def query(self, model):
+            return FakeQuery(model)
 
         def commit(self):
             return None

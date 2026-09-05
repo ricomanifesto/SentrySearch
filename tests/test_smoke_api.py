@@ -420,6 +420,9 @@ def test_analyst_disposition_endpoint_appends_current_evaluation_judgment(monkey
 
 
 def test_evaluator_only_job_preserves_sources_and_persists_new_score(monkeypatch):
+    monkeypatch.setattr(
+        api_main.report_service, "claim_report_evaluation", lambda *_args, **_kwargs: "lease-1"
+    )
     profile = {
         "coreMetadata": {"name": "Example", "category": "Backdoor"},
         "webSearchSources": {
@@ -471,6 +474,7 @@ def test_evaluator_only_job_preserves_sources_and_persists_new_score(monkeypatch
     api_main.run_report_evaluation("report-1", "analyst-user")
 
     assert completed["quality_assessment"]["overall_score"] == 4.25
+    assert completed["evaluation_lease"] == "lease-1"
     assert completed["threat_data"]["webSearchSources"]["primarySources"][0]["url"] == (
         "https://example.com/report"
     )
@@ -668,7 +672,8 @@ def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
     captured_stages = []
     evaluation_calls = []
 
-    def finalize_report(report_id, report_data, user_id=None):
+    def finalize_report(report_id, report_data, user_id=None, *, generation_lease=None):
+        assert generation_lease is None
         captured.update(report_id=report_id, report_data=report_data, user_id=user_id)
         return report_id
 
@@ -681,7 +686,7 @@ def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
     monkeypatch.setattr(
         api_main.report_service,
         "update_generation_stage",
-        lambda report_id, stage: captured_stages.append((report_id, stage)),
+        lambda report_id, stage, **_kwargs: captured_stages.append((report_id, stage)),
         raising=False,
     )
 

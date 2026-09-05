@@ -71,8 +71,11 @@ With that opt-in set, creating a report commits the pending report and its
 runtime-dispatch intent together. The worker retries runtime submission using the
 report ID as its idempotency key, claims only `sentrysearch/generate_report/v1`,
 heartbeats the lease while generation runs, and keeps report artifacts in
-SentrySearch storage. Evaluation remains a product-owned follow-up with its
-existing retry endpoint. Use `--once` for one dispatch-and-claim cycle.
+SentrySearch storage. Each attempt registers a product-side write fence; uploads
+use content-addressed keys and only the current writer can publish references.
+Evaluation remains a product-owned follow-up with its existing retry endpoint.
+The worker also reconciles terminal runs and reclaims interrupted evaluations.
+Use `--once` for one reconciliation, dispatch, claim, and recovery cycle.
 
 For a runtime started in token mode, set both `SENTRYRUNTIME_PRODUCER_TOKEN` and
 `SENTRYRUNTIME_WORKER_TOKEN` in the worker environment. Configure matching token
@@ -84,10 +87,12 @@ outage. Leave both unset for the unauthenticated loopback demo.
 
 Non-loopback URLs remain rejected, even with tokens. Client-owned HTTP transport
 ignores environment proxies and never follows redirects. Do not enable this path
-in a deployed environment: report-write fencing, terminal-state reconciliation,
-evaluation recovery, authenticated transport, and controlled-canary validation
-remain prerequisites. Sequential replay tests do not prove overlapping-worker
-safety or recovery of every product-side terminal state.
+in a deployed environment yet. Local PostgreSQL/HTTP tests cover overlapping
+writers, immutable artifact references, terminal-state reconciliation, and
+bounded evaluation recovery. Protected deployed transport, worker lifecycle,
+operational monitoring, migration/drain planning, and a controlled canary remain
+release gates. See [runtime consistency and recovery](docs/runtime-consistency.md)
+for the proof command, exact ownership boundary, and remaining limitations.
 
 ## Validation Without Live Services
 

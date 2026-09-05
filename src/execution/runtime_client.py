@@ -24,6 +24,14 @@ class RuntimeAccessDenied(RuntimeError):
     """Service credentials or scope need operator correction, not a retry."""
 
 
+class RuntimeRunMissing(RuntimeError):
+    """The bound run cannot be read; do not silently replace its identity."""
+
+
+class RuntimeLeaseFenced(RuntimeError):
+    """The runtime no longer grants this worker authority to mutate the run."""
+
+
 @dataclass(frozen=True)
 class RuntimeRun:
     """The runtime fields needed by the SentrySearch adapter."""
@@ -34,6 +42,7 @@ class RuntimeRun:
     lease_owner: str
     lease_version: int
     input_ref: dict[str, Any]
+    error_code: str | None = None
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> "RuntimeRun":
@@ -47,6 +56,7 @@ class RuntimeRun:
             lease_owner=str(payload.get("lease_owner") or ""),
             lease_version=int(payload["lease_version"]),
             input_ref=dict(input_ref),
+            error_code=payload.get("error_code"),
         )
 
 
@@ -99,6 +109,13 @@ class RuntimeClient:
         )
         if response.status_code == httpx.codes.NO_CONTENT:
             return None
+        response.raise_for_status()
+        return RuntimeRun.from_payload(response.json())
+
+    def get_run(self, run_id: str) -> RuntimeRun:
+        response = self._request("GET", f"/v1/runs/{run_id}")
+        if response.status_code == httpx.codes.NOT_FOUND:
+            raise RuntimeRunMissing("bound runtime run is unavailable")
         response.raise_for_status()
         return RuntimeRun.from_payload(response.json())
 
@@ -160,8 +177,14 @@ class RuntimeClient:
         return RuntimeRun.from_payload(response.json())
 
     def _post(self, path: str, payload: dict[str, Any]) -> httpx.Response:
+        return self._request("POST", path, payload)
+
+    def _request(
+        self, method: str, path: str, payload: dict[str, Any] | None = None
+    ) -> httpx.Response:
         try:
-            response = self._client.post(
+            response = self._client.request(
+                method,
                 f"{self.base_url}{path}",
                 json=payload,
                 headers=self._headers,
@@ -173,6 +196,13 @@ class RuntimeClient:
             raise RuntimeUnavailable("local runtime is unavailable")
         if response.status_code in {httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN}:
             raise RuntimeAccessDenied("runtime credentials or scope were rejected")
+        if response.status_code == httpx.codes.CONFLICT:
+            try:
+                body = response.json()
+            except ValueError:
+                body = {}
+            if isinstance(body, dict) and body.get("code") == "lease_fenced":
+                raise RuntimeLeaseFenced("runtime lease was superseded or finalized")
         return response
 
 

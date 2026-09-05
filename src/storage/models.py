@@ -3,6 +3,7 @@ Database models for SentrySearch report storage using SQLAlchemy
 """
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
     DateTime,
@@ -85,6 +86,9 @@ class Report(Base):
     evaluation_error_code = Column(String(50))
     evaluation_attempts = Column(Integer, default=0)
     evaluated_at = Column(DateTime(timezone=True))
+    evaluation_lease_id = Column(UUID(as_uuid=True))
+    evaluation_lease_expires_at = Column(DateTime(timezone=True))
+    evaluation_recoveries = Column(Integer, nullable=False, default=0, server_default="0")
 
     # Cloud storage references
     markdown_s3_key = Column(String(500))  # S3 object key for markdown content
@@ -169,6 +173,8 @@ class ReportRuntimeDispatch(Base):
         primary_key=True,
     )
     runtime_run_id = Column(UUID(as_uuid=True))
+    lease_version = Column(BigInteger, nullable=False, default=0, server_default="0")
+    lease_owner = Column(Text)
     state = Column(String(20), nullable=False, default="pending")
     dispatch_attempts = Column(Integer, nullable=False, default=0)
     last_error_code = Column(String(50))

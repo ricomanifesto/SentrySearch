@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from src.core.generation_failures import EvidenceAttestationError
+from src.domain.execution import GenerationLease
 from src.execution.dispatcher import dispatch_pending_reports
 from src.execution.runtime_client import RuntimeClient, RuntimeRun, RuntimeUnavailable
 from src.execution.worker import DurableGenerationWorker
@@ -139,6 +140,10 @@ def test_local_worker_wires_roles_and_stops_on_access_denial(monkeypatch, reject
     )
     monkeypatch.setattr(run_runtime_worker, "DurableGenerationWorker", Worker)
     monkeypatch.setattr(run_runtime_worker, "dispatch_pending_reports", dispatch)
+    monkeypatch.setattr(run_runtime_worker, "reconcile_runtime_reports", lambda *_args: 0)
+    monkeypatch.setattr(
+        run_runtime_worker.report_service, "get_pending_runtime_evaluations", lambda **_kwargs: []
+    )
     assert run_runtime_worker.main() == (1 if rejection else 0)
     assert claimed == ([] if rejection == "dispatch" else [True])
     assert producer.closed and runtime.closed
@@ -277,6 +282,9 @@ def test_worker_acknowledges_completed_report_replay_without_regeneration():
         def mark_report_failed(self, *_args: Any, **_kwargs: Any) -> bool:
             raise AssertionError("completed replay must not mark failure")
 
+        def begin_runtime_attempt(self, report_id: str, lease: GenerationLease) -> bool:
+            raise AssertionError("completed replay must not register a new product writer")
+
     def generate(*_args: Any, **_kwargs: Any) -> None:
         raise AssertionError("completed report must not be regenerated")
 
@@ -412,6 +420,10 @@ def test_worker_heartbeats_while_generation_is_running():
         def mark_report_failed(self, *_args: Any, **_kwargs: Any) -> bool:
             raise AssertionError("successful generation must not mark the report failed")
 
+        def begin_runtime_attempt(self, report_id: str, lease: GenerationLease) -> bool:
+            assert lease == GenerationLease(run.run_id, run.lease_owner, run.lease_version)
+            return True
+
     def generate(*_args: Any) -> None:
         assert heartbeat_seen.wait(timeout=1)
         report_status["value"] = "completed"
@@ -476,6 +488,9 @@ def test_worker_leaves_retryable_report_nonterminal_when_runtime_schedules_retry
 
         def mark_report_failed(self, *_args: Any, **_kwargs: Any) -> bool:
             self.marked_failed = True
+            return True
+
+        def begin_runtime_attempt(self, report_id: str, lease: GenerationLease) -> bool:
             return True
 
     def generate(*_args: Any) -> None:
@@ -547,6 +562,9 @@ def test_worker_maps_nonretryable_result_failure_to_terminal_runtime_category():
             self.failure = failure
             return True
 
+        def begin_runtime_attempt(self, report_id: str, lease: GenerationLease) -> bool:
+            return True
+
     def generate(*_args: Any) -> None:
         raise EvidenceAttestationError("private evidence detail")
 
@@ -566,6 +584,7 @@ def test_worker_maps_nonretryable_result_failure_to_terminal_runtime_category():
     assert reports.failure is not None
     assert reports.failure["error_code"] == "evidence_unattested"
     assert reports.failure["retryable"] is False
+    assert reports.failure["generation_lease"] == GenerationLease(run.run_id, "worker-1", 1)
 
 
 def test_worker_fails_missing_product_record_as_invalid_input():
@@ -600,6 +619,9 @@ def test_worker_fails_missing_product_record_as_invalid_input():
 
         def mark_report_failed(self, *_args: Any, **_kwargs: Any) -> bool:
             raise AssertionError("missing report cannot be marked")
+
+        def begin_runtime_attempt(self, report_id: str, lease: GenerationLease) -> bool:
+            raise AssertionError("missing report cannot be claimed")
 
     runtime = Runtime()
     worker = DurableGenerationWorker(

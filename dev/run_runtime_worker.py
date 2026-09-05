@@ -12,6 +12,7 @@ import threading
 
 from src.api.main import generate_report_artifact, run_report_evaluation
 from src.execution.dispatcher import dispatch_pending_reports
+from src.execution.reconciler import reconcile_runtime_reports
 from src.execution.runtime_client import (
     RuntimeAccessDenied,
     RuntimeClient,
@@ -61,6 +62,7 @@ def main() -> int:
             lease_seconds=args.lease_seconds,
         )
         while not stop.is_set():
+            reconcile_runtime_reports(dispatcher_runtime, report_service)
             dispatched = dispatch_pending_reports(dispatcher_runtime, report_service)
             try:
                 claimed = worker.run_once()
@@ -69,6 +71,13 @@ def main() -> int:
                 claimed = False
             if dispatched:
                 logger.info("Submitted %d pending report run(s)", dispatched)
+            # Includes reports published just before a generation worker crashed,
+            # even when that runtime run has already become terminal.
+            reconcile_runtime_reports(dispatcher_runtime, report_service)
+            for report_id, user_id in report_service.get_pending_runtime_evaluations(limit=1):
+                if stop.is_set():
+                    break
+                run_report_evaluation(report_id, user_id)
             if args.once:
                 return 0
             if not claimed:
