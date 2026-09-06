@@ -194,6 +194,9 @@ def test_runtime_dispatch_acknowledgement_records_run_id_and_attempt():
         def filter(self, *_args):
             return self
 
+        def with_for_update(self):
+            return self
+
         def first(self):
             return dispatch
 
@@ -233,6 +236,9 @@ def test_runtime_dispatch_failure_remains_pending_for_replay():
 
     class FakeQuery:
         def filter(self, *_args):
+            return self
+
+        def with_for_update(self):
             return self
 
         def first(self):
@@ -646,15 +652,21 @@ def test_failed_generation_preserves_the_last_observed_stage_for_recovery():
     )
 
     class FakeQuery:
+        def __init__(self, model):
+            self.model = model
+
         def filter(self, *args):
             return self
 
+        def with_for_update(self):
+            return self
+
         def first(self):
-            return report
+            return report if self.model is Report else None
 
     class FakeSession:
-        def query(self, *args):
-            return FakeQuery()
+        def query(self, model):
+            return FakeQuery(model)
 
         def commit(self):
             return None
@@ -690,15 +702,21 @@ def test_failed_evidence_gate_persists_its_named_audit_record():
     }
 
     class FakeQuery:
+        def __init__(self, model):
+            self.model = model
+
         def filter(self, *args):
             return self
 
+        def with_for_update(self):
+            return self
+
         def first(self):
-            return report
+            return report if self.model is Report else None
 
     class FakeSession:
-        def query(self, *args):
-            return FakeQuery()
+        def query(self, model):
+            return FakeQuery(model)
 
         def commit(self):
             return None
@@ -758,3 +776,28 @@ def test_empty_quality_distribution_has_no_average_score():
 
     assert result["average"] is None
     assert result["total_scored"] == 0
+
+
+def test_runtime_backlog_uses_a_single_statement_and_stable_clock():
+    from types import SimpleNamespace
+
+    statements = []
+
+    class Session:
+        def execute(self, statement):
+            statements.append(str(statement))
+            return SimpleNamespace(
+                mappings=lambda: SimpleNamespace(one=lambda: {"pending_dispatches": 0})
+            )
+
+    class Database:
+        @contextmanager
+        def get_session(self):
+            yield Session()
+
+    service = ReportStorageService.__new__(ReportStorageService)
+    service.db_manager = cast(Any, Database())
+    assert service.get_runtime_backlog() == {"pending_dispatches": 0}
+    assert len(statements) == 1
+    assert "statement_timestamp()" in statements[0]
+    assert "clock_timestamp()" not in statements[0]

@@ -8,6 +8,7 @@ from botocore.exceptions import ClientError
 import logging
 from typing import Optional, Dict, Any
 import json
+import hashlib
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -70,13 +71,14 @@ class S3StorageManager:
             logger.warning("S3 client not available, skipping upload")
             return None
 
-        key = f"reports/{report_id}/report.md"
+        content = markdown_content.encode("utf-8")
+        key = f"reports/{report_id}/artifacts/{hashlib.sha256(content).hexdigest()}.md"
 
         try:
             self.s3_client.put_object(
                 Bucket=self.bucket_name,
                 Key=key,
-                Body=markdown_content.encode("utf-8"),
+                Body=content,
                 ContentType="text/markdown",
                 Metadata={
                     "report_id": report_id,
@@ -97,13 +99,14 @@ class S3StorageManager:
             logger.warning("S3 client not available, skipping upload")
             return None
 
-        key = f"reports/{report_id}/trace.json"
+        content = json.dumps(trace_data, indent=2, sort_keys=True).encode("utf-8")
+        key = f"reports/{report_id}/artifacts/{hashlib.sha256(content).hexdigest()}.json"
 
         try:
             self.s3_client.put_object(
                 Bucket=self.bucket_name,
                 Key=key,
-                Body=json.dumps(trace_data, indent=2).encode("utf-8"),
+                Body=content,
                 ContentType="application/json",
                 Metadata={
                     "report_id": report_id,

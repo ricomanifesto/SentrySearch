@@ -49,7 +49,8 @@ from src.api.contracts import (
     SortDirection,
 )
 from src.domain.model_routes import generation_fallback_state
-from src.execution.runtime_client import validate_local_runtime_url
+from src.execution.config import ExecutionMode, execution_mode_from_environment
+from src.domain.execution import GenerationLease, GenerationLeaseLost
 from src.domain.reports import (
     AnalystDisposition,
     ClaimAttributionStatus,
@@ -74,11 +75,17 @@ from src.domain.reports import (
 logger = logging.getLogger(__name__)
 
 
-def local_runtime_url() -> str | None:
-    """Return the opt-in loopback runtime URL for local adapter development."""
+def require_execution_admission() -> ExecutionMode:
+    """Fail before reserving work; configuration errors never select legacy work."""
 
-    value = os.getenv("SENTRYRUNTIME_LOCAL_URL", "").strip()
-    return validate_local_runtime_url(value) if value else None
+    try:
+        mode = execution_mode_from_environment()
+    except ValueError:
+        logger.error("Execution admission configuration is invalid")
+        raise HTTPException(status_code=503, detail="New work is unavailable") from None
+    if mode == "paused":
+        raise HTTPException(status_code=503, detail="New work is paused")
+    return mode
 
 
 def apply_schema_migrations() -> None:
@@ -802,6 +809,7 @@ async def retry_report_evaluation(
 ):
     """Retry a failed or unrecorded evaluator without repeating report generation."""
 
+    mode = require_execution_admission()
     try:
         report = report_service.get_report(report_id, include_content=False)
         if report is None:
@@ -809,16 +817,22 @@ async def retry_report_evaluation(
         if get_report_user_id(user) and report.get("user_id") != user.id:
             raise HTTPException(status_code=404, detail="Report not found")
         owner_id = str(report.get("user_id") or user.id)
+        runtime_managed = report_service.has_runtime_dispatch(report_id)
+        if not runtime_managed and mode != "legacy":
+            raise HTTPException(status_code=409, detail="This report requires legacy evaluation")
         if not report_service.begin_report_evaluation(report_id, user_id=owner_id):
             raise HTTPException(
                 status_code=409,
                 detail="This report is not available for evaluation retry",
             )
-        background_tasks.add_task(run_report_evaluation, report_id, owner_id)
+        if not runtime_managed:
+            # TODO(sentryruntime-cutover): Remove this in-process evaluator path
+            # after legacy reports are migrated and deployed rollback is proven.
+            background_tasks.add_task(run_report_evaluation, report_id, owner_id)
         return {
             "report_id": report_id,
             "evaluation_status": EvaluationStatus.PENDING.value,
-            "message": "Evaluation retry started",
+            "message": "Evaluation retry queued",
         }
     except HTTPException:
         raise
@@ -830,8 +844,11 @@ def generate_report_artifact(
     report_id: str,
     tool_name: str,
     user_id: str,
+    generation_lease: GenerationLease | None = None,
 ) -> None:
     """Generate and persist the product artifact, raising a sanitized failure."""
+    # TODO(sentryruntime-cutover): Require generation_lease after the deployed
+    # canary and rollback gates pass and in-process generation is removed.
     start = time.monotonic()
     generator: ThreatProfileGenerator | None = None
     last_stage: GenerationStage | None = GenerationStage.QUEUED
@@ -855,7 +872,9 @@ def generate_report_artifact(
             stage_rank = stage_order.get(stage)
             previous_rank = stage_order.get(last_stage) if last_stage is not None else None
             if stage_rank is not None and (previous_rank is None or stage_rank > previous_rank):
-                report_service.update_generation_stage(report_id, stage.value)
+                report_service.update_generation_stage(
+                    report_id, stage.value, generation_lease=generation_lease
+                )
                 last_stage = stage
 
         raw_profile = generator.get_threat_intelligence(
@@ -910,12 +929,16 @@ def generate_report_artifact(
             "search_tags": [tag for tag in [tool_name.lower(), category.lower()] if tag],
         }
         try:
-            report_service.finalize_report(report_id, report_data, user_id=user_id)
-        except SourceLedgerError:
+            report_service.finalize_report(
+                report_id, report_data, user_id=user_id, generation_lease=generation_lease
+            )
+        except (SourceLedgerError, GenerationLeaseLost):
             raise
         except Exception as error:
             raise PersistenceFailureError("Generated report could not be persisted") from error
 
+    except GenerationLeaseLost:
+        raise
     except Exception as error:
         summarize_route = (
             getattr(generator, "route_provenance_for_stage", None)
@@ -937,6 +960,8 @@ def run_report_generation(
     try:
         generate_report_artifact(report_id, tool_name, user_id)
         run_report_evaluation(report_id, user_id)
+    except GenerationLeaseLost:
+        logger.info("Background generation no longer owns report %s", report_id)
     except ReportGenerationExecutionError as error:
         logger.exception("Background generation failed for report %s", report_id)
         try:
@@ -956,6 +981,9 @@ def run_report_evaluation(report_id: str, user_id: str) -> None:
 
     evaluation_route: Dict[str, Any] | None = None
     assessment: Dict[str, Any] | None = None
+    evaluation_lease = report_service.claim_report_evaluation(report_id, user_id=user_id)
+    if evaluation_lease is None:
+        return
     try:
         report = report_service.get_report(report_id, include_content=False)
         if report is None or report.get("user_id") != user_id:
@@ -964,6 +992,7 @@ def run_report_evaluation(report_id: str, user_id: str) -> None:
         if not isinstance(threat_data, dict):
             report_service.fail_report_evaluation(
                 report_id,
+                evaluation_lease=evaluation_lease,
                 error_code="missing_report_evidence",
             )
             return
@@ -975,6 +1004,7 @@ def run_report_evaluation(report_id: str, user_id: str) -> None:
         if not result.succeeded:
             report_service.fail_report_evaluation(
                 report_id,
+                evaluation_lease=evaluation_lease,
                 error_code="evaluator_unavailable",
                 quality_assessment=assessment,
                 evaluation_route=evaluation_route,
@@ -995,6 +1025,7 @@ def run_report_evaluation(report_id: str, user_id: str) -> None:
         rendered_profile["_quality_assessment"] = assessment
         report_service.complete_report_evaluation(
             report_id,
+            evaluation_lease=evaluation_lease,
             quality_assessment=assessment,
             evaluation_route=evaluation_route,
             threat_data=persisted_profile,
@@ -1004,6 +1035,7 @@ def run_report_evaluation(report_id: str, user_id: str) -> None:
         logger.exception("Evaluator retry failed for report %s: %s", report_id, exc)
         report_service.fail_report_evaluation(
             report_id,
+            evaluation_lease=evaluation_lease,
             error_code="evaluator_unavailable",
             quality_assessment=assessment,
             evaluation_route=evaluation_route,
@@ -1019,12 +1051,12 @@ async def create_report(
     """Schedule a threat intelligence report and return immediately.
 
     The response carries the new report id with status "generating" so the client
-    can poll until the selected local or in-process execution path completes.
+    can poll until the explicitly selected execution path completes.
     """
+    mode = require_execution_admission()
     try:
-        runtime_url = local_runtime_url()
         report_id = str(uuid.uuid4())
-        if runtime_url:
+        if mode == "runtime":
             report_service.create_pending_report(
                 report_id=report_id,
                 tool_name=report_request.tool_name,
@@ -1040,8 +1072,8 @@ async def create_report(
     except Exception as e:
         raise internal_server_error("Failed to start report generation", e)
 
-    if runtime_url is None:
-        # TODO(sentryruntime-cutover): Remove the in-process fallback after an
+    if mode == "legacy":
+        # TODO(sentryruntime-cutover): Remove explicit legacy generation after an
         # authenticated runtime deployment and worker canary are both verified.
         background_tasks.add_task(
             run_report_generation,

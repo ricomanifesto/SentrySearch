@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Protocol
+from collections.abc import Callable
 
 from src.execution.runtime_client import RuntimeRun, RuntimeUnavailable
 
@@ -28,11 +29,14 @@ def dispatch_pending_reports(
     reports: DispatchStorePort,
     *,
     limit: int = 20,
+    should_stop: Callable[[], bool] | None = None,
 ) -> int:
     """Submit pending intents, leaving failed attempts available for replay."""
 
     submitted = 0
     for report_id in reports.get_pending_runtime_dispatches(limit=limit):
+        if should_stop is not None and should_stop():
+            break
         try:
             run = runtime.submit_report(report_id)
         except RuntimeUnavailable:

@@ -256,6 +256,7 @@ def test_report_model_exposes_owner_for_api_authorization():
 
 
 def test_create_report_starts_background_job_without_synchronous_generation(monkeypatch):
+    monkeypatch.setenv("SENTRYSEARCH_EXECUTION_MODE", "legacy")
     generation_called = False
 
     class Generator:
@@ -301,6 +302,7 @@ def test_create_report_starts_background_job_without_synchronous_generation(monk
 
 
 def test_create_report_queues_runtime_dispatch_when_local_adapter_is_enabled(monkeypatch):
+    monkeypatch.setenv("SENTRYSEARCH_EXECUTION_MODE", "runtime")
     monkeypatch.setenv("SENTRYRUNTIME_LOCAL_URL", "http://127.0.0.1:8080")
     created = {}
 
@@ -334,7 +336,11 @@ def test_create_report_queues_runtime_dispatch_when_local_adapter_is_enabled(mon
     assert len(background_tasks.tasks) == 0
 
 
-def test_evaluation_retry_claims_saved_report_without_restarting_generation(monkeypatch):
+@pytest.mark.parametrize("runtime_managed", [False, True])
+def test_evaluation_retry_claims_saved_report_without_restarting_generation(
+    monkeypatch, runtime_managed
+):
+    monkeypatch.setenv("SENTRYSEARCH_EXECUTION_MODE", "legacy")
     user = supabase_auth.AuthenticatedUser(
         user_id="analyst-user",
         email="analyst@example.com",
@@ -351,6 +357,12 @@ def test_evaluation_retry_claims_saved_report_without_restarting_generation(monk
     claims = []
     monkeypatch.setattr(
         api_main.report_service,
+        "has_runtime_dispatch",
+        lambda _report_id: runtime_managed,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        api_main.report_service,
         "begin_report_evaluation",
         lambda report_id, user_id: claims.append((report_id, user_id)) or True,
     )
@@ -365,7 +377,7 @@ def test_evaluation_retry_claims_saved_report_without_restarting_generation(monk
 
     assert response["evaluation_status"] == "pending"
     assert claims == [("report-1", "analyst-user")]
-    assert len(background_tasks.tasks) == 1
+    assert len(background_tasks.tasks) == (0 if runtime_managed else 1)
 
 
 def test_analyst_disposition_endpoint_appends_current_evaluation_judgment(monkeypatch):
@@ -420,6 +432,9 @@ def test_analyst_disposition_endpoint_appends_current_evaluation_judgment(monkey
 
 
 def test_evaluator_only_job_preserves_sources_and_persists_new_score(monkeypatch):
+    monkeypatch.setattr(
+        api_main.report_service, "claim_report_evaluation", lambda *_args, **_kwargs: "lease-1"
+    )
     profile = {
         "coreMetadata": {"name": "Example", "category": "Backdoor"},
         "webSearchSources": {
@@ -471,6 +486,7 @@ def test_evaluator_only_job_preserves_sources_and_persists_new_score(monkeypatch
     api_main.run_report_evaluation("report-1", "analyst-user")
 
     assert completed["quality_assessment"]["overall_score"] == 4.25
+    assert completed["evaluation_lease"] == "lease-1"
     assert completed["threat_data"]["webSearchSources"]["primarySources"][0]["url"] == (
         "https://example.com/report"
     )
@@ -668,7 +684,8 @@ def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
     captured_stages = []
     evaluation_calls = []
 
-    def finalize_report(report_id, report_data, user_id=None):
+    def finalize_report(report_id, report_data, user_id=None, *, generation_lease=None):
+        assert generation_lease is None
         captured.update(report_id=report_id, report_data=report_data, user_id=user_id)
         return report_id
 
@@ -681,7 +698,7 @@ def test_background_generation_maps_profile_to_storage_schema(monkeypatch):
     monkeypatch.setattr(
         api_main.report_service,
         "update_generation_stage",
-        lambda report_id, stage: captured_stages.append((report_id, stage)),
+        lambda report_id, stage, **_kwargs: captured_stages.append((report_id, stage)),
         raising=False,
     )
 

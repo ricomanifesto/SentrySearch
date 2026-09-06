@@ -1,9 +1,10 @@
-"""Small synchronous client for the local SentryRuntime HTTP contract."""
+"""Small synchronous client for the SentryRuntime HTTP contract."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+import ssl
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
@@ -17,11 +18,19 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 class RuntimeUnavailable(RuntimeError):
-    """The local runtime could not accept a request."""
+    """The runtime could not accept a request."""
 
 
 class RuntimeAccessDenied(RuntimeError):
     """Service credentials or scope need operator correction, not a retry."""
+
+
+class RuntimeRunMissing(RuntimeError):
+    """The bound run cannot be read; do not silently replace its identity."""
+
+
+class RuntimeLeaseFenced(RuntimeError):
+    """The runtime no longer grants this worker authority to mutate the run."""
 
 
 @dataclass(frozen=True)
@@ -34,6 +43,7 @@ class RuntimeRun:
     lease_owner: str
     lease_version: int
     input_ref: dict[str, Any]
+    error_code: str | None = None
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> "RuntimeRun":
@@ -47,26 +57,48 @@ class RuntimeRun:
             lease_owner=str(payload.get("lease_owner") or ""),
             lease_version=int(payload["lease_version"]),
             input_ref=dict(input_ref),
+            error_code=payload.get("error_code"),
         )
 
 
 class RuntimeClient:
-    """Call a local runtime, optionally with scoped service credentials."""
+    """Call an explicit runtime authority; remote transport is verified and owned."""
 
     def __init__(
         self,
         base_url: str,
         *,
         bearer_token: str | None = None,
+        remote: bool = False,
+        ca_file: str | None = None,
         http_client: httpx.Client | None = None,
     ) -> None:
-        self.base_url = validate_local_runtime_url(base_url)
+        self.base_url = validate_runtime_url(base_url, remote=remote)
         validate_runtime_token(bearer_token)
+        if remote and not bearer_token:
+            raise ValueError("remote runtime requires a service token")
+        if remote and http_client is not None:
+            raise ValueError("remote runtime transport must be owned by RuntimeClient")
+        if ca_file is not None and (
+            not self.base_url.startswith("https://") or http_client is not None
+        ):
+            raise ValueError("runtime trust configuration requires owned HTTPS transport")
+        verification: bool | ssl.SSLContext = True
+        if ca_file is not None:
+            if not ca_file:
+                raise ValueError("runtime trust bundle must not be empty")
+            try:
+                verification = ssl.create_default_context(cafile=ca_file)
+            except (OSError, ValueError):
+                raise ValueError("runtime trust bundle could not be loaded") from None
+            verification.minimum_version = ssl.TLSVersion.TLSv1_2
         self._headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
         self._owns_client = http_client is None
         self._client = http_client or httpx.Client(
             timeout=httpx.Timeout(5.0, connect=2.0),
             trust_env=False,
+            verify=verification,
+            follow_redirects=False,
         )
 
     def close(self) -> None:
@@ -99,6 +131,13 @@ class RuntimeClient:
         )
         if response.status_code == httpx.codes.NO_CONTENT:
             return None
+        response.raise_for_status()
+        return RuntimeRun.from_payload(response.json())
+
+    def get_run(self, run_id: str) -> RuntimeRun:
+        response = self._request("GET", f"/v1/runs/{run_id}")
+        if response.status_code == httpx.codes.NOT_FOUND:
+            raise RuntimeRunMissing("bound runtime run is unavailable")
         response.raise_for_status()
         return RuntimeRun.from_payload(response.json())
 
@@ -160,19 +199,36 @@ class RuntimeClient:
         return RuntimeRun.from_payload(response.json())
 
     def _post(self, path: str, payload: dict[str, Any]) -> httpx.Response:
+        return self._request("POST", path, payload)
+
+    def _request(
+        self, method: str, path: str, payload: dict[str, Any] | None = None
+    ) -> httpx.Response:
         try:
-            response = self._client.post(
+            response = self._client.request(
+                method,
                 f"{self.base_url}{path}",
                 json=payload,
                 headers=self._headers,
                 follow_redirects=False,
             )
-        except httpx.RequestError as error:
-            raise RuntimeUnavailable("local runtime request failed") from error
+        except httpx.RequestError:
+            raise RuntimeUnavailable("runtime request failed") from None
         if response.status_code >= httpx.codes.INTERNAL_SERVER_ERROR:
-            raise RuntimeUnavailable("local runtime is unavailable")
+            raise RuntimeUnavailable("runtime is unavailable")
         if response.status_code in {httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN}:
             raise RuntimeAccessDenied("runtime credentials or scope were rejected")
+        if response.is_redirect:
+            raise RuntimeAccessDenied("runtime redirects are not permitted")
+        if response.status_code == httpx.codes.CONFLICT:
+            try:
+                body = response.json()
+            except ValueError:
+                body = {}
+            if isinstance(body, dict) and body.get("code") == "lease_fenced":
+                raise RuntimeLeaseFenced("runtime lease was superseded or finalized")
+        if response.is_client_error and not (method == "GET" and response.status_code == 404):
+            raise RuntimeAccessDenied("runtime request was rejected")
         return response
 
 
@@ -185,22 +241,39 @@ def validate_runtime_token(value: str | None) -> None:
         raise ValueError("runtime bearer token must contain 32-512 valid token characters")
 
 
-def validate_local_runtime_url(value: str) -> str:
-    """Keep execution local until the product adapter passes its cutover gates."""
+def validate_runtime_url(value: str, *, remote: bool = False) -> str:
+    """Accept one unambiguous operator-configured authority, never a base path."""
 
-    # TODO(sentryruntime-cutover): Replace the loopback-only URL with authenticated
-    # service configuration after report-write fencing, terminal reconciliation,
-    # authenticated transport, and the deployed canary are verified.
-    normalized = value.strip().rstrip("/")
-    parsed = urlsplit(normalized)
-    if (
-        parsed.scheme not in {"http", "https"}
-        or parsed.hostname not in LOOPBACK_HOSTS
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.path not in {"", "/"}
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ValueError("SENTRYRUNTIME_LOCAL_URL must be an HTTP loopback URL")
-    return normalized
+    message = (
+        "runtime URL must be an HTTPS authority"
+        if remote
+        else "runtime URL must be an HTTP(S) loopback authority"
+    )
+    try:
+        parsed = urlsplit(value)
+        invalid = (
+            not value
+            or any(
+                character.isspace() or ord(character) < 32 or ord(character) == 127
+                for character in value
+            )
+            or any(character in value for character in ("?", "#", "\\", "%"))
+            or parsed.scheme not in ({"https"} if remote else {"http", "https"})
+            or not parsed.hostname
+            or (not remote and parsed.hostname not in LOOPBACK_HOSTS)
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.netloc.endswith(":")
+            or (parsed.port is not None and not 1 <= parsed.port <= 65535)
+        )
+        # Check HTTPX agrees with urllib before attaching credentials.
+        url = httpx.URL(value)
+        default_port = 80 if parsed.scheme == "http" else 443
+        normalized_port = None if parsed.port == default_port else parsed.port
+        invalid = invalid or url.host != parsed.hostname or url.port != normalized_port
+    except (ValueError, httpx.InvalidURL):
+        raise ValueError(message) from None
+    if invalid:
+        raise ValueError(message)
+    return str(url).removesuffix("/")

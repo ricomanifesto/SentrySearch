@@ -4,11 +4,14 @@ Report storage service combining PostgreSQL and S3 for SentrySearch
 
 import logging
 from typing import Dict, Any, List, Optional, Sequence, cast
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import uuid
 from sqlalchemy import and_, asc, desc, func, or_, select
+from sqlalchemy.orm import Session
+
+from src.domain.execution import EVALUATION_LEASE_SECONDS, GenerationLease, GenerationLeaseLost
 
 from src.domain.reports import (
     AnalystDisposition,
@@ -958,12 +961,16 @@ class ReportStorageService:
         report_id: str,
         report_data: Dict[str, Any],
         user_id: Optional[str] = None,
+        *,
+        generation_lease: GenerationLease | None = None,
     ) -> str:
         """Populate an existing pending report with generated content and mark it complete.
 
-        Falls back to inserting a fresh row if the pending placeholder is gone.
+        Check ownership before upload and again when publishing references.
         """
         try:
+            with self.db_manager.get_session() as session:
+                self._generation_report(session, report_id, generation_lease)
             tool_name = report_data.get("tool_name", "")
             category, threat_type, classification_status = self.resolve_classification(
                 tool_name=tool_name,
@@ -1018,16 +1025,7 @@ class ReportStorageService:
                     logger.warning(f"Could not upload trace data for {report_id}: {e}")
 
             with self.db_manager.get_session() as session:
-                report = session.query(Report).filter(Report.id == report_id).first()
-
-                if report is None:
-                    logger.warning(
-                        f"Pending report {report_id} missing on finalize; inserting fresh row"
-                    )
-                    report_data["id"] = report_id
-                    report_data["status"] = ReportStatus.COMPLETED.value
-                    report_data["generation_stage"] = GenerationStage.COMPLETED.value
-                    return self.store_report(report_data, user_id=user_id)
+                report = self._generation_report(session, report_id, generation_lease)
 
                 if report_data.get("tool_name"):
                     report.tool_name = report_data["tool_name"]
@@ -1089,6 +1087,68 @@ class ReportStorageService:
             logger.error(f"Error finalizing report: {e}")
             raise
 
+    @staticmethod
+    def _locked_report(session: Session, report_id: str) -> Any:
+        # Legacy Column-based models are dynamically typed at the ORM boundary.
+        return session.query(Report).filter(Report.id == report_id).with_for_update().first()
+
+    @staticmethod
+    def _locked_dispatch(session: Session, report_id: str) -> Any:
+        return (
+            session.query(ReportRuntimeDispatch)
+            .filter(ReportRuntimeDispatch.report_id == report_id)
+            .with_for_update()
+            .first()
+        )
+
+    def _generation_report(
+        self, session: Session, report_id: str, lease: GenerationLease | None
+    ) -> Any:
+        # All product writers lock the report before the dispatch record. No
+        # provider call or object upload runs while these locks are held.
+        report = self._locked_report(session, report_id)
+        if report is None or report.status != ReportStatus.GENERATING.value:
+            raise GenerationLeaseLost("report is no longer generating")
+        dispatch = self._locked_dispatch(session, report_id)
+        if dispatch is None:
+            # TODO(sentryruntime-cutover): Require a runtime intent and lease after
+            # the deployed canary and rollback gates pass. Do not add new
+            # unfenced generation paths.
+            if lease is not None:
+                raise GenerationLeaseLost("report has no runtime intent")
+        elif (
+            lease is None
+            or str(dispatch.runtime_run_id) != lease.run_id
+            or dispatch.lease_version != lease.version
+            or dispatch.lease_owner != lease.owner
+            or dispatch.state != "submitted"
+        ):
+            raise GenerationLeaseLost("generation attempt no longer owns the report")
+        return report
+
+    def begin_runtime_attempt(self, report_id: str, lease: GenerationLease) -> bool:
+        """Register the product-side fence before doing any generation work."""
+        with self.db_manager.get_session() as session:
+            report = self._locked_report(session, report_id)
+            if report is None or report.status != ReportStatus.GENERATING.value:
+                return False
+            dispatch = self._locked_dispatch(session, report_id)
+            if dispatch is None or dispatch.state not in {"pending", "submitted"}:
+                raise GenerationLeaseLost("report has no active runtime intent")
+            if dispatch.runtime_run_id is not None and str(dispatch.runtime_run_id) != lease.run_id:
+                raise GenerationLeaseLost("runtime run does not match the report intent")
+            version = int(dispatch.lease_version or 0)
+            if lease.version < version or (
+                lease.version == version and lease.owner != dispatch.lease_owner
+            ):
+                raise GenerationLeaseLost("generation attempt was superseded")
+            dispatch.runtime_run_id = uuid.UUID(lease.run_id)
+            dispatch.lease_version = lease.version
+            dispatch.lease_owner = lease.owner
+            dispatch.state = "submitted"
+            session.commit()
+            return True
+
     def get_pending_runtime_dispatches(self, *, limit: int = 20) -> List[str]:
         """Return durable runtime intents that have not been acknowledged."""
 
@@ -1113,14 +1173,22 @@ class ReportStorageService:
             dispatch = (
                 session.query(ReportRuntimeDispatch)
                 .filter(ReportRuntimeDispatch.report_id == report_id)
+                .with_for_update()
                 .first()
             )
             if dispatch is None:
                 return False
+            if (
+                dispatch.runtime_run_id is not None
+                and str(dispatch.runtime_run_id) != runtime_run_id
+            ):
+                raise ValueError("runtime run does not match the report intent")
             dispatch.runtime_run_id = uuid.UUID(runtime_run_id)
-            dispatch.state = "submitted"
+            if dispatch.state == "pending":
+                dispatch.state = "submitted"
             dispatch.dispatch_attempts = int(dispatch.dispatch_attempts or 0) + 1
-            dispatch.last_error_code = None
+            if dispatch.state == "submitted":
+                dispatch.last_error_code = None
             session.commit()
             return True
 
@@ -1131,12 +1199,135 @@ class ReportStorageService:
             dispatch = (
                 session.query(ReportRuntimeDispatch)
                 .filter(ReportRuntimeDispatch.report_id == report_id)
+                .with_for_update()
                 .first()
             )
             if dispatch is None or dispatch.state != "pending":
                 return False
             dispatch.dispatch_attempts = int(dispatch.dispatch_attempts or 0) + 1
             dispatch.last_error_code = error_code[:50]
+            session.commit()
+            return True
+
+    def get_runtime_reconciliation_batch(self, *, limit: int = 20) -> list[tuple[str, str]]:
+        with self.db_manager.get_session() as session:
+            rows = (
+                session.query(ReportRuntimeDispatch)
+                .filter(
+                    ReportRuntimeDispatch.state == "submitted",
+                    ReportRuntimeDispatch.runtime_run_id.is_not(None),
+                )
+                .order_by(
+                    ReportRuntimeDispatch.updated_at.asc(), ReportRuntimeDispatch.report_id.asc()
+                )
+                .limit(limit)
+                .all()
+            )
+            return [(str(row.report_id), str(row.runtime_run_id)) for row in rows]
+
+    def get_runtime_backlog(self) -> dict[str, int]:
+        """Sample aggregate product state in one statement, without report payloads."""
+        dispatches = select(func.count()).select_from(ReportRuntimeDispatch)
+        evaluations = (
+            select(func.count())
+            .select_from(Report)
+            .join(ReportRuntimeDispatch, ReportRuntimeDispatch.report_id == Report.id)
+            .where(
+                Report.status == ReportStatus.COMPLETED.value,
+                Report.evaluation_status == EvaluationStatus.PENDING.value,
+                Report.user_id.is_not(None),
+            )
+        )
+        ready = or_(
+            Report.evaluation_lease_expires_at.is_(None),
+            Report.evaluation_lease_expires_at <= func.statement_timestamp(),
+        )
+        statement = select(
+            dispatches.where(ReportRuntimeDispatch.state == "pending")
+            .scalar_subquery()
+            .label("pending_dispatches"),
+            dispatches.where(ReportRuntimeDispatch.state == "submitted")
+            .scalar_subquery()
+            .label("submitted_dispatches"),
+            evaluations.where(ready).scalar_subquery().label("ready_evaluations"),
+            evaluations.where(Report.evaluation_lease_expires_at > func.statement_timestamp())
+            .scalar_subquery()
+            .label("active_evaluations"),
+            dispatches.where(ReportRuntimeDispatch.last_error_code.is_not(None))
+            .scalar_subquery()
+            .label("dispatch_errors"),
+        )
+        with self.db_manager.get_session() as session:
+            return {
+                str(key): int(value)
+                for key, value in session.execute(statement).mappings().one().items()
+            }
+
+    def has_runtime_dispatch(self, report_id: str) -> bool:
+        """Execution ownership follows the durable intent, not the API environment."""
+        with self.db_manager.get_session() as session:
+            return (
+                session.scalar(
+                    select(ReportRuntimeDispatch.report_id).where(
+                        ReportRuntimeDispatch.report_id == report_id
+                    )
+                )
+                is not None
+            )
+
+    def record_runtime_check_error(self, report_id: str, code: str) -> None:
+        with self.db_manager.get_session() as session:
+            dispatch = self._locked_dispatch(session, report_id)
+            if dispatch is not None and dispatch.state == "submitted":
+                dispatch.last_error_code = code[:50]
+                dispatch.updated_at = func.clock_timestamp()
+
+    def apply_runtime_observation(
+        self, report_id: str, run_id: str, *, state: str, lease_version: int, error_code: str | None
+    ) -> bool:
+        """Reconcile a terminal run without inventing or downgrading artifacts."""
+        if state not in {"queued", "running", "retry_wait", "succeeded", "failed"}:
+            raise ValueError("unknown runtime state")
+        with self.db_manager.get_session() as session:
+            report = self._locked_report(session, report_id)
+            dispatch = self._locked_dispatch(session, report_id)
+            if (
+                report is None
+                or dispatch is None
+                or dispatch.state != "submitted"
+                or str(dispatch.runtime_run_id) != run_id
+            ):
+                return False
+            dispatch.updated_at = func.clock_timestamp()
+            if lease_version < int(dispatch.lease_version or 0):
+                dispatch.last_error_code = "stale_runtime_observation"
+                return False
+            dispatch.last_error_code = None
+            if state not in {"succeeded", "failed"}:
+                return False
+            dispatch.state = state
+            dispatch.lease_version = lease_version
+            if report.status == ReportStatus.GENERATING.value:
+                report.status = ReportStatus.FAILED.value
+                report.generation_failure_stage = report.generation_stage
+                report.generation_stage = GenerationStage.FAILED.value
+                report.generation_retryable = False
+                report.generation_error_code = (
+                    GenerationErrorCode.PERSISTENCE_FAILED
+                    if state == "succeeded"
+                    else GenerationErrorCode.UNKNOWN
+                ).value
+                report.generation_failure = {
+                    "error_code": report.generation_error_code,
+                    "retryable": False,
+                    "runtime_state": state,
+                    "runtime_error_code": error_code,
+                }
+                if state == "succeeded":
+                    dispatch.last_error_code = "runtime_result_missing"
+                self._refresh_review_status(report)
+            elif report.status == ReportStatus.COMPLETED.value and state == "failed":
+                dispatch.last_error_code = "runtime_failed_after_publication"
             session.commit()
             return True
 
@@ -1152,19 +1343,107 @@ class ReportStorageService:
             )
             if report is None or report.status != ReportStatus.COMPLETED.value:
                 return False
-            if report.evaluation_status == EvaluationStatus.PENDING.value:
-                return False
+            if (
+                report.evaluation_status == EvaluationStatus.PENDING.value
+                and report.evaluation_lease_id is not None
+            ):
+                now = session.scalar(select(func.clock_timestamp()))
+                if (
+                    report.evaluation_lease_expires_at is not None
+                    and report.evaluation_lease_expires_at > now
+                ):
+                    return False
             report.evaluation_status = EvaluationStatus.PENDING.value
             report.evaluation_error_code = None
             report.evaluation_attempts = int(report.evaluation_attempts or 0) + 1
+            report.evaluation_lease_id = None
+            report.evaluation_lease_expires_at = None
+            report.evaluation_recoveries = 0
             self._refresh_review_status(report)
             session.commit()
             return True
+
+    def get_pending_runtime_evaluations(self, *, limit: int = 20) -> list[tuple[str, str]]:
+        with self.db_manager.get_session() as session:
+            rows = (
+                session.query(Report)
+                .join(ReportRuntimeDispatch, ReportRuntimeDispatch.report_id == Report.id)
+                .filter(
+                    Report.status == ReportStatus.COMPLETED.value,
+                    Report.evaluation_status == EvaluationStatus.PENDING.value,
+                    Report.user_id.is_not(None),
+                    or_(
+                        Report.evaluation_lease_expires_at.is_(None),
+                        Report.evaluation_lease_expires_at <= func.clock_timestamp(),
+                    ),
+                )
+                .order_by(
+                    func.coalesce(Report.evaluation_lease_expires_at, Report.created_at), Report.id
+                )
+                .limit(limit)
+                .all()
+            )
+            return [(str(report.id), str(report.user_id)) for report in rows]
+
+    def claim_report_evaluation(
+        self, report_id: str, *, user_id: str, lease_seconds: int = EVALUATION_LEASE_SECONDS
+    ) -> str | None:
+        """Claim queued or interrupted evaluation, with two automatic recoveries."""
+        if not 1 <= lease_seconds <= 3600:
+            raise ValueError("evaluation lease must be between 1 and 3600 seconds")
+        with self.db_manager.get_session() as session:
+            report = self._locked_report(session, report_id)
+            if (
+                report is None
+                or report.user_id != user_id
+                or report.status != ReportStatus.COMPLETED.value
+                or report.evaluation_status != EvaluationStatus.PENDING.value
+            ):
+                return None
+            now = session.scalar(select(func.clock_timestamp()))
+            if report.evaluation_lease_id is not None:
+                if (
+                    report.evaluation_lease_expires_at is not None
+                    and report.evaluation_lease_expires_at > now
+                ):
+                    return None
+                if int(report.evaluation_recoveries or 0) >= 2:
+                    report.evaluation_status = EvaluationStatus.FAILED.value
+                    report.evaluation_error_code = "evaluation_recovery_exhausted"
+                    report.evaluated_at = now
+                    report.evaluation_lease_id = None
+                    report.evaluation_lease_expires_at = None
+                    self._refresh_review_status(report)
+                    return None
+                report.evaluation_recoveries = int(report.evaluation_recoveries or 0) + 1
+                report.evaluation_attempts = int(report.evaluation_attempts or 0) + 1
+            else:
+                report.evaluation_attempts = max(1, int(report.evaluation_attempts or 0))
+            token = uuid.uuid4()
+            report.evaluation_lease_id = token
+            report.evaluation_lease_expires_at = now + timedelta(seconds=lease_seconds)
+            report.evaluation_error_code = None
+            self._refresh_review_status(report)
+            session.commit()
+            return str(token)
+
+    def _evaluation_report(self, session: Session, report_id: str, token: str) -> Any:
+        report = self._locked_report(session, report_id)
+        if (
+            report is None
+            or report.status != ReportStatus.COMPLETED.value
+            or report.evaluation_status != EvaluationStatus.PENDING.value
+            or report.evaluation_lease_id is None
+            or str(report.evaluation_lease_id) != token
+        ):
+            return None
+        return report
 
     def complete_report_evaluation(
         self,
         report_id: str,
         *,
+        evaluation_lease: str,
         quality_assessment: Dict[str, Any],
         evaluation_route: Dict[str, Any],
         threat_data: Dict[str, Any],
@@ -1172,12 +1451,16 @@ class ReportStorageService:
     ) -> bool:
         """Persist a successful evaluator retry without repeating research or synthesis."""
 
+        with self.db_manager.get_session() as session:
+            if self._evaluation_report(session, report_id, evaluation_lease) is None:
+                return False
+
         sources = (threat_data.get("webSearchSources") or {}).get("primarySources") or []
         assert_source_ledger_consistent(threat_data, sources)
         assert_markdown_source_ledger_consistent(markdown_content, sources)
         markdown_s3_key = self.s3_manager.upload_markdown_report(report_id, markdown_content)
         with self.db_manager.get_session() as session:
-            report = session.query(Report).filter(Report.id == report_id).first()
+            report = self._evaluation_report(session, report_id, evaluation_lease)
             if report is None:
                 return False
             report.quality_assessment = quality_assessment
@@ -1186,6 +1469,8 @@ class ReportStorageService:
             report.evaluation_status = EvaluationStatus.COMPLETED.value
             report.evaluation_error_code = None
             report.evaluated_at = datetime.now(timezone.utc)
+            report.evaluation_lease_id = None
+            report.evaluation_lease_expires_at = None
             report.threat_data = threat_data
             report.markdown_s3_key = markdown_s3_key
             self._refresh_review_status(report)
@@ -1196,6 +1481,7 @@ class ReportStorageService:
         self,
         report_id: str,
         *,
+        evaluation_lease: str,
         error_code: str,
         quality_assessment: Optional[Dict[str, Any]] = None,
         evaluation_route: Optional[Dict[str, Any]] = None,
@@ -1203,12 +1489,14 @@ class ReportStorageService:
         """Keep the narrative and record a blame-free, retryable evaluator failure."""
 
         with self.db_manager.get_session() as session:
-            report = session.query(Report).filter(Report.id == report_id).first()
+            report = self._evaluation_report(session, report_id, evaluation_lease)
             if report is None:
                 return False
             report.evaluation_status = EvaluationStatus.FAILED.value
             report.evaluation_error_code = error_code
             report.evaluated_at = datetime.now(timezone.utc)
+            report.evaluation_lease_id = None
+            report.evaluation_lease_expires_at = None
             if quality_assessment is not None:
                 report.quality_assessment = quality_assessment
             if evaluation_route is not None:
@@ -1217,20 +1505,28 @@ class ReportStorageService:
             session.commit()
             return True
 
-    def update_generation_stage(self, report_id: str, stage: GenerationStage | str) -> bool:
+    def update_generation_stage(
+        self,
+        report_id: str,
+        stage: GenerationStage | str,
+        *,
+        generation_lease: GenerationLease | None = None,
+    ) -> bool:
         """Persist an observable background-generation stage without changing status."""
 
         try:
             normalized_stage = GenerationStage(stage)
             with self.db_manager.get_session() as session:
-                report = session.query(Report).filter(Report.id == report_id).first()
-                if report is None:
-                    return False
+                report = self._generation_report(session, report_id, generation_lease)
                 report.generation_stage = normalized_stage.value
                 self._refresh_review_status(report)
                 session.commit()
                 logger.info("Report %s generation stage: %s", report_id, normalized_stage.value)
                 return True
+        except GenerationLeaseLost:
+            if generation_lease is not None:
+                raise
+            return False
         except (ValueError, TypeError):
             logger.warning("Ignored unknown generation stage for report %s: %s", report_id, stage)
             return False
@@ -1245,13 +1541,12 @@ class ReportStorageService:
         error_code: GenerationErrorCode | str = GenerationErrorCode.UNKNOWN,
         retryable: bool = False,
         failure: Optional[Dict[str, Any]] = None,
+        generation_lease: GenerationLease | None = None,
     ) -> bool:
         """Mark a pending report as failed so the UI can surface a retry state."""
         try:
             with self.db_manager.get_session() as session:
-                report = session.query(Report).filter(Report.id == report_id).first()
-                if report is None:
-                    return False
+                report = self._generation_report(session, report_id, generation_lease)
                 if report.generation_stage not in {
                     GenerationStage.FAILED.value,
                     GenerationStage.COMPLETED.value,
@@ -1278,6 +1573,10 @@ class ReportStorageService:
                 session.commit()
                 logger.info(f"Report marked failed: {report_id}")
                 return True
+        except GenerationLeaseLost:
+            if generation_lease is not None:
+                raise
+            return False
         except Exception as e:
             logger.error(f"Error marking report failed: {e}")
             return False
