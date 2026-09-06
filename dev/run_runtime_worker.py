@@ -63,6 +63,8 @@ def load_jobs():
     from src.api.main import generate_report_artifact, run_report_evaluation
     from src.storage.report_service import report_service
 
+    report_service.db_manager.require_schema()
+    report_service.s3_manager.require_available()
     return report_service, generate_report_artifact, run_report_evaluation
 
 

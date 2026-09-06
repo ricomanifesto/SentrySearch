@@ -40,6 +40,10 @@ Start the FastAPI backend:
 ```bash
 uv sync --locked
 cp .env.example .env
+# Configure the database, then run migrations with the schema-owner role.
+uv run python -m dev.migrate_storage
+# Use the application's restricted DB role for checks and serving.
+uv run python -m dev.migrate_storage --check
 uv run python run_api.py
 ```
 
@@ -55,6 +59,13 @@ npm run dev
 The API listens on `http://localhost:8001`; the frontend listens on `http://localhost:3000`. Keep `NEXT_PUBLIC_API_URL=http://localhost:8001` in both environment files.
 
 The example files list every required variable. OpenRouter is needed for live generation, Supabase for authentication, PostgreSQL for report metadata and search, and S3 for report files and exports.
+
+API and worker startup now require a compatible product schema and never run DDL
+or reader-state backfills. Existing databases need the explicit release command
+before starting this version. Remote databases require `DB_SSLMODE=verify-full`
+and `DB_SSLROOTCERT`; artifact clients use the SDK credential chain, including
+session tokens and workload roles. See [storage release and credentials](docs/storage-release.md)
+for role separation, upgrade order, configuration, and local proof limits.
 
 ### Execution admission and durable generation
 

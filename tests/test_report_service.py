@@ -93,21 +93,9 @@ def test_report_schema_and_contract_preserve_route_provenance():
 
 
 def test_additive_migration_creates_model_route_columns():
-    statements: list[str] = []
+    from src.storage.schema import MIGRATION_SQL
 
-    class FakeConnection:
-        def execute(self, statement):
-            statements.append(str(statement))
-
-    class FakeEngine:
-        @contextmanager
-        def begin(self):
-            yield FakeConnection()
-
-    manager = DatabaseManager.__new__(DatabaseManager)
-    manager.engine = cast(Any, FakeEngine())
-
-    manager.migrate_schema()
+    statements = [statement.strip() for statement in MIGRATION_SQL.read_text().split(";")]
 
     assert "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_route JSONB" in statements
     assert "ALTER TABLE reports ADD COLUMN IF NOT EXISTS research_route JSONB" in statements

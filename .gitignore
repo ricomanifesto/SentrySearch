@@ -61,6 +61,7 @@ Thumbs.db
 !/docs/evidence-admissibility-decision-*.md
 !/docs/runtime-consistency.md
 !/docs/runtime-admission.md
+!/docs/storage-release.md
 backup_*/
 # Legacy main files (keep API files)
 /main.py

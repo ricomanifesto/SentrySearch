@@ -1,15 +1,15 @@
-"""
-Database configuration and connection management for SentrySearch
-"""
+"""Database configuration, release checks and session ownership."""
 
-import os
-from sqlalchemy import create_engine, text, Engine
-from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.pool import QueuePool
-from contextlib import contextmanager
 import logging
+import os
+from contextlib import contextmanager
 
-from .models import Base
+from sqlalchemy import Engine, create_engine, text
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import QueuePool
+
+from .config import database_url
+from . import schema
 
 logger = logging.getLogger(__name__)
 
@@ -21,150 +21,77 @@ class DatabaseManager:
         self._initialize_connection()
 
     def _initialize_connection(self):
-        """Initialize database connection from environment variables"""
-        # Database connection parameters
-        db_host = os.getenv("DB_HOST", "localhost")
-        db_port = os.getenv("DB_PORT", "5432")
-        db_name = os.getenv("DB_NAME", "sentrysearch")
-        db_user = os.getenv("DB_USER", "postgres")
-        db_password = os.getenv("DB_PASSWORD", "")
-
-        # Construct connection URL
-        if db_password:
-            db_url = f"postgresql+psycopg://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
-        else:
-            db_url = f"postgresql+psycopg://{db_user}@{db_host}:{db_port}/{db_name}"
-
-        # Create engine with connection pooling
         self.engine = create_engine(
-            db_url,
+            database_url(),
             poolclass=QueuePool,
             pool_size=10,
             max_overflow=20,
+            pool_timeout=5,
             pool_pre_ping=True,
+            hide_parameters=True,
             echo=os.getenv("DB_DEBUG", "false").lower() == "true",
         )
-
-        # Create session factory
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
-
-        logger.info(f"Database initialized: {db_host}:{db_port}/{db_name}")
+        logger.info("Database engine configured")
 
     def create_tables(self):
-        """Create all database tables"""
-        try:
-            Base.metadata.create_all(bind=self.engine)
-            logger.info("Database tables created successfully")
-        except Exception as e:
-            logger.error(f"Error creating tables: {e}")
-            raise
+        """Initialize storage through the same versioned release path."""
+        self.migrate_schema()
 
     def migrate_schema(self):
-        """Apply idempotent, additive schema migrations to an existing database.
+        """Release command only; serving processes must use require_schema."""
+        schema.migrate(self.engine)
 
-        ``create_all`` only creates missing tables; it never adds columns to a table
-        that already exists. New nullable/defaulted columns are added here with
-        ``ADD COLUMN IF NOT EXISTS`` so a deploy self-heals without a manual migration.
-        """
-        statements = [
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'completed'",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_stage VARCHAR(20) DEFAULT 'completed'",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_failure_stage VARCHAR(20)",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_error_code VARCHAR(50)",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_retryable BOOLEAN",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_failure JSONB",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS review_status VARCHAR(30)",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS classification_status VARCHAR(30)",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS claim_attribution_status VARCHAR(30)",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS claim_attribution_version VARCHAR(10)",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evidence_admissibility_status VARCHAR(30) DEFAULT 'unassessed'",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evidence_admissibility_version VARCHAR(10)",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evidence_admissibility JSONB",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS generation_route JSONB",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS research_route JSONB",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS synthesis_route JSONB",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_route JSONB",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_status VARCHAR(20)",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_error_code VARCHAR(50)",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_attempts INTEGER DEFAULT 0",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluated_at TIMESTAMPTZ",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_lease_id UUID",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_lease_expires_at TIMESTAMPTZ",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evaluation_recoveries INTEGER NOT NULL DEFAULT 0",
-            "CREATE INDEX IF NOT EXISTS ix_reports_pending_evaluations ON reports (evaluation_status, evaluation_lease_expires_at)",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS content_preview TEXT",
-            "CREATE INDEX IF NOT EXISTS ix_reports_review_status ON reports (review_status)",
-            "CREATE INDEX IF NOT EXISTS ix_reports_classification_status ON reports (classification_status)",
-            "CREATE INDEX IF NOT EXISTS ix_reports_claim_attribution_status ON reports (claim_attribution_status)",
-            "CREATE INDEX IF NOT EXISTS ix_reports_evidence_admissibility_status ON reports (evidence_admissibility_status)",
-            "CREATE TABLE IF NOT EXISTS report_disposition_events (id UUID PRIMARY KEY, report_id UUID NOT NULL REFERENCES reports(id) ON DELETE CASCADE, reviewer_user_id VARCHAR(100) NOT NULL, disposition VARCHAR(30) NOT NULL, note TEXT, evaluation_attempt INTEGER NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
-            "CREATE INDEX IF NOT EXISTS ix_report_disposition_events_report_id ON report_disposition_events (report_id)",
-            "CREATE INDEX IF NOT EXISTS ix_report_disposition_events_disposition ON report_disposition_events (disposition)",
-            "CREATE INDEX IF NOT EXISTS ix_report_disposition_events_current ON report_disposition_events (report_id, evaluation_attempt, created_at DESC)",
-            "CREATE TABLE IF NOT EXISTS report_runtime_dispatches (report_id UUID PRIMARY KEY REFERENCES reports(id) ON DELETE CASCADE, runtime_run_id UUID, state VARCHAR(20) NOT NULL DEFAULT 'pending', dispatch_attempts INTEGER NOT NULL DEFAULT 0, last_error_code VARCHAR(50), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
-            "CREATE INDEX IF NOT EXISTS ix_report_runtime_dispatches_pending ON report_runtime_dispatches (state, created_at)",
-            "ALTER TABLE report_runtime_dispatches ADD COLUMN IF NOT EXISTS lease_version BIGINT NOT NULL DEFAULT 0",
-            "ALTER TABLE report_runtime_dispatches ADD COLUMN IF NOT EXISTS lease_owner TEXT",
-        ]
+    def require_schema(self) -> None:
+        schema.require_schema(self.engine)
+
+    def check_schema(self) -> bool:
         try:
-            with self.engine.begin() as connection:
-                for statement in statements:
-                    connection.execute(text(statement))
-            logger.info("Database schema migrations applied")
-        except Exception as e:
-            logger.error(f"Error applying schema migrations: {e}")
-            raise
+            self.require_schema()
+            return True
+        except RuntimeError:
+            return False
 
     def test_connection(self):
-        """Test database connection"""
         try:
             with self.engine.connect() as connection:
-                result = connection.execute(text("SELECT 1"))
-                logger.info("Database connection test successful")
+                connection.execute(text("SELECT 1"))
                 return True
-        except Exception as e:
-            logger.error(f"Database connection test failed: {e}")
+        except Exception:
+            logger.warning("Database connection unavailable")
             return False
 
     @contextmanager
     def get_session(self):
-        """Get database session with automatic cleanup"""
         session = self.SessionLocal()
         try:
             yield session
             session.commit()
-        except Exception as e:
+        except Exception:
             session.rollback()
-            logger.error(f"Database session error: {e}")
+            logger.error("Database session failed")
             raise
         finally:
             session.close()
 
     def get_session_sync(self) -> Session:
-        """Get synchronous database session"""
         return self.SessionLocal()
 
 
-# Global database manager instance
 db_manager = DatabaseManager()
 
 
-# Convenience functions
 def get_db_session():
-    """Get database session (for dependency injection)"""
     return db_manager.get_session_sync()
 
 
 def create_tables():
-    """Create database tables"""
     return db_manager.create_tables()
 
 
 def migrate_schema():
-    """Apply additive schema migrations"""
     return db_manager.migrate_schema()
 
 
 def test_connection():
-    """Test database connection"""
     return db_manager.test_connection()

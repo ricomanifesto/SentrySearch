@@ -88,18 +88,13 @@ def require_execution_admission() -> ExecutionMode:
     return mode
 
 
-def apply_schema_migrations() -> None:
-    """Self-heal the database schema on boot (additive, idempotent migrations)."""
-    try:
-        db_manager.migrate_schema()
-        report_service.reconcile_reader_state()
-    except Exception as e:  # pragma: no cover - startup best-effort
-        logger.exception("Schema migration on startup failed: %s", e)
-
-
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    apply_schema_migrations()
+    from src.storage.config import is_deployed
+
+    db_manager.require_schema()
+    if is_deployed():
+        report_service.s3_manager.require_available()
     yield
 
 
@@ -620,8 +615,8 @@ async def health_check():
             "database": "connected" if db_status else "disconnected",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-    except Exception as e:
-        logger.exception("Health check failed: %s", e)
+    except Exception:
+        logger.warning("Health check failed")
         return JSONResponse(
             status_code=503,
             content={"status": "unhealthy", "error": "Health check failed"},
@@ -638,9 +633,13 @@ async def readiness_check():
                 status_code=503,
                 content={"status": "unready", "database": "disconnected"},
             )
-        return {"status": "ready", "database": "connected"}
-    except Exception as e:
-        logger.exception("Readiness check failed: %s", e)
+        if not db_manager.check_schema():
+            return JSONResponse(
+                status_code=503, content={"status": "unready", "schema": "incompatible"}
+            )
+        return {"status": "ready", "database": "connected", "schema": "compatible"}
+    except Exception:
+        logger.warning("Readiness check failed")
         return JSONResponse(
             status_code=503,
             content={"status": "unready", "error": "Readiness check failed"},

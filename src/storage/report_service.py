@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import uuid
+from contextlib import nullcontext
 from sqlalchemy import and_, asc, desc, func, or_, select
 from sqlalchemy.orm import Session
 
@@ -707,7 +708,7 @@ class ReportStorageService:
         # Default to unknown if no clear categorization
         return ("unknown", "unknown")
 
-    def reconcile_reader_state(self) -> Dict[str, int]:
+    def reconcile_reader_state(self, *, session: Session | None = None) -> Dict[str, int]:
         """Backfill queryable review state and explicit classification provenance."""
 
         summary = {
@@ -717,11 +718,16 @@ class ReportStorageService:
             "evidence_contract_updates": 0,
         }
         try:
-            with self.db_manager.get_session() as session:
-                # TODO(reader-state-backfill): Remove the startup full-table scan after every
-                # deployed database reports zero missing reader-state fields for one release.
-                reports = session.query(Report).all()
-                for report in reports:
+            with (
+                nullcontext(session) if session is not None else self.db_manager.get_session()
+            ) as session:
+                # The release transaction owns backfill and version publication.
+                # Admin reconciliation remains explicit, never a startup scan.
+                reports = session.query(Report).yield_per(250)
+                for row_number, row in enumerate(reports, start=1):
+                    # Legacy declarative models expose Column types to static
+                    # checkers; ORM instances carry the corresponding values.
+                    report = cast(Any, row)
                     old_classification = (
                         report.category,
                         report.threat_type,
@@ -774,12 +780,14 @@ class ReportStorageService:
                     self._refresh_review_status(report)
                     if previous_review_status != report.review_status:
                         summary["review_updates"] += 1
+                    if row_number % 250 == 0:
+                        session.flush()
 
-                session.commit()
+                session.flush()
             logger.info("Reader-state reconciliation complete: %s", summary)
             return summary
-        except Exception as e:
-            logger.error("Error reconciling reader state: %s", e)
+        except Exception:
+            logger.error("Reader-state reconciliation failed")
             raise
 
     def update_existing_categorizations(self) -> int:
@@ -1848,15 +1856,7 @@ class ReportStorageService:
 
     def test_connection(self) -> bool:
         """Test database connection for health checks"""
-        try:
-            with self.db_manager.get_session() as session:
-                from sqlalchemy import text
-
-                session.execute(text("SELECT 1"))
-                return True
-        except Exception as e:
-            logger.error(f"Database connection test failed: {e}")
-            return False
+        return self.db_manager.test_connection()
 
     def count_reports(self, **filters) -> int:
         """Count total reports with optional filters"""

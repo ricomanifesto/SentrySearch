@@ -5,8 +5,10 @@ S3 storage manager for SentrySearch report content
 import os
 import boto3
 from botocore.exceptions import ClientError
+from botocore.config import Config
+from .config import is_deployed
 import logging
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 import json
 import hashlib
 from datetime import datetime, timezone
@@ -34,42 +36,48 @@ class S3StorageManager:
         if not self._initialized:
             self._initialize_client()
             self._initialized = True
+        if self.s3_client is None:
+            raise RuntimeError("Artifact storage unavailable; verify bucket and SDK credentials")
+
+    def require_available(self) -> None:
+        """Resolve SDK credentials, not bucket permissions or live object access."""
+        self._ensure_initialized()
 
     def _initialize_client(self):
-        """Initialize S3 client with credentials from environment"""
+        """Keep credential resolution and refresh owned by the SDK session."""
         try:
-            access_key = os.getenv("AWS_ACCESS_KEY_ID")
-            secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-
-            if not access_key or not secret_key:
-                logger.warning(
-                    f"AWS credentials not found. ACCESS_KEY: {'set' if access_key else 'not set'}, SECRET_KEY: {'set' if secret_key else 'not set'}"
-                )
-                logger.warning("S3 storage will be disabled")
-                self.s3_client = None
-                return
-
-            # AWS credentials from environment variables or IAM role
-            self.s3_client = boto3.client(
+            if not self.bucket_name or (is_deployed() and not os.getenv("AWS_S3_BUCKET")):
+                raise ValueError("Explicit artifact bucket required")
+            session = boto3.Session()
+            credentials = session.get_credentials()
+            if credentials is None:
+                raise ValueError("No SDK credentials available")
+            # Resolve deferred role credentials once before admitting work. Do
+            # not pass this snapshot to the client: the session retains refresh.
+            resolved = credentials.get_frozen_credentials()
+            if not resolved.access_key or not resolved.secret_key:
+                raise ValueError("Incomplete SDK credentials")
+            self.s3_client = session.client(
                 "s3",
                 region_name=self.region,
-                aws_access_key_id=access_key,
-                aws_secret_access_key=secret_key,
+                config=Config(
+                    connect_timeout=5,
+                    read_timeout=30,
+                    retries={"mode": "standard", "total_max_attempts": 3},
+                ),
             )
-            logger.info(
-                f"S3 client initialized for bucket: {self.bucket_name} in region: {self.region}"
-            )
-        except Exception as e:
-            logger.warning(f"Error initializing S3 client: {e}")
-            logger.warning("S3 storage will be disabled")
+            logger.info("Artifact client initialized using SDK credential provider chain")
+        except Exception:
             self.s3_client = None
+            logger.warning("Artifact storage initialization failed")
+            raise RuntimeError(
+                "Artifact storage unavailable; verify bucket and SDK credentials"
+            ) from None
 
-    def upload_markdown_report(self, report_id: str, markdown_content: str) -> Optional[str]:
+    def upload_markdown_report(self, report_id: str, markdown_content: str) -> str:
         """Upload markdown report content to S3"""
         self._ensure_initialized()
-        if not self.s3_client:
-            logger.warning("S3 client not available, skipping upload")
-            return None
+        assert self.s3_client is not None
 
         content = markdown_content.encode("utf-8")
         key = f"reports/{report_id}/artifacts/{hashlib.sha256(content).hexdigest()}.md"
@@ -92,12 +100,10 @@ class S3StorageManager:
             logger.error(f"Error uploading markdown report: {e}")
             raise
 
-    def upload_trace_data(self, report_id: str, trace_data: Dict[Any, Any]) -> Optional[str]:
+    def upload_trace_data(self, report_id: str, trace_data: Dict[Any, Any]) -> str:
         """Upload trace data to S3"""
         self._ensure_initialized()
-        if not self.s3_client:
-            logger.warning("S3 client not available, skipping upload")
-            return None
+        assert self.s3_client is not None
 
         content = json.dumps(trace_data, indent=2, sort_keys=True).encode("utf-8")
         key = f"reports/{report_id}/artifacts/{hashlib.sha256(content).hexdigest()}.json"
@@ -123,9 +129,7 @@ class S3StorageManager:
     def download_content(self, s3_key: str) -> str:
         """Download content from S3"""
         self._ensure_initialized()
-        if not self.s3_client:
-            logger.warning("S3 client not available, cannot download")
-            return ""
+        assert self.s3_client is not None
 
         try:
             response = self.s3_client.get_object(Bucket=self.bucket_name, Key=s3_key)
@@ -139,9 +143,7 @@ class S3StorageManager:
     def get_presigned_url(self, s3_key: str, expiration: int = 3600) -> str:
         """Generate presigned URL for temporary access"""
         self._ensure_initialized()
-        if not self.s3_client:
-            logger.warning("S3 client not available, cannot generate presigned URL")
-            return ""
+        assert self.s3_client is not None
 
         try:
             url = self.s3_client.generate_presigned_url(
@@ -157,9 +159,7 @@ class S3StorageManager:
     def delete_report_files(self, report_id: str):
         """Delete all files for a report"""
         self._ensure_initialized()
-        if not self.s3_client:
-            logger.warning("S3 client not available, cannot delete files")
-            return
+        assert self.s3_client is not None
 
         try:
             # List all objects with the report prefix
@@ -183,9 +183,7 @@ class S3StorageManager:
     def list_report_files(self, report_id: str) -> list:
         """List all files for a report"""
         self._ensure_initialized()
-        if not self.s3_client:
-            logger.warning("S3 client not available, cannot list files")
-            return []
+        assert self.s3_client is not None
 
         try:
             response = self.s3_client.list_objects_v2(

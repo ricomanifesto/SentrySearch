@@ -551,6 +551,8 @@ def test_additive_migration_backfills_existing_intents_and_evaluations(reports, 
     service.create_pending_report(report_id, "Example", "owner", runtime_dispatch=True)
     # Remove only the new columns from this isolated test database to model an upgrade.
     with service.db_manager.get_session() as session:
+        # Historical installations predate the explicit release revision ledger.
+        session.execute(text("DROP TABLE sentrysearch_schema_migrations"))
         for column in (
             "evaluation_lease_id",
             "evaluation_lease_expires_at",

@@ -79,12 +79,16 @@ def main() -> None:
                         "OPENROUTER_",
                         "SUPABASE_",
                         "DB_",
+                        "PG",
                         "SENTRYRUNTIME_",
                         "SENTRYSEARCH_TEST_",
                     )
                 )
             }
             env["PYTHON_DOTENV_DISABLED"] = "1"
+            env["ENVIRONMENT"] = "test"
+            env["AWS_EC2_METADATA_DISABLED"] = "true"
+            env["SENTRYSEARCH_TEST_PG_BIN"] = str(pg_bin)
             env["SENTRYSEARCH_EXECUTION_MODE"] = "runtime"
             env["DATABASE_URL"] = f"postgres://postgres@/postgres?host={pg_socket}&sslmode=disable"
             env["SENTRYSEARCH_TEST_DATABASE_URL"] = (
@@ -144,7 +148,15 @@ def main() -> None:
                 else:
                     raise RuntimeError("runtime did not become ready")
             subprocess.run(
-                [sys.executable, "-m", "pytest", "tests/runtime_postgres.py", "-v"],
+                [
+                    sys.executable,
+                    "-m",
+                    "pytest",
+                    "tests/runtime_postgres.py",
+                    "tests/storage_postgres.py",
+                    *(["tests/storage_tls_postgres.py"] if args.tls else []),
+                    "-v",
+                ],
                 cwd=repo,
                 env=env,
                 check=True,

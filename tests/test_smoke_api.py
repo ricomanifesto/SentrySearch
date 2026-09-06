@@ -54,7 +54,7 @@ def test_smoke_api_exercises_local_auth_boundary_without_live_services():
     assert asyncio.run(run_checks()) == 0
 
 
-def test_health_check_redacts_internal_exception(monkeypatch):
+def test_health_check_redacts_internal_exception(monkeypatch, caplog):
     def fail_connection():
         raise RuntimeError("database password leaked")
 
@@ -64,6 +64,7 @@ def test_health_check_redacts_internal_exception(monkeypatch):
 
     assert response.status_code == 503
     assert response.body == b'{"status":"unhealthy","error":"Health check failed"}'
+    assert "database password leaked" not in caplog.text
 
 
 def test_readiness_check_fails_when_database_is_disconnected(monkeypatch):
@@ -77,10 +78,19 @@ def test_readiness_check_fails_when_database_is_disconnected(monkeypatch):
 
 def test_readiness_check_passes_when_database_is_connected(monkeypatch):
     monkeypatch.setattr(api_main.report_service, "test_connection", lambda: True)
+    monkeypatch.setattr(api_main.db_manager, "check_schema", lambda: True)
 
     response = asyncio.run(api_main.readiness_check())
 
-    assert response == {"status": "ready", "database": "connected"}
+    assert response == {"status": "ready", "database": "connected", "schema": "compatible"}
+
+
+def test_readiness_requires_schema_not_only_connectivity(monkeypatch):
+    monkeypatch.setattr(api_main.report_service, "test_connection", lambda: True)
+    monkeypatch.setattr(api_main.db_manager, "check_schema", lambda: False)
+    response = asyncio.run(api_main.readiness_check())
+    assert response.status_code == 503
+    assert response.body == b'{"status":"unready","schema":"incompatible"}'
 
 
 def test_readiness_check_redacts_internal_exception(monkeypatch):
