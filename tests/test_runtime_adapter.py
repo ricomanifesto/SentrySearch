@@ -11,7 +11,12 @@ import pytest
 from src.core.generation_failures import EvidenceAttestationError
 from src.domain.execution import GenerationLease
 from src.execution.dispatcher import dispatch_pending_reports
-from src.execution.runtime_client import RuntimeClient, RuntimeRun, RuntimeUnavailable
+from src.execution.runtime_client import (
+    RuntimeAccessDenied,
+    RuntimeClient,
+    RuntimeRun,
+    RuntimeUnavailable,
+)
 from src.execution.worker import DurableGenerationWorker
 
 
@@ -26,7 +31,7 @@ def test_runtime_client_sends_bearer_header_without_following_redirects():
         client = RuntimeClient(
             "http://127.0.0.1:8080", bearer_token="p" * 40, http_client=http_client
         )
-        with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(RuntimeAccessDenied, match="redirects"):
             client.submit_report("report-1")
     assert len(requests) == 1
     assert requests[0].headers["Authorization"] == "Bearer " + "p" * 40
@@ -77,7 +82,8 @@ def test_local_worker_uses_distinct_dispatch_and_worker_credentials(monkeypatch)
     monkeypatch.setenv("SENTRYRUNTIME_WORKER_TOKEN", "w" * 40)
     calls: list[tuple[str, str | None]] = []
 
-    def factory(url: str, *, bearer_token: str | None):
+    def factory(url: str, *, bearer_token: str | None, remote: bool, ca_file: str | None):
+        assert remote is False and ca_file is None
         calls.append((url, bearer_token))
         return object()
 

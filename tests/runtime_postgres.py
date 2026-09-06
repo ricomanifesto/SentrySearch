@@ -71,15 +71,9 @@ def artifact(threat_profile_data):
 
 @pytest.fixture
 def runtime_clients():
-    from src.execution.runtime_client import RuntimeClient
+    from dev.run_runtime_worker import runtime_clients_from_environment
 
-    producer = RuntimeClient(
-        os.environ["SENTRYRUNTIME_LOCAL_URL"],
-        bearer_token=os.environ["SENTRYRUNTIME_PRODUCER_TOKEN"],
-    )
-    worker = RuntimeClient(
-        os.environ["SENTRYRUNTIME_LOCAL_URL"], bearer_token=os.environ["SENTRYRUNTIME_WORKER_TOKEN"]
-    )
+    producer, worker = runtime_clients_from_environment()
     try:
         yield producer, worker
     finally:
@@ -122,19 +116,13 @@ def test_replacement_attempt_fences_the_old_writer(reports, artifact, owner):
 
 def test_runtime_failure_and_exhaustion_are_reconciled_without_regeneration(reports):
     from src.domain.execution import GenerationLease
-    from src.execution.runtime_client import RuntimeClient
+    from dev.run_runtime_worker import runtime_clients_from_environment
     from src.execution.dispatcher import dispatch_pending_reports
     from src.execution.reconciler import reconcile_runtime_reports
     from src.storage.models import ReportRuntimeDispatch
 
     service, _objects = reports
-    producer = RuntimeClient(
-        os.environ["SENTRYRUNTIME_LOCAL_URL"],
-        bearer_token=os.environ["SENTRYRUNTIME_PRODUCER_TOKEN"],
-    )
-    worker = RuntimeClient(
-        os.environ["SENTRYRUNTIME_LOCAL_URL"], bearer_token=os.environ["SENTRYRUNTIME_WORKER_TOKEN"]
-    )
+    producer, worker = runtime_clients_from_environment()
     try:
         report_id = str(uuid.uuid4())
         service.create_pending_report(report_id, "Example", "owner", runtime_dispatch=True)
@@ -279,18 +267,12 @@ def test_missing_and_durable_reports_reject_unfenced_writes(reports, artifact):
 
 
 def test_worker_passes_the_registered_fence_to_generation(reports, artifact):
-    from src.execution.runtime_client import RuntimeClient
+    from dev.run_runtime_worker import runtime_clients_from_environment
     from src.execution.worker import DurableGenerationWorker
     from src.execution.dispatcher import dispatch_pending_reports
 
     service, _objects = reports
-    producer = RuntimeClient(
-        os.environ["SENTRYRUNTIME_LOCAL_URL"],
-        bearer_token=os.environ["SENTRYRUNTIME_PRODUCER_TOKEN"],
-    )
-    runtime = RuntimeClient(
-        os.environ["SENTRYRUNTIME_LOCAL_URL"], bearer_token=os.environ["SENTRYRUNTIME_WORKER_TOKEN"]
-    )
+    producer, runtime = runtime_clients_from_environment()
     report_id = str(uuid.uuid4())
     service.create_pending_report(report_id, "Example", "owner", runtime_dispatch=True)
     seen = []
@@ -721,7 +703,10 @@ def test_evaluation_deadline_leaves_a_recoverable_product_lease(
     from fastapi import BackgroundTasks
     from src.auth.supabase_auth import AuthenticatedUser
 
-    monkeypatch.delenv("SENTRYRUNTIME_LOCAL_URL")
+    monkeypatch.delenv("SENTRYRUNTIME_LOCAL_URL", raising=False)
+    monkeypatch.delenv("SENTRYRUNTIME_URL", raising=False)
+    monkeypatch.delenv("SENTRYRUNTIME_CA_FILE", raising=False)
+    monkeypatch.setenv("SENTRYSEARCH_EXECUTION_MODE", "legacy")
     background = BackgroundTasks()
     user = AuthenticatedUser(
         user_id="owner", email="owner@example.com", metadata={"role": "analyst"}
@@ -729,4 +714,81 @@ def test_evaluation_deadline_leaves_a_recoverable_product_lease(
     response = asyncio.run(api.retry_report_evaluation(report_id, background, user))
     assert response["evaluation_status"] == "pending"
     assert background.tasks == []
+    assert service.get_pending_runtime_evaluations() == [(report_id, "owner")]
+
+
+def test_paused_api_does_not_reserve_reports_or_evaluation(reports, artifact, monkeypatch):
+    import asyncio
+    from fastapi import BackgroundTasks, HTTPException
+    from src.api import main as api
+    from src.auth.supabase_auth import AuthenticatedUser
+    from src.storage.models import ReportRuntimeDispatch
+
+    service, _objects = reports
+    report_id = str(uuid.uuid4())
+    service.create_pending_report(report_id, "Example", "owner")
+    service.finalize_report(report_id, artifact)
+    before = service.get_report(report_id, include_content=False)
+    monkeypatch.setattr(api, "report_service", service)
+    monkeypatch.setenv("SENTRYSEARCH_EXECUTION_MODE", "paused")
+    user = AuthenticatedUser(user_id="owner", email="owner@example.com", metadata={})
+    tasks = BackgroundTasks()
+    for action in (
+        lambda: api.create_report(api.ReportCreate(tool_name="Blocked"), tasks, user),
+        lambda: api.retry_report_evaluation(report_id, tasks, user),
+    ):
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(action())
+        assert error.value.status_code == 503
+    assert tasks.tasks == []
+    assert service.get_report(report_id, include_content=False) == before
+    with service.db_manager.get_session() as session:
+        assert session.query(Report).count() == 1
+        assert session.query(ReportRuntimeDispatch).count() == 0
+
+
+def test_accepted_intent_survives_outage_and_drains_during_admission_pause(
+    reports, artifact, runtime_clients, monkeypatch
+):
+    import asyncio
+    from fastapi import BackgroundTasks
+    from src.api import main as api
+    from src.auth.supabase_auth import AuthenticatedUser
+    from src.execution.dispatcher import dispatch_pending_reports
+    from src.execution.runtime_client import RuntimeUnavailable
+    from src.execution.worker import DurableGenerationWorker
+
+    service, _objects = reports
+    producer, runtime = runtime_clients
+    monkeypatch.setattr(api, "report_service", service)
+    monkeypatch.setenv("SENTRYSEARCH_EXECUTION_MODE", "runtime")
+    user = AuthenticatedUser(user_id="owner", email="owner@example.com", metadata={})
+    tasks = BackgroundTasks()
+    accepted = asyncio.run(api.create_report(api.ReportCreate(tool_name="Example"), tasks, user))
+    report_id = accepted["report_id"]
+    assert tasks.tasks == []
+
+    class Outage:
+        def submit_report(self, report_id):
+            raise RuntimeUnavailable("fixture outage")
+
+    assert dispatch_pending_reports(Outage(), service) == 0
+    assert service.get_pending_runtime_dispatches() == [report_id]
+    assert service.get_report(report_id, include_content=False)["status"] == "generating"
+    monkeypatch.setenv("SENTRYSEARCH_EXECUTION_MODE", "paused")
+    assert dispatch_pending_reports(producer, service) == 1
+
+    def generate(report_id, tool_name, user_id, lease):
+        service.finalize_report(report_id, artifact, user_id, generation_lease=lease)
+
+    worker = DurableGenerationWorker(
+        runtime=runtime,
+        reports=service,
+        generate=generate,
+        worker_id="pause-drain",
+        lease_seconds=60,
+    )
+    assert worker.run_once()
+    assert service.get_report(report_id, include_content=False)["status"] == "completed"
+    assert service.get_pending_runtime_dispatches() == []
     assert service.get_pending_runtime_evaluations() == [(report_id, "owner")]

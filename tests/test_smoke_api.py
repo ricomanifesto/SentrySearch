@@ -256,6 +256,7 @@ def test_report_model_exposes_owner_for_api_authorization():
 
 
 def test_create_report_starts_background_job_without_synchronous_generation(monkeypatch):
+    monkeypatch.setenv("SENTRYSEARCH_EXECUTION_MODE", "legacy")
     generation_called = False
 
     class Generator:
@@ -301,6 +302,7 @@ def test_create_report_starts_background_job_without_synchronous_generation(monk
 
 
 def test_create_report_queues_runtime_dispatch_when_local_adapter_is_enabled(monkeypatch):
+    monkeypatch.setenv("SENTRYSEARCH_EXECUTION_MODE", "runtime")
     monkeypatch.setenv("SENTRYRUNTIME_LOCAL_URL", "http://127.0.0.1:8080")
     created = {}
 
@@ -338,6 +340,7 @@ def test_create_report_queues_runtime_dispatch_when_local_adapter_is_enabled(mon
 def test_evaluation_retry_claims_saved_report_without_restarting_generation(
     monkeypatch, runtime_managed
 ):
+    monkeypatch.setenv("SENTRYSEARCH_EXECUTION_MODE", "legacy")
     user = supabase_auth.AuthenticatedUser(
         user_id="analyst-user",
         email="analyst@example.com",

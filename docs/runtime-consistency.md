@@ -2,7 +2,8 @@
 
 SentryRuntime owns execution state. SentrySearch owns reports, evidence,
 evaluation, analyst judgments, and artifact references. The adapter remains
-opt-in and loopback-only; this is not a deployed-service release.
+opt-in, with explicit local or verified HTTPS transport; this is not a
+deployed-service release. See [admission and transport](runtime-admission.md).
 
 ## Publication boundary
 
@@ -65,11 +66,13 @@ attempt numbers retain their role in analyst-judgment versioning.
 
 The automatic scan is limited to reports with runtime dispatch intents. Manual
 retries for these reports only reserve pending evaluation for the supervised
-worker, even when the API's runtime URL is unset. They do not start another
+worker, even with explicit legacy admission and no API runtime URL. Paused
+admission rejects all manual retries before reservation. They do not start another
 evaluator inside the API process.
 
-Legacy reports without a runtime intent still use the existing in-process
-manual-retry path. There is no evaluation heartbeat, and that legacy path has no
+Legacy reports without a runtime intent require explicit legacy admission for
+the in-process manual-retry path; runtime admission returns 409 without reserving
+evaluation. There is no evaluation heartbeat, and that legacy path has no
 whole-job deadline. A replacement lease still fences old result writes. Drain
 old API/worker processes before cutover; the supervisor cannot stop an evaluator
 already running in another process.
@@ -147,14 +150,16 @@ uv sync --locked
 uv run python dev/check_local_setup.py
 ```
 
-With Go, Homebrew PostgreSQL 16, and a SentryRuntime checkout available:
+With Go, OpenSSL, Homebrew PostgreSQL 16, and a SentryRuntime checkout that
+supports native TLS and readiness:
 
 ```bash
 uv run python dev/check_runtime_consistency.py --runtime-repo ../sentryruntime
+uv run python dev/check_runtime_consistency.py --runtime-repo ../sentryruntime --tls
 ```
 
 The runner builds the real runtime, starts a disposable socket-only PostgreSQL
-server and a token-authenticated loopback runtime, and creates an isolated
+server and a token-authenticated runtime, and creates an isolated
 product database for each integration test. It tests takeover during upload,
 reconciliation after runtime failure and lease exhaustion, evaluation takeover,
 saved-evidence evaluation recovery, aggregate backlog, and additive migration
@@ -162,6 +167,11 @@ backfills. It also kills a supervised evaluator at its deadline, verifies the
 report survives, and reclaims evaluation from saved evidence after lease expiry.
 The regular gate includes process/HTTP tests for live probes, SIGTERM drain,
 forced deadlines, parent death, error redaction, and signal-lock reentrancy.
+The HTTPS variant uses disposable certificates and the worker's remote-client
+configuration. Both variants prove that API pause reserves nothing and an
+accepted intent survives a runtime outage, then drains while admission is paused.
+The regular gate also tests real TLS rejection of wrong CA/hostname, expired
+certificates, redirects, and ambient trust/proxy overrides.
 
 The storage code uses a fake S3 client; the evaluator is stubbed. These tests do
 not call AWS or a model provider and do not prove bucket policy, deployed
@@ -183,4 +193,5 @@ The runner stops its processes and removes its disposable data after execution.
 - Define retention for unreferenced content without deleting any live artifact.
   This slice does not add automatic object cleanup or alter bucket policies.
 - Run an explicitly approved controlled canary with rollback receipts before
-  enabling remote execution or removing `TODO(sentryruntime-cutover)` fallbacks.
+  enabling remote execution for deployed workloads or removing
+  `TODO(sentryruntime-cutover)` legacy paths.

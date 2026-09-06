@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -13,10 +14,18 @@ import time
 
 import httpx
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dev.tls_fixtures import create_certificates
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runtime-repo", type=Path, required=True)
+    parser.add_argument(
+        "--tls",
+        action="store_true",
+        help="exercise explicit remote-mode HTTPS using disposable local trust",
+    )
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[1]
     runtime_repo = args.runtime_repo.resolve()
@@ -76,6 +85,7 @@ def main() -> None:
                 )
             }
             env["PYTHON_DOTENV_DISABLED"] = "1"
+            env["SENTRYSEARCH_EXECUTION_MODE"] = "runtime"
             env["DATABASE_URL"] = f"postgres://postgres@/postgres?host={pg_socket}&sslmode=disable"
             env["SENTRYSEARCH_TEST_DATABASE_URL"] = (
                 f"postgresql+psycopg://postgres@/postgres?host={pg_socket}&sslmode=disable"
@@ -85,7 +95,18 @@ def main() -> None:
                 listener.bind(("127.0.0.1", 0))
                 port = listener.getsockname()[1]
             env["SENTRYRUNTIME_LISTEN_ADDRESS"] = f"127.0.0.1:{port}"
-            env["SENTRYRUNTIME_LOCAL_URL"] = f"http://127.0.0.1:{port}"
+            verification: bool | ssl.SSLContext = True
+            if args.tls:
+                cert = create_certificates(scratch / "tls")
+                env["SENTRYRUNTIME_TLS_CERT_FILE"] = str(cert.certificate)
+                env["SENTRYRUNTIME_TLS_KEY_FILE"] = str(cert.key)
+                env["SENTRYRUNTIME_CA_FILE"] = str(cert.ca)
+                runtime_url = f"https://127.0.0.1:{port}"
+                env["SENTRYRUNTIME_URL"] = runtime_url
+                verification = ssl.create_default_context(cafile=cert.ca)
+            else:
+                runtime_url = f"http://127.0.0.1:{port}"
+                env["SENTRYRUNTIME_LOCAL_URL"] = runtime_url
             env["SENTRYRUNTIME_AUTH_MODE"] = "token"
             entries = []
             for role in ("producer", "worker"):
@@ -102,16 +123,19 @@ def main() -> None:
                 )
             env["SENTRYRUNTIME_AUTH_CREDENTIALS"] = json.dumps(entries)
             server = subprocess.Popen([str(binary)], cwd=runtime_repo, env=env)
-            with httpx.Client(trust_env=False, timeout=1) as probe:
+            with httpx.Client(trust_env=False, verify=verification, timeout=3) as probe:
                 for _ in range(100):
                     if server.poll() is not None:
                         raise RuntimeError("runtime exited before readiness")
                     try:
                         if (
                             probe.get(
-                                env["SENTRYRUNTIME_LOCAL_URL"] + "/v1/runs/invalid"
+                                runtime_url + "/readyz",
+                                headers={
+                                    "Authorization": "Bearer " + env["SENTRYRUNTIME_PRODUCER_TOKEN"]
+                                },
                             ).status_code
-                            == 401
+                            == 200
                         ):
                             break
                     except httpx.RequestError:

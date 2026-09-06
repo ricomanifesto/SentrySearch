@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the opt-in local SentrySearch durable-generation worker."""
+"""Run the opt-in SentrySearch durable-generation worker."""
 
 from __future__ import annotations
 
@@ -10,7 +10,10 @@ import socket
 import threading
 import time
 
+from dotenv import load_dotenv
+
 from src.execution.dispatcher import dispatch_pending_reports
+from src.execution.config import runtime_endpoint_from_environment
 from src.execution.reconciler import reconcile_runtime_reports
 from src.execution.runtime_client import (
     RuntimeAccessDenied,
@@ -46,6 +49,7 @@ def main() -> int:
     # TODO(sentryruntime-cutover): Move this local process into the deployed worker
     # service after report-write fencing, terminal reconciliation, authenticated
     # transport, and the deployed canary are verified.
+    load_dotenv()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
         settings = WorkerSettings(**vars(parse_args()))
@@ -64,7 +68,6 @@ def load_jobs():
 
 def run_worker_loop(settings: WorkerSettings, stop: threading.Event, emit: Emit) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    report_service, generate, evaluate = load_jobs()
     worker_id = f"{socket.gethostname()}-{os.getpid()}"
     dispatcher_runtime, runtime = runtime_clients_from_environment()
 
@@ -77,6 +80,7 @@ def run_worker_loop(settings: WorkerSettings, stop: threading.Event, emit: Emit)
         emit({"event": "backlog", "counts": report_service.get_runtime_backlog(), "at": sampled_at})
 
     try:
+        report_service, generate, evaluate = load_jobs()
         worker = DurableGenerationWorker(
             runtime=runtime,
             reports=report_service,
@@ -100,7 +104,7 @@ def run_worker_loop(settings: WorkerSettings, stop: threading.Event, emit: Emit)
             try:
                 claimed = worker.run_once()
             except RuntimeUnavailable:
-                logger.warning("Local runtime is unavailable; retrying after the poll interval")
+                logger.warning("Runtime is unavailable; retrying after the poll interval")
                 emit({"event": "error", "code": "runtime_unavailable"})
                 claimed = False
             if dispatched:
@@ -133,18 +137,27 @@ def run_worker_loop(settings: WorkerSettings, stop: threading.Event, emit: Emit)
 def runtime_clients_from_environment() -> tuple[RuntimeClient, RuntimeClient]:
     """Keep submission authority separate from execution authority."""
 
-    runtime_url = os.getenv("SENTRYRUNTIME_LOCAL_URL", "")
-    if not runtime_url.strip():
-        raise ValueError("SENTRYRUNTIME_LOCAL_URL is required")
+    endpoint = runtime_endpoint_from_environment()
     producer_token = os.getenv("SENTRYRUNTIME_PRODUCER_TOKEN") or None
     worker_token = os.getenv("SENTRYRUNTIME_WORKER_TOKEN") or None
     if (producer_token is None) != (worker_token is None):
         raise ValueError("set both runtime producer and worker tokens, or neither for local mode")
+    if endpoint.remote and (
+        not producer_token or not worker_token or producer_token == worker_token
+    ):
+        raise ValueError("remote runtime requires distinct producer and worker tokens")
     validate_runtime_token(producer_token)
     validate_runtime_token(worker_token)
-    producer = RuntimeClient(runtime_url, bearer_token=producer_token)
+    producer = RuntimeClient(
+        endpoint.url, bearer_token=producer_token, remote=endpoint.remote, ca_file=endpoint.ca_file
+    )
     try:
-        worker = RuntimeClient(runtime_url, bearer_token=worker_token)
+        worker = RuntimeClient(
+            endpoint.url,
+            bearer_token=worker_token,
+            remote=endpoint.remote,
+            ca_file=endpoint.ca_file,
+        )
     except Exception:
         producer.close()
         raise

@@ -49,7 +49,7 @@ from src.api.contracts import (
     SortDirection,
 )
 from src.domain.model_routes import generation_fallback_state
-from src.execution.runtime_client import validate_local_runtime_url
+from src.execution.config import ExecutionMode, execution_mode_from_environment
 from src.domain.execution import GenerationLease, GenerationLeaseLost
 from src.domain.reports import (
     AnalystDisposition,
@@ -75,11 +75,17 @@ from src.domain.reports import (
 logger = logging.getLogger(__name__)
 
 
-def local_runtime_url() -> str | None:
-    """Return the opt-in loopback runtime URL for local adapter development."""
+def require_execution_admission() -> ExecutionMode:
+    """Fail before reserving work; configuration errors never select legacy work."""
 
-    value = os.getenv("SENTRYRUNTIME_LOCAL_URL", "").strip()
-    return validate_local_runtime_url(value) if value else None
+    try:
+        mode = execution_mode_from_environment()
+    except ValueError:
+        logger.error("Execution admission configuration is invalid")
+        raise HTTPException(status_code=503, detail="New work is unavailable") from None
+    if mode == "paused":
+        raise HTTPException(status_code=503, detail="New work is paused")
+    return mode
 
 
 def apply_schema_migrations() -> None:
@@ -803,6 +809,7 @@ async def retry_report_evaluation(
 ):
     """Retry a failed or unrecorded evaluator without repeating report generation."""
 
+    mode = require_execution_admission()
     try:
         report = report_service.get_report(report_id, include_content=False)
         if report is None:
@@ -810,12 +817,15 @@ async def retry_report_evaluation(
         if get_report_user_id(user) and report.get("user_id") != user.id:
             raise HTTPException(status_code=404, detail="Report not found")
         owner_id = str(report.get("user_id") or user.id)
+        runtime_managed = report_service.has_runtime_dispatch(report_id)
+        if not runtime_managed and mode != "legacy":
+            raise HTTPException(status_code=409, detail="This report requires legacy evaluation")
         if not report_service.begin_report_evaluation(report_id, user_id=owner_id):
             raise HTTPException(
                 status_code=409,
                 detail="This report is not available for evaluation retry",
             )
-        if not report_service.has_runtime_dispatch(report_id):
+        if not runtime_managed:
             # TODO(sentryruntime-cutover): Remove this in-process evaluator path
             # after legacy reports are migrated and deployed rollback is proven.
             background_tasks.add_task(run_report_evaluation, report_id, owner_id)
@@ -1041,12 +1051,12 @@ async def create_report(
     """Schedule a threat intelligence report and return immediately.
 
     The response carries the new report id with status "generating" so the client
-    can poll until the selected local or in-process execution path completes.
+    can poll until the explicitly selected execution path completes.
     """
+    mode = require_execution_admission()
     try:
-        runtime_url = local_runtime_url()
         report_id = str(uuid.uuid4())
-        if runtime_url:
+        if mode == "runtime":
             report_service.create_pending_report(
                 report_id=report_id,
                 tool_name=report_request.tool_name,
@@ -1062,8 +1072,8 @@ async def create_report(
     except Exception as e:
         raise internal_server_error("Failed to start report generation", e)
 
-    if runtime_url is None:
-        # TODO(sentryruntime-cutover): Remove the in-process fallback after an
+    if mode == "legacy":
+        # TODO(sentryruntime-cutover): Remove explicit legacy generation after an
         # authenticated runtime deployment and worker canary are both verified.
         background_tasks.add_task(
             run_report_generation,

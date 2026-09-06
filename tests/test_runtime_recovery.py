@@ -189,7 +189,7 @@ def test_runtime_client_reads_run_with_producer_auth_and_preserves_error_code():
     [
         (404, {}, RuntimeRunMissing),
         (409, {"code": "lease_fenced"}, RuntimeLeaseFenced),
-        (409, {"code": "different_conflict"}, httpx.HTTPStatusError),
+        (409, {"code": "different_conflict"}, RuntimeAccessDenied),
     ],
 )
 def test_runtime_client_distinguishes_missing_fenced_and_other_conflicts(status, body, error):

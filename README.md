@@ -56,18 +56,24 @@ The API listens on `http://localhost:8001`; the frontend listens on `http://loca
 
 The example files list every required variable. OpenRouter is needed for live generation, Supabase for authentication, PostgreSQL for report metadata and search, and S3 for report files and exports.
 
-### Local durable-generation adapter
+### Execution admission and durable generation
 
-The default API path still starts generation inside the web process. To exercise
-the durable adapter, start the local runtime API on `127.0.0.1:8080`, set
-`SENTRYRUNTIME_LOCAL_URL=http://127.0.0.1:8080`, and run the worker in another
-terminal:
+New report creation and manual evaluation retries now default to **paused**.
+Set `SENTRYSEARCH_EXECUTION_MODE=runtime` for the durable adapter, or explicitly
+set `legacy` for the transitional in-process path. Paused requests return 503
+before reserving work; reads remain available. Invalid runtime settings never
+select legacy execution. Existing installations must select a mode before new
+work will be accepted.
+
+For the local demo, start the runtime on `127.0.0.1:8080`, set
+`SENTRYRUNTIME_LOCAL_URL=http://127.0.0.1:8080` in both API and worker environments,
+set the API's execution mode to `runtime`, and run the worker in another terminal:
 
 ```bash
 uv run python -m dev.run_runtime_worker --health-port 8081
 ```
 
-With that opt-in set, creating a report commits the pending report and its
+With runtime admission selected, creating a report commits the pending report and its
 runtime-dispatch intent together. The worker retries runtime submission using the
 report ID as its idempotency key, claims only `sentrysearch/generate_report/v1`,
 heartbeats the lease while generation runs, and keeps report artifacts in
@@ -90,9 +96,15 @@ execution worker uses the worker token. A 401/403 during dispatch, claim, or fin
 acknowledgment stops the process for operator correction; it is not retried as an
 outage. Leave both unset for the unauthenticated loopback demo.
 
-Non-loopback URLs remain rejected, even with tokens. Client-owned HTTP transport
-ignores environment proxies and never follows redirects. Do not enable this path
-in a deployed environment yet. Local PostgreSQL/HTTP tests cover overlapping
+For explicit HTTPS transport, set `SENTRYRUNTIME_URL` instead of
+`SENTRYRUNTIME_LOCAL_URL`. The worker requires both distinct scoped tokens and
+verifies the server CA and hostname. Set `SENTRYRUNTIME_CA_FILE` for a custom PEM
+trust bundle; otherwise HTTPX uses its default CA bundle. Environment proxies
+and ambient trust overrides are ignored, and redirects are rejected. These are
+locally tested capabilities, not authorization or evidence of deployed cutover.
+See [admission and transport configuration](docs/runtime-admission.md).
+
+Local PostgreSQL/HTTP and HTTPS tests cover overlapping
 writers, immutable artifact references, terminal-state reconciliation, and
 bounded evaluation recovery. Local process tests cover probes, drain, deadlines,
 and supervisor loss. Protected deployed transport, target-platform lifecycle and
