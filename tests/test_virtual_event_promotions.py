@@ -3,6 +3,7 @@ import asyncio
 from datetime import datetime, timezone
 import json
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock, Mock
 
 import pytest
@@ -20,7 +21,9 @@ from src.core.threat_profile_schema import attest_profile_sources
 from src.core.source_ledger import canonicalize_profile_sources
 from src.storage.models import Report
 from src.storage.report_service import ReportStorageService
-from test_evidence_admissibility import OPERATIONAL_SOURCE
+from tests.test_evidence_admissibility import OPERATIONAL_SOURCE as EVIDENCE_SOURCE
+
+OPERATIONAL_SOURCE = cast(dict[str, Any], EVIDENCE_SOURCE)
 
 MARKERS = [
     "[Virtual Event]",
@@ -204,6 +207,7 @@ def test_excluded_promotion_does_not_reappear_in_reader_audit_or_markdown(threat
     assert [source["sourceId"] for source in assessment["sourceObservations"]] == ["S1", "S2"]
     private_before = deepcopy(threat_profile_data)
     public = get_validated_evidence_admissibility({"threat_data": threat_profile_data})
+    assert public is not None
     assert [source.source_id for source in public.source_observations] == ["S1"]
     assert "[Virtual Event]" not in json.dumps(
         reader_safe_threat_data({"threat_data": threat_profile_data})
@@ -284,10 +288,13 @@ def test_mixed_sources_persist_without_exposing_private_promotion_audit(
     assert promotion["url"] not in markdown
     assert [source["sourceId"] for source in report.web_sources] == ["S1"]
     assert report.threat_data["evidenceAdmissibility"] == assessment
-    assert len(report.evidence_admissibility["sourceObservations"]) == 2
-    public = get_validated_evidence_admissibility(
-        {"evidence_admissibility": report.evidence_admissibility}
-    )
+    stored_assessment = report.evidence_admissibility
+    assert isinstance(stored_assessment, dict)
+    stored_observations = stored_assessment["sourceObservations"]
+    assert isinstance(stored_observations, list)
+    assert len(stored_observations) == 2
+    public = get_validated_evidence_admissibility({"evidence_admissibility": stored_assessment})
+    assert public is not None
     assert [source.source_id for source in public.source_observations] == ["S1"]
 
 
