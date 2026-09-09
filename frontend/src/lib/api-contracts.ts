@@ -214,6 +214,9 @@ export interface PaginatedResponse<T> {
     limit: number;
     total: number;
     pages: number;
+    // Totals and offsets describe stored matches; exclusion counts are page-local.
+    excluded_on_page?: number;
+    total_includes_excluded?: boolean;
   };
 }
 

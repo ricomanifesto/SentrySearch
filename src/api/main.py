@@ -22,6 +22,11 @@ from src.storage.database import db_manager
 from src.core.threat_profile_generator import ThreatProfileGenerator
 from src.core.report_evaluator import evaluate_saved_report
 from src.core.markdown_generator import generate_markdown
+from src.core.evidence_admissibility import (
+    ContentPolicyExclusion,
+    assert_no_virtual_event_promotions,
+    reader_evidence_admissibility,
+)
 from src.core.generation_failures import (
     PersistenceFailureError,
     ProfileOutputError,
@@ -209,7 +214,11 @@ def get_validated_evidence_admissibility(
     """Validate the persisted safety record before publishing it on the API."""
 
     assessment = get_evidence_admissibility(report)
-    return EvidenceAdmissibility.model_validate(assessment) if assessment is not None else None
+    if assessment is None:
+        return None
+    # Validate the full audit before omitting any records from its public projection.
+    EvidenceAdmissibility.model_validate(assessment)
+    return EvidenceAdmissibility.model_validate(reader_evidence_admissibility(assessment))
 
 
 def reader_safe_threat_data(report: Dict[str, Any]) -> Dict[str, Any] | None:
@@ -218,16 +227,34 @@ def reader_safe_threat_data(report: Dict[str, Any]) -> Dict[str, Any] | None:
     threat_data = report.get("threat_data")
     if not isinstance(threat_data, dict):
         return None
-    return {
+    public = {
         key: value
         for key, value in threat_data.items()
         if not key.startswith("_") and key != "comprehensiveWebSearchSources"
     }
+    assert_no_virtual_event_promotions(public)
+    assessment = public.get("evidenceAdmissibility")
+    if isinstance(assessment, dict):
+        EvidenceAdmissibility.model_validate(assessment)
+        public["evidenceAdmissibility"] = reader_evidence_admissibility(assessment)
+    return public
 
 
 def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
     """Project one stored row through the same lifecycle contract on every surface."""
 
+    # Retained rows predate write-time gates. Reject this record rather than
+    # remove a source or label and expose an inconsistent report/export.
+    assert_no_virtual_event_promotions(
+        report.get("tool_name"),
+        report.get("content_preview"),
+        report.get("markdown_content"),
+        reader_safe_threat_data(report),
+        report.get("web_sources"),
+        get_quality_assessment(report),
+        report.get("search_tags"),
+        report.get("generation_failure"),
+    )
     quality_score = get_quality_score(report)
     sources = get_report_sources(report)
     evaluation_status = get_evaluation_status(report)
@@ -314,6 +341,23 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
         ),
         "content_preview": report.get("content_preview"),
     }
+
+
+def report_collection_fields(
+    reports: List[Dict[str, Any]],
+) -> tuple[list[tuple[Dict[str, Any], Dict[str, Any]]], int]:
+    """Project each stored record, omitting only explicit content-policy exclusions."""
+
+    projected = []
+    excluded_count = 0
+    for report in reports:
+        try:
+            fields = report_response_fields(report)
+        except ContentPolicyExclusion:
+            excluded_count += 1
+            continue
+        projected.append((report, fields))
+    return projected, excluded_count
 
 
 def get_report_sources(report: Dict[str, Any]) -> List[ReportSource]:
@@ -704,7 +748,8 @@ async def list_reports(
         )
 
         # Convert to response models
-        report_responses = [ReportResponse(**report_response_fields(report)) for report in reports]
+        projected, excluded_count = report_collection_fields(reports)
+        report_responses = [ReportResponse(**fields) for _, fields in projected]
 
         return {
             "reports": report_responses,
@@ -713,6 +758,8 @@ async def list_reports(
                 "limit": pagination.limit,
                 "total": total_count,
                 "pages": (total_count + pagination.limit - 1) // pagination.limit,
+                "excluded_on_page": excluded_count,
+                "total_includes_excluded": True,
             },
             "filters": {
                 "query": query,
@@ -764,6 +811,10 @@ async def get_report(
             disposition_history=report.get("disposition_history", []),
         )
 
+    except ContentPolicyExclusion as error:
+        raise HTTPException(
+            status_code=404, detail="Report unavailable under content policy"
+        ) from error
     except HTTPException:
         raise
     except Exception as e:
@@ -1172,7 +1223,8 @@ async def search_reports(
         total_count = report_service.count_search_results(**search_params)
 
         # Convert to response models
-        report_responses = [ReportResponse(**report_response_fields(report)) for report in reports]
+        projected, excluded_count = report_collection_fields(reports)
+        report_responses = [ReportResponse(**fields) for _, fields in projected]
 
         return {
             "reports": report_responses,
@@ -1181,6 +1233,8 @@ async def search_reports(
                 "limit": pagination.limit,
                 "total": total_count,
                 "pages": (total_count + pagination.limit - 1) // pagination.limit,
+                "excluded_on_page": excluded_count,
+                "total_includes_excluded": True,
             },
             "search_params": search_params,
         }
@@ -1312,8 +1366,9 @@ async def get_analytics(
         recent_reports = report_service.list_reports(
             limit=10, sort_by="created_at", sort_order="desc", user_id=user_id
         )
+        projected, excluded_count = report_collection_fields(recent_reports)
         recent_activity = []
-        for report in recent_reports:
+        for report, fields in projected:
             recent_activity.append(
                 {
                     "id": report["id"],
@@ -1330,11 +1385,9 @@ async def get_analytics(
                         generation_route=report.get("generation_route"),
                     ),
                     "evaluation_status": get_evaluation_status(report),
-                    "review_status": report_response_fields(report)["review_status"],
-                    "analyst_disposition": report_response_fields(report)["analyst_disposition"],
-                    "eligible_for_judgment": report_response_fields(report)[
-                        "eligible_for_judgment"
-                    ],
+                    "review_status": fields["review_status"],
+                    "analyst_disposition": fields["analyst_disposition"],
+                    "eligible_for_judgment": fields["eligible_for_judgment"],
                     "status": get_report_status(report),
                 }
             )
@@ -1385,6 +1438,7 @@ async def get_analytics(
             "route_performance": build_route_performance(records),
             "generation_failure_breakdown": build_generation_failure_breakdown(records),
             "recent_activity": recent_activity,
+            "recent_activity_excluded_count": excluded_count,
         }
 
     except Exception as e:
@@ -1439,6 +1493,7 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
         recent_activity = report_service.list_reports(
             limit=5, sort_by="created_at", sort_order="desc", user_id=user_id
         )
+        projected, excluded_count = report_collection_fields(recent_activity)
 
         return {
             "summary": {
@@ -1466,13 +1521,14 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
                     "created_at": r["created_at"],
                     "quality_score": r.get("quality_score"),
                     "evaluation_status": get_evaluation_status(r),
-                    "review_status": report_response_fields(r)["review_status"],
-                    "analyst_disposition": report_response_fields(r)["analyst_disposition"],
-                    "eligible_for_judgment": report_response_fields(r)["eligible_for_judgment"],
+                    "review_status": fields["review_status"],
+                    "analyst_disposition": fields["analyst_disposition"],
+                    "eligible_for_judgment": fields["eligible_for_judgment"],
                     "status": get_report_status(r),
                 }
-                for r in recent_activity
+                for r, fields in projected
             ],
+            "recent_activity_excluded_count": excluded_count,
         }
 
     except Exception as e:

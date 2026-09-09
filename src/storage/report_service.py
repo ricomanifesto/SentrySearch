@@ -42,6 +42,7 @@ from src.core.source_ledger import (
     assert_source_ledger_consistent,
     claim_attribution_status,
 )
+from src.core.evidence_admissibility import assert_no_virtual_event_promotions
 from src.domain.model_routes import generation_fallback_state
 
 from .database import db_manager
@@ -802,6 +803,13 @@ class ReportStorageService:
         user_id: Optional[str] = None,
     ) -> str:
         """Store a complete report with metadata in PostgreSQL and content in S3"""
+        assert_no_virtual_event_promotions(
+            report_data.get("threat_data"),
+            report_data.get("web_sources"),
+            report_data.get("markdown_content"),
+            report_data.get("tool_name"),
+            report_data.get("quality_assessment"),
+        )
         try:
             # Generate API key hash for user association
             api_key_hash = None
@@ -976,6 +984,13 @@ class ReportStorageService:
 
         Check ownership before upload and again when publishing references.
         """
+        assert_no_virtual_event_promotions(
+            report_data.get("threat_data"),
+            report_data.get("web_sources"),
+            report_data.get("markdown_content"),
+            report_data.get("tool_name"),
+            report_data.get("quality_assessment"),
+        )
         try:
             with self.db_manager.get_session() as session:
                 self._generation_report(session, report_id, generation_lease)
@@ -1459,6 +1474,7 @@ class ReportStorageService:
     ) -> bool:
         """Persist a successful evaluator retry without repeating research or synthesis."""
 
+        assert_no_virtual_event_promotions(threat_data, markdown_content, quality_assessment)
         with self.db_manager.get_session() as session:
             if self._evaluation_report(session, report_id, evaluation_lease) is None:
                 return False
@@ -1842,6 +1858,11 @@ class ReportStorageService:
                 s3_key = None
                 if content_type == "markdown" and report.markdown_s3_key:
                     s3_key = report.markdown_s3_key
+                    assert_no_virtual_event_promotions(
+                        report.threat_data,
+                        report.web_sources,
+                        self.s3_manager.download_content(s3_key),
+                    )
                 elif content_type == "trace" and report.trace_s3_key:
                     s3_key = report.trace_s3_key
 
