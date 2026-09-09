@@ -1,6 +1,6 @@
 """Representation-aware text projection for the explicit promotion marker."""
 
-from html import escape, unescape
+from html import escape
 from html.parser import HTMLParser
 import re
 from typing import Any, Literal
@@ -49,30 +49,35 @@ def _literal_html(_renderer: Any, tokens: Any, index: int, _options: Any, _env: 
     return escape(tokens[index].content, quote=False)
 
 
-def _source_text(_renderer: Any, tokens: Any, index: int, _options: Any, _env: Any) -> str:
-    # Source prose historically includes entity-encoded bracket labels. Decode
-    # only ordinary text, then escape it: never parse it again as markup/code.
-    return escape(unescape(tokens[index].content), quote=False)
+def _source_special(_renderer: Any, tokens: Any, index: int, _options: Any, _env: Any) -> str:
+    # Preserve source-HTML entity labels escaped in Markdown, without decoding
+    # entity-produced ampersands again or changing literal code tokens.
+    token = tokens[index]
+    if token.info == "escape" and token.content == "&":
+        return "&"
+    return escape(token.content, quote=False)
 
 
 _MARKDOWN = _parser()
 _MARKDOWN.add_render_rule("html_inline", _literal_html)
 _MARKDOWN.add_render_rule("html_block", _literal_html)
-_AUTHORED = _parser()
-_AUTHORED.add_render_rule("text", _source_text)
+_AUTHORED = _parser().disable("text_join")
+_AUTHORED.add_render_rule("text_special", _source_special)
 
 
 def has_promotion_marker(value: str, *, representation: Representation = "authored") -> bool:
     """Check one field, never concatenate records or reparse rendered text.
 
-    Authored source prose may contain Markdown or raw source HTML. Explicit
-    Markdown follows the reader's escaped-HTML behavior; text is already final.
+    Authored prose has no stored format attestation: check both reader Markdown
+    and source HTML semantics. Explicit formats use only their own projection.
     """
     if representation == "text":
         return bool(_MARKER.search(value))
     if representation == "markdown":
         value = _MARKDOWN.render(value)
     elif representation == "authored":
+        if has_promotion_marker(value, representation="markdown"):
+            return True
         value = _AUTHORED.render(value)
     elif representation != "html":
         raise ValueError("Unsupported promotion-content representation")

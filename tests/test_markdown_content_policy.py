@@ -28,7 +28,13 @@ def test_authored_content_respects_rendered_markdown_and_literal_syntax(case):
 @pytest.mark.parametrize("surface", ["research", "persistence", "retained", "export"])
 @pytest.mark.parametrize(
     "markdown",
-    ["[**Virtual** Event]", "[[Virtual](https://security.example.org) Event]", "[`Virtual` Event]"],
+    [
+        "[**Virtual** Event]",
+        "[[Virtual](https://security.example.org) Event]",
+        "[`Virtual` Event]",
+        "<script>[Virtual Event]</script>",
+        "<style>[Virtual Event]</style>",
+    ],
 )
 def test_rendered_marker_is_excluded_at_every_shared_boundary(surface, markdown):
     if surface == "research":

@@ -10,6 +10,8 @@
   {"markdown": "[[Virtual][source] Event]\n\n[source]: https://security.example.org", "blocked": true},
   {"markdown": "[Virtual\n**Event**]", "blocked": true},
   {"markdown": "[Virtual\n\nEvent]", "blocked": true},
+  {"markdown": "<script>[Virtual Event]</script>", "blocked": true},
+  {"markdown": "<style>[Virtual Event]</style>", "blocked": true},
   {"markdown": "`[Virtual Event]`", "blocked": true},
   {"markdown": "```text\n[Virtual Event]\n```", "blocked": true},
   {"markdown": "[\\*\\*Virtual\\*\\* Event]", "blocked": false},
@@ -20,6 +22,8 @@
   {"markdown": "`[<strong>Virtual</strong> Event]`", "blocked": false},
   {"markdown": "[&lt;strong&gt;Virtual&lt;/strong&gt; Event]", "blocked": false},
   {"markdown": "`&#91;Virtual Event&#93;`", "blocked": false},
+  {"markdown": "&amp;#91;Virtual Event&amp;#93;", "blocked": false},
+  {"markdown": "&amp;amp;#91;Virtual Event&amp;amp;#93;", "blocked": false},
   {"markdown": "**Security events** inform threat detection.", "blocked": false},
   {"markdown": "A virtual event discussed security research.", "blocked": false},
   {"markdown": "[Virtual Events] Detection notes", "blocked": false}
