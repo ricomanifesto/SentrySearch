@@ -1669,6 +1669,7 @@ class ReportStorageService:
         clean_note = note.strip() if isinstance(note, str) and note.strip() else None
         if clean_note is not None and len(clean_note) > 1000:
             raise ValueError("Disposition notes must not exceed 1000 characters")
+        assert_no_virtual_event_promotions(clean_note)
 
         with self.db_manager.get_session() as session:
             query = session.query(Report).filter(Report.id == report_id)

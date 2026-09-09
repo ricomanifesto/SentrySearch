@@ -848,6 +848,12 @@ async def append_report_disposition(
         report = report_service.get_report(report_id, include_content=False)
         if report is None or (get_report_user_id(user) and report.get("user_id") != user.id):
             raise HTTPException(status_code=404, detail="Report not found")
+        try:
+            assert_no_virtual_event_promotions(request.note)
+        except ContentPolicyExclusion as error:
+            raise HTTPException(
+                status_code=422, detail="Disposition note contains excluded content"
+            ) from error
         report = await checked_report_snapshot(report)
         event = report_service.append_report_disposition(
             report_id,

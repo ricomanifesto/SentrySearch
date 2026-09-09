@@ -13,6 +13,7 @@ from src.core.report_content_policy import load_checked_report
 from src.domain.reports import ReportStatus
 from src.domain.execution import GenerationLease, GenerationLeaseLost
 from src.execution.runtime_client import RuntimeAccessDenied, RuntimeLeaseFenced, RuntimeRun
+from src.storage.retained_content import RetainedContentUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -180,15 +181,31 @@ class DurableGenerationWorker:
             return True
 
         def load_content(key: str) -> str:
-            loader = getattr(self.reports, "download_report_content", None)
-            if not callable(loader):
-                raise RuntimeError("Retained report content is unavailable")
-            return loader(key)
+            try:
+                loader = getattr(self.reports, "download_report_content", None)
+                if not callable(loader):
+                    raise RuntimeError("Retained report content is unavailable")
+                return loader(key)
+            except (GenerationLeaseLost, RuntimeLeaseFenced, RuntimeAccessDenied):
+                raise
+            except Exception as error:
+                raise RetainedContentUnavailable(
+                    "Retained report content is unavailable"
+                ) from error
 
         try:
             report = load_checked_report(report, load_content)
         except ContentPolicyExclusion:
             self._fail_invalid_input(run, "report input is unavailable under content policy")
+            return True
+        except RetainedContentUnavailable:
+            self.runtime.fail(
+                run.run_id,
+                run.lease_owner,
+                run.lease_version,
+                error_code="dependency_unavailable",
+                error_summary="retained report content is unavailable",
+            )
             return True
 
         if report.get("status") == ReportStatus.COMPLETED.value:
