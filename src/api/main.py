@@ -255,6 +255,11 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
         report.get("search_tags"),
         report.get("generation_failure"),
     )
+    markdown_key = report.get("_markdown_s3_key")
+    if report.get("markdown_content") is None and markdown_key:
+        # Metadata-only reads still enforce whole-record eligibility. Keep the
+        # loaded body and object key private; retrieval failures remain errors.
+        assert_no_virtual_event_promotions(report_service.s3_manager.download_content(markdown_key))
     quality_score = get_quality_score(report)
     sources = get_report_sources(report)
     evaluation_status = get_evaluation_status(report)
@@ -1103,6 +1108,12 @@ async def create_report(
     The response carries the new report id with status "generating" so the client
     can poll until the explicitly selected execution path completes.
     """
+    try:
+        assert_no_virtual_event_promotions(report_request.tool_name)
+    except ContentPolicyExclusion as error:
+        raise HTTPException(
+            status_code=422, detail="Report target unavailable under content policy"
+        ) from error
     mode = require_execution_admission()
     try:
         report_id = str(uuid.uuid4())

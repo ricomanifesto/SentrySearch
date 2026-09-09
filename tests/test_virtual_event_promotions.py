@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 from pydantic import ValidationError
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 
 from src.api import main as api_main
 from src.auth.supabase_auth import AuthenticatedUser
@@ -534,3 +534,133 @@ def test_analytics_policy_exclusion_keeps_clean_activity_and_original_counts(
     assert result["recent_activity_excluded_count"] == 1
     assert result["summary" if dashboard else "overview"]["total_reports"] == 11
     assert rows == original
+
+
+def retained_storage(monkeypatch):
+    reports = [
+        Report(
+            id=report_id,
+            tool_name="Security analysis",
+            created_at=datetime.now(timezone.utc),
+            user_id="reader",
+            status="completed",
+            markdown_s3_key=f"{report_id}.md",
+        )
+        for report_id in ["clean", "blocked"]
+    ]
+    service = ReportStorageService.__new__(ReportStorageService)
+    service.db_manager = MagicMock()
+    session = service.db_manager.get_session.return_value.__enter__.return_value
+    report_query = MagicMock()
+    for method in ["filter", "order_by", "offset", "limit"]:
+        getattr(report_query, method).return_value = report_query
+    report_query.all.return_value = reports
+    report_query.first.return_value = reports[1]
+    disposition_query = MagicMock()
+    disposition_query.filter.return_value.order_by.return_value.all.return_value = []
+    session.query.side_effect = lambda model: report_query if model is Report else disposition_query
+    service.s3_manager = Mock()
+    service.s3_manager.download_content.side_effect = {
+        "clean.md": "Legitimate security event analysis",
+        "blocked.md": r"\[Virtual&#160;Event\] Register now",
+    }.__getitem__
+    monkeypatch.setattr(api_main, "report_service", service)
+    monkeypatch.setattr(service, "count_reports", Mock(return_value=2))
+    monkeypatch.setattr(service, "count_search_results", Mock(return_value=2))
+    monkeypatch.setattr(service, "list_analytics_records", lambda **_: [])
+    monkeypatch.setattr(service, "get_threat_type_stats", lambda **_: {})
+    monkeypatch.setattr(service, "get_quality_score_distribution", lambda **_: {})
+    return service, session, reports
+
+
+@pytest.mark.parametrize("endpoint", ["list", "search", "analytics", "dashboard"])
+def test_retained_s3_only_marker_is_excluded_from_collections(monkeypatch, endpoint):
+    service, session, reports = retained_storage(monkeypatch)
+    original = [report.to_dict() for report in reports]
+    user = AuthenticatedUser(user_id="reader", email="reader@example.com", metadata={})
+    if endpoint == "list":
+        response = asyncio.run(
+            api_main.list_reports(
+                api_main.PaginationParams(),
+                user,
+                query=None,
+                threat_type=None,
+                min_quality=None,
+                status=None,
+                review_status=None,
+                analyst_disposition=None,
+                requires_action=False,
+                eligible_for_handoff=False,
+            )
+        )
+    elif endpoint == "search":
+        response = asyncio.run(
+            api_main.search_reports(api_main.SearchFilters(), api_main.PaginationParams(), user)
+        )
+    elif endpoint == "analytics":
+        response = asyncio.run(api_main.get_analytics("30d", user))
+    else:
+        response = asyncio.run(api_main.get_dashboard_analytics(user))
+    if endpoint in {"list", "search"}:
+        assert [report.id for report in response["reports"]] == ["clean"]
+        assert response["pagination"]["total"] == 2
+        assert response["pagination"]["excluded_on_page"] == 1
+        assert response["pagination"]["total_includes_excluded"] is True
+    else:
+        assert [report["id"] for report in response["recent_activity"]] == ["clean"]
+        assert response["recent_activity_excluded_count"] == 1
+    serialized = json.dumps(response, default=lambda value: value.model_dump(mode="json"))
+    assert "markdown_content" not in serialized
+    assert "clean.md" not in serialized
+    assert "blocked.md" not in serialized
+    assert service.s3_manager.download_content.call_count == 2
+    assert [report.to_dict() for report in reports] == original
+    session.commit.assert_not_called()
+
+
+@pytest.mark.parametrize("include_content", [False, True])
+def test_retained_s3_only_marker_is_checked_by_detail_without_duplicate_download(
+    monkeypatch, include_content
+):
+    service, session, _ = retained_storage(monkeypatch)
+    user = AuthenticatedUser(user_id="reader", email="reader@example.com", metadata={})
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(api_main.get_report("blocked", include_content, user))
+    assert error.value.status_code == 404
+    service.s3_manager.download_content.assert_called_once_with("blocked.md")
+    session.commit.assert_not_called()
+
+
+def test_retained_s3_failure_never_counts_as_policy_admission(monkeypatch):
+    service, session, _ = retained_storage(monkeypatch)
+    service.s3_manager.download_content.side_effect = RuntimeError("Object unavailable")
+    user = AuthenticatedUser(user_id="reader", email="reader@example.com", metadata={})
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(
+            api_main.search_reports(api_main.SearchFilters(), api_main.PaginationParams(), user)
+        )
+    assert error.value.status_code == 500
+    session.commit.assert_not_called()
+
+
+@pytest.mark.parametrize("mode", ["legacy", "runtime"])
+@pytest.mark.parametrize("marker", MARKERS)
+def test_tagged_tool_name_is_rejected_before_execution_admission(monkeypatch, mode, marker):
+    admission = Mock(return_value=mode)
+    pending = Mock()
+    monkeypatch.setattr(api_main, "require_execution_admission", admission)
+    monkeypatch.setattr(api_main.report_service, "create_pending_report", pending)
+    user = AuthenticatedUser(user_id="reader", email="reader@example.com", metadata={})
+    background_tasks = BackgroundTasks()
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(
+            api_main.create_report(
+                api_main.ReportCreate(tool_name=f"{marker} Security briefing"),
+                background_tasks,
+                user,
+            )
+        )
+    assert error.value.status_code == 422
+    admission.assert_not_called()
+    pending.assert_not_called()
+    assert background_tasks.tasks == []

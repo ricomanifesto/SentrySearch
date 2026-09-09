@@ -183,6 +183,8 @@ class ReportStorageService:
             ]
             current_event = current_events[-1] if current_events else None
             report_dict = report.to_dict()
+            # Policy projection needs retained content even for metadata-only reads.
+            report_dict["_markdown_s3_key"] = report.markdown_s3_key
             report_dict["analyst_disposition"] = (
                 current_event.disposition
                 if current_event is not None
