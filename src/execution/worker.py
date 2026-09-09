@@ -8,6 +8,8 @@ import threading
 from typing import Any, Protocol
 
 from src.core.generation_failures import build_generation_failure
+from src.core.evidence_admissibility import ContentPolicyExclusion
+from src.core.report_content_policy import load_checked_report
 from src.domain.reports import ReportStatus
 from src.domain.execution import GenerationLease, GenerationLeaseLost
 from src.execution.runtime_client import RuntimeAccessDenied, RuntimeLeaseFenced, RuntimeRun
@@ -175,6 +177,18 @@ class DurableGenerationWorker:
         report = self.reports.get_report(report_id, include_content=False)
         if report is None:
             self._fail_invalid_input(run, "report input is unavailable")
+            return True
+
+        def load_content(key: str) -> str:
+            loader = getattr(self.reports, "download_report_content", None)
+            if not callable(loader):
+                raise RuntimeError("Retained report content is unavailable")
+            return loader(key)
+
+        try:
+            report = load_checked_report(report, load_content)
+        except ContentPolicyExclusion:
+            self._fail_invalid_input(run, "report input is unavailable under content policy")
             return True
 
         if report.get("status") == ReportStatus.COMPLETED.value:

@@ -169,7 +169,28 @@ def assert_no_virtual_event_promotions(*values: Any) -> None:
 def reader_evidence_admissibility(assessment: Mapping[str, Any]) -> dict[str, Any]:
     """Keep the private audit intact while omitting promotion records from public exports."""
 
-    public = deepcopy(dict(assessment))
+    from src.domain.evidence import EvidenceAdmissibility
+
+    validated = EvidenceAdmissibility.model_validate(assessment)
+
+    # Only validated contract fields cross this boundary, never arbitrary audit
+    # metadata. Validation aliases preserve the profile-owned representation.
+    def observation_fields(observation: Any) -> dict[str, Any]:
+        return {
+            str(field.validation_alias or name): getattr(observation, name)
+            for name, field in type(observation).model_fields.items()
+        }
+
+    public: dict[str, Any] = {
+        "schemaVersion": validated.schema_version,
+        "status": validated.status.value,
+        "sourceObservations": [observation_fields(item) for item in validated.source_observations],
+        "indicatorObservations": [
+            observation_fields(item) for item in validated.indicator_observations
+        ],
+        "blockingFindings": list(validated.blocking_findings),
+        "summary": dict(validated.summary),
+    }
     observations = public.get("sourceObservations")
     if isinstance(observations, list):
         public["sourceObservations"] = [
@@ -181,6 +202,10 @@ def reader_evidence_admissibility(assessment: Mapping[str, Any]) -> dict[str, An
                 and not contains_virtual_event_promotion(source)
             )
         ]
+    if contains_virtual_event_promotion(public):
+        raise ContentPolicyExclusion(
+            "Public evidence assessment contains an excluded virtual-event promotion"
+        )
     return public
 
 

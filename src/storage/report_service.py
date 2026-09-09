@@ -43,6 +43,7 @@ from src.core.source_ledger import (
     claim_attribution_status,
 )
 from src.core.evidence_admissibility import assert_no_virtual_event_promotions
+from src.core.report_content_policy import load_checked_report
 from src.domain.model_routes import generation_fallback_state
 
 from .database import db_manager
@@ -1848,6 +1849,9 @@ class ReportStorageService:
             logger.error(f"Error deleting report: {e}")
             raise
 
+    def download_report_content(self, key: str) -> str:
+        return self.s3_manager.download_content(key)
+
     def get_download_url(self, report_id: str, content_type: str = "markdown") -> Optional[str]:
         """Get presigned URL for downloading report content"""
         try:
@@ -1856,22 +1860,19 @@ class ReportStorageService:
 
                 if not report:
                     return None
-
-                s3_key = None
-                if content_type == "markdown" and report.markdown_s3_key:
-                    s3_key = report.markdown_s3_key
-                    assert_no_virtual_event_promotions(
-                        report.threat_data,
-                        report.web_sources,
-                        self.s3_manager.download_content(s3_key),
-                    )
-                elif content_type == "trace" and report.trace_s3_key:
-                    s3_key = report.trace_s3_key
-
-                if s3_key:
-                    return self.s3_manager.get_presigned_url(s3_key)
-
+                snapshot = report.to_dict()
+                snapshot["_markdown_s3_key"] = report.markdown_s3_key
+                s3_key = (
+                    report.markdown_s3_key
+                    if content_type == "markdown"
+                    else (report.trace_s3_key if content_type == "trace" else None)
+                )
+            if not s3_key:
                 return None
+            # Trace downloads are private audit access, not public Markdown exports.
+            if content_type == "markdown":
+                load_checked_report(snapshot, self.download_report_content)
+            return self.s3_manager.get_presigned_url(s3_key)
 
         except Exception as e:
             logger.error(f"Error getting download URL: {e}")

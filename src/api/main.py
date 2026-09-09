@@ -19,6 +19,13 @@ load_dotenv()
 
 from src.storage.report_service import report_service
 from src.storage.database import db_manager
+from src.storage.retained_content import retained_content_reader
+from src.core.report_content_policy import (
+    assert_report_content_allowed,
+    load_checked_report,
+    public_report_content,
+    reader_safe_threat_data,
+)
 from src.core.threat_profile_generator import ThreatProfileGenerator
 from src.core.report_evaluator import evaluate_saved_report
 from src.core.markdown_generator import generate_markdown
@@ -221,45 +228,30 @@ def get_validated_evidence_admissibility(
     return EvidenceAdmissibility.model_validate(reader_evidence_admissibility(assessment))
 
 
-def reader_safe_threat_data(report: Dict[str, Any]) -> Dict[str, Any] | None:
-    """Expose analyst fields without internal trace or duplicate source-analysis metadata."""
-
-    threat_data = report.get("threat_data")
-    if not isinstance(threat_data, dict):
-        return None
-    public = {
-        key: value
-        for key, value in threat_data.items()
-        if not key.startswith("_") and key != "comprehensiveWebSearchSources"
-    }
-    assert_no_virtual_event_promotions(public)
-    assessment = public.get("evidenceAdmissibility")
-    if isinstance(assessment, dict):
-        EvidenceAdmissibility.model_validate(assessment)
-        public["evidenceAdmissibility"] = reader_evidence_admissibility(assessment)
-    return public
-
-
-def assert_report_content_allowed(report: Dict[str, Any]) -> None:
-    """Check retained content before publication or admission to further work."""
-
-    # Retained rows predate write-time gates. Reject this record rather than
-    # remove a source or label and expose an inconsistent report/export.
-    assert_no_virtual_event_promotions(
-        report.get("tool_name"),
-        report.get("content_preview"),
-        report.get("markdown_content"),
-        reader_safe_threat_data(report),
-        report.get("web_sources"),
-        get_quality_assessment(report),
-        report.get("search_tags"),
-        report.get("generation_failure"),
+async def load_retained_contents(reports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    keys = [
+        report["_markdown_s3_key"]
+        for report in reports
+        if report.get("_markdown_s3_key") and report.get("markdown_content") is None
+    ]
+    bodies = await retained_content_reader.read_many(
+        keys, report_service.s3_manager.download_content
     )
-    markdown_key = report.get("_markdown_s3_key")
-    if report.get("markdown_content") is None and markdown_key:
-        # Metadata-only reads still enforce whole-record eligibility. Keep the
-        # loaded body and object key private; retrieval failures remain errors.
-        assert_no_virtual_event_promotions(report_service.s3_manager.download_content(markdown_key))
+    return [
+        (
+            {**report, "markdown_content": bodies[report["_markdown_s3_key"]]}
+            if report.get("_markdown_s3_key") in bodies and report.get("markdown_content") is None
+            else dict(report)
+        )
+        for report in reports
+    ]
+
+
+async def checked_report_snapshot(report: Dict[str, Any]) -> Dict[str, Any]:
+    public_report_content(report)
+    [snapshot] = await load_retained_contents([report])
+    assert_report_content_allowed(snapshot)
+    return snapshot
 
 
 def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
@@ -354,14 +346,22 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def report_collection_fields(
+async def report_collection_fields(
     reports: List[Dict[str, Any]],
 ) -> tuple[list[tuple[Dict[str, Any], Dict[str, Any]]], int]:
     """Project each stored record, omitting only explicit content-policy exclusions."""
 
-    projected = []
+    candidates = []
     excluded_count = 0
     for report in reports:
+        try:
+            public_report_content(report)
+        except ContentPolicyExclusion:
+            excluded_count += 1
+            continue
+        candidates.append(report)
+    projected = []
+    for report in await load_retained_contents(candidates):
         try:
             fields = report_response_fields(report)
         except ContentPolicyExclusion:
@@ -759,7 +759,7 @@ async def list_reports(
         )
 
         # Convert to response models
-        projected, excluded_count = report_collection_fields(reports)
+        projected, excluded_count = await report_collection_fields(reports)
         report_responses = [ReportResponse(**fields) for _, fields in projected]
 
         return {
@@ -796,7 +796,7 @@ async def get_report(
 ):
     """Get specific report by ID"""
     try:
-        report = report_service.get_report(report_id, include_content=include_content)
+        report = report_service.get_report(report_id, include_content=False)
 
         if not report:
             raise HTTPException(status_code=404, detail="Report not found")
@@ -805,6 +805,7 @@ async def get_report(
         if get_report_user_id(user) and report.get("user_id") != user.id:
             raise HTTPException(status_code=404, detail="Report not found")
 
+        report = await checked_report_snapshot(report)
         return ReportDetail(
             **report_response_fields(report),
             markdown_content=report.get("markdown_content") if include_content else None,
@@ -847,7 +848,7 @@ async def append_report_disposition(
         report = report_service.get_report(report_id, include_content=False)
         if report is None or (get_report_user_id(user) and report.get("user_id") != user.id):
             raise HTTPException(status_code=404, detail="Report not found")
-        assert_report_content_allowed(report)
+        report = await checked_report_snapshot(report)
         event = report_service.append_report_disposition(
             report_id,
             disposition=request.disposition,
@@ -885,7 +886,7 @@ async def retry_report_evaluation(
             raise HTTPException(status_code=404, detail="Report not found")
         if get_report_user_id(user) and report.get("user_id") != user.id:
             raise HTTPException(status_code=404, detail="Report not found")
-        assert_report_content_allowed(report)
+        report = await checked_report_snapshot(report)
         owner_id = str(report.get("user_id") or user.id)
         runtime_managed = report_service.has_runtime_dispatch(report_id)
         if not runtime_managed and mode != "legacy":
@@ -921,6 +922,7 @@ def generate_report_artifact(
     generation_lease: GenerationLease | None = None,
 ) -> None:
     """Generate and persist the product artifact, raising a sanitized failure."""
+    assert_no_virtual_event_promotions(tool_name)
     # TODO(sentryruntime-cutover): Require generation_lease after the deployed
     # canary and rollback gates pass and in-process generation is removed.
     start = time.monotonic()
@@ -1034,6 +1036,8 @@ def run_report_generation(
     try:
         generate_report_artifact(report_id, tool_name, user_id)
         run_report_evaluation(report_id, user_id)
+    except ContentPolicyExclusion:
+        logger.info("Report %s is unavailable for generation under content policy", report_id)
     except GenerationLeaseLost:
         logger.info("Background generation no longer owns report %s", report_id)
     except ReportGenerationExecutionError as error:
@@ -1057,7 +1061,7 @@ def run_report_evaluation(report_id: str, user_id: str) -> None:
     if report is None or report.get("user_id") != user_id:
         return
     try:
-        assert_report_content_allowed(report)
+        report = load_checked_report(report, report_service.s3_manager.download_content)
     except ContentPolicyExclusion:
         logger.info("Report %s is unavailable for evaluation under content policy", report_id)
         return
@@ -1080,7 +1084,7 @@ def run_report_evaluation(report_id: str, user_id: str) -> None:
     if evaluation_lease is None:
         return
     try:
-        threat_data = report.get("threat_data")
+        threat_data = reader_safe_threat_data(report)
         if not isinstance(threat_data, dict):
             report_service.fail_report_evaluation(
                 report_id,
@@ -1115,6 +1119,9 @@ def run_report_evaluation(report_id: str, user_id: str) -> None:
             raise ValueError("Evaluator retry changed the source ledger")
         rendered_profile = dict(persisted_profile)
         rendered_profile["_quality_assessment"] = assessment
+        private_audit = (report.get("threat_data") or {}).get("evidenceAdmissibility")
+        if isinstance(private_audit, dict):
+            persisted_profile["evidenceAdmissibility"] = private_audit
         report_service.complete_report_evaluation(
             report_id,
             evaluation_lease=evaluation_lease,
@@ -1271,7 +1278,7 @@ async def search_reports(
         total_count = report_service.count_search_results(**search_params)
 
         # Convert to response models
-        projected, excluded_count = report_collection_fields(reports)
+        projected, excluded_count = await report_collection_fields(reports)
         report_responses = [ReportResponse(**fields) for _, fields in projected]
 
         return {
@@ -1414,7 +1421,7 @@ async def get_analytics(
         recent_reports = report_service.list_reports(
             limit=10, sort_by="created_at", sort_order="desc", user_id=user_id
         )
-        projected, excluded_count = report_collection_fields(recent_reports)
+        projected, excluded_count = await report_collection_fields(recent_reports)
         recent_activity = []
         for report, fields in projected:
             recent_activity.append(
@@ -1541,7 +1548,7 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
         recent_activity = report_service.list_reports(
             limit=5, sort_by="created_at", sort_order="desc", user_id=user_id
         )
-        projected, excluded_count = report_collection_fields(recent_activity)
+        projected, excluded_count = await report_collection_fields(recent_activity)
 
         return {
             "summary": {
