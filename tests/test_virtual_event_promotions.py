@@ -664,3 +664,175 @@ def test_tagged_tool_name_is_rejected_before_execution_admission(monkeypatch, mo
     admission.assert_not_called()
     pending.assert_not_called()
     assert background_tasks.tasks == []
+
+
+def retained_admission_service(monkeypatch, surface):
+    report: dict[str, Any] = {
+        "id": "retained",
+        "user_id": "reader",
+        "tool_name": "Security event analysis",
+        "threat_data": {"toolOverview": {"description": "Ordinary security event analysis"}},
+    }
+    marker = r"\[Virtual&#160;Event\] Register now"
+    if surface == "title":
+        report["tool_name"] = marker
+    elif surface == "source":
+        report["web_sources"] = [{"title": marker}]
+    elif surface == "narrative":
+        report["threat_data"] = {"toolOverview": {"description": marker}}
+    elif surface in {"s3", "s3_error"}:
+        report["_markdown_s3_key"] = "retained.md"
+    service = Mock()
+    service.get_report.return_value = report
+    service.s3_manager.download_content.return_value = marker
+    if surface == "s3_error":
+        service.s3_manager.download_content.side_effect = RuntimeError("Object unavailable")
+    service.has_runtime_dispatch.return_value = False
+    service.begin_report_evaluation.return_value = True
+    monkeypatch.setattr(api_main, "report_service", service)
+    monkeypatch.setattr(api_main, "require_execution_admission", lambda: "legacy")
+    evaluator = Mock()
+    monkeypatch.setattr(api_main, "evaluate_saved_report", evaluator)
+    return service, report, evaluator
+
+
+def invoke_retained_admission(endpoint, background, user):
+    if endpoint == "worker":
+        return api_main.run_report_evaluation("retained", user.id)
+    if endpoint == "evaluation":
+        return asyncio.run(api_main.retry_report_evaluation("retained", background, user))
+    return asyncio.run(
+        api_main.append_report_disposition(
+            "retained",
+            api_main.AnalystDispositionCreate(disposition="needs_revision", note="Review"),
+            user,
+        )
+    )
+
+
+@pytest.mark.parametrize("endpoint", ["evaluation", "worker", "disposition"])
+@pytest.mark.parametrize("surface", ["title", "source", "narrative", "s3"])
+def test_retained_policy_precedes_every_evaluation_and_handoff_side_effect(
+    monkeypatch, endpoint, surface
+):
+    service, report, evaluator = retained_admission_service(monkeypatch, surface)
+    original = deepcopy(report)
+    user = AuthenticatedUser(user_id="reader", email="reader@example.com", metadata={})
+    background = BackgroundTasks()
+    if endpoint == "worker":
+        invoke_retained_admission(endpoint, background, user)
+    else:
+        with pytest.raises(HTTPException) as error:
+            invoke_retained_admission(endpoint, background, user)
+        assert error.value.status_code == 404
+        assert error.value.detail == "Report unavailable under content policy"
+    for name in [
+        "has_runtime_dispatch",
+        "begin_report_evaluation",
+        "claim_report_evaluation",
+        "complete_report_evaluation",
+        "fail_report_evaluation",
+        "append_report_disposition",
+    ]:
+        getattr(service, name).assert_not_called()
+    evaluator.assert_not_called()
+    assert background.tasks == []
+    assert report == original
+
+
+@pytest.mark.parametrize("endpoint", ["evaluation", "worker", "disposition"])
+def test_retained_admission_checks_owner_before_policy_object_read(monkeypatch, endpoint):
+    service, report, evaluator = retained_admission_service(monkeypatch, "s3")
+    report["user_id"] = "other-owner"
+    user = AuthenticatedUser(user_id="reader", email="reader@example.com", metadata={})
+    background = BackgroundTasks()
+    if endpoint == "worker":
+        invoke_retained_admission(endpoint, background, user)
+    else:
+        with pytest.raises(HTTPException) as error:
+            invoke_retained_admission(endpoint, background, user)
+        assert error.value.status_code == 404
+        assert error.value.detail == "Report not found"
+    service.s3_manager.download_content.assert_not_called()
+    service.begin_report_evaluation.assert_not_called()
+    service.claim_report_evaluation.assert_not_called()
+    service.append_report_disposition.assert_not_called()
+    service.fail_report_evaluation.assert_not_called()
+    evaluator.assert_not_called()
+    assert background.tasks == []
+
+
+@pytest.mark.parametrize("endpoint", ["evaluation", "disposition"])
+def test_retained_admission_preserves_object_errors_without_transition(monkeypatch, endpoint):
+    service, _, evaluator = retained_admission_service(monkeypatch, "s3_error")
+    user = AuthenticatedUser(user_id="reader", email="reader@example.com", metadata={})
+    background = BackgroundTasks()
+    with pytest.raises(HTTPException) as error:
+        invoke_retained_admission(endpoint, background, user)
+    assert error.value.status_code == 500
+    service.begin_report_evaluation.assert_not_called()
+    service.claim_report_evaluation.assert_not_called()
+    service.append_report_disposition.assert_not_called()
+    service.fail_report_evaluation.assert_not_called()
+    evaluator.assert_not_called()
+    assert background.tasks == []
+
+
+def test_accepted_legacy_retry_read_failure_is_recoverable_without_evaluator_blame(monkeypatch):
+    service, report, evaluator = retained_admission_service(monkeypatch, "s3")
+    report["evaluation_status"] = "failed"
+    service.s3_manager.download_content.side_effect = [
+        "Security event analysis",
+        RuntimeError("Object unavailable"),
+        "Security event analysis",
+    ]
+
+    def begin(*_, **__):
+        report.update(evaluation_status="pending", evaluation_error_code=None)
+        return True
+
+    def fail(*_, **kwargs):
+        assert kwargs["evaluation_lease"] == "lease-1"
+        report.update(evaluation_status="failed", evaluation_error_code=kwargs["error_code"])
+        return True
+
+    service.begin_report_evaluation.side_effect = begin
+    service.claim_report_evaluation.return_value = "lease-1"
+    service.fail_report_evaluation.side_effect = fail
+    user = AuthenticatedUser(user_id="reader", email="reader@example.com", metadata={})
+    background = BackgroundTasks()
+    invoke_retained_admission("evaluation", background, user)
+    assert report["evaluation_status"] == "pending"
+    asyncio.run(background())
+    assert report["evaluation_status"] == "failed"
+    assert report["evaluation_error_code"] == "report_content_unavailable"
+    evaluator.assert_not_called()
+    service.complete_report_evaluation.assert_not_called()
+    retry = BackgroundTasks()
+    invoke_retained_admission("evaluation", retry, user)
+    assert report["evaluation_status"] == "pending"
+    assert len(retry.tasks) == 1
+
+
+@pytest.mark.parametrize("runtime_managed", [False, True])
+def test_ordinary_retained_retry_still_queues_for_its_execution_owner(monkeypatch, runtime_managed):
+    service, report, evaluator = retained_admission_service(monkeypatch, "clean")
+    service.has_runtime_dispatch.return_value = runtime_managed
+    original = deepcopy(report)
+    user = AuthenticatedUser(user_id="reader", email="reader@example.com", metadata={})
+    background = BackgroundTasks()
+    result = invoke_retained_admission("evaluation", background, user)
+    assert result["evaluation_status"] == "pending"
+    service.begin_report_evaluation.assert_called_once_with("retained", user_id="reader")
+    assert len(background.tasks) == (0 if runtime_managed else 1)
+    evaluator.assert_not_called()
+    assert report == original
+
+
+def test_owned_excluded_report_can_still_be_deleted(monkeypatch):
+    service, _, _ = retained_admission_service(monkeypatch, "s3")
+    service.delete_report.return_value = True
+    user = AuthenticatedUser(user_id="reader", email="reader@example.com", metadata={})
+    asyncio.run(api_main.delete_report("retained", user))
+    service.delete_report.assert_called_once_with("retained")
+    service.s3_manager.download_content.assert_not_called()

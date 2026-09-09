@@ -240,8 +240,8 @@ def reader_safe_threat_data(report: Dict[str, Any]) -> Dict[str, Any] | None:
     return public
 
 
-def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
-    """Project one stored row through the same lifecycle contract on every surface."""
+def assert_report_content_allowed(report: Dict[str, Any]) -> None:
+    """Check retained content before publication or admission to further work."""
 
     # Retained rows predate write-time gates. Reject this record rather than
     # remove a source or label and expose an inconsistent report/export.
@@ -260,6 +260,12 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
         # Metadata-only reads still enforce whole-record eligibility. Keep the
         # loaded body and object key private; retrieval failures remain errors.
         assert_no_virtual_event_promotions(report_service.s3_manager.download_content(markdown_key))
+
+
+def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Project one stored row through the same lifecycle contract on every surface."""
+
+    assert_report_content_allowed(report)
     quality_score = get_quality_score(report)
     sources = get_report_sources(report)
     evaluation_status = get_evaluation_status(report)
@@ -838,6 +844,10 @@ async def append_report_disposition(
     """Append a judgment to the current evaluation vintage."""
 
     try:
+        report = report_service.get_report(report_id, include_content=False)
+        if report is None or (get_report_user_id(user) and report.get("user_id") != user.id):
+            raise HTTPException(status_code=404, detail="Report not found")
+        assert_report_content_allowed(report)
         event = report_service.append_report_disposition(
             report_id,
             disposition=request.disposition,
@@ -848,6 +858,10 @@ async def append_report_disposition(
         if event is None:
             raise HTTPException(status_code=404, detail="Report not found")
         return AnalystDispositionEvent(**event)
+    except ContentPolicyExclusion as error:
+        raise HTTPException(
+            status_code=404, detail="Report unavailable under content policy"
+        ) from error
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except HTTPException:
@@ -871,6 +885,7 @@ async def retry_report_evaluation(
             raise HTTPException(status_code=404, detail="Report not found")
         if get_report_user_id(user) and report.get("user_id") != user.id:
             raise HTTPException(status_code=404, detail="Report not found")
+        assert_report_content_allowed(report)
         owner_id = str(report.get("user_id") or user.id)
         runtime_managed = report_service.has_runtime_dispatch(report_id)
         if not runtime_managed and mode != "legacy":
@@ -889,6 +904,10 @@ async def retry_report_evaluation(
             "evaluation_status": EvaluationStatus.PENDING.value,
             "message": "Evaluation retry queued",
         }
+    except ContentPolicyExclusion as error:
+        raise HTTPException(
+            status_code=404, detail="Report unavailable under content policy"
+        ) from error
     except HTTPException:
         raise
     except Exception as e:
@@ -1034,15 +1053,33 @@ def run_report_generation(
 def run_report_evaluation(report_id: str, user_id: str) -> None:
     """Retry only the quality judge for an existing synthesized report."""
 
+    report = report_service.get_report(report_id, include_content=False)
+    if report is None or report.get("user_id") != user_id:
+        return
+    try:
+        assert_report_content_allowed(report)
+    except ContentPolicyExclusion:
+        logger.info("Report %s is unavailable for evaluation under content policy", report_id)
+        return
+    except Exception:
+        # Admission may already have queued a legacy job. Release it through the
+        # fenced failure contract so a transient content outage remains retryable.
+        logger.exception("Report content could not be checked for evaluation %s", report_id)
+        evaluation_lease = report_service.claim_report_evaluation(report_id, user_id=user_id)
+        if evaluation_lease is not None:
+            report_service.fail_report_evaluation(
+                report_id,
+                evaluation_lease=evaluation_lease,
+                error_code="report_content_unavailable",
+            )
+        return
+    # Policy rejection must precede any lease or evaluator failure transition.
     evaluation_route: Dict[str, Any] | None = None
     assessment: Dict[str, Any] | None = None
     evaluation_lease = report_service.claim_report_evaluation(report_id, user_id=user_id)
     if evaluation_lease is None:
         return
     try:
-        report = report_service.get_report(report_id, include_content=False)
-        if report is None or report.get("user_id") != user_id:
-            return
         threat_data = report.get("threat_data")
         if not isinstance(threat_data, dict):
             report_service.fail_report_evaluation(
