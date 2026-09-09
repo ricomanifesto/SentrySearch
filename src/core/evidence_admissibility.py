@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 from enum import StrEnum
-from html import unescape
 from ipaddress import IPv4Network, IPv6Network, ip_address, ip_network
 import re
 from typing import Any, Iterable, Mapping
@@ -16,7 +15,7 @@ from src.core.generation_failures import (
     EvidenceGateError,
 )
 from src.core.source_ledger import CLAIM_CLASS_SELECTORS
-from src.core.source_snapshot import visible_source_text
+from src.core.promotion_content import has_promotion_marker
 from src.domain.reports import EvidenceAdmissibilityStatus
 
 EVIDENCE_ADMISSIBILITY_SCHEMA_VERSION = "1"
@@ -127,7 +126,6 @@ _DOMAIN_TOKEN = re.compile(
     r"(?<![A-Za-z0-9-])(?:\*\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}"
 )
 _HEX_HASH = re.compile(r"^[0-9a-fA-F]+$")
-_VIRTUAL_EVENT_MARKER = re.compile(r"\[\s*virtual\s+event\s*\]", re.IGNORECASE)
 
 
 class ContentPolicyExclusion(ValueError):
@@ -143,18 +141,7 @@ def contains_virtual_event_promotion(value: Any) -> bool:
         return any(contains_virtual_event_promotion(child) for child in value)
     if not isinstance(value, str):
         return False
-    # Entities may be nested inside escaped feed or Markdown content.
-    decoded = value
-    while True:
-        normalized = unescape(decoded)
-        if normalized == decoded:
-            break
-        decoded = normalized
-    decoded = re.sub(r"\\([\[\]])", r"\1", decoded)
-    return bool(
-        _VIRTUAL_EVENT_MARKER.search(decoded)
-        or _VIRTUAL_EVENT_MARKER.search(visible_source_text(decoded))
-    )
+    return has_promotion_marker(value)
 
 
 def assert_no_virtual_event_promotions(*values: Any) -> None:
