@@ -15,6 +15,7 @@ from src.core.generation_failures import (
     EvidenceGateError,
 )
 from src.core.source_ledger import CLAIM_CLASS_SELECTORS
+from src.core.promotion_content import has_promotion_marker
 from src.domain.reports import EvidenceAdmissibilityStatus
 
 EVIDENCE_ADMISSIBILITY_SCHEMA_VERSION = "1"
@@ -127,6 +128,74 @@ _DOMAIN_TOKEN = re.compile(
 _HEX_HASH = re.compile(r"^[0-9a-fA-F]+$")
 
 
+class ContentPolicyExclusion(ValueError):
+    """A record is unavailable by content policy, not malformed or a failed generation."""
+
+
+def contains_virtual_event_promotion(value: Any) -> bool:
+    """Recognize the explicit visible tag without rewriting a promotion as news."""
+
+    if isinstance(value, Mapping):
+        return any(contains_virtual_event_promotion(child) for child in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(contains_virtual_event_promotion(child) for child in value)
+    if not isinstance(value, str):
+        return False
+    return has_promotion_marker(value)
+
+
+def assert_no_virtual_event_promotions(*values: Any) -> None:
+    """Reject forbidden reader content before persistence, regardless of assessment flags."""
+
+    for value in values:
+        for path, text in _profile_strings(value, include_sources=True):
+            if contains_virtual_event_promotion(text):
+                raise ContentPolicyExclusion(f"{path} contains an excluded virtual-event promotion")
+
+
+def reader_evidence_admissibility(assessment: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep the private audit intact while omitting promotion records from public exports."""
+
+    from src.domain.evidence import EvidenceAdmissibility
+
+    validated = EvidenceAdmissibility.model_validate(assessment)
+
+    # Only validated contract fields cross this boundary, never arbitrary audit
+    # metadata. Validation aliases preserve the profile-owned representation.
+    def observation_fields(observation: Any) -> dict[str, Any]:
+        return {
+            str(field.validation_alias or name): getattr(observation, name)
+            for name, field in type(observation).model_fields.items()
+        }
+
+    public: dict[str, Any] = {
+        "schemaVersion": validated.schema_version,
+        "status": validated.status.value,
+        "sourceObservations": [observation_fields(item) for item in validated.source_observations],
+        "indicatorObservations": [
+            observation_fields(item) for item in validated.indicator_observations
+        ],
+        "blockingFindings": list(validated.blocking_findings),
+        "summary": dict(validated.summary),
+    }
+    observations = public.get("sourceObservations")
+    if isinstance(observations, list):
+        public["sourceObservations"] = [
+            source
+            for source in observations
+            if not isinstance(source, Mapping)
+            or (
+                source.get("ruleId") != "source.virtual-event-promotion"
+                and not contains_virtual_event_promotion(source)
+            )
+        ]
+    if contains_virtual_event_promotion(public):
+        raise ContentPolicyExclusion(
+            "Public evidence assessment contains an excluded virtual-event promotion"
+        )
+    return public
+
+
 def _host_is_reserved_example(hostname: str) -> bool:
     host = hostname.strip().strip(".").casefold()
     return any(host == value or host.endswith(f".{value}") for value in _RESERVED_EXAMPLE_HOSTS)
@@ -149,7 +218,12 @@ def _source_observation(source: Mapping[str, Any]) -> dict[str, Any]:
         marker for marker in _OPERATIONAL_TEXT_MARKERS if marker in f"{title_text} {snapshot_text}"
     }
 
-    if _host_is_reserved_example(hostname):
+    if contains_virtual_event_promotion(source):
+        purpose = SourcePurpose.EXCLUDED_NON_OPERATIONAL
+        disposition = EvidenceDisposition.EXCLUDED
+        rule_id = "source.virtual-event-promotion"
+        reason = "Tagged virtual-event promotions are excluded from report content and evidence."
+    elif _host_is_reserved_example(hostname):
         purpose = SourcePurpose.EXCLUDED_NON_OPERATIONAL
         disposition = EvidenceDisposition.EXCLUDED
         rule_id = "source.reserved-example-host"
@@ -430,23 +504,31 @@ def _unique(values: Iterable[str]) -> list[str]:
 def _profile_strings(
     value: Any,
     path: str = "profile",
+    *,
+    include_sources: bool = False,
 ) -> Iterable[tuple[str, str]]:
     """Yield reader-visible profile strings without rescanning source metadata."""
 
     if isinstance(value, Mapping):
         for key, child in value.items():
-            if path == "profile" and key in {
-                "claimAttribution",
-                "evidenceAdmissibility",
-                "references",
-                "webSearchSources",
-            }:
+            if key == "evidenceAdmissibility":
                 continue
-            yield from _profile_strings(child, f"{path}.{key}")
+            if (
+                not include_sources
+                and path == "profile"
+                and key
+                in {
+                    "claimAttribution",
+                    "references",
+                    "webSearchSources",
+                }
+            ):
+                continue
+            yield from _profile_strings(child, f"{path}.{key}", include_sources=include_sources)
         return
     if isinstance(value, list):
         for index, child in enumerate(value):
-            yield from _profile_strings(child, f"{path}[{index}]")
+            yield from _profile_strings(child, f"{path}[{index}]", include_sources=include_sources)
         return
     if isinstance(value, str) and value.strip():
         yield path, value
@@ -468,7 +550,11 @@ def assess_profile_evidence(
         if observation["sourceId"]
     }
     coverage_findings: list[str] = []
-    safety_findings: list[str] = []
+    safety_findings: list[str] = [
+        f"{path} contains an excluded virtual-event promotion."
+        for path, text in _profile_strings(profile, include_sources=True)
+        if contains_virtual_event_promotion(text)
+    ]
 
     attribution = profile.get("claimAttribution")
     claims = attribution.get("claims") if isinstance(attribution, Mapping) else None

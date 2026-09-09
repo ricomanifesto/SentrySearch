@@ -1,12 +1,39 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 import { ReportNarrative } from '../src/components/report/ReportNarrative';
 import { SourceEvidence } from '../src/components/report/SourceEvidence';
 import { GenerationProgress } from '../src/components/report/GenerationProgress';
 import { RouteProvenance } from '../src/components/report/RouteProvenance';
 import { getQualityLabel } from '../src/lib/report-query';
+
+type ProseNode = { type: string; tagName?: string; value?: string; children?: ProseNode[] };
+
+function proseText(node: ProseNode): string {
+  if (node.type === 'text' || node.type === 'raw') return node.value ?? '';
+  if (node.tagName === 'br') return '\n';
+  return (node.children ?? []).map(proseText).join('');
+}
+
+test('matches the shared promotion corpus with the reader Markdown parser', () => {
+  const cases: { markdown: string; blocked: boolean }[] = JSON.parse(
+    readFileSync(new URL('../../tests/fixtures/promotion-markdown.json', import.meta.url), 'utf8'),
+  );
+  for (const { markdown, blocked } of cases) {
+    let renderedText = '';
+    const captureText = () => (tree: ProseNode) => { renderedText = proseText(tree); };
+    renderToStaticMarkup(
+      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[captureText]}>{markdown}</ReactMarkdown>,
+    );
+    assert.equal(/\[\s*virtual\s+event\s*\]/i.test(renderedText), blocked, markdown);
+  }
+  const html = renderToStaticMarkup(<ReportNarrative markdown={'[Virtual\n\nEvent]'} />);
+  assert.match(html, /<p[^>]*>\[Virtual<\/p>\s*<p[^>]*>Event\]<\/p>/);
+});
 
 test('uses the generator quality vocabulary at every score threshold', () => {
   assert.equal(getQualityLabel(null), 'Not scored');

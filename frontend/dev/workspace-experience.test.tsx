@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { AxiosError, AxiosHeaders } from 'axios';
 
 import { DashboardBriefingSignals } from '../src/components/DashboardBriefingSignals';
 import { ReviewStatusBanner } from '../src/components/report/ReviewStatusBanner';
 import { AnalystDispositionPanel } from '../src/components/report/AnalystDispositionPanel';
 import { NavigationSessionActions } from '../src/components/layout/Navigation';
-import type { AnalyticsDashboard, ExportConfig } from '../src/lib/api-contracts';
+import type { AnalyticsDashboard, ExportConfig, SearchFilters } from '../src/lib/api-contracts';
 import { getReportSectionLinks, splitReportContent } from '../src/lib/report-content';
 import { getReviewAttentionSummary } from '../src/lib/review-attention';
 import { getGenerationFailurePresentation } from '../src/lib/generation-failure';
@@ -20,6 +21,69 @@ import {
   defaultReportQuery,
 } from '../src/lib/report-query';
 import { SAMPLE_REPORT } from '../src/lib/sample-report';
+import { api, ExportHandoffEligibilityError } from '../src/lib/api';
+
+const contentExportConfig: ExportConfig = {
+  format: 'json', include_content: true, include_metadata: false,
+  include_sources: false, include_tags: false,
+};
+
+function exportReadError(status: number, detail: string) {
+  const error = new AxiosError('Report unavailable');
+  error.response = {
+    status, statusText: 'Unavailable', data: { detail }, headers: {},
+    config: { headers: new AxiosHeaders() },
+  };
+  return error;
+}
+
+for (const selected of [true, false]) {
+  test(`policy-excluded detail does not disable a ${selected ? 'selected' : 'matching'} export`, async (t) => {
+    t.mock.method(api, 'getReport', async (id: string) => {
+      if (id === 'blocked') throw exportReadError(404, 'Report unavailable under content policy');
+      return { ...SAMPLE_REPORT, id, eligible_for_handoff: true };
+    });
+    t.mock.method(api, 'searchReports', async () => ({
+      reports: ['blocked', 'clean'].map((id) => ({ ...SAMPLE_REPORT, id, eligible_for_handoff: true })),
+      pagination: { page: 1, limit: 100, total: 2, pages: 1 },
+    }));
+    const exported = JSON.parse(await api.exportReports({
+      ...contentExportConfig, selected_reports: selected ? ['blocked', 'clean'] : [],
+    }));
+    assert.deepEqual(exported.reports.map((report: { id: string }) => report.id), ['clean']);
+    assert.equal(exported.export_metadata.total_reports, 1);
+  });
+}
+
+test('matching export continues after a completely excluded page', async (t) => {
+  const pages: number[] = [];
+  t.mock.method(api, 'searchReports', async (_filters: SearchFilters, page = 1) => {
+    pages.push(page);
+    return {
+      reports: page === 1 ? [] : [{ ...SAMPLE_REPORT, id: 'clean', eligible_for_handoff: true }],
+      pagination: { page, limit: 100, total: 101, pages: 2, excluded_on_page: page === 1 ? 100 : 0, total_includes_excluded: true },
+    };
+  });
+  const exported = JSON.parse(await api.exportReports({ ...contentExportConfig, include_content: false }));
+  assert.deepEqual(pages, [1, 2]);
+  assert.deepEqual(exported.reports.map((report: { id: string }) => report.id), ['clean']);
+});
+
+for (const [status, detail] of [[404, 'Report not found'], [403, 'Forbidden'], [500, 'Report unavailable under content policy']] as const) {
+  test(`export preserves unrelated ${status} errors`, async (t) => {
+    const error = exportReadError(status, detail);
+    t.mock.method(api, 'getReport', async () => { throw error; });
+    await assert.rejects(api.exportReports({ ...contentExportConfig, selected_reports: ['clean'] }), (actual) => actual === error);
+  });
+}
+
+test('policy exclusions never relax the remaining reports handoff gate', async (t) => {
+  t.mock.method(api, 'getReport', async (id: string) => {
+    if (id === 'blocked') throw exportReadError(404, 'Report unavailable under content policy');
+    return { ...SAMPLE_REPORT, id, eligible_for_handoff: false };
+  });
+  await assert.rejects(api.exportReports({ ...contentExportConfig, selected_reports: ['blocked', 'ineligible'] }), ExportHandoffEligibilityError);
+});
 
 const emptyDashboard: AnalyticsDashboard = {
   summary: {

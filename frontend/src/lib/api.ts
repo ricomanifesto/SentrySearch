@@ -242,14 +242,24 @@ class SentrySearchAPI {
       ? Math.trunc(config.max_reports)
       : 1000;
     const maxReports = Math.min(Math.max(configuredMaximum, 1), 1000);
+    const readExportReports = async (ids: string[]): Promise<ReportDetail[]> => {
+      const details = await mapWithConcurrency(ids, 8, async (id) => {
+        try {
+          return await this.getReport(id, config.include_content);
+        } catch (error) {
+          if (axios.isAxiosError(error) && error.response?.status === 404
+            && error.response.data?.detail === 'Report unavailable under content policy') {
+            return null;
+          }
+          throw error;
+        }
+      });
+      return details.filter((report): report is ReportDetail => report !== null);
+    };
     let reports: ReportDetail[];
 
     if (selectedIds.length > 0) {
-      reports = await mapWithConcurrency(
-        selectedIds.slice(0, maxReports),
-        8,
-        (reportId) => this.getReport(reportId, config.include_content),
-      );
+      reports = await readExportReports(selectedIds.slice(0, maxReports));
       const blockedCount = reports.filter((report) => !report.eligible_for_handoff).length;
       if (blockedCount > 0) {
         throw new ExportHandoffEligibilityError(blockedCount);
@@ -274,16 +284,13 @@ class SentrySearchAPI {
         );
         const remaining = maxReports - summaries.length;
         summaries.push(...response.reports.slice(0, remaining));
-        if (page >= response.pagination.pages || response.reports.length === 0) break;
+        if (page >= response.pagination.pages
+          || (response.reports.length === 0 && !response.pagination.excluded_on_page)) break;
         page += 1;
       }
       const needsDetails = config.include_content || config.include_tags || config.include_sources || config.include_metadata;
       reports = needsDetails
-        ? await mapWithConcurrency(
-            summaries,
-            8,
-            (report) => this.getReport(report.id, config.include_content),
-          )
+        ? await readExportReports(summaries.map((report) => report.id))
         : summaries.map((report) => ({
             ...report,
             web_sources: [],

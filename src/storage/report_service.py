@@ -42,6 +42,8 @@ from src.core.source_ledger import (
     assert_source_ledger_consistent,
     claim_attribution_status,
 )
+from src.core.evidence_admissibility import assert_no_virtual_event_promotions
+from src.core.report_content_policy import load_checked_report
 from src.domain.model_routes import generation_fallback_state
 
 from .database import db_manager
@@ -182,6 +184,8 @@ class ReportStorageService:
             ]
             current_event = current_events[-1] if current_events else None
             report_dict = report.to_dict()
+            # Policy projection needs retained content even for metadata-only reads.
+            report_dict["_markdown_s3_key"] = report.markdown_s3_key
             report_dict["analyst_disposition"] = (
                 current_event.disposition
                 if current_event is not None
@@ -802,6 +806,13 @@ class ReportStorageService:
         user_id: Optional[str] = None,
     ) -> str:
         """Store a complete report with metadata in PostgreSQL and content in S3"""
+        assert_no_virtual_event_promotions(
+            report_data.get("threat_data"),
+            report_data.get("web_sources"),
+            report_data.get("markdown_content"),
+            report_data.get("tool_name"),
+            report_data.get("quality_assessment"),
+        )
         try:
             # Generate API key hash for user association
             api_key_hash = None
@@ -976,6 +987,13 @@ class ReportStorageService:
 
         Check ownership before upload and again when publishing references.
         """
+        assert_no_virtual_event_promotions(
+            report_data.get("threat_data"),
+            report_data.get("web_sources"),
+            report_data.get("markdown_content"),
+            report_data.get("tool_name"),
+            report_data.get("quality_assessment"),
+        )
         try:
             with self.db_manager.get_session() as session:
                 self._generation_report(session, report_id, generation_lease)
@@ -1459,6 +1477,7 @@ class ReportStorageService:
     ) -> bool:
         """Persist a successful evaluator retry without repeating research or synthesis."""
 
+        assert_no_virtual_event_promotions(threat_data, markdown_content, quality_assessment)
         with self.db_manager.get_session() as session:
             if self._evaluation_report(session, report_id, evaluation_lease) is None:
                 return False
@@ -1650,6 +1669,7 @@ class ReportStorageService:
         clean_note = note.strip() if isinstance(note, str) and note.strip() else None
         if clean_note is not None and len(clean_note) > 1000:
             raise ValueError("Disposition notes must not exceed 1000 characters")
+        assert_no_virtual_event_promotions(clean_note)
 
         with self.db_manager.get_session() as session:
             query = session.query(Report).filter(Report.id == report_id)
@@ -1830,6 +1850,9 @@ class ReportStorageService:
             logger.error(f"Error deleting report: {e}")
             raise
 
+    def download_report_content(self, key: str) -> str:
+        return self.s3_manager.download_content(key)
+
     def get_download_url(self, report_id: str, content_type: str = "markdown") -> Optional[str]:
         """Get presigned URL for downloading report content"""
         try:
@@ -1838,17 +1861,19 @@ class ReportStorageService:
 
                 if not report:
                     return None
-
-                s3_key = None
-                if content_type == "markdown" and report.markdown_s3_key:
-                    s3_key = report.markdown_s3_key
-                elif content_type == "trace" and report.trace_s3_key:
-                    s3_key = report.trace_s3_key
-
-                if s3_key:
-                    return self.s3_manager.get_presigned_url(s3_key)
-
+                snapshot = report.to_dict()
+                snapshot["_markdown_s3_key"] = report.markdown_s3_key
+                s3_key = (
+                    report.markdown_s3_key
+                    if content_type == "markdown"
+                    else (report.trace_s3_key if content_type == "trace" else None)
+                )
+            if not s3_key:
                 return None
+            # Trace downloads are private audit access, not public Markdown exports.
+            if content_type == "markdown":
+                load_checked_report(snapshot, self.download_report_content)
+            return self.s3_manager.get_presigned_url(s3_key)
 
         except Exception as e:
             logger.error(f"Error getting download URL: {e}")

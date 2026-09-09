@@ -6,6 +6,7 @@ import logging
 import re
 from datetime import datetime
 from typing import Any, Mapping
+from src.core.evidence_admissibility import reader_evidence_admissibility
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,7 @@ def generate_markdown(data):
 
         evidence = data.get("evidenceAdmissibility")
         if isinstance(evidence, Mapping):
+            evidence = reader_evidence_admissibility(evidence)
             evidence_status = str(evidence.get("status") or "unassessed").replace("_", " ")
             md.append(f"**Operational Evidence Safety**: {evidence_status.title()}")
             md.append(

@@ -49,6 +49,15 @@ def _normalized_text(value: str) -> str:
     return " ".join(value.split())
 
 
+def visible_source_text(value: str) -> str:
+    """Normalize HTML text using the same parser as captured evidence."""
+
+    parser = _VisibleTextParser()
+    parser.feed(value)
+    parser.close()
+    return _normalized_text(" ".join(parser.parts))
+
+
 def _github_raw_url(url: str) -> str:
     parsed = urlsplit(url)
     if parsed.hostname not in {"github.com", "www.github.com"}:
@@ -104,9 +113,7 @@ def _response_text(response: httpx.Response, body: bytes) -> str:
     encoding = response.encoding or "utf-8"
     decoded = body.decode(encoding, errors="replace")
     if "html" in content_type or "<html" in decoded[:500].casefold():
-        parser = _VisibleTextParser()
-        parser.feed(decoded)
-        decoded = " ".join(parser.parts)
+        decoded = visible_source_text(decoded)
     return _normalized_text(decoded)[:MAX_SNAPSHOT_TEXT]
 
 

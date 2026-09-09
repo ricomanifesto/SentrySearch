@@ -397,6 +397,15 @@ def test_analyst_disposition_endpoint_appends_current_evaluation_judgment(monkey
         metadata={"role": "analyst"},
     )
     calls = []
+    monkeypatch.setattr(
+        api_main.report_service,
+        "get_report",
+        lambda report_id, include_content=False: {
+            "id": report_id,
+            "user_id": "analyst-user",
+            "tool_name": "Security event analysis",
+        },
+    )
 
     def append_report_disposition(report_id, **kwargs):
         calls.append((report_id, kwargs))
