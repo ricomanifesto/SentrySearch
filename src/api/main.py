@@ -32,6 +32,7 @@ from src.core.markdown_generator import generate_markdown
 from src.core.evidence_admissibility import (
     ContentPolicyExclusion,
     assert_no_virtual_event_promotions,
+    contains_virtual_event_promotion,
     reader_evidence_admissibility,
 )
 from src.core.generation_failures import (
@@ -371,6 +372,39 @@ async def report_collection_fields(
     return projected, excluded_count
 
 
+async def recent_report_fields(
+    *, limit: int, stored_total: int, user_id: Optional[str]
+) -> tuple[list[tuple[Dict[str, Any], Dict[str, Any]]], int]:
+    """Fill an unpaginated feed; keep stored-page pagination unchanged elsewhere."""
+    visible = []
+    excluded_count = 0
+    offset = 0
+    # The initial stored count bounds the scan even if new reports arrive.
+    while len(visible) < limit and offset < stored_total:
+        remaining = min(limit - len(visible), stored_total - offset)
+        rows = report_service.list_reports(
+            limit=remaining, offset=offset, sort_by="created_at", sort_order="desc", user_id=user_id
+        )
+        if not rows:
+            break
+        projected, excluded = await report_collection_fields(rows)
+        visible.extend(projected)
+        excluded_count += excluded
+        offset += len(rows)
+        if len(rows) < remaining:
+            break
+    return visible, excluded_count
+
+
+def reader_threat_distribution(user_id: Optional[str] = None) -> Dict[str, int]:
+    """Keep prohibited free-text labels out of aggregate reader surfaces."""
+    return {
+        label: count
+        for label, count in report_service.get_threat_type_stats(user_id=user_id).items()
+        if not contains_virtual_event_promotion(label)
+    }
+
+
 def get_report_sources(report: Dict[str, Any]) -> List[ReportSource]:
     """Return a stable source-evidence contract, including for older report rows."""
 
@@ -498,7 +532,7 @@ def build_analytics_trends(
             daily_counts[report_date] += 1
             if record.processing_time_ms is not None:
                 processing_by_date[report_date].append(record.processing_time_ms)
-        if record.threat_type:
+        if record.threat_type and not contains_virtual_event_promotion(record.threat_type):
             threat_counts[record.threat_type] = threat_counts.get(record.threat_type, 0) + 1
         if record.quality_score is not None:
             score = record.quality_score
@@ -1316,9 +1350,13 @@ async def get_search_filters(user: AuthenticatedUser = Depends(verify_jwt_token)
         tags = report_service.get_popular_tags(limit=50, user_id=user_id)
 
         return {
-            "threat_types": threat_types,
-            "categories": categories,
-            "tags": tags,
+            "threat_types": [
+                value for value in threat_types if not contains_virtual_event_promotion(value)
+            ],
+            "categories": [
+                value for value in categories if not contains_virtual_event_promotion(value)
+            ],
+            "tags": [value for value in tags if not contains_virtual_event_promotion(value)],
             "quality_range": {"min": 0.0, "max": 5.0},
             "date_range_options": [
                 {"label": "Last 7 days", "days": 7},
@@ -1345,7 +1383,7 @@ async def update_categorizations(user: AuthenticatedUser = Depends(verify_jwt_to
         updated_count = report_service.update_existing_categorizations()
 
         # Get updated stats
-        threat_stats = report_service.get_threat_type_stats()
+        threat_stats = reader_threat_distribution()
 
         return {
             "message": f"Successfully updated {updated_count} reports",
@@ -1424,10 +1462,9 @@ async def get_analytics(
         ]
 
         # Recent activity
-        recent_reports = report_service.list_reports(
-            limit=10, sort_by="created_at", sort_order="desc", user_id=user_id
+        projected, excluded_count = await recent_report_fields(
+            limit=10, stored_total=total_reports, user_id=user_id
         )
-        projected, excluded_count = await report_collection_fields(recent_reports)
         recent_activity = []
         for report, fields in projected:
             recent_activity.append(
@@ -1528,7 +1565,7 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
         )
 
         # Get threat type distribution
-        threat_stats = report_service.get_threat_type_stats(user_id=user_id)
+        threat_stats = reader_threat_distribution(user_id=user_id)
 
         # Get quality score distribution
         quality_stats = report_service.get_quality_score_distribution(user_id=user_id)
@@ -1551,10 +1588,9 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
         ]
 
         # Get recent activity
-        recent_activity = report_service.list_reports(
-            limit=5, sort_by="created_at", sort_order="desc", user_id=user_id
+        projected, excluded_count = await recent_report_fields(
+            limit=5, stored_total=total_reports, user_id=user_id
         )
-        projected, excluded_count = await report_collection_fields(recent_activity)
 
         return {
             "summary": {
