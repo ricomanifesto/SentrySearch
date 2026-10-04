@@ -91,16 +91,18 @@ the healthcheck or SSL enforcement to work around a failure. Missing CA paths fa
 during configuration; unreadable or malformed PEM files and invalid server
 identities fail when libpq connects.
 
-A credential-free preflight can verify the actual database endpoint before
-deployment (substitute its existing host and port):
+A credential-free preflight with OpenSSL 3 can verify the actual database endpoint
+before deployment (substitute its existing host and port):
 
 ```bash
 openssl s_client -starttls postgres -connect "$DB_HOST:$DB_PORT" \
   -servername "$DB_HOST" -verify_hostname "$DB_HOST" -verify_return_error \
+  -no-CAfile -no-CApath -no-CAstore \
   -CAfile certs/supabase-prod-ca-2021.crt </dev/null
 ```
 
-Require `Verify return code: 0 (ok)`. This proves the endpoint's TLS identity, not
+Require `Verify return code: 0 (ok)`. Disabling the default CA sources ensures the
+bundled CA alone validates the endpoint's TLS identity. This does not prove
 database authentication, schema compatibility, or application readiness. After
 the approved deployment, require Railway `SUCCESS`, no startup TLS errors, and
 `/api/ready` returning 200. Handle any subsequent schema or credential error as a
