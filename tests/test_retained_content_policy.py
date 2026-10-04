@@ -520,3 +520,83 @@ def test_markdown_download_checks_historical_dispositions_before_signing(monkeyp
         service.get_download_url("blocked")
     service.s3_manager.get_presigned_url.assert_not_called()
     session.commit.assert_not_called()
+
+
+def test_waiting_request_gets_next_slot_before_a_large_batch_continues():
+    from src.storage.retained_content import RetainedContentReader
+
+    reader = RetainedContentReader(max_workers=1, timeout_seconds=1)
+    release = Event()
+    entered = Event()
+    order = []
+
+    def load(key):
+        order.append(key)
+        if key == "large-0":
+            entered.set()
+            release.wait(2)
+        else:
+            sleep(0.02)
+        return key
+
+    async def check():
+        large = asyncio.create_task(reader.read_many([f"large-{i}" for i in range(20)], load))
+        while not entered.is_set():
+            await asyncio.sleep(0.001)
+        small = asyncio.create_task(reader.read_many(["detail"], load))
+        await asyncio.sleep(0.01)
+        release.set()
+        large_result, small_result = await asyncio.gather(large, small)
+        assert order[:2] == ["large-0", "detail"]
+        assert list(large_result) == [f"large-{i}" for i in range(20)]
+        assert small_result == {"detail": "detail"}
+
+    try:
+        asyncio.run(check())
+    finally:
+        release.set()
+        reader.close()
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_expired_or_cancelled_waiter_cannot_block_later_requests(cancel):
+    from src.storage.retained_content import RetainedContentReader, RetainedContentUnavailable
+
+    reader = RetainedContentReader(max_workers=1, timeout_seconds=0.1)
+    release = Event()
+    entered = Event()
+    calls = []
+
+    def load(key):
+        calls.append(key)
+        if key == "holding":
+            entered.set()
+            release.wait(2)
+        return key
+
+    async def check():
+        holder = asyncio.create_task(reader.read_many(["holding"], load))
+        while not entered.is_set():
+            await asyncio.sleep(0.001)
+        holder.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await holder
+        obsolete = asyncio.create_task(reader.read_many(["obsolete"], load))
+        if cancel:
+            await asyncio.sleep(0.01)
+            obsolete.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await obsolete
+        else:
+            with pytest.raises(RetainedContentUnavailable):
+                await obsolete
+        assert calls == ["holding"]
+        release.set()
+        assert await reader.read_many(["later"], load) == {"later": "later"}
+        assert calls == ["holding", "later"]
+
+    try:
+        asyncio.run(check())
+    finally:
+        release.set()
+        reader.close()

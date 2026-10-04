@@ -1,8 +1,9 @@
-"""Bounded object reads with per-operation and page-sized deadlines."""
+"""Fair, bounded object reads with per-operation and page-sized deadlines."""
 
 import asyncio
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from threading import BoundedSemaphore
+from threading import BoundedSemaphore, Lock
 from typing import Callable, Iterable
 
 
@@ -18,8 +19,32 @@ class RetainedContentReader:
             max_workers=max_workers, thread_name_prefix="content-read"
         )
         self._slots = BoundedSemaphore(max_workers)
+        self._admission_lock = Lock()
+        self._waiters: deque[object] = deque()
         self._max_workers = max_workers
         self._timeout = timeout_seconds
+
+    async def _acquire_slot(self, deadline: float) -> None:
+        # A lane joins the shared queue for each object, so a large request
+        # cannot overtake other requests already waiting for physical capacity.
+        ticket = object()
+        admitted = False
+        with self._admission_lock:
+            self._waiters.append(ticket)
+        try:
+            while True:
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise RetainedContentUnavailable("Report content temporarily unavailable")
+                with self._admission_lock:
+                    if self._waiters[0] is ticket and self._slots.acquire(blocking=False):
+                        self._waiters.popleft()
+                        admitted = True
+                        return
+                await asyncio.sleep(0.005)
+        finally:
+            if not admitted:
+                with self._admission_lock:
+                    self._waiters.remove(ticket)
 
     async def read_many(self, keys: Iterable[str], load: Callable[[str], str]) -> dict[str, str]:
         unique = list(dict.fromkeys(keys))
@@ -29,12 +54,7 @@ class RetainedContentReader:
         async def read(key: str) -> str:
             # Waiting for another request's SDK calls is independently bounded.
             admission_deadline = min(deadline, asyncio.get_running_loop().time() + self._timeout)
-            while True:
-                if asyncio.get_running_loop().time() >= admission_deadline:
-                    raise RetainedContentUnavailable("Report content temporarily unavailable")
-                if self._slots.acquire(blocking=False):
-                    break
-                await asyncio.sleep(0.005)
+            await self._acquire_slot(admission_deadline)
             try:
                 if asyncio.get_running_loop().time() >= admission_deadline:
                     raise RetainedContentUnavailable("Report content temporarily unavailable")
