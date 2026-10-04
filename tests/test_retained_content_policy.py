@@ -179,6 +179,67 @@ def test_object_reader_is_concurrent_global_and_nonblocking():
         reader.close()
 
 
+def test_maximum_page_of_healthy_retained_reads_completes():
+    from src.storage.retained_content import RetainedContentReader
+
+    reader = RetainedContentReader()
+    keys = [f"{index}.md" for index in range(100)]
+    active = peak = 0
+    lock = Lock()
+
+    def load(key):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            sleep(0.25)
+            return f"content:{key}"
+        finally:
+            with lock:
+                active -= 1
+
+    try:
+        result = asyncio.run(reader.read_many(keys + keys, load))
+        assert list(result.items()) == [(key, f"content:{key}") for key in keys]
+        assert peak == 4
+    finally:
+        reader.close()
+
+
+@pytest.mark.parametrize("occupied", [False, True])
+def test_large_batch_keeps_individual_read_and_admission_timeouts(occupied):
+    from src.storage.retained_content import RetainedContentReader, RetainedContentUnavailable
+
+    reader = RetainedContentReader(max_workers=1, timeout_seconds=0.05)
+    release = Event()
+    entered = Event()
+    calls = []
+
+    def load(key):
+        calls.append(key)
+        entered.set()
+        release.wait(2)
+        return key
+
+    async def scenario():
+        if occupied:
+            with pytest.raises(RetainedContentUnavailable):
+                await reader.read_many(["occupied"], load)
+        # A larger page must not grant a stalled read or saturated admission
+        # the entire multi-wave batch budget.
+        with pytest.raises(RetainedContentUnavailable):
+            await asyncio.wait_for(reader.read_many([str(i) for i in range(100)], load), 0.5)
+        assert entered.is_set()
+        assert calls == (["occupied"] if occupied else ["0"])
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        release.set()
+        reader.close()
+
+
 def test_private_trace_access_preserves_the_original_audit():
     service = ReportStorageService.__new__(ReportStorageService)
     service.db_manager = MagicMock()

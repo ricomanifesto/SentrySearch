@@ -22,6 +22,75 @@ import {
 } from '../src/lib/report-query';
 import { SAMPLE_REPORT } from '../src/lib/sample-report';
 import { api, ExportHandoffEligibilityError } from '../src/lib/api';
+import ReportsPage from '../src/app/reports/page';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { AppRouterContext } from 'next/dist/shared/lib/app-router-context.shared-runtime';
+import { PathnameContext, SearchParamsContext } from 'next/dist/shared/lib/hooks-client-context.shared-runtime';
+
+function renderReportsPage({ page = 1, total = 21, excluded = 20, clean = false, reviewState = 'all' } = {}) {
+  const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+  const params = new URLSearchParams(`review_state=${reviewState}&page=${page}`);
+  const filters = reportQueryFromSearchParams(params);
+  client.setQueryData(['reports', 'list', page, filters], {
+    reports: clean ? [SAMPLE_REPORT] : [],
+    pagination: { page, limit: 20, total, pages: Math.ceil(total / 20), excluded_on_page: excluded, total_includes_excluded: true },
+  });
+  client.setQueryData(['reports', 'library-count'], { reports: [], pagination: { total } });
+  client.setQueryData(['search', 'filters'], { threat_types: [], categories: [], tags: [] });
+  // Render the route's real workspace inside its Suspense boundary. Auth is
+  // covered separately; this fixture supplies only navigation and API state.
+  const workspace = ReportsPage().props.children;
+  try {
+    return renderToStaticMarkup(
+      <AppRouterContext.Provider value={{ back() {}, forward() {}, refresh() {}, push() {}, replace() {}, prefetch() {}, bfcacheId: 'test' }}>
+        <PathnameContext.Provider value="/reports">
+          <SearchParamsContext.Provider value={params}>
+            <QueryClientProvider client={client}>{workspace}</QueryClientProvider>
+          </SearchParamsContext.Provider>
+        </PathnameContext.Provider>
+      </AppRouterContext.Provider>,
+    );
+  } finally {
+    client.clear();
+  }
+}
+
+test('an excluded first page keeps navigation to later saved reports', () => {
+  const html = renderReportsPage();
+  assert.match(html, /No reports available on this page/);
+  assert.match(html, /20 reports excluded on this page/);
+  assert.match(html, /Page 1 of 2/);
+  assert.match(html, /<button(?![^>]*\sdisabled=)[^>]*>Next<\/button>/);
+  assert.doesNotMatch(html, /No saved reports yet|review queue is clear|Showing 1–20/);
+});
+
+test('an excluded last page keeps navigation back to earlier reports', () => {
+  const html = renderReportsPage({ page: 2, total: 40 });
+  assert.match(html, /Page 2 of 2/);
+  assert.match(html, /<button(?![^>]*\sdisabled=)[^>]*>Previous<\/button>/);
+  assert.match(html, /<button[^>]*\sdisabled=[^>]*>Next<\/button>/);
+});
+
+test('a partial page discloses exclusions without presenting stored totals as visible counts', () => {
+  const html = renderReportsPage({ excluded: 19, clean: true });
+  assert.match(html, /19 reports excluded on this page/);
+  assert.match(html, /Totals include reports excluded by content policy/);
+  assert.match(html, /Showing 1 report from stored matches/);
+  assert.doesNotMatch(html, /No reports available on this page/);
+});
+
+test('a later clean page still renders the saved report and previous navigation', () => {
+  const html = renderReportsPage({ page: 2, excluded: 0, clean: true });
+  assert.match(html, /Open record/);
+  assert.match(html, /Page 2 of 2/);
+  assert.match(html, /<button(?![^>]*\sdisabled=)[^>]*>Previous<\/button>/);
+});
+
+test('an empty library retains its first-report guidance without pagination', () => {
+  const html = renderReportsPage({ total: 0, excluded: 0, reviewState: 'actionable' });
+  assert.match(html, /No saved reports yet/);
+  assert.doesNotMatch(html, />Next<|>Previous<|reports excluded on this page/);
+});
 
 const contentExportConfig: ExportConfig = {
   format: 'json', include_content: true, include_metadata: false,

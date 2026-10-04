@@ -1,4 +1,4 @@
-"""Bounded, request-deadlined object reads without blocking the API event loop."""
+"""Bounded object reads with per-operation and page-sized deadlines."""
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -18,21 +18,25 @@ class RetainedContentReader:
             max_workers=max_workers, thread_name_prefix="content-read"
         )
         self._slots = BoundedSemaphore(max_workers)
+        self._max_workers = max_workers
         self._timeout = timeout_seconds
 
     async def read_many(self, keys: Iterable[str], load: Callable[[str], str]) -> dict[str, str]:
         unique = list(dict.fromkeys(keys))
-        deadline = asyncio.get_running_loop().time() + self._timeout
+        waves = (len(unique) + self._max_workers - 1) // self._max_workers
+        deadline = asyncio.get_running_loop().time() + waves * self._timeout
 
         async def read(key: str) -> str:
+            # Waiting for another request's SDK calls is independently bounded.
+            admission_deadline = min(deadline, asyncio.get_running_loop().time() + self._timeout)
             while True:
-                if asyncio.get_running_loop().time() >= deadline:
+                if asyncio.get_running_loop().time() >= admission_deadline:
                     raise RetainedContentUnavailable("Report content temporarily unavailable")
                 if self._slots.acquire(blocking=False):
                     break
                 await asyncio.sleep(0.005)
             try:
-                if asyncio.get_running_loop().time() >= deadline:
+                if asyncio.get_running_loop().time() >= admission_deadline:
                     raise RetainedContentUnavailable("Report content temporarily unavailable")
                 future = self._executor.submit(load, key)
             except BaseException:
@@ -45,7 +49,9 @@ class RetainedContentReader:
             try:
                 return await asyncio.wait_for(
                     asyncio.shield(wrapped),
-                    timeout=max(0, deadline - asyncio.get_running_loop().time()),
+                    timeout=max(
+                        0, min(self._timeout, deadline - asyncio.get_running_loop().time())
+                    ),
                 )
             except asyncio.TimeoutError as error:
                 raise RetainedContentUnavailable(
@@ -58,9 +64,19 @@ class RetainedContentReader:
                     lambda done: None if done.cancelled() else done.exception()
                 )
 
-        tasks = [asyncio.create_task(read(key)) for key in unique]
+        # Only worker lanes wait for capacity. Later keys start their admission
+        # budget when a lane reaches them, not when the page is first submitted.
+        pending = iter(unique)
+        results: dict[str, str] = {}
+
+        async def worker() -> None:
+            for key in pending:
+                results[key] = await read(key)
+
+        tasks = [asyncio.create_task(worker()) for _ in range(min(len(unique), self._max_workers))]
         try:
-            return dict(zip(unique, await asyncio.gather(*tasks)))
+            await asyncio.gather(*tasks)
+            return {key: results[key] for key in unique}
         except BaseException:
             for task in tasks:
                 task.cancel()
