@@ -142,31 +142,16 @@ class ReportStorageService:
     def _attach_disposition_state(
         session: Any,
         reports: Sequence[Report],
-        *,
-        include_history: bool = False,
     ) -> list[Dict[str, Any]]:
-        """Project append-only judgments without mutating the report row."""
+        """Build a complete policy snapshot without mutating stored rows or judgments."""
 
         if not reports:
             return []
-        query = session.query(ReportDispositionEvent)
-        if include_history:
-            query = query.filter(
-                ReportDispositionEvent.report_id.in_([report.id for report in reports])
-            )
-        else:
-            query = query.filter(
-                or_(
-                    *(
-                        and_(
-                            ReportDispositionEvent.report_id == report.id,
-                            ReportDispositionEvent.evaluation_attempt
-                            == int(cast(Any, report).evaluation_attempts or 0),
-                        )
-                        for report in reports
-                    )
-                )
-            )
+        # Historical notes remain reader-visible in detail responses, so every
+        # collection and export must inspect the same history before admission.
+        query = session.query(ReportDispositionEvent).filter(
+            ReportDispositionEvent.report_id.in_([report.id for report in reports])
+        )
         events = query.order_by(
             ReportDispositionEvent.created_at.asc(),
             ReportDispositionEvent.id.asc(),
@@ -196,11 +181,9 @@ class ReportStorageService:
                 if current_event is not None
                 else None
             )
-            report_dict["disposition_history"] = (
-                [event.to_dict(current_evaluation_attempt=current_attempt) for event in history]
-                if include_history
-                else []
-            )
+            report_dict["disposition_history"] = [
+                event.to_dict(current_evaluation_attempt=current_attempt) for event in history
+            ]
             projected.append(report_dict)
         return projected
 
@@ -1617,18 +1600,7 @@ class ReportStorageService:
                 if not report:
                     return None
 
-                report_dict = self._attach_disposition_state(
-                    session,
-                    [report],
-                    include_history=True,
-                )[0]
-                # Full extraction data and tags are only needed on a single-report
-                # fetch (the record view), not the list, so they're added here rather
-                # than in the shared, list-facing to_dict().
-                report_dict["threat_data"] = report.threat_data
-                report_dict["web_sources"] = report.web_sources or []
-                report_dict["search_tags"] = report.search_tags or []
-
+                report_dict = self._attach_disposition_state(session, [report])[0]
                 # Load content from S3 if requested
                 if include_content:
                     if report.markdown_s3_key:
@@ -1861,8 +1833,7 @@ class ReportStorageService:
 
                 if not report:
                     return None
-                snapshot = report.to_dict()
-                snapshot["_markdown_s3_key"] = report.markdown_s3_key
+                snapshot = self._attach_disposition_state(session, [report])[0]
                 s3_key = (
                     report.markdown_s3_key
                     if content_type == "markdown"

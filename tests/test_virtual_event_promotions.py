@@ -19,7 +19,7 @@ from src.core.markdown_generator import generate_markdown
 from src.core.threat_profile_generator import ThreatProfileGenerator
 from src.core.threat_profile_schema import attest_profile_sources
 from src.core.source_ledger import canonicalize_profile_sources
-from src.storage.models import Report
+from src.storage.models import Report, ReportDispositionEvent
 from src.storage.report_service import ReportStorageService
 from tests.test_evidence_admissibility import OPERATIONAL_SOURCE as EVIDENCE_SOURCE
 
@@ -574,9 +574,27 @@ def retained_storage(monkeypatch):
 
 
 @pytest.mark.parametrize("endpoint", ["list", "search", "analytics", "dashboard"])
-def test_retained_s3_only_marker_is_excluded_from_collections(monkeypatch, endpoint):
+@pytest.mark.parametrize("marker_field", ["markdown", "search_tags", "historical_disposition"])
+def test_stored_policy_markers_are_excluded_from_collections(monkeypatch, endpoint, marker_field):
     service, session, reports = retained_storage(monkeypatch)
-    original = [report.to_dict() for report in reports]
+    if marker_field != "markdown":
+        service.s3_manager.download_content.side_effect = None
+        service.s3_manager.download_content.return_value = "Security analysis"
+        if marker_field == "search_tags":
+            reports[1].search_tags = ["[**Virtual** Event]"]
+        else:
+            reports[1].evaluation_attempts = 2
+            event = ReportDispositionEvent(
+                id="event",
+                report_id="blocked",
+                evaluation_attempt=1,
+                disposition="needs_revision",
+                note="[Virtual Event] Register now",
+            )
+            session.query(
+                ReportDispositionEvent
+            ).filter.return_value.order_by.return_value.all.return_value = [event]
+    original = [deepcopy(report.to_dict()) for report in reports]
     user = AuthenticatedUser(user_id="reader", email="reader@example.com", metadata={})
     if endpoint == "list":
         response = asyncio.run(
@@ -613,7 +631,9 @@ def test_retained_s3_only_marker_is_excluded_from_collections(monkeypatch, endpo
     assert "markdown_content" not in serialized
     assert "clean.md" not in serialized
     assert "blocked.md" not in serialized
-    assert service.s3_manager.download_content.call_count == 2
+    assert service.s3_manager.download_content.call_count == (
+        2 if marker_field == "markdown" else 1
+    )
     assert [report.to_dict() for report in reports] == original
     session.commit.assert_not_called()
 

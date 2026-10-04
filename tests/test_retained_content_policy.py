@@ -2,6 +2,7 @@ import asyncio
 from copy import deepcopy
 from threading import Event, Lock
 from time import sleep
+from typing import Any
 from unittest.mock import MagicMock, Mock
 
 import pytest
@@ -14,7 +15,7 @@ from src.core.evidence_admissibility import ContentPolicyExclusion
 from src.execution.runtime_client import RuntimeRun
 from src.execution.supervisor import WorkerSettings
 from src.execution.worker import DurableGenerationWorker
-from src.storage.models import Report
+from src.storage.models import Report, ReportDispositionEvent
 from src.storage.report_service import ReportStorageService
 from tests.test_virtual_event_promotions import MARKERS, collection_report
 
@@ -50,15 +51,15 @@ def test_every_public_audit_field_is_checked_without_mutating_private_original(f
 
 
 @pytest.mark.parametrize("blocked", [True, False])
-def test_retained_download_checks_title_before_signing(blocked):
+@pytest.mark.parametrize("field", ["tool_name", "search_tags"])
+def test_retained_download_checks_stored_policy_fields_before_signing(blocked, field):
     service = ReportStorageService.__new__(ReportStorageService)
     service.db_manager = MagicMock()
     session = service.db_manager.get_session.return_value.__enter__.return_value
-    session.query.return_value.filter.return_value.first.return_value = Report(
-        id="retained",
-        tool_name="[Virtual Event] Briefing" if blocked else "Security events",
-        markdown_s3_key="retained.md",
-    )
+    report = Report(id="retained", tool_name="Security events", markdown_s3_key="retained.md")
+    value = "[Virtual Event] Briefing" if blocked else "Security events"
+    setattr(report, field, [value] if field == "search_tags" else value)
+    session.query.return_value.filter.return_value.first.return_value = report
     service.s3_manager = Mock()
     service.s3_manager.download_content.return_value = "Security analysis"
     if blocked:
@@ -351,14 +352,13 @@ def test_collection_object_reads_are_bounded_nonblocking_and_keep_order(monkeypa
     assert rows == original
 
 
-@pytest.mark.parametrize(
-    "error", [FileNotFoundError("missing object"), TimeoutError("slow object")]
-)
-def test_unreadable_retained_job_does_not_terminate_worker_loop(monkeypatch, error):
+@pytest.mark.parametrize("failure", ["missing", "timeout", "audit", "profile_audit"])
+@pytest.mark.parametrize("status", ["generating", "completed"])
+def test_invalid_retained_job_does_not_terminate_worker_loop(monkeypatch, failure, status):
     stop = Event()
     runtime = Mock()
     reports = Mock()
-    rows = {
+    rows: dict[str, dict[str, Any]] = {
         key: {
             "id": key,
             "user_id": "owner",
@@ -368,6 +368,11 @@ def test_unreadable_retained_job_does_not_terminate_worker_loop(monkeypatch, err
         }
         for key in ("unreadable", "ordinary")
     }
+    rows["unreadable"]["status"] = status
+    if failure == "audit":
+        rows["unreadable"]["evidence_admissibility"] = {"schemaVersion": "legacy"}
+    elif failure == "profile_audit":
+        rows["unreadable"]["threat_data"] = {"evidenceAdmissibility": {"status": "invalid"}}
     original = deepcopy(rows["unreadable"])
     runs = [
         RuntimeRun(
@@ -382,7 +387,15 @@ def test_unreadable_retained_job_does_not_terminate_worker_loop(monkeypatch, err
     ]
     runtime.claim.side_effect = runs
     reports.get_report.side_effect = lambda report_id, **_: rows[report_id]
-    reports.download_report_content.side_effect = [error, "Ordinary security analysis"]
+    if failure in {"missing", "timeout"}:
+        error = (
+            FileNotFoundError("missing object")
+            if failure == "missing"
+            else TimeoutError("slow object")
+        )
+        reports.download_report_content.side_effect = [error, "Ordinary security analysis"]
+    else:
+        reports.download_report_content.return_value = "Ordinary security analysis"
     reports.begin_runtime_attempt.return_value = True
     reports.get_pending_runtime_evaluations.return_value = []
 
@@ -402,8 +415,14 @@ def test_unreadable_retained_job_does_not_terminate_worker_loop(monkeypatch, err
         runs[0].run_id,
         "worker",
         1,
-        error_code="dependency_unavailable",
-        error_summary="retained report content is unavailable",
+        error_code=(
+            "dependency_unavailable" if failure in {"missing", "timeout"} else "invalid_input"
+        ),
+        error_summary=(
+            "retained report content is unavailable"
+            if failure in {"missing", "timeout"}
+            else "retained report policy contract is invalid"
+        ),
     )
     assert reports.begin_runtime_attempt.call_count == 1
     assert reports.begin_runtime_attempt.call_args.args[0] == "ordinary"
@@ -478,3 +497,26 @@ def test_disposition_note_check_preserves_owner_boundary(monkeypatch):
         )
     assert error.value.status_code == 404
     service.append_report_disposition.assert_not_called()
+
+
+def test_markdown_download_checks_historical_dispositions_before_signing(monkeypatch):
+    from tests.test_virtual_event_promotions import retained_storage
+
+    service, session, reports = retained_storage(monkeypatch)
+    reports[1].evaluation_attempts = 2
+    service.s3_manager.download_content.side_effect = None
+    service.s3_manager.download_content.return_value = "Security analysis"
+    event = ReportDispositionEvent(
+        id="historical",
+        report_id="blocked",
+        evaluation_attempt=1,
+        disposition="needs_revision",
+        note="[Virtual Event] Register now",
+    )
+    session.query(
+        ReportDispositionEvent
+    ).filter.return_value.order_by.return_value.all.return_value = [event]
+    with pytest.raises(ContentPolicyExclusion):
+        service.get_download_url("blocked")
+    service.s3_manager.get_presigned_url.assert_not_called()
+    session.commit.assert_not_called()

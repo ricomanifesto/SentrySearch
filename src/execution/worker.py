@@ -7,6 +7,8 @@ import logging
 import threading
 from typing import Any, Protocol
 
+from pydantic import ValidationError
+
 from src.core.generation_failures import build_generation_failure
 from src.core.evidence_admissibility import ContentPolicyExclusion
 from src.core.report_content_policy import load_checked_report
@@ -197,6 +199,9 @@ class DurableGenerationWorker:
             report = load_checked_report(report, load_content)
         except ContentPolicyExclusion:
             self._fail_invalid_input(run, "report input is unavailable under content policy")
+            return True
+        except ValidationError:
+            self._fail_invalid_input(run, "retained report policy contract is invalid")
             return True
         except RetainedContentUnavailable:
             self.runtime.fail(
