@@ -12,7 +12,18 @@ from dev.tls_fixtures import create_certificates
 from src.storage.database import DatabaseManager
 
 
-@pytest.mark.parametrize("case", ["trusted", "wrong_ca", "wrong_hostname", "expired", "plaintext"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "trusted",
+        "wrong_ca",
+        "wrong_hostname",
+        "expired",
+        "plaintext",
+        "malformed_ca",
+        "unreadable_ca",
+    ],
+)
 def test_database_tls_verifies_server_and_has_no_plaintext_fallback(case, monkeypatch, caplog):
     pg_bin = Path(os.environ["SENTRYSEARCH_TEST_PG_BIN"])
     with tempfile.TemporaryDirectory(prefix="storage-tls-", dir="/tmp") as directory:
@@ -26,6 +37,10 @@ def test_database_tls_verifies_server_and_has_no_plaintext_fallback(case, monkey
         )
         cert.key.chmod(0o600)
         trusted_ca = create_certificates(root / "other").ca if case == "wrong_ca" else cert.ca
+        if case == "malformed_ca":
+            trusted_ca.write_text("not a PEM certificate")
+        elif case == "unreadable_ca":
+            trusted_ca.chmod(0)
         subprocess.run(
             [
                 str(pg_bin / "initdb"),

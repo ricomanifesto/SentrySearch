@@ -1,8 +1,13 @@
 """Offline configuration, credential-chain and process-boundary proofs."""
 
 import asyncio
+import hashlib
 import logging
+import ssl
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import Mock
 
 import boto3
@@ -69,6 +74,58 @@ def test_remote_database_requires_ca_then_constructs_verified_url(storage_env, t
     assert manager.engine.url.query["sslrootcert"] == str(ca)
     assert manager.engine.url.query["gssencmode"] == "disable"
     manager.engine.dispose()
+
+
+def test_bundled_supabase_ca_has_reviewed_identity():
+    ca = Path(__file__).resolve().parents[1] / "certs" / "supabase-prod-ca-2021.crt"
+    # Pin the reviewed public root, not a leaf certificate or a machine's trust store.
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.load_verify_locations(cafile=str(ca))
+    certificates = context.get_ca_certs(binary_form=True)
+    assert len(certificates) == 1
+    assert hashlib.sha256(certificates[0]).hexdigest() == (
+        "807025ad50d4ed219d2c9c7d299c004f824eb00cf7f65afef607d07b72e6cafa"
+    )
+    assert b"PRIVATE KEY" not in ca.read_bytes()
+
+
+def test_production_database_cold_start_with_bundled_ca():
+    root = Path(__file__).resolve().parents[1]
+    # Exercise the import-time configuration that previously stopped deployment.
+    # Engine construction is offline: these are synthetic values, never used to connect.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from src.storage.database import db_manager; "
+            "assert db_manager.engine.url.query['sslmode'] == 'verify-full'; "
+            "assert db_manager.engine.url.query['sslrootcert'] == "
+            "'certs/supabase-prod-ca-2021.crt'; db_manager.engine.dispose()",
+        ],
+        cwd=root,
+        env={
+            "PYTHON_DOTENV_DISABLED": "1",
+            "ENVIRONMENT": "production",
+            "DB_HOST": "db.example.test",
+            "DB_NAME": "fixture",
+            "DB_USER": "fixture",
+            "DB_PASSWORD": "fixture",
+            "DB_SSLROOTCERT": "certs/supabase-prod-ca-2021.crt",
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("path_kind", ["missing", "directory"])
+def test_remote_database_rejects_unusable_ca_path(storage_env, tmp_path, path_kind):
+    storage_env.setenv("DB_HOST", "db.example.test")
+    ca = tmp_path / "absent.pem" if path_kind == "missing" else tmp_path
+    storage_env.setenv("DB_SSLROOTCERT", str(ca))
+    with pytest.raises(ValueError, match="readable DB_SSLROOTCERT"):
+        database.DatabaseManager()
 
 
 @pytest.mark.parametrize("key", ["PGHOSTADDR", "PGSERVICE"])

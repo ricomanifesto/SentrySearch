@@ -65,6 +65,49 @@ database over completed work. After a release failure, correct the cause and rer
 - Bound SQL parameters are hidden. Connection, readiness, and release diagnostics
   omit raw driver errors. This is not a repository-wide log-redaction audit.
 
+### Railway database TLS
+
+The repository includes the public Supabase production CA at
+`certs/supabase-prod-ca-2021.crt`; its [provenance and fingerprints](../certs/README.md)
+are recorded alongside it. For a Supabase deployment, include that directory in
+the image and set these service variables before starting the new release:
+
+```text
+DB_SSLMODE=verify-full
+DB_SSLROOTCERT=/app/certs/supabase-prod-ca-2021.crt
+```
+
+The absolute path assumes the Railway image's application root is `/app`.
+If the build uses a different root, use that root's absolute path or
+`certs/supabase-prod-ca-2021.crt` relative to the `python run_api.py` working
+directory. Confirm the file exists and is readable in the built image. The
+existing connection settings and credentials do not need to change. Other
+database providers must use their own reviewed CA bundle.
+
+Approve the deployment and production variable changes through the normal
+release process. Rebuild from the revision containing the certificate; an old
+image will not acquire the file from a variable change or restart. Do not change
+the healthcheck or SSL enforcement to work around a failure. Missing CA paths fail
+during configuration; unreadable or malformed PEM files and invalid server
+identities fail when libpq connects.
+
+A credential-free preflight with OpenSSL 3 can verify the actual database endpoint
+before deployment (substitute its existing host and port):
+
+```bash
+openssl s_client -starttls postgres -connect "$DB_HOST:$DB_PORT" \
+  -servername "$DB_HOST" -verify_hostname "$DB_HOST" -verify_return_error \
+  -no-CAfile -no-CApath -no-CAstore \
+  -CAfile certs/supabase-prod-ca-2021.crt </dev/null
+```
+
+Require `Verify return code: 0 (ok)`. Disabling the default CA sources ensures the
+bundled CA alone validates the endpoint's TLS identity. This does not prove
+database authentication, schema compatibility, or application readiness. After
+the approved deployment, require Railway `SUCCESS`, no startup TLS errors, and
+`/api/ready` returning 200. Handle any subsequent schema or credential error as a
+separate release prerequisite; this certificate fix does not perform migrations.
+
 ## Artifact credentials
 
 Set `AWS_S3_BUCKET` explicitly in staging/production. `AWS_REGION` defaults to
