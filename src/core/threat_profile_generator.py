@@ -27,6 +27,7 @@ from src.core.performance_metrics import PerformanceTracker
 from src.core.threat_profile_schema import (
     EmbeddedEvidenceCorrection,
     ThreatProfile,
+    _normalize_url as normalize_attested_source_url,
     attest_profile_sources,
     parse_embedded_evidence_correction,
     parse_threat_profile_response,
@@ -41,6 +42,7 @@ from src.core.generation_failures import (
 from src.core.evidence_admissibility import (
     assess_profile_evidence,
     classify_research_sources,
+    contains_virtual_event_promotion,
     quarantine_rejected_indicator_items,
     research_source_observations,
 )
@@ -405,7 +407,7 @@ Return a compact but technically dense evidence dossier. Include concrete findin
             )
             for source in response_sources:
                 url = str(source.get("url") or "").strip()
-                if url:
+                if url and not contains_virtual_event_promotion(sources_by_url.get(url)):
                     sources_by_url[url] = source
             tool_events.extend(list(getattr(response, "tool_events", None) or []))
             for field in usage_fields:
@@ -508,7 +510,31 @@ Return a compact but technically dense evidence dossier. Include concrete findin
                 raise EvidenceUnavailableError("OpenRouter web search returned no source evidence")
 
             try:
-                research_sources = capture_source_snapshots(attach_source_ids(research_sources))
+                # A relabelled URL variant must not hide the tagged source record.
+                promotions_by_url = {
+                    normalize_attested_source_url(str(source.get("url") or "")): source
+                    for source in research_sources
+                    if contains_virtual_event_promotion(source)
+                }
+                research_sources = attach_source_ids(
+                    [
+                        promotions_by_url.get(
+                            normalize_attested_source_url(str(source.get("url") or "")), source
+                        )
+                        for source in research_sources
+                    ]
+                )
+                captured = capture_source_snapshots(
+                    [
+                        source
+                        for source in research_sources
+                        if not contains_virtual_event_promotion(source)
+                    ]
+                )
+                captured_by_id = {source["sourceId"]: source for source in captured}
+                research_sources = [
+                    captured_by_id.get(source["sourceId"], source) for source in research_sources
+                ]
                 research_sources = classify_research_sources(research_sources)
             except SourceLedgerError as error:
                 raise EvidenceAttestationError("Research source catalog was invalid") from error
@@ -546,6 +572,16 @@ Return a compact but technically dense evidence dossier. Include concrete findin
             synthesis_sources = _operational_synthesis_sources(research_sources)
             if not synthesis_sources:  # pragma: no cover - guarded by the observation check
                 raise EvidenceUnavailableError("Research produced no captured operational evidence")
+            if contains_virtual_event_promotion(research_text) or any(
+                source.get("evidenceRuleId") == "source.virtual-event-promotion"
+                for source in research_sources
+            ):
+                # The combined model dossier has no trustworthy record boundaries.
+                # Replace it in full with admitted evidence, never strip just a tag.
+                research_text = "\n\n".join(
+                    f"{source['sourceId']}\n{source['contentSnapshot']['text']}"
+                    for source in synthesis_sources
+                )
             source_catalog = json.dumps(synthesis_sources, indent=2, sort_keys=True)
             withheld_source_count = len(research_sources) - len(synthesis_sources)
 

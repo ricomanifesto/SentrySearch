@@ -214,6 +214,9 @@ export interface PaginatedResponse<T> {
     limit: number;
     total: number;
     pages: number;
+    // Totals and offsets describe stored matches; exclusion counts are page-local.
+    excluded_on_page?: number;
+    total_includes_excluded?: boolean;
   };
 }
 
@@ -230,6 +233,7 @@ export interface AnalyticsDashboard {
   };
   threat_distribution: Record<string, number>;
   quality_distribution: Array<{ range: string; count: number }>;
+  recent_activity_scan_limited?: boolean;
   recent_activity: Array<{
     id: string;
     tool_name: string;
@@ -284,6 +288,7 @@ export interface AnalyticsData {
     routes: { primary: number; fallback: number; unrecorded: number };
     utc_hours: Record<string, number>;
   }>;
+  recent_activity_scan_limited?: boolean;
   recent_activity: Array<{
     id: string;
     tool_name: string;

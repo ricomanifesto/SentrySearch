@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { AxiosError, AxiosHeaders } from 'axios';
 
 import { DashboardBriefingSignals } from '../src/components/DashboardBriefingSignals';
 import { ReviewStatusBanner } from '../src/components/report/ReviewStatusBanner';
 import { AnalystDispositionPanel } from '../src/components/report/AnalystDispositionPanel';
 import { NavigationSessionActions } from '../src/components/layout/Navigation';
-import type { AnalyticsDashboard, ExportConfig } from '../src/lib/api-contracts';
+import type { AnalyticsDashboard, ExportConfig, SearchFilters } from '../src/lib/api-contracts';
 import { getReportSectionLinks, splitReportContent } from '../src/lib/report-content';
 import { getReviewAttentionSummary } from '../src/lib/review-attention';
 import { getGenerationFailurePresentation } from '../src/lib/generation-failure';
@@ -20,6 +21,138 @@ import {
   defaultReportQuery,
 } from '../src/lib/report-query';
 import { SAMPLE_REPORT } from '../src/lib/sample-report';
+import { api, ExportHandoffEligibilityError } from '../src/lib/api';
+import ReportsPage from '../src/app/reports/page';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { AppRouterContext } from 'next/dist/shared/lib/app-router-context.shared-runtime';
+import { PathnameContext, SearchParamsContext } from 'next/dist/shared/lib/hooks-client-context.shared-runtime';
+
+function renderReportsPage({ page = 1, total = 21, excluded = 20, clean = false, reviewState = 'all' } = {}) {
+  const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+  const params = new URLSearchParams(`review_state=${reviewState}&page=${page}`);
+  const filters = reportQueryFromSearchParams(params);
+  client.setQueryData(['reports', 'list', page, filters], {
+    reports: clean ? [SAMPLE_REPORT] : [],
+    pagination: { page, limit: 20, total, pages: Math.ceil(total / 20), excluded_on_page: excluded, total_includes_excluded: true },
+  });
+  client.setQueryData(['reports', 'library-count'], { reports: [], pagination: { total } });
+  client.setQueryData(['search', 'filters'], { threat_types: [], categories: [], tags: [] });
+  // Render the route's real workspace inside its Suspense boundary. Auth is
+  // covered separately; this fixture supplies only navigation and API state.
+  const workspace = ReportsPage().props.children;
+  try {
+    return renderToStaticMarkup(
+      <AppRouterContext.Provider value={{ back() {}, forward() {}, refresh() {}, push() {}, replace() {}, prefetch() {}, bfcacheId: 'test' }}>
+        <PathnameContext.Provider value="/reports">
+          <SearchParamsContext.Provider value={params}>
+            <QueryClientProvider client={client}>{workspace}</QueryClientProvider>
+          </SearchParamsContext.Provider>
+        </PathnameContext.Provider>
+      </AppRouterContext.Provider>,
+    );
+  } finally {
+    client.clear();
+  }
+}
+
+test('an excluded first page keeps navigation to later saved reports', () => {
+  const html = renderReportsPage();
+  assert.match(html, /No reports available on this page/);
+  assert.match(html, /20 reports excluded on this page/);
+  assert.match(html, /Page 1 of 2/);
+  assert.match(html, /<button(?![^>]*\sdisabled=)[^>]*>Next<\/button>/);
+  assert.doesNotMatch(html, /No saved reports yet|review queue is clear|Showing 1–20/);
+});
+
+test('an excluded last page keeps navigation back to earlier reports', () => {
+  const html = renderReportsPage({ page: 2, total: 40 });
+  assert.match(html, /Page 2 of 2/);
+  assert.match(html, /<button(?![^>]*\sdisabled=)[^>]*>Previous<\/button>/);
+  assert.match(html, /<button[^>]*\sdisabled=[^>]*>Next<\/button>/);
+});
+
+test('a partial page discloses exclusions without presenting stored totals as visible counts', () => {
+  const html = renderReportsPage({ excluded: 19, clean: true });
+  assert.match(html, /19 reports excluded on this page/);
+  assert.match(html, /Totals include reports excluded by content policy/);
+  assert.match(html, /Showing 1 report from stored matches/);
+  assert.doesNotMatch(html, /No reports available on this page/);
+});
+
+test('a later clean page still renders the saved report and previous navigation', () => {
+  const html = renderReportsPage({ page: 2, excluded: 0, clean: true });
+  assert.match(html, /Open record/);
+  assert.match(html, /Page 2 of 2/);
+  assert.match(html, /<button(?![^>]*\sdisabled=)[^>]*>Previous<\/button>/);
+});
+
+test('an empty library retains its first-report guidance without pagination', () => {
+  const html = renderReportsPage({ total: 0, excluded: 0, reviewState: 'actionable' });
+  assert.match(html, /No saved reports yet/);
+  assert.doesNotMatch(html, />Next<|>Previous<|reports excluded on this page/);
+});
+
+const contentExportConfig: ExportConfig = {
+  format: 'json', include_content: true, include_metadata: false,
+  include_sources: false, include_tags: false,
+};
+
+function exportReadError(status: number, detail: string) {
+  const error = new AxiosError('Report unavailable');
+  error.response = {
+    status, statusText: 'Unavailable', data: { detail }, headers: {},
+    config: { headers: new AxiosHeaders() },
+  };
+  return error;
+}
+
+for (const selected of [true, false]) {
+  test(`policy-excluded detail does not disable a ${selected ? 'selected' : 'matching'} export`, async (t) => {
+    t.mock.method(api, 'getReport', async (id: string) => {
+      if (id === 'blocked') throw exportReadError(404, 'Report unavailable under content policy');
+      return { ...SAMPLE_REPORT, id, eligible_for_handoff: true };
+    });
+    t.mock.method(api, 'searchReports', async () => ({
+      reports: ['blocked', 'clean'].map((id) => ({ ...SAMPLE_REPORT, id, eligible_for_handoff: true })),
+      pagination: { page: 1, limit: 100, total: 2, pages: 1 },
+    }));
+    const exported = JSON.parse(await api.exportReports({
+      ...contentExportConfig, selected_reports: selected ? ['blocked', 'clean'] : [],
+    }));
+    assert.deepEqual(exported.reports.map((report: { id: string }) => report.id), ['clean']);
+    assert.equal(exported.export_metadata.total_reports, 1);
+  });
+}
+
+test('matching export continues after a completely excluded page', async (t) => {
+  const pages: number[] = [];
+  t.mock.method(api, 'searchReports', async (_filters: SearchFilters, page = 1) => {
+    pages.push(page);
+    return {
+      reports: page === 1 ? [] : [{ ...SAMPLE_REPORT, id: 'clean', eligible_for_handoff: true }],
+      pagination: { page, limit: 100, total: 101, pages: 2, excluded_on_page: page === 1 ? 100 : 0, total_includes_excluded: true },
+    };
+  });
+  const exported = JSON.parse(await api.exportReports({ ...contentExportConfig, include_content: false }));
+  assert.deepEqual(pages, [1, 2]);
+  assert.deepEqual(exported.reports.map((report: { id: string }) => report.id), ['clean']);
+});
+
+for (const [status, detail] of [[404, 'Report not found'], [403, 'Forbidden'], [500, 'Report unavailable under content policy']] as const) {
+  test(`export preserves unrelated ${status} errors`, async (t) => {
+    const error = exportReadError(status, detail);
+    t.mock.method(api, 'getReport', async () => { throw error; });
+    await assert.rejects(api.exportReports({ ...contentExportConfig, selected_reports: ['clean'] }), (actual) => actual === error);
+  });
+}
+
+test('policy exclusions never relax the remaining reports handoff gate', async (t) => {
+  t.mock.method(api, 'getReport', async (id: string) => {
+    if (id === 'blocked') throw exportReadError(404, 'Report unavailable under content policy');
+    return { ...SAMPLE_REPORT, id, eligible_for_handoff: false };
+  });
+  await assert.rejects(api.exportReports({ ...contentExportConfig, selected_reports: ['blocked', 'ineligible'] }), ExportHandoffEligibilityError);
+});
 
 const emptyDashboard: AnalyticsDashboard = {
   summary: {
@@ -425,4 +558,36 @@ test('a bounded matching export scope reports the records it can package', () =>
   assert.equal(state.recordCount, 5);
   assert.equal(state.packageScope, '5 records matching');
   assert.equal(state.canPrepare, true);
+});
+
+test('activity feed distinguishes an incomplete scan from an empty workspace', async () => {
+  const { ActivityFeed } = await import('../src/components/ActivityFeed');
+  for (const scanLimited of [true, false]) {
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    client.setQueryData(['activities', undefined, 10], { events: [], scanLimited });
+    try {
+      const html = renderToStaticMarkup(<QueryClientProvider client={client}><ActivityFeed /></QueryClientProvider>);
+      if (scanLimited) {
+        assert.match(html, /Recent activity is incomplete/);
+        assert.match(html, /href="\/reports"/);
+        assert.doesNotMatch(html, /Activity appears after a report is generated/);
+      } else {
+        assert.match(html, /Activity appears after a report is generated/);
+        assert.doesNotMatch(html, /Recent activity is incomplete/);
+      }
+    } finally {
+      client.clear();
+    }
+  }
+});
+
+test('activity API preserves scan completeness alongside real events', async () => {
+  const original = api.getDashboardAnalytics;
+  api.getDashboardAnalytics = async () => ({ recent_activity: [], recent_activity_scan_limited: true } as unknown as AnalyticsDashboard);
+  try {
+    const result = await api.getActivities();
+    assert.deepEqual(result, { events: [], scanLimited: true });
+  } finally {
+    api.getDashboardAnalytics = original;
+  }
 });

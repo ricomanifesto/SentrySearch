@@ -11,6 +11,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from json_repair import repair_json
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from src.core.evidence_admissibility import contains_virtual_event_promotion
 
 logger = logging.getLogger(__name__)
 
@@ -663,6 +664,11 @@ def attest_profile_sources(
 ) -> None:
     """Reject profile URLs that were not returned by the hosted web-search tool."""
 
+    excluded_promotion_urls = {
+        _normalize_url(str(source.get("url", "")))
+        for source in web_search_sources
+        if contains_virtual_event_promotion(source)
+    }
     evidence_url_pairs = [
         (str(source.get("url", "")).strip(), normalized)
         for source in web_search_sources
@@ -704,6 +710,8 @@ def attest_profile_sources(
             if replacement:
                 source["url"] = replacement
                 normalized = _normalize_url(replacement)
+        if normalized in excluded_promotion_urls:
+            raise ValueError("Threat profile cites an excluded virtual-event promotion")
         claimed_urls.add(normalized)
 
     unattested = sorted(claimed_urls - evidence_urls)

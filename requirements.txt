@@ -65,6 +65,10 @@ jmespath==1.1.0
     #   botocore
 json-repair==0.61.7
     # via sentrysearch
+markdown-it-py==4.2.0
+    # via sentrysearch
+mdurl==0.1.2
+    # via markdown-it-py
 multidict==6.7.1
     # via yarl
 packaging==26.2

@@ -42,6 +42,8 @@ from src.core.source_ledger import (
     assert_source_ledger_consistent,
     claim_attribution_status,
 )
+from src.core.evidence_admissibility import assert_no_virtual_event_promotions
+from src.core.report_content_policy import load_checked_report
 from src.domain.model_routes import generation_fallback_state
 
 from .database import db_manager
@@ -140,31 +142,16 @@ class ReportStorageService:
     def _attach_disposition_state(
         session: Any,
         reports: Sequence[Report],
-        *,
-        include_history: bool = False,
     ) -> list[Dict[str, Any]]:
-        """Project append-only judgments without mutating the report row."""
+        """Build a complete policy snapshot without mutating stored rows or judgments."""
 
         if not reports:
             return []
-        query = session.query(ReportDispositionEvent)
-        if include_history:
-            query = query.filter(
-                ReportDispositionEvent.report_id.in_([report.id for report in reports])
-            )
-        else:
-            query = query.filter(
-                or_(
-                    *(
-                        and_(
-                            ReportDispositionEvent.report_id == report.id,
-                            ReportDispositionEvent.evaluation_attempt
-                            == int(cast(Any, report).evaluation_attempts or 0),
-                        )
-                        for report in reports
-                    )
-                )
-            )
+        # Historical notes remain reader-visible in detail responses, so every
+        # collection and export must inspect the same history before admission.
+        query = session.query(ReportDispositionEvent).filter(
+            ReportDispositionEvent.report_id.in_([report.id for report in reports])
+        )
         events = query.order_by(
             ReportDispositionEvent.created_at.asc(),
             ReportDispositionEvent.id.asc(),
@@ -182,6 +169,8 @@ class ReportStorageService:
             ]
             current_event = current_events[-1] if current_events else None
             report_dict = report.to_dict()
+            # Policy projection needs retained content even for metadata-only reads.
+            report_dict["_markdown_s3_key"] = report.markdown_s3_key
             report_dict["analyst_disposition"] = (
                 current_event.disposition
                 if current_event is not None
@@ -192,11 +181,9 @@ class ReportStorageService:
                 if current_event is not None
                 else None
             )
-            report_dict["disposition_history"] = (
-                [event.to_dict(current_evaluation_attempt=current_attempt) for event in history]
-                if include_history
-                else []
-            )
+            report_dict["disposition_history"] = [
+                event.to_dict(current_evaluation_attempt=current_attempt) for event in history
+            ]
             projected.append(report_dict)
         return projected
 
@@ -802,6 +789,13 @@ class ReportStorageService:
         user_id: Optional[str] = None,
     ) -> str:
         """Store a complete report with metadata in PostgreSQL and content in S3"""
+        assert_no_virtual_event_promotions(
+            report_data.get("threat_data"),
+            report_data.get("web_sources"),
+            report_data.get("markdown_content"),
+            report_data.get("tool_name"),
+            report_data.get("quality_assessment"),
+        )
         try:
             # Generate API key hash for user association
             api_key_hash = None
@@ -976,6 +970,13 @@ class ReportStorageService:
 
         Check ownership before upload and again when publishing references.
         """
+        assert_no_virtual_event_promotions(
+            report_data.get("threat_data"),
+            report_data.get("web_sources"),
+            report_data.get("markdown_content"),
+            report_data.get("tool_name"),
+            report_data.get("quality_assessment"),
+        )
         try:
             with self.db_manager.get_session() as session:
                 self._generation_report(session, report_id, generation_lease)
@@ -1459,6 +1460,7 @@ class ReportStorageService:
     ) -> bool:
         """Persist a successful evaluator retry without repeating research or synthesis."""
 
+        assert_no_virtual_event_promotions(threat_data, markdown_content, quality_assessment)
         with self.db_manager.get_session() as session:
             if self._evaluation_report(session, report_id, evaluation_lease) is None:
                 return False
@@ -1598,18 +1600,7 @@ class ReportStorageService:
                 if not report:
                     return None
 
-                report_dict = self._attach_disposition_state(
-                    session,
-                    [report],
-                    include_history=True,
-                )[0]
-                # Full extraction data and tags are only needed on a single-report
-                # fetch (the record view), not the list, so they're added here rather
-                # than in the shared, list-facing to_dict().
-                report_dict["threat_data"] = report.threat_data
-                report_dict["web_sources"] = report.web_sources or []
-                report_dict["search_tags"] = report.search_tags or []
-
+                report_dict = self._attach_disposition_state(session, [report])[0]
                 # Load content from S3 if requested
                 if include_content:
                     if report.markdown_s3_key:
@@ -1650,6 +1641,7 @@ class ReportStorageService:
         clean_note = note.strip() if isinstance(note, str) and note.strip() else None
         if clean_note is not None and len(clean_note) > 1000:
             raise ValueError("Disposition notes must not exceed 1000 characters")
+        assert_no_virtual_event_promotions(clean_note)
 
         with self.db_manager.get_session() as session:
             query = session.query(Report).filter(Report.id == report_id)
@@ -1830,6 +1822,9 @@ class ReportStorageService:
             logger.error(f"Error deleting report: {e}")
             raise
 
+    def download_report_content(self, key: str) -> str:
+        return self.s3_manager.download_content(key)
+
     def get_download_url(self, report_id: str, content_type: str = "markdown") -> Optional[str]:
         """Get presigned URL for downloading report content"""
         try:
@@ -1838,17 +1833,18 @@ class ReportStorageService:
 
                 if not report:
                     return None
-
-                s3_key = None
-                if content_type == "markdown" and report.markdown_s3_key:
-                    s3_key = report.markdown_s3_key
-                elif content_type == "trace" and report.trace_s3_key:
-                    s3_key = report.trace_s3_key
-
-                if s3_key:
-                    return self.s3_manager.get_presigned_url(s3_key)
-
+                snapshot = self._attach_disposition_state(session, [report])[0]
+                s3_key = (
+                    report.markdown_s3_key
+                    if content_type == "markdown"
+                    else (report.trace_s3_key if content_type == "trace" else None)
+                )
+            if not s3_key:
                 return None
+            # Trace downloads are private audit access, not public Markdown exports.
+            if content_type == "markdown":
+                load_checked_report(snapshot, self.download_report_content)
+            return self.s3_manager.get_presigned_url(s3_key)
 
         except Exception as e:
             logger.error(f"Error getting download URL: {e}")

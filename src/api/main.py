@@ -1,6 +1,7 @@
 """SentrySearch FastAPI application."""
 
 from contextlib import asynccontextmanager
+import asyncio
 import logging
 import os
 import time
@@ -19,9 +20,22 @@ load_dotenv()
 
 from src.storage.report_service import report_service
 from src.storage.database import db_manager
+from src.storage.retained_content import retained_content_reader
+from src.core.report_content_policy import (
+    assert_report_content_allowed,
+    load_checked_report,
+    public_report_content,
+    reader_safe_threat_data,
+)
 from src.core.threat_profile_generator import ThreatProfileGenerator
 from src.core.report_evaluator import evaluate_saved_report
 from src.core.markdown_generator import generate_markdown
+from src.core.evidence_admissibility import (
+    ContentPolicyExclusion,
+    assert_no_virtual_event_promotions,
+    contains_virtual_event_promotion,
+    reader_evidence_admissibility,
+)
 from src.core.generation_failures import (
     PersistenceFailureError,
     ProfileOutputError,
@@ -209,25 +223,43 @@ def get_validated_evidence_admissibility(
     """Validate the persisted safety record before publishing it on the API."""
 
     assessment = get_evidence_admissibility(report)
-    return EvidenceAdmissibility.model_validate(assessment) if assessment is not None else None
-
-
-def reader_safe_threat_data(report: Dict[str, Any]) -> Dict[str, Any] | None:
-    """Expose analyst fields without internal trace or duplicate source-analysis metadata."""
-
-    threat_data = report.get("threat_data")
-    if not isinstance(threat_data, dict):
+    if assessment is None:
         return None
-    return {
-        key: value
-        for key, value in threat_data.items()
-        if not key.startswith("_") and key != "comprehensiveWebSearchSources"
-    }
+    # Validate the full audit before omitting any records from its public projection.
+    EvidenceAdmissibility.model_validate(assessment)
+    return EvidenceAdmissibility.model_validate(reader_evidence_admissibility(assessment))
+
+
+async def load_retained_contents(reports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    keys = [
+        report["_markdown_s3_key"]
+        for report in reports
+        if report.get("_markdown_s3_key") and report.get("markdown_content") is None
+    ]
+    bodies = await retained_content_reader.read_many(
+        keys, report_service.s3_manager.download_content
+    )
+    return [
+        (
+            {**report, "markdown_content": bodies[report["_markdown_s3_key"]]}
+            if report.get("_markdown_s3_key") in bodies and report.get("markdown_content") is None
+            else dict(report)
+        )
+        for report in reports
+    ]
+
+
+async def checked_report_snapshot(report: Dict[str, Any]) -> Dict[str, Any]:
+    public_report_content(report)
+    [snapshot] = await load_retained_contents([report])
+    assert_report_content_allowed(snapshot)
+    return snapshot
 
 
 def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
     """Project one stored row through the same lifecycle contract on every surface."""
 
+    assert_report_content_allowed(report)
     quality_score = get_quality_score(report)
     sources = get_report_sources(report)
     evaluation_status = get_evaluation_status(report)
@@ -313,6 +345,82 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
             analyst_disposition=analyst_disposition,
         ),
         "content_preview": report.get("content_preview"),
+    }
+
+
+async def report_collection_fields(
+    reports: List[Dict[str, Any]],
+) -> tuple[list[tuple[Dict[str, Any], Dict[str, Any]]], int]:
+    """Project each stored record, omitting only explicit content-policy exclusions."""
+
+    candidates = []
+    excluded_count = 0
+    for report in reports:
+        try:
+            public_report_content(report)
+        except ContentPolicyExclusion:
+            excluded_count += 1
+            continue
+        candidates.append(report)
+    projected = []
+    for report in await load_retained_contents(candidates):
+        try:
+            fields = report_response_fields(report)
+        except ContentPolicyExclusion:
+            excluded_count += 1
+            continue
+        projected.append((report, fields))
+    return projected, excluded_count
+
+
+RECENT_ACTIVITY_SCAN_LIMIT = 100
+RECENT_ACTIVITY_TIMEOUT_SECONDS = 10.0
+
+
+async def recent_report_fields(
+    *, limit: int, stored_total: int, user_id: Optional[str]
+) -> tuple[list[tuple[Dict[str, Any], Dict[str, Any]]], int, bool]:
+    """Fill a feed within one row/read deadline budget; disclose incomplete scans."""
+    visible = []
+    excluded_count = 0
+    offset = 0
+    scan_limit = min(stored_total, RECENT_ACTIVITY_SCAN_LIMIT)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + RECENT_ACTIVITY_TIMEOUT_SECONDS
+    while len(visible) < limit and offset < scan_limit:
+        if loop.time() >= deadline:
+            return visible, excluded_count, True
+        remaining = min(limit - len(visible), scan_limit - offset)
+        rows = report_service.list_reports(
+            limit=remaining, offset=offset, sort_by="created_at", sort_order="desc", user_id=user_id
+        )
+        if not rows:
+            return visible, excluded_count, False
+        time_left = deadline - loop.time()
+        if time_left <= 0:
+            return visible, excluded_count, True
+        try:
+            projected, excluded = await asyncio.wait_for(
+                report_collection_fields(rows), timeout=time_left
+            )
+        except TimeoutError:
+            # Cancellation stops awaiting the batch, not the SDK calls that still
+            # own physical capacity. Only fully validated batches are returned.
+            return visible, excluded_count, True
+        visible.extend(projected)
+        excluded_count += excluded
+        offset += len(rows)
+        if len(rows) < remaining:
+            return visible, excluded_count, False
+    return visible, excluded_count, len(visible) < limit and offset < stored_total
+
+
+def reader_threat_distribution(user_id: Optional[str] = None) -> Dict[str, int]:
+    """Keep prohibited free-text labels out of aggregate reader surfaces."""
+    return {
+        label: count
+        for label, count in report_service.get_threat_type_stats(user_id=user_id).items()
+        if not contains_virtual_event_promotion(label)
     }
 
 
@@ -443,7 +551,7 @@ def build_analytics_trends(
             daily_counts[report_date] += 1
             if record.processing_time_ms is not None:
                 processing_by_date[report_date].append(record.processing_time_ms)
-        if record.threat_type:
+        if record.threat_type and not contains_virtual_event_promotion(record.threat_type):
             threat_counts[record.threat_type] = threat_counts.get(record.threat_type, 0) + 1
         if record.quality_score is not None:
             score = record.quality_score
@@ -704,7 +812,8 @@ async def list_reports(
         )
 
         # Convert to response models
-        report_responses = [ReportResponse(**report_response_fields(report)) for report in reports]
+        projected, excluded_count = await report_collection_fields(reports)
+        report_responses = [ReportResponse(**fields) for _, fields in projected]
 
         return {
             "reports": report_responses,
@@ -713,6 +822,8 @@ async def list_reports(
                 "limit": pagination.limit,
                 "total": total_count,
                 "pages": (total_count + pagination.limit - 1) // pagination.limit,
+                "excluded_on_page": excluded_count,
+                "total_includes_excluded": True,
             },
             "filters": {
                 "query": query,
@@ -738,7 +849,7 @@ async def get_report(
 ):
     """Get specific report by ID"""
     try:
-        report = report_service.get_report(report_id, include_content=include_content)
+        report = report_service.get_report(report_id, include_content=False)
 
         if not report:
             raise HTTPException(status_code=404, detail="Report not found")
@@ -747,6 +858,7 @@ async def get_report(
         if get_report_user_id(user) and report.get("user_id") != user.id:
             raise HTTPException(status_code=404, detail="Report not found")
 
+        report = await checked_report_snapshot(report)
         return ReportDetail(
             **report_response_fields(report),
             markdown_content=report.get("markdown_content") if include_content else None,
@@ -764,6 +876,10 @@ async def get_report(
             disposition_history=report.get("disposition_history", []),
         )
 
+    except ContentPolicyExclusion as error:
+        raise HTTPException(
+            status_code=404, detail="Report unavailable under content policy"
+        ) from error
     except HTTPException:
         raise
     except Exception as e:
@@ -782,6 +898,16 @@ async def append_report_disposition(
     """Append a judgment to the current evaluation vintage."""
 
     try:
+        report = report_service.get_report(report_id, include_content=False)
+        if report is None or (get_report_user_id(user) and report.get("user_id") != user.id):
+            raise HTTPException(status_code=404, detail="Report not found")
+        try:
+            assert_no_virtual_event_promotions(request.note)
+        except ContentPolicyExclusion as error:
+            raise HTTPException(
+                status_code=422, detail="Disposition note contains excluded content"
+            ) from error
+        report = await checked_report_snapshot(report)
         event = report_service.append_report_disposition(
             report_id,
             disposition=request.disposition,
@@ -792,6 +918,10 @@ async def append_report_disposition(
         if event is None:
             raise HTTPException(status_code=404, detail="Report not found")
         return AnalystDispositionEvent(**event)
+    except ContentPolicyExclusion as error:
+        raise HTTPException(
+            status_code=404, detail="Report unavailable under content policy"
+        ) from error
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except HTTPException:
@@ -815,6 +945,7 @@ async def retry_report_evaluation(
             raise HTTPException(status_code=404, detail="Report not found")
         if get_report_user_id(user) and report.get("user_id") != user.id:
             raise HTTPException(status_code=404, detail="Report not found")
+        report = await checked_report_snapshot(report)
         owner_id = str(report.get("user_id") or user.id)
         runtime_managed = report_service.has_runtime_dispatch(report_id)
         if not runtime_managed and mode != "legacy":
@@ -833,6 +964,10 @@ async def retry_report_evaluation(
             "evaluation_status": EvaluationStatus.PENDING.value,
             "message": "Evaluation retry queued",
         }
+    except ContentPolicyExclusion as error:
+        raise HTTPException(
+            status_code=404, detail="Report unavailable under content policy"
+        ) from error
     except HTTPException:
         raise
     except Exception as e:
@@ -846,6 +981,7 @@ def generate_report_artifact(
     generation_lease: GenerationLease | None = None,
 ) -> None:
     """Generate and persist the product artifact, raising a sanitized failure."""
+    assert_no_virtual_event_promotions(tool_name)
     # TODO(sentryruntime-cutover): Require generation_lease after the deployed
     # canary and rollback gates pass and in-process generation is removed.
     start = time.monotonic()
@@ -959,6 +1095,8 @@ def run_report_generation(
     try:
         generate_report_artifact(report_id, tool_name, user_id)
         run_report_evaluation(report_id, user_id)
+    except ContentPolicyExclusion:
+        logger.info("Report %s is unavailable for generation under content policy", report_id)
     except GenerationLeaseLost:
         logger.info("Background generation no longer owns report %s", report_id)
     except ReportGenerationExecutionError as error:
@@ -978,16 +1116,41 @@ def run_report_generation(
 def run_report_evaluation(report_id: str, user_id: str) -> None:
     """Retry only the quality judge for an existing synthesized report."""
 
+    report = report_service.get_report(report_id, include_content=False)
+    if report is None or report.get("user_id") != user_id:
+        return
+    try:
+        report = load_checked_report(report, report_service.s3_manager.download_content)
+    except ContentPolicyExclusion:
+        logger.info("Report %s is unavailable for evaluation under content policy", report_id)
+        # This job was already queued. Retire it through the existing lease so
+        # an excluded oldest-first row cannot starve later pending evaluations.
+        evaluation_lease = report_service.claim_report_evaluation(report_id, user_id=user_id)
+        if evaluation_lease is not None:
+            report_service.fail_report_evaluation(
+                report_id, evaluation_lease=evaluation_lease, error_code="content_policy_excluded"
+            )
+        return
+    except Exception:
+        # Admission may already have queued a legacy job. Release it through the
+        # fenced failure contract so a transient content outage remains retryable.
+        logger.exception("Report content could not be checked for evaluation %s", report_id)
+        evaluation_lease = report_service.claim_report_evaluation(report_id, user_id=user_id)
+        if evaluation_lease is not None:
+            report_service.fail_report_evaluation(
+                report_id,
+                evaluation_lease=evaluation_lease,
+                error_code="report_content_unavailable",
+            )
+        return
+    # Only policy-admitted content may reach the evaluator.
     evaluation_route: Dict[str, Any] | None = None
     assessment: Dict[str, Any] | None = None
     evaluation_lease = report_service.claim_report_evaluation(report_id, user_id=user_id)
     if evaluation_lease is None:
         return
     try:
-        report = report_service.get_report(report_id, include_content=False)
-        if report is None or report.get("user_id") != user_id:
-            return
-        threat_data = report.get("threat_data")
+        threat_data = reader_safe_threat_data(report)
         if not isinstance(threat_data, dict):
             report_service.fail_report_evaluation(
                 report_id,
@@ -1022,6 +1185,9 @@ def run_report_evaluation(report_id: str, user_id: str) -> None:
             raise ValueError("Evaluator retry changed the source ledger")
         rendered_profile = dict(persisted_profile)
         rendered_profile["_quality_assessment"] = assessment
+        private_audit = (report.get("threat_data") or {}).get("evidenceAdmissibility")
+        if isinstance(private_audit, dict):
+            persisted_profile["evidenceAdmissibility"] = private_audit
         report_service.complete_report_evaluation(
             report_id,
             evaluation_lease=evaluation_lease,
@@ -1052,6 +1218,12 @@ async def create_report(
     The response carries the new report id with status "generating" so the client
     can poll until the explicitly selected execution path completes.
     """
+    try:
+        assert_no_virtual_event_promotions(report_request.tool_name)
+    except ContentPolicyExclusion as error:
+        raise HTTPException(
+            status_code=422, detail="Report target unavailable under content policy"
+        ) from error
     mode = require_execution_admission()
     try:
         report_id = str(uuid.uuid4())
@@ -1172,7 +1344,8 @@ async def search_reports(
         total_count = report_service.count_search_results(**search_params)
 
         # Convert to response models
-        report_responses = [ReportResponse(**report_response_fields(report)) for report in reports]
+        projected, excluded_count = await report_collection_fields(reports)
+        report_responses = [ReportResponse(**fields) for _, fields in projected]
 
         return {
             "reports": report_responses,
@@ -1181,6 +1354,8 @@ async def search_reports(
                 "limit": pagination.limit,
                 "total": total_count,
                 "pages": (total_count + pagination.limit - 1) // pagination.limit,
+                "excluded_on_page": excluded_count,
+                "total_includes_excluded": True,
             },
             "search_params": search_params,
         }
@@ -1201,9 +1376,13 @@ async def get_search_filters(user: AuthenticatedUser = Depends(verify_jwt_token)
         tags = report_service.get_popular_tags(limit=50, user_id=user_id)
 
         return {
-            "threat_types": threat_types,
-            "categories": categories,
-            "tags": tags,
+            "threat_types": [
+                value for value in threat_types if not contains_virtual_event_promotion(value)
+            ],
+            "categories": [
+                value for value in categories if not contains_virtual_event_promotion(value)
+            ],
+            "tags": [value for value in tags if not contains_virtual_event_promotion(value)],
             "quality_range": {"min": 0.0, "max": 5.0},
             "date_range_options": [
                 {"label": "Last 7 days", "days": 7},
@@ -1230,7 +1409,7 @@ async def update_categorizations(user: AuthenticatedUser = Depends(verify_jwt_to
         updated_count = report_service.update_existing_categorizations()
 
         # Get updated stats
-        threat_stats = report_service.get_threat_type_stats()
+        threat_stats = reader_threat_distribution()
 
         return {
             "message": f"Successfully updated {updated_count} reports",
@@ -1309,11 +1488,11 @@ async def get_analytics(
         ]
 
         # Recent activity
-        recent_reports = report_service.list_reports(
-            limit=10, sort_by="created_at", sort_order="desc", user_id=user_id
+        projected, excluded_count, scan_limited = await recent_report_fields(
+            limit=10, stored_total=total_reports, user_id=user_id
         )
         recent_activity = []
-        for report in recent_reports:
+        for report, fields in projected:
             recent_activity.append(
                 {
                     "id": report["id"],
@@ -1330,11 +1509,9 @@ async def get_analytics(
                         generation_route=report.get("generation_route"),
                     ),
                     "evaluation_status": get_evaluation_status(report),
-                    "review_status": report_response_fields(report)["review_status"],
-                    "analyst_disposition": report_response_fields(report)["analyst_disposition"],
-                    "eligible_for_judgment": report_response_fields(report)[
-                        "eligible_for_judgment"
-                    ],
+                    "review_status": fields["review_status"],
+                    "analyst_disposition": fields["analyst_disposition"],
+                    "eligible_for_judgment": fields["eligible_for_judgment"],
                     "status": get_report_status(report),
                 }
             )
@@ -1385,6 +1562,8 @@ async def get_analytics(
             "route_performance": build_route_performance(records),
             "generation_failure_breakdown": build_generation_failure_breakdown(records),
             "recent_activity": recent_activity,
+            "recent_activity_excluded_count": excluded_count,
+            "recent_activity_scan_limited": scan_limited,
         }
 
     except Exception as e:
@@ -1413,7 +1592,7 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
         )
 
         # Get threat type distribution
-        threat_stats = report_service.get_threat_type_stats(user_id=user_id)
+        threat_stats = reader_threat_distribution(user_id=user_id)
 
         # Get quality score distribution
         quality_stats = report_service.get_quality_score_distribution(user_id=user_id)
@@ -1436,8 +1615,8 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
         ]
 
         # Get recent activity
-        recent_activity = report_service.list_reports(
-            limit=5, sort_by="created_at", sort_order="desc", user_id=user_id
+        projected, excluded_count, scan_limited = await recent_report_fields(
+            limit=5, stored_total=total_reports, user_id=user_id
         )
 
         return {
@@ -1466,13 +1645,15 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
                     "created_at": r["created_at"],
                     "quality_score": r.get("quality_score"),
                     "evaluation_status": get_evaluation_status(r),
-                    "review_status": report_response_fields(r)["review_status"],
-                    "analyst_disposition": report_response_fields(r)["analyst_disposition"],
-                    "eligible_for_judgment": report_response_fields(r)["eligible_for_judgment"],
+                    "review_status": fields["review_status"],
+                    "analyst_disposition": fields["analyst_disposition"],
+                    "eligible_for_judgment": fields["eligible_for_judgment"],
                     "status": get_report_status(r),
                 }
-                for r in recent_activity
+                for r, fields in projected
             ],
+            "recent_activity_excluded_count": excluded_count,
+            "recent_activity_scan_limited": scan_limited,
         }
 
     except Exception as e:

@@ -166,6 +166,7 @@ function ReportsWorkspace() {
   const activeFilterCount = countActiveReportFilters(filters);
   const hasActiveFilters = activeFilterCount > 0;
   const totalReports = reportsData?.pagination.total ?? 0;
+  const excludedOnPage = reportsData?.pagination.excluded_on_page ?? 0;
   const pageStart = reportsData ? ((reportsData.pagination.page - 1) * reportsData.pagination.limit) + 1 : 0;
   const pageEnd = reportsData ? Math.min(reportsData.pagination.page * reportsData.pagination.limit, reportsData.pagination.total) : 0;
   const failedRunGroups = useMemo(
@@ -255,7 +256,12 @@ function ReportsWorkspace() {
                 ? filters.reviewState === 'actionable' && (libraryCount?.pagination.total ?? 0) > 0
                   ? 'No reports currently need action'
                   : 'No matching reports'
-                : `Showing ${pageStart}–${pageEnd} of ${totalReports} ${filters.reviewState === 'actionable' ? 'unresolved' : 'matching'} reports`}
+                : reportsData.pagination.total_includes_excluded
+                  ? `Showing ${reportsData.reports.length} ${reportsData.reports.length === 1 ? 'report' : 'reports'} from stored matches ${pageStart}–${pageEnd} of ${totalReports}. Totals include reports excluded by content policy.`
+                  : `Showing ${pageStart}–${pageEnd} of ${totalReports} ${filters.reviewState === 'actionable' ? 'unresolved' : 'matching'} reports`}
+              {excludedOnPage > 0 && (
+                <span className="block">{excludedOnPage} {excludedOnPage === 1 ? 'report' : 'reports'} excluded on this page.</span>
+              )}
             </p>
           )}
 
@@ -276,18 +282,24 @@ function ReportsWorkspace() {
             ) : reportsData?.reports.length === 0 ? (
               <div className="rounded-xl border border-dashed border-zinc-300 px-6 py-12 text-center">
                 <h2 className="text-base font-semibold text-zinc-950">
-                  {filters.reviewState === 'actionable' && (libraryCount?.pagination.total ?? 0) > 0
-                    ? 'The review queue is clear'
-                    : hasActiveFilters
-                      ? 'No matching reports'
-                      : 'No saved reports yet'}
+                  {totalReports > 0
+                    ? 'No reports available on this page'
+                    : filters.reviewState === 'actionable' && (libraryCount?.pagination.total ?? 0) > 0
+                      ? 'The review queue is clear'
+                      : hasActiveFilters
+                        ? 'No matching reports'
+                        : 'No saved reports yet'}
                 </h2>
                 <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-zinc-500">
-                  {filters.reviewState === 'actionable' && (libraryCount?.pagination.total ?? 0) > 0
-                    ? 'Saved reports remain available under All history; no runs currently need retry, evaluation, revision, or analyst judgment.'
-                    : hasActiveFilters
-                      ? 'Adjust the search or filters to broaden the review queue.'
-                      : 'Generate your first report to start building the review queue.'}
+                  {totalReports > 0
+                    ? reportsData.pagination.pages > 1
+                      ? 'Use the page controls to check other saved reports. Reports excluded by content policy are not shown.'
+                      : 'Reports on this page are excluded by content policy. Adjust the search or filters to check other saved reports.'
+                    : filters.reviewState === 'actionable' && (libraryCount?.pagination.total ?? 0) > 0
+                      ? 'Saved reports remain available under All history; no runs currently need retry, evaluation, revision, or analyst judgment.'
+                      : hasActiveFilters
+                        ? 'Adjust the search or filters to broaden the review queue.'
+                        : 'Generate your first report to start building the review queue.'}
                 </p>
                 <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row">
                   {hasActiveFilters && (
@@ -308,33 +320,32 @@ function ReportsWorkspace() {
                     <ReportReviewRecord key={report.id} report={report} />
                   ))}
                 </div>
-
-                {reportsData && reportsData.pagination.pages > 1 && (
-                  <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <span className="text-sm text-zinc-600">
-                      Page {currentPage} of {reportsData.pagination.pages}
-                    </span>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        disabled={currentPage <= 1}
-                        onClick={() => replaceQuery(filters, Math.max(1, currentPage - 1))}
-                        className={`${secondaryButtonClass} disabled:pointer-events-none disabled:opacity-50`}
-                      >
-                        Previous
-                      </button>
-                      <button
-                        type="button"
-                        disabled={currentPage >= reportsData.pagination.pages}
-                        onClick={() => replaceQuery(filters, Math.min(reportsData.pagination.pages, currentPage + 1))}
-                        className={`${secondaryButtonClass} disabled:pointer-events-none disabled:opacity-50`}
-                      >
-                        Next
-                      </button>
-                    </div>
-                  </div>
-                )}
               </>
+            )}
+            {!isLoading && !error && reportsData && reportsData.pagination.pages > 1 && (
+              <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <span className="text-sm text-zinc-600">
+                  Page {currentPage} of {reportsData.pagination.pages}
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={currentPage <= 1}
+                    onClick={() => replaceQuery(filters, Math.max(1, currentPage - 1))}
+                    className={`${secondaryButtonClass} disabled:pointer-events-none disabled:opacity-50`}
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    disabled={currentPage >= reportsData.pagination.pages}
+                    onClick={() => replaceQuery(filters, Math.min(reportsData.pagination.pages, currentPage + 1))}
+                    className={`${secondaryButtonClass} disabled:pointer-events-none disabled:opacity-50`}
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         </div>

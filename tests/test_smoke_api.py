@@ -397,6 +397,15 @@ def test_analyst_disposition_endpoint_appends_current_evaluation_judgment(monkey
         metadata={"role": "analyst"},
     )
     calls = []
+    monkeypatch.setattr(
+        api_main.report_service,
+        "get_report",
+        lambda report_id, include_content=False: {
+            "id": report_id,
+            "user_id": "analyst-user",
+            "tool_name": "Security event analysis",
+        },
+    )
 
     def append_report_disposition(report_id, **kwargs):
         calls.append((report_id, kwargs))
@@ -1272,14 +1281,15 @@ def test_dashboard_analytics_requires_auth_before_storage_read(monkeypatch):
     assert storage_called is False
 
 
-def test_analytics_filters_report_reads_by_authenticated_non_admin(monkeypatch):
+@pytest.mark.parametrize("stored_count", [0, 1])
+def test_analytics_filters_report_reads_by_authenticated_non_admin(monkeypatch, stored_count):
     captured_count_kwargs = []
     captured_analytics_kwargs = {}
     captured_list_kwargs = {}
 
     def count_reports(**kwargs):
         captured_count_kwargs.append(kwargs)
-        return 0
+        return stored_count
 
     def list_analytics_records(**kwargs):
         captured_analytics_kwargs.update(kwargs)
@@ -1301,11 +1311,14 @@ def test_analytics_filters_report_reads_by_authenticated_non_admin(monkeypatch):
 
     response = asyncio.run(api_main.get_analytics("30d", user))
 
-    assert response["overview"]["total_reports"] == 0
+    assert response["overview"]["total_reports"] == stored_count
     assert all(kwargs["user_id"] == "analyst-user" for kwargs in captured_count_kwargs)
     assert captured_analytics_kwargs["user_id"] == "analyst-user"
     assert "created_after" in captured_analytics_kwargs
-    assert captured_list_kwargs["user_id"] == "analyst-user"
+    if stored_count:
+        assert captured_list_kwargs["user_id"] == "analyst-user"
+    else:
+        assert captured_list_kwargs == {}
 
 
 def test_analytics_trends_are_derived_from_persisted_records():
@@ -1460,7 +1473,10 @@ def test_generation_failures_are_clustered_by_typed_cause_stage_route_and_hour()
     ]
 
 
-def test_dashboard_analytics_filters_report_reads_by_authenticated_non_admin(monkeypatch):
+@pytest.mark.parametrize("stored_count", [0, 1])
+def test_dashboard_analytics_filters_report_reads_by_authenticated_non_admin(
+    monkeypatch, stored_count
+):
     captured_count_kwargs = []
     captured_quality_kwargs = {}
     captured_threat_kwargs = {}
@@ -1469,7 +1485,7 @@ def test_dashboard_analytics_filters_report_reads_by_authenticated_non_admin(mon
 
     def count_reports(**kwargs):
         captured_count_kwargs.append(kwargs)
-        return 0
+        return stored_count
 
     def get_quality_score_distribution(**kwargs):
         captured_quality_kwargs.update(kwargs)
@@ -1506,12 +1522,15 @@ def test_dashboard_analytics_filters_report_reads_by_authenticated_non_admin(mon
 
     response = asyncio.run(api_main.get_dashboard_analytics(user))
 
-    assert response["summary"]["total_reports"] == 0
+    assert response["summary"]["total_reports"] == stored_count
     assert response["summary"]["avg_quality_score"] is None
     assert all(kwargs["user_id"] == "analyst-user" for kwargs in captured_count_kwargs)
     assert captured_quality_kwargs["user_id"] == "analyst-user"
     assert captured_threat_kwargs["user_id"] == "analyst-user"
-    assert captured_list_kwargs["user_id"] == "analyst-user"
+    if stored_count:
+        assert captured_list_kwargs["user_id"] == "analyst-user"
+    else:
+        assert captured_list_kwargs == {}
     assert captured_analytics_kwargs["user_id"] == "analyst-user"
 
 

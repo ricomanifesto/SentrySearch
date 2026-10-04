@@ -1,0 +1,110 @@
+"""Fair, bounded object reads with per-operation and page-sized deadlines."""
+
+import asyncio
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from threading import BoundedSemaphore, Lock
+from typing import Callable, Iterable
+
+
+class RetainedContentUnavailable(RuntimeError):
+    """Eligibility cannot be established; this is not a policy exclusion."""
+
+
+class RetainedContentReader:
+    def __init__(self, *, max_workers: int = 4, timeout_seconds: float = 5.0):
+        if timeout_seconds <= 0:
+            raise ValueError("Content read deadline must be positive")
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="content-read"
+        )
+        self._slots = BoundedSemaphore(max_workers)
+        self._admission_lock = Lock()
+        self._waiters: deque[object] = deque()
+        self._max_workers = max_workers
+        self._timeout = timeout_seconds
+
+    async def _acquire_slot(self, deadline: float) -> None:
+        # A lane joins the shared queue for each object, so a large request
+        # cannot overtake other requests already waiting for physical capacity.
+        ticket = object()
+        admitted = False
+        with self._admission_lock:
+            self._waiters.append(ticket)
+        try:
+            while True:
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise RetainedContentUnavailable("Report content temporarily unavailable")
+                with self._admission_lock:
+                    if self._waiters[0] is ticket and self._slots.acquire(blocking=False):
+                        self._waiters.popleft()
+                        admitted = True
+                        return
+                await asyncio.sleep(0.005)
+        finally:
+            if not admitted:
+                with self._admission_lock:
+                    self._waiters.remove(ticket)
+
+    async def read_many(self, keys: Iterable[str], load: Callable[[str], str]) -> dict[str, str]:
+        unique = list(dict.fromkeys(keys))
+        waves = (len(unique) + self._max_workers - 1) // self._max_workers
+        deadline = asyncio.get_running_loop().time() + waves * self._timeout
+
+        async def read(key: str) -> str:
+            # Waiting for another request's SDK calls is independently bounded.
+            admission_deadline = min(deadline, asyncio.get_running_loop().time() + self._timeout)
+            await self._acquire_slot(admission_deadline)
+            try:
+                if asyncio.get_running_loop().time() >= admission_deadline:
+                    raise RetainedContentUnavailable("Report content temporarily unavailable")
+                future = self._executor.submit(load, key)
+            except BaseException:
+                self._slots.release()
+                raise
+            # A request timeout cannot stop a running SDK call. Capacity belongs
+            # to that call until its real completion, not to the awaiting task.
+            future.add_done_callback(lambda _: self._slots.release())
+            wrapped = asyncio.wrap_future(future)
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(wrapped),
+                    timeout=max(
+                        0, min(self._timeout, deadline - asyncio.get_running_loop().time())
+                    ),
+                )
+            except asyncio.TimeoutError as error:
+                raise RetainedContentUnavailable(
+                    "Report content temporarily unavailable"
+                ) from error
+            finally:
+                # Consume late failures after request cancellation without
+                # cancelling the underlying work or releasing its capacity.
+                wrapped.add_done_callback(
+                    lambda done: None if done.cancelled() else done.exception()
+                )
+
+        # Only worker lanes wait for capacity. Later keys start their admission
+        # budget when a lane reaches them, not when the page is first submitted.
+        pending = iter(unique)
+        results: dict[str, str] = {}
+
+        async def worker() -> None:
+            for key in pending:
+                results[key] = await read(key)
+
+        tasks = [asyncio.create_task(worker()) for _ in range(min(len(unique), self._max_workers))]
+        try:
+            await asyncio.gather(*tasks)
+            return {key: results[key] for key in unique}
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+    def close(self) -> None:
+        self._executor.shutdown(wait=False, cancel_futures=True)
+
+
+retained_content_reader = RetainedContentReader()

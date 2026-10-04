@@ -151,6 +151,7 @@ class Report(Base):
             "evaluated_at": self.evaluated_at.isoformat() if self.evaluated_at else None,
             "quality_assessment": self.quality_assessment,
             "web_sources": self.web_sources or [],
+            "search_tags": self.search_tags or [],
             "evidence_admissibility": self.evidence_admissibility,
             "threat_data": self.threat_data,
             "content_preview": _content_preview(self.content_preview, self.threat_data),

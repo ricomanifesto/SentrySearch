@@ -380,9 +380,7 @@ def test_fresh_evaluation_vintage_returns_to_unreviewed_without_deleting_history
         def query(self, *args):
             return FakeQuery()
 
-    projected = ReportStorageService._attach_disposition_state(
-        FakeSession(), [report], include_history=True
-    )[0]
+    projected = ReportStorageService._attach_disposition_state(FakeSession(), [report])[0]
 
     assert projected["analyst_disposition"] == AnalystDisposition.UNREVIEWED.value
     assert projected["current_disposition"] is None
