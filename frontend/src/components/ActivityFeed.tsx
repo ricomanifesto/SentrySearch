@@ -14,6 +14,7 @@ import {
 
 import { api, type ActivityEvent } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/utils';
+import { RecentActivityNotice } from '@/components/RecentActivityNotice';
 
 type ActivityTrailRow = {
   id: string;
@@ -83,14 +84,14 @@ interface ActivityFeedProps {
 }
 
 export function ActivityFeed({ userId, limit = 10, showHeader = true, compact = false }: ActivityFeedProps) {
-  const { data: activities, isLoading, error } = useQuery({
+  const { data: feed, isLoading, error } = useQuery({
     queryKey: ['activities', userId, limit],
     queryFn: () => api.getActivities(),
     refetchInterval: 30000,
   });
 
   // Only ever render real activity. Never fall back to fabricated events.
-  const activityTrailRows = buildActivityTrailRows(activities || []);
+  const activityTrailRows = buildActivityTrailRows(feed?.events || []);
 
   if (error) {
     return (
@@ -113,6 +114,7 @@ export function ActivityFeed({ userId, limit = 10, showHeader = true, compact = 
           </p>
         </div>
       )}
+      {!isLoading && feed?.scanLimited ? <RecentActivityNotice /> : null}
       <div className={showHeader ? 'mt-4' : ''}>
         {isLoading ? (
           <div className="space-y-3" role="status" aria-label="Loading activity trail">
@@ -120,7 +122,7 @@ export function ActivityFeed({ userId, limit = 10, showHeader = true, compact = 
               <div key={i} className="h-12 animate-pulse rounded-lg bg-zinc-100" />
             ))}
           </div>
-        ) : activityTrailRows.length === 0 ? (
+        ) : activityTrailRows.length === 0 && !feed?.scanLimited ? (
           <div className="rounded-lg border border-dashed border-zinc-300 px-4 py-8 text-center">
             <p className="text-sm text-zinc-500">
               Activity appears after a report is generated.

@@ -306,9 +306,9 @@ class SentrySearchAPI {
     return buildReportExport(reports, config);
   }
 
-  async getActivities(): Promise<ActivityEvent[]> {
+  async getActivities(): Promise<{ events: ActivityEvent[]; scanLimited: boolean }> {
     const analytics = await this.getDashboardAnalytics();
-    return analytics.recent_activity.map((report) => ({
+    const events: ActivityEvent[] = analytics.recent_activity.map((report) => ({
       id: report.id,
       type: 'report_created',
       description: report.status === 'failed'
@@ -328,6 +328,7 @@ class SentrySearchAPI {
           ? 'info'
           : 'warning',
     }));
+    return { events, scanLimited: analytics.recent_activity_scan_limited === true };
   }
 }
 

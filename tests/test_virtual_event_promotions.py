@@ -732,7 +732,7 @@ def invoke_retained_admission(endpoint, background, user):
 
 @pytest.mark.parametrize("endpoint", ["evaluation", "worker", "disposition"])
 @pytest.mark.parametrize("surface", ["title", "source", "narrative", "s3"])
-def test_retained_policy_precedes_every_evaluation_and_handoff_side_effect(
+def test_retained_policy_blocks_new_admission_and_retires_already_pending_work(
     monkeypatch, endpoint, surface
 ):
     service, report, evaluator = retained_admission_service(monkeypatch, surface)
@@ -749,12 +749,20 @@ def test_retained_policy_precedes_every_evaluation_and_handoff_side_effect(
     for name in [
         "has_runtime_dispatch",
         "begin_report_evaluation",
-        "claim_report_evaluation",
         "complete_report_evaluation",
-        "fail_report_evaluation",
         "append_report_disposition",
     ]:
         getattr(service, name).assert_not_called()
+    if endpoint == "worker":
+        service.claim_report_evaluation.assert_called_once_with("retained", user_id="reader")
+        service.fail_report_evaluation.assert_called_once_with(
+            "retained",
+            evaluation_lease=service.claim_report_evaluation.return_value,
+            error_code="content_policy_excluded",
+        )
+    else:
+        service.claim_report_evaluation.assert_not_called()
+        service.fail_report_evaluation.assert_not_called()
     evaluator.assert_not_called()
     assert background.tasks == []
     assert report == original
@@ -856,3 +864,57 @@ def test_owned_excluded_report_can_still_be_deleted(monkeypatch):
     asyncio.run(api_main.delete_report("retained", user))
     service.delete_report.assert_called_once_with("retained")
     service.s3_manager.download_content.assert_not_called()
+
+
+def test_excluded_pending_evaluation_releases_queue_for_next_report(
+    monkeypatch, threat_profile_data
+):
+    service = ReportStorageService.__new__(ReportStorageService)
+    service.db_manager = MagicMock()
+    service.s3_manager = Mock()
+    session = service.db_manager.get_session.return_value.__enter__.return_value
+    session.scalar.return_value = datetime.now(timezone.utc)
+    rows = {
+        key: Report(
+            id=key,
+            user_id="reader",
+            status="completed",
+            evaluation_status="pending",
+            tool_name="[Virtual Event] Briefing" if key == "blocked" else "Security analysis",
+            threat_data=deepcopy(threat_profile_data),
+        )
+        for key in ["blocked", "clean"]
+    }
+    query = session.query.return_value
+    for name in ["join", "filter", "order_by", "limit"]:
+        getattr(query, name).return_value = query
+    query.all.side_effect = lambda: [
+        row for row in rows.values() if row.evaluation_status == "pending"
+    ][:1]
+    monkeypatch.setattr(service, "_locked_report", lambda _, report_id: rows[report_id])
+    monkeypatch.setattr(service, "get_report", lambda report_id, **_: rows[report_id].to_dict())
+    monkeypatch.setattr(api_main, "report_service", service)
+    evaluator = Mock(side_effect=RuntimeError("test evaluator unavailable"))
+    monkeypatch.setattr(api_main, "evaluate_saved_report", evaluator)
+    original_profile = deepcopy(rows["blocked"].threat_data)
+    for _ in range(2):
+        for report_id, user_id in service.get_pending_runtime_evaluations(limit=1):
+            api_main.run_report_evaluation(report_id, user_id)
+    assert rows["blocked"].evaluation_error_code == "content_policy_excluded"
+    assert rows["blocked"].evaluation_status == "failed"
+    assert rows["blocked"].evaluation_lease_id is None
+    assert rows["blocked"].threat_data == original_profile
+    assert rows["clean"].evaluation_error_code == "evaluator_unavailable"
+    evaluator.assert_called_once()
+    assert service.get_pending_runtime_evaluations(limit=1) == []
+
+
+def test_excluded_pending_evaluation_cannot_retire_another_workers_lease(monkeypatch):
+    service, report, evaluator = retained_admission_service(monkeypatch, "title")
+    service.claim_report_evaluation.return_value = None
+    original = deepcopy(report)
+    api_main.run_report_evaluation("retained", "reader")
+    service.claim_report_evaluation.assert_called_once_with("retained", user_id="reader")
+    service.fail_report_evaluation.assert_not_called()
+    evaluator.assert_not_called()
+    assert report == original

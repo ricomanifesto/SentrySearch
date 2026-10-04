@@ -1,5 +1,6 @@
 'use client';
 
+import { RecentActivityNotice } from '@/components/RecentActivityNotice';
 import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
@@ -244,6 +245,7 @@ export default function AnalyticsPage() {
             <section className="min-w-0 border-t border-zinc-200 pt-6">
               <h2 className="text-base font-semibold text-zinc-950">Review timeline</h2>
               <p className="mt-1 text-sm text-zinc-500">Recent report activity in this window.</p>
+              {analytics?.recent_activity_scan_limited ? <RecentActivityNotice /> : null}
               <div className="mt-4">
                 {shownRecentActivity.length > 0 ? (
                   <ul className="divide-y divide-zinc-100">
@@ -284,11 +286,11 @@ export default function AnalyticsPage() {
                       </li>
                     ))}
                   </ul>
-                ) : (
+                ) : !analytics?.recent_activity_scan_limited ? (
                   <div className="rounded-lg border border-dashed border-zinc-300 px-4 py-8 text-center">
                     <p className="text-sm text-zinc-500">No recent report activity in this window.</p>
                   </div>
-                )}
+                ) : null}
               </div>
             </section>
 

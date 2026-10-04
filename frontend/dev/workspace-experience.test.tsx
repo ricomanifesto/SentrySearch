@@ -559,3 +559,35 @@ test('a bounded matching export scope reports the records it can package', () =>
   assert.equal(state.packageScope, '5 records matching');
   assert.equal(state.canPrepare, true);
 });
+
+test('activity feed distinguishes an incomplete scan from an empty workspace', async () => {
+  const { ActivityFeed } = await import('../src/components/ActivityFeed');
+  for (const scanLimited of [true, false]) {
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    client.setQueryData(['activities', undefined, 10], { events: [], scanLimited });
+    try {
+      const html = renderToStaticMarkup(<QueryClientProvider client={client}><ActivityFeed /></QueryClientProvider>);
+      if (scanLimited) {
+        assert.match(html, /Recent activity is incomplete/);
+        assert.match(html, /href="\/reports"/);
+        assert.doesNotMatch(html, /Activity appears after a report is generated/);
+      } else {
+        assert.match(html, /Activity appears after a report is generated/);
+        assert.doesNotMatch(html, /Recent activity is incomplete/);
+      }
+    } finally {
+      client.clear();
+    }
+  }
+});
+
+test('activity API preserves scan completeness alongside real events', async () => {
+  const original = api.getDashboardAnalytics;
+  api.getDashboardAnalytics = async () => ({ recent_activity: [], recent_activity_scan_limited: true } as unknown as AnalyticsDashboard);
+  try {
+    const result = await api.getActivities();
+    assert.deepEqual(result, { events: [], scanLimited: true });
+  } finally {
+    api.getDashboardAnalytics = original;
+  }
+});

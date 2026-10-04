@@ -233,6 +233,7 @@ export interface AnalyticsDashboard {
   };
   threat_distribution: Record<string, number>;
   quality_distribution: Array<{ range: string; count: number }>;
+  recent_activity_scan_limited?: boolean;
   recent_activity: Array<{
     id: string;
     tool_name: string;
@@ -287,6 +288,7 @@ export interface AnalyticsData {
     routes: { primary: number; fallback: number; unrecorded: number };
     utc_hours: Record<string, number>;
   }>;
+  recent_activity_scan_limited?: boolean;
   recent_activity: Array<{
     id: string;
     tool_name: string;

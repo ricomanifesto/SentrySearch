@@ -2,6 +2,7 @@ import asyncio
 from copy import deepcopy
 from datetime import datetime, timezone
 from unittest.mock import Mock
+from threading import Event
 
 import pytest
 
@@ -67,6 +68,7 @@ def test_activity_finds_clean_rows_after_multiple_excluded_batches(
         f"clean-{i}" for i in range(min(limit, available))
     ]
     assert result["recent_activity_excluded_count"] == limit * 2
+    assert result["recent_activity_scan_limited"] is False
     assert rows == original
 
 
@@ -125,3 +127,67 @@ def test_backfill_does_not_hide_later_storage_failures(monkeypatch):
         asyncio.run(api.get_dashboard_analytics(USER))
     assert error.value.status_code == 500
     assert service.list_reports.call_count == 2
+
+
+@pytest.mark.parametrize("dashboard", [False, True])
+def test_activity_stops_after_one_hundred_stored_rows(monkeypatch, dashboard):
+    service = Mock()
+    service.count_reports.return_value = 1000
+    service.list_analytics_records.return_value = []
+    service.get_threat_type_stats.return_value = {}
+    service.get_quality_score_distribution.return_value = {}
+    service.list_reports.side_effect = lambda *, limit, offset=0, **_: [
+        {**collection_report(str(i)), "_markdown_s3_key": f"{i}.md"}
+        for i in range(offset, offset + limit)
+    ]
+    service.s3_manager.download_content.return_value = "[Virtual Event] Register now"
+    monkeypatch.setattr(api, "report_service", service)
+    result = asyncio.run(
+        api.get_dashboard_analytics(USER) if dashboard else api.get_analytics("30d", USER)
+    )
+    assert result["recent_activity"] == []
+    assert service.s3_manager.download_content.call_count == 100
+    assert result["recent_activity_excluded_count"] == 100
+    assert result["recent_activity_scan_limited"] is True
+
+
+def test_activity_deadline_cancels_wait_without_releasing_running_object_capacity(monkeypatch):
+    from src.storage.retained_content import RetainedContentReader, RetainedContentUnavailable
+
+    release = Event()
+    calls = []
+    reader = RetainedContentReader(max_workers=4, timeout_seconds=0.06)
+    service = Mock()
+    service.count_reports.return_value = 1000
+    service.list_analytics_records.return_value = []
+    service.get_threat_type_stats.return_value = {}
+    service.get_quality_score_distribution.return_value = {}
+    service.list_reports.side_effect = lambda *, limit, offset=0, **_: [
+        {**collection_report(str(i)), "_markdown_s3_key": f"{i}.md"}
+        for i in range(offset, offset + limit)
+    ]
+
+    def load(key):
+        calls.append(key)
+        release.wait(1)
+        return "Security analysis"
+
+    service.s3_manager.download_content.side_effect = load
+    monkeypatch.setattr(api, "report_service", service)
+    monkeypatch.setattr(api, "retained_content_reader", reader)
+    monkeypatch.setattr(api, "RECENT_ACTIVITY_TIMEOUT_SECONDS", 0.02, raising=False)
+
+    async def check():
+        result = await api.get_dashboard_analytics(USER)
+        assert result["recent_activity"] == []
+        assert result["recent_activity_scan_limited"] is True
+        with pytest.raises(RetainedContentUnavailable):
+            await reader.read_many(["probe"], load)
+        assert len(calls) == 4
+        assert "probe" not in calls
+
+    try:
+        asyncio.run(check())
+    finally:
+        release.set()
+        reader.close()

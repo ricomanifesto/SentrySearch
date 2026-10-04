@@ -1,6 +1,7 @@
 """SentrySearch FastAPI application."""
 
 from contextlib import asynccontextmanager
+import asyncio
 import logging
 import os
 import time
@@ -372,28 +373,46 @@ async def report_collection_fields(
     return projected, excluded_count
 
 
+RECENT_ACTIVITY_SCAN_LIMIT = 100
+RECENT_ACTIVITY_TIMEOUT_SECONDS = 10.0
+
+
 async def recent_report_fields(
     *, limit: int, stored_total: int, user_id: Optional[str]
-) -> tuple[list[tuple[Dict[str, Any], Dict[str, Any]]], int]:
-    """Fill an unpaginated feed; keep stored-page pagination unchanged elsewhere."""
+) -> tuple[list[tuple[Dict[str, Any], Dict[str, Any]]], int, bool]:
+    """Fill a feed within one row/read deadline budget; disclose incomplete scans."""
     visible = []
     excluded_count = 0
     offset = 0
-    # The initial stored count bounds the scan even if new reports arrive.
-    while len(visible) < limit and offset < stored_total:
-        remaining = min(limit - len(visible), stored_total - offset)
+    scan_limit = min(stored_total, RECENT_ACTIVITY_SCAN_LIMIT)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + RECENT_ACTIVITY_TIMEOUT_SECONDS
+    while len(visible) < limit and offset < scan_limit:
+        if loop.time() >= deadline:
+            return visible, excluded_count, True
+        remaining = min(limit - len(visible), scan_limit - offset)
         rows = report_service.list_reports(
             limit=remaining, offset=offset, sort_by="created_at", sort_order="desc", user_id=user_id
         )
         if not rows:
-            break
-        projected, excluded = await report_collection_fields(rows)
+            return visible, excluded_count, False
+        time_left = deadline - loop.time()
+        if time_left <= 0:
+            return visible, excluded_count, True
+        try:
+            projected, excluded = await asyncio.wait_for(
+                report_collection_fields(rows), timeout=time_left
+            )
+        except TimeoutError:
+            # Cancellation stops awaiting the batch, not the SDK calls that still
+            # own physical capacity. Only fully validated batches are returned.
+            return visible, excluded_count, True
         visible.extend(projected)
         excluded_count += excluded
         offset += len(rows)
         if len(rows) < remaining:
-            break
-    return visible, excluded_count
+            return visible, excluded_count, False
+    return visible, excluded_count, len(visible) < limit and offset < stored_total
 
 
 def reader_threat_distribution(user_id: Optional[str] = None) -> Dict[str, int]:
@@ -1104,6 +1123,13 @@ def run_report_evaluation(report_id: str, user_id: str) -> None:
         report = load_checked_report(report, report_service.s3_manager.download_content)
     except ContentPolicyExclusion:
         logger.info("Report %s is unavailable for evaluation under content policy", report_id)
+        # This job was already queued. Retire it through the existing lease so
+        # an excluded oldest-first row cannot starve later pending evaluations.
+        evaluation_lease = report_service.claim_report_evaluation(report_id, user_id=user_id)
+        if evaluation_lease is not None:
+            report_service.fail_report_evaluation(
+                report_id, evaluation_lease=evaluation_lease, error_code="content_policy_excluded"
+            )
         return
     except Exception:
         # Admission may already have queued a legacy job. Release it through the
@@ -1117,7 +1143,7 @@ def run_report_evaluation(report_id: str, user_id: str) -> None:
                 error_code="report_content_unavailable",
             )
         return
-    # Policy rejection must precede any lease or evaluator failure transition.
+    # Only policy-admitted content may reach the evaluator.
     evaluation_route: Dict[str, Any] | None = None
     assessment: Dict[str, Any] | None = None
     evaluation_lease = report_service.claim_report_evaluation(report_id, user_id=user_id)
@@ -1462,7 +1488,7 @@ async def get_analytics(
         ]
 
         # Recent activity
-        projected, excluded_count = await recent_report_fields(
+        projected, excluded_count, scan_limited = await recent_report_fields(
             limit=10, stored_total=total_reports, user_id=user_id
         )
         recent_activity = []
@@ -1537,6 +1563,7 @@ async def get_analytics(
             "generation_failure_breakdown": build_generation_failure_breakdown(records),
             "recent_activity": recent_activity,
             "recent_activity_excluded_count": excluded_count,
+            "recent_activity_scan_limited": scan_limited,
         }
 
     except Exception as e:
@@ -1588,7 +1615,7 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
         ]
 
         # Get recent activity
-        projected, excluded_count = await recent_report_fields(
+        projected, excluded_count, scan_limited = await recent_report_fields(
             limit=5, stored_total=total_reports, user_id=user_id
         )
 
@@ -1626,6 +1653,7 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
                 for r, fields in projected
             ],
             "recent_activity_excluded_count": excluded_count,
+            "recent_activity_scan_limited": scan_limited,
         }
 
     except Exception as e:
