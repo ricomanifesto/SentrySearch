@@ -1,5 +1,59 @@
 # Image security remediation — October 6, 2026
 
+## Current candidate: OS-package minimization
+
+The latest ARM64 image is
+`sha256:275b21b7f3ffebfd6b257bff20626c2ed09f8b59dbd17fd77c2f42737ce068f1`
+(a local image ID, not a published manifest). It preserves Python 3.11.17 and the
+existing dependency lock, using pinned distroless `cc-debian13:nonroot` for the
+core and selected native-library payloads from the pinned official Python donor.
+This is a project-maintained composition, not an upstream Python 3.11 distroless
+distribution. The build rejects mismatched core-library versions. Package
+metadata, original checksums and licenses remain; removed command matches are
+reviewed, not hidden through scanner suppression.
+
+Trivy 0.75.0, database updated `2026-10-06T19:11:49Z`, scanned this exact image
+with the same all-severity/no-ignore/offline/telemetry-disabled settings below.
+
+| Local ARM64 Search candidate | Debian packages | Critical | High | Medium | Low | Unknown |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Prior Trixie remediation | 87 | 0 | 44 | 58 | 61 | 2 |
+| Minimized runtime | 29 | 0 | 7 | 27 | 14 | 1 |
+
+The 49 remaining occurrences represent 39 distinct advisories. No Python-package
+findings remain; the unchanged companion runtime image rescans with zero findings.
+No remaining match supplies a fixed version in this scan. **Release remains held.**
+
+| Residual group | Evidence and disposition |
+| --- | --- |
+| Four util-linux high advisories, four matches on `libuuid1` | `mount` and `nsenter` are absent. [76642](https://security-tracker.debian.org/tracker/CVE-2026-76642), [78408](https://security-tracker.debian.org/tracker/CVE-2026-78408), [78409](https://security-tracker.debian.org/tracker/CVE-2026-78409), [78410](https://security-tracker.debian.org/tracker/CVE-2026-78410) concern those commands, not UUID generation. Candidate for an explicit narrow component-absence disposition; not a patched source package or granted waiver. |
+| ncurses high, three matches | [CVE-2025-69720](https://security-tracker.debian.org/tracker/CVE-2025-69720) concerns absent `infocmp`. Libraries/terminfo remain for Python curses/readline. The distinct low-severity termcap parser finding remains a library concern; command absence does not cover it. |
+| liblzma, scanner UNKNOWN | [Upstream GHSA-5qpq-xqfv-j9pg](https://github.com/tukaani-project/xz/security/advisories/GHSA-5qpq-xqfv-j9pg) is **HIGH**, fixed in 5.8.4; installed Debian `5.8.1-1+deb13u1` remains flagged. It requires repeated decoder initialization after an actual allocation failure for certain non-XZ formats. Ordinary high-level Python decoding creates fresh objects, but explicit repeated `LZMADecompressor.__init__` can reuse state. No application exploit was demonstrated; this is not evidence of safety. Resolve through a supported fix or explicit release-owner risk decision. |
+| Medium/low native-library findings | Retained libc, SQLite Session, zlib, libstdc++ and ncurses code needs bounded caller/build/range review. SQLite Session is enabled; absence of the named `apply_v3` symbol does not waive other changeset findings. The zlib `gz_vacate` version-range disagreement remains open. Power8-specific glibc evidence does not apply to this ARM64 image; missing nscd/bzip2recover/zipfile components are narrow findings only. |
+
+The final image passes 13 service-image and 7 named-volume cases: TLS/auth,
+least-privilege release separation, init ownership, shutdown, drain/recovery,
+absence of shell/package/admin tooling, native Python/spawn compatibility, and
+loaded-library package checksums/licenses. A negative control hides only package
+metadata and proves the provenance guard fails. The tool-absence guard first
+failed on the prior image. Independent final-image inspection resolved all 33
+wheel ELF dependency graphs and imported 76 native stdlib extensions; optional
+`_tkinter` is absent in both old and new images because Tcl/Tk was already absent.
+CA trust, legacy OpenSSL provider, NSS and timezone checks pass. The setup gate
+still passes 725 tests with lint, formatting, types and API smoke.
+
+Stop general minimization at this boundary. Do not remove working native stdlib
+features, mix Debian unstable packages, overlay core TLS/libc libraries, or erase
+metadata to reach zero. Next resolve liblzma and the remaining narrow dispositions,
+then finish the environment-specific staging contract. Refresh the exact image
+scan before any release decision. amd64 execution, cloud IAM/network/probes,
+real providers, registry provenance and production compatibility remain unproven.
+
+## Historical dependency/base remediation receipt
+
+The following records the preceding Trixie candidate, superseded by the exact
+image and residual-risk review above. Its counts and next step are historical.
+
 The local ARM64 candidate has **zero critical and zero Python-package findings**
 in the recorded scan. It is **not release-approved**: 44 high OS package/advisory
 matches remain, representing eight distinct advisories. No scanner suppression,

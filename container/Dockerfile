@@ -13,6 +13,7 @@
 # dev/check_service_images.py.
 ARG TARGETARCH
 ARG PYTHON_IMAGE=docker.io/library/python:3.11-slim-trixie@sha256:0dd364ba7e10242f07755449e3a3d0e35f9efd987952737b90def6709ab0c5ce
+ARG RUNTIME_IMAGE=gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2
 
 # tini v0.19.0 static release assets; checksums match the release's .sha256sum files.
 FROM scratch AS init-amd64
@@ -22,6 +23,7 @@ FROM scratch AS init-arm64
 ADD --checksum=sha256:eae1d3aa50c48fb23b8cbdf4e369d0910dfc538566bfd09df89a774aa84a48b9 \
     https://github.com/krallin/tini/releases/download/v0.19.0/tini-static-arm64 /tini
 FROM init-${TARGETARCH} AS init
+FROM ${RUNTIME_IMAGE} AS runtime-base
 
 FROM ${PYTHON_IMAGE} AS build
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never \
@@ -41,21 +43,67 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-install-project && \
     rm -f /app/.venv/.lock && chmod -R go-w /app/.venv
 
-FROM ${PYTHON_IMAGE}
+FROM ${PYTHON_IMAGE} AS runtime-files
+COPY --from=runtime-base /var/lib/dpkg/status.d /tmp/base-status
+# These exact revisions were reviewed together. Fail rather than overlay libc or
+# silently mix different native TLS/loader versions when either pin changes.
+RUN set -eu; for package in libc6 libssl3t64 libgcc-s1 libstdc++6 zlib1g libzstd1; do \
+    expected="$(sed -n 's/^Version: //p' "/tmp/base-status/$package")"; \
+    test "$(dpkg-query -W -f='${Version}' "$package")" = "$expected"; \
+    done
 # Dependency installation belongs only in the build stage. Remove global
 # installers, their vendored libraries and ensurepip's bundled wheels, not just
 # their entry points. The application venv does not include packaging tools.
 RUN python -m pip uninstall --yes pip setuptools wheel && \
-    rm -r /usr/local/lib/python3.11/ensurepip && \
-    find /usr -xdev -type f \( -perm -4000 -o -perm -2000 \) -exec chmod a-s '{}' +
-# No role needs setuid/setgid helpers. The explicit volume-init root override
-# does not depend on them; package metadata remains intact for scanner review.
+    rm -r /usr/local/lib/python3.11/ensurepip /usr/local/include /usr/local/lib/pkgconfig && \
+    rm /usr/local/bin/python3-config /usr/local/bin/python3.11-config
+# Preserve whole native-library packages required by the existing Python stdlib,
+# including UUID, curses and DBM. Do not copy the builder's libc/OpenSSL over the
+# distroless base. The base owns those, C++ libs, NSS, netbase, CA and timezone.
+# Keep package provenance and licenses so minimization never hides scan matches.
+RUN set -eu; \
+    mkdir -p /runtime-extra/var/lib/dpkg/status.d; \
+    for package in libbz2-1.0 libcrypt1 libdb5.3t64 libffi8 libgdbm6t64 \
+        liblzma5 libncursesw6 libreadline8t64 libsqlite3-0 libtinfo6 libuuid1 \
+        readline-common ncurses-base openssl-provider-legacy openssl; do \
+        dpkg-query --listfiles "$package" > /tmp/package-listed; \
+        : > /tmp/package-files; \
+        while IFS= read -r path; do \
+            if [ -e "$path" ] || [ -L "$path" ]; then \
+                printf '%s\n' "$path" >> /tmp/package-files; \
+            else \
+                case "$path" in /usr/share/doc/*|/usr/share/man/*|/usr/share/info/*|/usr/share/lintian/*) ;; \
+                    *) printf 'Missing package runtime file: %s\n' "$path" >&2; exit 1 ;; esac; \
+            fi; \
+        done < /tmp/package-listed; \
+        test -f "/usr/share/doc/$package/copyright"; \
+        tar --create --no-recursion --verbatim-files-from \
+            --files-from=/tmp/package-files --file=/tmp/package.tar; \
+        tar --extract --file=/tmp/package.tar --directory=/runtime-extra; \
+        dpkg-query --status "$package" > "/runtime-extra/var/lib/dpkg/status.d/$package"; \
+        binary_package="$(dpkg-query -W -f='${binary:Package}' "$package")"; \
+        cp "/var/lib/dpkg/info/$binary_package.md5sums" \
+            "/runtime-extra/var/lib/dpkg/status.d/$package.md5sums"; \
+    done; \
+    rm /runtime-extra/usr/bin/openssl /runtime-extra/usr/bin/c_rehash \
+        /runtime-extra/usr/lib/ssl/misc/CA.pl /runtime-extra/usr/lib/ssl/misc/tsget.pl \
+        /runtime-extra/usr/lib/ssl/misc/tsget
+# The donor already prunes changelogs/manpages. Preserve all remaining package
+# files except OpenSSL CLI/Perl helpers: only config, providers and licenses are
+# needed at runtime. Keep its package metadata too; scanners may overmatch the
+# absent commands, which requires evidence review rather than suppression.
 # Generation writes process-local traces and metrics relative to the working
 # directory. Give the service a private scratch directory instead of /app.
 RUN groupadd --system --gid 10001 sentrysearch && \
     useradd --system --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent \
         --shell /usr/sbin/nologin sentrysearch && \
     install -d -o 10001 -g 10001 -m 0700 /var/lib/sentrysearch
+
+FROM runtime-base
+COPY --from=runtime-files /runtime-extra/ /
+COPY --from=runtime-files /usr/local/ /usr/local/
+COPY --from=runtime-files /etc/passwd /etc/group /etc/
+COPY --from=runtime-files /var/lib/sentrysearch /var/lib/sentrysearch
 # Root-owned application files. Only service and bootstrap entry points are copied from
 # dev/; test tools, fixtures, the frontend, and local env files are excluded.
 COPY --from=init --chmod=0755 /tini /usr/local/bin/tini
@@ -77,3 +125,5 @@ USER 10001:10001
 # tini is PID 1: it forwards signals to the selected role's main process only and
 # reaps orphaned descendants. The worker supervisor owns its child's drain.
 ENTRYPOINT ["/usr/local/bin/tini", "--"]
+# Distroless has no default role; never inherit a command from a future base.
+CMD []

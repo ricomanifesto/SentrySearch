@@ -499,6 +499,201 @@ def test_release_image_has_no_installers_or_vendored_build_tools():
         assert result.returncode == 0, result.stderr
 
 
+def test_release_image_has_no_shell_package_manager_or_os_build_utilities():
+    # Inspect runnable tools rather than distribution names or Dockerfile text.
+    # Python remains an intentional execution surface; this is minimization,
+    # not a claim that the container cannot execute arbitrary application code.
+    script = r"""
+import os, pathlib, re, shutil
+forbidden = {
+    'sh', 'bash', 'dash', 'ash', 'zsh', 'ksh', 'csh', 'tcsh', 'fish', 'busybox',
+    'apt', 'apt-get', 'apt-cache', 'dpkg', 'dpkg-deb', 'rpm', 'yum', 'dnf', 'apk',
+    'pip', 'pip3', 'uv', 'conda', 'mamba', 'mount', 'umount', 'nsenter', 'unshare',
+    'infocmp', 'tic', 'tput', 'perl', 'cp', 'tar', 'gcc', 'g++', 'cc', 'c++',
+    'make', 'cmake', 'ninja', 'ld', 'as', 'ar', 'pkg-config', 'curl', 'wget',
+    'git', 'rsync', 'ssh', 'scp', 'find', 'sed', 'awk', 'grep',
+}
+present = {name for name in forbidden if shutil.which(name)}
+# Standard executable directories cover off-PATH helpers and version-suffixed
+# tools without requiring any particular package manager or base filesystem.
+directories = set(os.get_exec_path()) | {'/bin', '/sbin', '/usr/bin', '/usr/sbin',
+    '/usr/local/bin', '/usr/local/sbin', '/busybox'}
+versioned = re.compile(r'(?:perl[0-9.]+|(?:gcc|g\+\+|cc|c\+\+)-[0-9.]+|python[0-9.]*-config)')
+for directory in directories:
+    path = pathlib.Path(directory)
+    if path.is_dir():
+        for candidate in path.iterdir():
+            if candidate.name in forbidden or versioned.fullmatch(candidate.name):
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    present.add(candidate.name)
+assert not present, sorted(present)
+print('OS utility minimization verified')
+"""
+    result = docker(
+        "run",
+        "--rm",
+        "--network=none",
+        "--read-only",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges",
+        SEARCH_IMAGE,
+        "python",
+        "-c",
+        script,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_release_image_preserves_native_python_and_spawn_compatibility():
+    # No host mounts, external endpoints, database or terminal are involved.
+    # This exercises native libraries that can disappear in a minimized rootfs,
+    # not merely import names or copies of the image-build dependency list.
+    script = """
+import bz2, ctypes, curses, hashlib, ipaddress, lzma, multiprocessing
+import readline, socket, sqlite3, ssl, uuid, zlib
+from cryptography.hazmat.primitives import hashes
+from psycopg import pq
+import psycopg_binary
+
+payload = b'disposable native-library fixture' * 4
+for codec in (bz2, lzma, zlib):
+    assert codec.decompress(codec.compress(payload)) == payload
+with sqlite3.connect(':memory:') as database:
+    assert database.execute('select 6 * 7').fetchone() == (42,)
+libc = ctypes.CDLL(None)
+libc.strlen.argtypes = [ctypes.c_char_p]
+libc.strlen.restype = ctypes.c_size_t
+assert libc.strlen(b'native') == 6
+assert readline.get_current_history_length() >= 0
+assert curses.version
+identifier = uuid.uuid4()
+assert identifier.version == 4 and uuid.UUID(str(identifier)) == identifier
+addresses = socket.getaddrinfo('localhost', 0, type=socket.SOCK_STREAM)
+assert addresses and all(ipaddress.ip_address(item[4][0]).is_loopback for item in addresses)
+assert ssl.create_default_context().cert_store_stats()['x509_ca'] > 0
+digest = hashes.Hash(hashes.SHA256())
+digest.update(payload)
+assert digest.finalize() == hashlib.sha256(payload).digest()
+assert pq.version() > 0
+
+# The worker's spawn mode needs an executable interpreter and working handle
+# transfer. A real spawned process sends over a pipe without a shell/temp file.
+context = multiprocessing.get_context('spawn')
+receiver, sender = context.Pipe(duplex=False)
+child = context.Process(target=sender.send, args=('spawn-compatible',))
+try:
+    child.start()
+    sender.close()
+    assert receiver.poll(10), 'spawned child did not respond'
+    assert receiver.recv() == 'spawn-compatible'
+    child.join(timeout=10)
+    assert child.exitcode == 0
+finally:
+    if child.is_alive():
+        child.terminate()
+        child.join(timeout=5)
+    receiver.close()
+    sender.close()
+print('native Python and spawn compatibility verified')
+"""
+    result = docker(
+        "run",
+        "--rm",
+        "--network=none",
+        "--read-only",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges",
+        SEARCH_IMAGE,
+        "python",
+        "-c",
+        script,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("hide_inventory", [False, True], ids=["intact", "missing-inventory"])
+def test_loaded_system_libraries_retain_package_provenance(hide_inventory):
+    # Derive the checked libraries from actual mappings, not a copied package
+    # list. Python itself and wheel-bundled libraries have separate provenance.
+    script = r"""
+import bz2, ctypes, curses, dbm.gnu, hashlib, json, lzma, pathlib, readline
+import re, sqlite3, ssl, zlib, _dbm, _uuid
+from cryptography.hazmat.primitives import hashes
+from psycopg import pq
+
+ssl.create_default_context()
+hashes.Hash(hashes.SHA256()).finalize()
+assert pq.version() > 0
+loaded = set()
+for line in pathlib.Path('/proc/self/maps').read_text().splitlines():
+    fields = line.split(maxsplit=5)
+    if len(fields) != 6 or not fields[5].startswith('/'):
+        continue
+    path = pathlib.Path(fields[5]).resolve()
+    if str(path).startswith(('/usr/local/', '/app/.venv/')):
+        continue
+    if re.search(r'\.so(?:\.|$)', path.name):
+        assert path.is_file(), f'mapped native file missing: {path}'
+        loaded.add(path)
+assert loaded, 'no system native libraries were inspected'
+
+inventory = pathlib.Path('/var/lib/dpkg/status.d')
+assert inventory.is_dir(), 'native package inventory missing'
+owners = {}
+for status in inventory.iterdir():
+    if not status.is_file() or status.name.endswith('.md5sums'):
+        continue
+    fields = {}
+    for line in status.read_text().splitlines():
+        if line and not line[0].isspace() and ': ' in line:
+            key, value = line.split(': ', 1)
+            fields[key] = value
+    assert all(fields.get(key) for key in ('Package', 'Version', 'Architecture')), status.name
+    manifest = status.with_name(status.name + '.md5sums')
+    if not manifest.is_file():
+        continue
+    for line in manifest.read_text().splitlines():
+        digest, relative = line.split(maxsplit=1)
+        path = (pathlib.Path('/') / relative).resolve()
+        if path in loaded:
+            assert re.fullmatch('[0-9a-f]{32}', digest), manifest.name
+            actual = hashlib.md5(path.read_bytes(), usedforsecurity=False).hexdigest()
+            assert actual == digest, f'native package checksum mismatch: {path}'
+            license_file = pathlib.Path('/usr/share/doc') / fields['Package'] / 'copyright'
+            assert license_file.read_bytes(), f'package copyright missing: {fields["Package"]}'
+            owners[path] = fields['Package']
+missing = loaded - owners.keys()
+assert not missing, 'native package checksum missing: ' + ', '.join(map(str, sorted(missing)))
+print(json.dumps({'mapped_system_libraries': len(loaded), 'packages': sorted(set(owners.values()))}))
+"""
+    # A fresh empty tmpfs masks metadata only for this negative-control container;
+    # the image and native libraries remain untouched, with no host files mounted.
+    options = ("--tmpfs", "/var/lib/dpkg/status.d:mode=0755") if hide_inventory else ()
+    result = docker(
+        "run",
+        "--rm",
+        "--network=none",
+        "--read-only",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges",
+        *options,
+        SEARCH_IMAGE,
+        "python",
+        "-c",
+        script,
+        check=False,
+    )
+    if hide_inventory:
+        assert result.returncode != 0
+        assert "native package checksum missing" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        receipt = json.loads(result.stdout)
+        assert receipt["mapped_system_libraries"] > 0 and receipt["packages"]
+
+
 def test_invalid_configuration_fails_closed_without_exposing_secrets(stack: Stack):
     plaintext = {**stack.product_env(), "ENVIRONMENT": "production", "DB_SSLMODE": "disable"}
     plaintext.pop("DB_SSLROOTCERT")

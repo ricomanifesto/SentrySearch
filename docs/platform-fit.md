@@ -133,7 +133,9 @@ cryptography and urllib3, plus base-image packaging dependencies and OS findings
 need a bounded dependency/base review and rescan before publication or deployment.
 Do not suppress all OS findings or infer a live service's exposure from this image.
 
-The subsequent [dependency/base remediation](image-security.md) clears critical
-and Python-package findings after a rebuild and rescan. It retains 44 high OS
-package matches across eight advisories; publication/deployment remain held.
+The subsequent [dependency/base remediation and OS minimization](image-security.md)
+clears critical and Python-package findings and reduces Debian packages to 29.
+The exact rebuilt image retains 7 high OS matches across five advisories, plus
+lower/unknown findings. The liblzma UNKNOWN match has an upstream HIGH advisory;
+publication/deployment remain held for explicit residual-risk resolution.
 Use that newer exact-image receipt when continuing, not the historical counts above.

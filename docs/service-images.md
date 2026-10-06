@@ -15,7 +15,8 @@ so it cannot replace that build implicitly.
 docker build --file container/Dockerfile --tag sentrysearch:local .
 ```
 
-Inputs are pinned: the multi-architecture Python 3.11 base image by digest, the
+Inputs are pinned: the multi-architecture Python 3.11 donor and distroless
+`cc-debian13:nonroot` runtime images by digest, the
 build-only `uv` installer by PyPI wheel hashes, the runtime dependencies by
 `uv.lock` (`uv sync --locked --no-dev`), and the static `tini` v0.19.0 init by
 SHA-256 for `amd64` and `arm64`. Those checksums match the release's published
@@ -26,6 +27,17 @@ the Dockerfile pins. Follow [upstream signature verification](https://github.com
 when changing either binary. Update a pin deliberately and rerun the proof below.
 Image digests are not bit-for-bit
 reproducible across builds.
+
+The runtime contains no shell, package manager or administrative/build commands.
+It keeps the existing Python interpreter/stdlib, locked application environment,
+and required native-library package files. Distroless owns libc, core OpenSSL,
+C++ runtime, NSS, CA trust and timezone data; the donor supplies the remaining
+native stdlib libraries and OpenSSL configuration/legacy provider, without its
+CLI or Perl helpers. Core package revisions must match exactly or the build fails.
+Original package metadata, checksums and licenses remain for scanning and review;
+this partial payload is not an apt-managed installation. The project owns testing
+this composition when either base pin changes; an upstream Python version upgrade
+is a separate decision. Use exec-form Python commands, never shell-form probes.
 
 `container/Dockerfile.dockerignore` admits only `pyproject.toml`, `uv.lock`,
 `.python-version`, `run_api.py`, `src/`, `certs/`, and the three explicit service
@@ -151,6 +163,10 @@ It proves:
   application files are root-owned; the image has no default command, baked
   configuration, or `.env` file; and the process tree runs as UID 10001 under
   `tini`;
+- shell/package/admin tool absence, native compression/SQLite/TLS/curses/readline
+  and multiprocessing-spawn compatibility, plus package checksums and licenses
+  for actually loaded system libraries; a metadata-masking negative control
+  proves the provenance assertion detects missing inventory;
 - the release job succeeds with the schema-owner role, is idempotent, and is
   rejected for the application role; the application role passes the read-only
   check after grants and cannot create tables;
