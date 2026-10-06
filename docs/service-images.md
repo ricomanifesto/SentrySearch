@@ -28,7 +28,7 @@ Image digests are not bit-for-bit
 reproducible across builds.
 
 `container/Dockerfile.dockerignore` admits only `pyproject.toml`, `uv.lock`,
-`.python-version`, `run_api.py`, `src/`, `certs/`, and the two release entry
+`.python-version`, `run_api.py`, `src/`, `certs/`, and the three explicit service
 points from `dev/`. Tests, fixtures, the frontend, Terraform, and `.env` files
 never enter the build context. Behind a TLS-intercepting build proxy, pass its
 complete PEM trust bundle as `--secret id=build_ca,src=<bundle>`; it is used only
@@ -44,8 +44,9 @@ The image has no default command. Each service selects exactly one role:
 | Worker | `python -m dev.run_runtime_worker --health-port 8081` | application | runtime endpoint, trust, and distinct producer/worker tokens; OpenRouter; S3 |
 | Release job | `python -m dev.migrate_storage` | schema owner | none |
 | Release check | `python -m dev.migrate_storage --check` | application | none |
+| Volume initializer | `python -m dev.prepare_service_volumes ...` | none | explicit material profile/version; root only for fresh-volume ownership |
 
-All roles use the explicit `DB_*`, `ENVIRONMENT`, and `AWS_*` settings described
+Application and database release roles use the explicit `DB_*`, `ENVIRONMENT`, and `AWS_*` settings described
 in [the storage release contract](storage-release.md), and the admission and
 runtime settings in [admission and transport](runtime-admission.md). The image
 sets `PYTHON_DOTENV_DISABLED=1`; configuration comes only from the service
@@ -77,12 +78,14 @@ containing that grant script when running the proof.
 The API writes dispatch intent to the product database; it never calls the
 runtime and must not receive runtime tokens. Release credentials are supplied
 only to the one-shot release job. Runtime tokens are credentials with their full
-configured authority, so do not reuse them for other services or probes.
+configured authority, so do not reuse them for other services. A runtime health
+probe needs its own restricted credential and still has that credential's API
+authority; it is not a special health-only role.
 
 ## Process contract
 
 `tini` is PID 1. It forwards signals only to the selected role's main process
-and reaps orphaned descendants. Containers run as UID/GID `10001` with a
+and reaps orphaned descendants. Application and release containers run as UID/GID `10001` with a
 read-only-compatible root filesystem. Application code and dependencies in
 `/app` are owned by root and not writable by the service user.
 
@@ -123,6 +126,11 @@ platform; the supervisor does not restart itself.
 
 Platform-specific probe, restart, and termination settings belong to the
 deployment-target decision; this document does not select a platform.
+
+The [local AWS platform-fit proof](platform-fit.md) adds a root-only one-shot
+initializer, strict file-secret profiles, and real named-volume lifecycle tests.
+It exercises a Fargate-shaped filesystem contract without deploying anything.
+The initializer exits before application startup, which depends on its success.
 
 ## Local proof
 
@@ -165,3 +173,12 @@ It does not prove a registry, a target platform's probes or grace periods,
 resource limits, real provider or S3 behavior, certificate rotation, real
 credentials, network policy, or production data migration. Those remain gated
 by the deployment, canary, and rollback stages.
+
+### Image release gate
+
+Passing lifecycle tests is not release approval. Generate an SBOM and scan the
+exact intended image digest, review dependency/base findings and retain their
+dispositions before publishing. The October 6, 2026 local platform-fit candidate
+has unresolved critical/high Search-image findings; see
+[the platform-fit release hold](platform-fit.md#draft-task-contract-and-release-hold).
+No image publication or deployment is established by the local tests.

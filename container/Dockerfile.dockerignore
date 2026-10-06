@@ -8,6 +8,7 @@
 !src/**
 !dev/run_runtime_worker.py
 !dev/migrate_storage.py
+!dev/prepare_service_volumes.py
 !certs/**
 !container/build-requirements.txt
 **/__pycache__

@@ -465,6 +465,7 @@ def test_image_contract_ships_only_root_owned_release_files():
     expected = {f"app/{path}" for path in [*tracked, "run_api.py"]} | {
         "app/dev/run_runtime_worker.py",
         "app/dev/migrate_storage.py",
+        "app/dev/prepare_service_volumes.py",
     }
     shipped = {name for name in members if name.startswith("app/") and "/.venv/" not in name}
     assert shipped == expected
@@ -658,6 +659,8 @@ def test_busy_worker_drain_deadline_kills_child_and_restart_recovers_lease(stack
     docker("kill", "--signal", "SIGTERM", first)
     draining = local_probe(first, "/readyz")
     assert draining[0] == 503 and draining[1]["draining"], draining
+    # Readiness withdraws admission while the living child is still draining.
+    assert local_probe(first, "/healthz")[0] == 200
     code = int(docker("wait", first, timeout=30).stdout.strip())
     output = logs(first)
     assert code == 124, output

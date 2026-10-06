@@ -63,6 +63,7 @@ Thumbs.db
 !/docs/runtime-admission.md
 !/docs/storage-release.md
 !/docs/service-images.md
+!/docs/platform-fit.md
 backup_*/
 # Legacy main files (keep API files)
 /main.py

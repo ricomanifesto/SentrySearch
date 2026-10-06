@@ -1,10 +1,11 @@
 # syntax=docker/dockerfile:1
 
-# One backend image for three independently run roles. The image has no default
+# One backend image for independently run roles. The image has no default
 # command; each service must select one explicitly (see docs/service-images.md):
 #   API:       python /app/run_api.py
 #   Worker:    python -m dev.run_runtime_worker --health-port 8081
 #   Migration: python -m dev.migrate_storage [--check]
+#   Volume init: python -m dev.prepare_service_volumes ... (explicit root override)
 # Build from the repository root:  docker build -f container/Dockerfile .
 #
 # The multi-architecture base image, the build-only uv installer, and the init
@@ -47,13 +48,13 @@ RUN groupadd --system --gid 10001 sentrysearch && \
     useradd --system --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent \
         --shell /usr/sbin/nologin sentrysearch && \
     install -d -o 10001 -g 10001 -m 0700 /var/lib/sentrysearch
-# Root-owned application files. Only the release entry points are copied from
+# Root-owned application files. Only service and bootstrap entry points are copied from
 # dev/; test tools, fixtures, the frontend, and local env files are excluded.
 COPY --from=init --chmod=0755 /tini /usr/local/bin/tini
 COPY --from=build /app/.venv /app/.venv
 COPY run_api.py /app/
 COPY src /app/src
-COPY dev/run_runtime_worker.py dev/migrate_storage.py /app/dev/
+COPY dev/run_runtime_worker.py dev/migrate_storage.py dev/prepare_service_volumes.py /app/dev/
 COPY certs /app/certs
 # Code imports only from /app; PYTHONSAFEPATH keeps the writable working
 # directory off sys.path so it cannot shadow application modules.
