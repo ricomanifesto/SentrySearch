@@ -1,0 +1,5 @@
+# Build-stage installer only; pip verifies one of these PyPI wheel digests.
+uv==0.12.0 \
+    --hash=sha256:cbff74f884846d794713670faf8abe10db3bd70c43b01e63223f74eb7d958689 \
+    --hash=sha256:effc2de9f044e880306f3c52b048bf24ee4fe63429c82dd6509c9a0f3d1b8f0b \
+    --hash=sha256:c818bb6aead39652e2ad644583fa418ac8d92baf50b4c6f685738bb2598e33bd

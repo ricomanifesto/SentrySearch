@@ -187,9 +187,11 @@ The runner stops its processes and removes its disposable data after execution.
 - Prove authenticated protected transport, secret delivery, and least-privilege
   runtime, product-database, and artifact access in the target environment.
 - Validate the locally tested health, drain, deadlines, and restart behavior in
-  the target platform. Wire alerts for stale backlog samples, missing runs,
-  exhausted evaluation recovery, and terminal-state mismatches. Test the actual
-  platform's termination grace and provider cost controls.
+  the target platform, starting from the packaged process contract in
+  [backend service images](service-images.md). Wire alerts for stale backlog
+  samples, missing runs, exhausted evaluation recovery, and terminal-state
+  mismatches. Test the actual platform's termination grace and provider cost
+  controls.
 - Define retention for unreferenced content without deleting any live artifact.
   This slice does not add automatic object cleanup or alter bucket policies.
 - Run an explicitly approved controlled canary with rollback receipts before

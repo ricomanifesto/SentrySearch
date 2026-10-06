@@ -1,0 +1,16 @@
+# Used only by `docker build -f container/Dockerfile .`; the existing Railway
+# build does not read this file. Allow only image inputs.
+*
+!pyproject.toml
+!uv.lock
+!.python-version
+!run_api.py
+!src/**
+!dev/run_runtime_worker.py
+!dev/migrate_storage.py
+!certs/**
+!container/build-requirements.txt
+**/__pycache__
+**/*.py[cod]
+**/.env
+**/.env.*

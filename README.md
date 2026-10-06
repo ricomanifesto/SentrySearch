@@ -115,6 +115,12 @@ and ambient trust overrides are ignored, and redirects are rejected. These are
 locally tested capabilities, not authorization or evidence of deployed cutover.
 See [admission and transport configuration](docs/runtime-admission.md).
 
+The API, worker, and product release job can also run as separate services from
+one non-root backend image. See [backend service images](docs/service-images.md)
+for build inputs, role commands, credential separation, probes, signal behavior,
+and the local container proof. The image is not published or deployed by this
+repository, and the existing Railway build is unchanged.
+
 Local PostgreSQL/HTTP and HTTPS tests cover overlapping
 writers, immutable artifact references, terminal-state reconciliation, and
 bounded evaluation recovery. Local process tests cover probes, drain, deadlines,
