@@ -444,6 +444,8 @@ def test_image_contract_ships_only_root_owned_release_files():
             members = {}
             with tarfile.open(fileobj=archive) as image:
                 for member in image:
+                    if member.isfile():
+                        assert member.mode & 0o6000 == 0, member.name
                     if member.name == "var/lib/sentrysearch/":
                         assert (member.uid, member.gid, member.mode) == (10001, 10001, 0o700)
                     elif member.name.startswith("var/lib/sentrysearch/"):
@@ -473,6 +475,28 @@ def test_image_contract_ships_only_root_owned_release_files():
         assert members[name] == hashlib.sha256((REPO / name[4:]).read_bytes()).hexdigest(), name
     assert "usr/local/bin/tini" in members
     assert not any(Path(name).name.startswith(".env") for name in members)
+
+
+def test_release_image_has_no_installers_or_vendored_build_tools():
+    # Check the application environment AND the global base interpreter. Removing
+    # a vulnerable vendored copy from only one of them leaves it in the image.
+    for interpreter in ("/app/.venv/bin/python", "/usr/local/bin/python"):
+        result = docker(
+            "run",
+            "--rm",
+            "--network=none",
+            "--read-only",
+            "--cap-drop=ALL",
+            SEARCH_IMAGE,
+            interpreter,
+            "-c",
+            "import importlib.util; "
+            "names=('pip','setuptools','pkg_resources','wheel','ensurepip'); "
+            "present=[name for name in names if importlib.util.find_spec(name)]; "
+            "assert not present, present",
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
 
 
 def test_invalid_configuration_fails_closed_without_exposing_secrets(stack: Stack):

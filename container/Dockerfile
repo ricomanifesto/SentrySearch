@@ -12,7 +12,7 @@
 # binary are pinned by digest. Update them deliberately and rerun
 # dev/check_service_images.py.
 ARG TARGETARCH
-ARG PYTHON_IMAGE=docker.io/library/python:3.11-slim-bookworm@sha256:0a310eeecf4e1f5a0743f9a6520c90c88d089c903ca5fd283f501e3a805f5f89
+ARG PYTHON_IMAGE=docker.io/library/python:3.11-slim-trixie@sha256:0dd364ba7e10242f07755449e3a3d0e35f9efd987952737b90def6709ab0c5ce
 
 # tini v0.19.0 static release assets; checksums match the release's .sha256sum files.
 FROM scratch AS init-amd64
@@ -42,6 +42,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     rm -f /app/.venv/.lock && chmod -R go-w /app/.venv
 
 FROM ${PYTHON_IMAGE}
+# Dependency installation belongs only in the build stage. Remove global
+# installers, their vendored libraries and ensurepip's bundled wheels, not just
+# their entry points. The application venv does not include packaging tools.
+RUN python -m pip uninstall --yes pip setuptools wheel && \
+    rm -r /usr/local/lib/python3.11/ensurepip && \
+    find /usr -xdev -type f \( -perm -4000 -o -perm -2000 \) -exec chmod a-s '{}' +
+# No role needs setuid/setgid helpers. The explicit volume-init root override
+# does not depend on them; package metadata remains intact for scanner review.
 # Generation writes process-local traces and metrics relative to the working
 # directory. Give the service a private scratch directory instead of /app.
 RUN groupadd --system --gid 10001 sentrysearch && \

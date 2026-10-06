@@ -178,7 +178,8 @@ by the deployment, canary, and rollback stages.
 
 Passing lifecycle tests is not release approval. Generate an SBOM and scan the
 exact intended image digest, review dependency/base findings and retain their
-dispositions before publishing. The October 6, 2026 local platform-fit candidate
-has unresolved critical/high Search-image findings; see
-[the platform-fit release hold](platform-fit.md#draft-task-contract-and-release-hold).
+dispositions before publishing. The October 6, 2026 remediation candidate clears
+the earlier critical and Python findings but retains unresolved OS high findings;
+see [the exact scan and release hold](image-security.md). The final stage has no
+Python installers or setuid/setgid files; these constraints have image guards.
 No image publication or deployment is established by the local tests.

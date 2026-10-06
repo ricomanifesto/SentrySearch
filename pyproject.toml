@@ -29,6 +29,17 @@ dev = [
 
 [tool.uv]
 package = false
+# Security floors for transitive auth/transport dependencies. Keep the resolved
+# versions and exported requirements in sync; these are not new application APIs.
+constraint-dependencies = [
+    "anyio>=4.14.2",
+    "cryptography>=50.0.2",
+    "h2>=4.4.1",
+    "hpack>=4.2.0",
+    "multidict>=6.9.1",
+    "pyjwt>=2.15.1",
+    "urllib3>=2.8.0",
+]
 
 [tool.black]
 line-length = 100

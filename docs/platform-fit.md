@@ -125,10 +125,15 @@ read-only roots and scoped task/execution policies. It contains no service,
 network, database, bucket or release-job provisioning. Mocked Terraform validation
 does not establish real IAM enforcement or Fargate acceptance.
 
-The October 6, 2026 local ARM64 Search image scan is **not release-clean**:
+The original October 6, 2026 local ARM64 Search image was **not release-clean**:
 Trivy 0.75.0 reported 4 critical and 64 high package/advisory occurrences,
 including 13 critical/high occurrences with listed Python-package fixes.
 These counts are not proof of exploitability. Application PyJWT, AnyIO,
 cryptography and urllib3, plus base-image packaging dependencies and OS findings,
 need a bounded dependency/base review and rescan before publication or deployment.
 Do not suppress all OS findings or infer a live service's exposure from this image.
+
+The subsequent [dependency/base remediation](image-security.md) clears critical
+and Python-package findings after a rebuild and rescan. It retains 44 high OS
+package matches across eight advisories; publication/deployment remain held.
+Use that newer exact-image receipt when continuing, not the historical counts above.
