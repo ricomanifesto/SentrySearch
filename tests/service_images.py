@@ -288,7 +288,7 @@ def _start_postgres(stack: Stack) -> None:
         == 0,
         container=name,
     )
-    for role in ("runtime_owner", "search_release", "search_app"):
+    for role in ("runtime_owner", "runtime_app", "search_release", "search_app"):
         stack.psql("postgres", f"CREATE ROLE {role} LOGIN PASSWORD '{stack.secrets[role]}'")
     stack.psql("postgres", "CREATE DATABASE sentryruntime OWNER runtime_owner")
     for database in ("sentrysearch", "release_proof", "unreleased"):
@@ -316,6 +316,7 @@ def stack() -> Iterator[Stack]:
     names = (
         "postgres",
         "runtime_owner",
+        "runtime_app",
         "search_release",
         "search_app",
         "producer",
@@ -347,6 +348,31 @@ def stack() -> Iterator[Stack]:
                 detach=False,
             )
             assert migrated.returncode == 0, migrated.stderr
+            # Exercise the runtime's canonical operator script as its DDL owner,
+            # then serve under a distinct login that cannot migrate or rewrite events.
+            grants = Path(os.environ["SENTRYRUNTIME_TEST_REPO"]) / "db/roles/service.sql"
+            docker(
+                "exec",
+                "-i",
+                f"{stack.network}-postgres",
+                "psql",
+                "-X",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-v",
+                "database_name=sentryruntime",
+                "-v",
+                "service_role=runtime_app",
+                "-U",
+                "runtime_owner",
+                "-d",
+                "sentryruntime",
+                stdin=grants.read_text(),
+            )
+            runtime_db = (
+                f"postgres://runtime_app:{stack.secrets['runtime_app']}@postgres:5432/"
+                "sentryruntime?sslmode=verify-full&sslrootcert=/run/trust/postgres-ca.pem"
+            )
             credentials = [
                 {
                     "token_sha256": hashlib.sha256(stack.secrets[role].encode()).hexdigest(),
@@ -523,6 +549,31 @@ def test_release_job_separates_schema_owner_from_application_role(stack: Stack):
         check=False,
     )
     assert denied.returncode != 0 and "permission denied" in denied.stderr
+
+
+def test_runtime_service_role_cannot_migrate_or_rewrite_history(stack: Stack):
+    for statement in (
+        "CREATE TABLE public.forbidden(id int)",
+        "UPDATE runtime_run_events SET actor_id='forbidden'",
+        "DELETE FROM runtime_runs",
+        "UPDATE goose_db_version SET is_applied=false",
+    ):
+        result = docker(
+            "exec",
+            f"{stack.network}-postgres",
+            "psql",
+            "-X",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-U",
+            "runtime_app",
+            "-d",
+            "sentryruntime",
+            "-c",
+            statement,
+            check=False,
+        )
+        assert result.returncode != 0 and "permission denied" in result.stderr
 
 
 def test_api_serves_readiness_and_stops_gracefully_on_sigterm(stack: Stack):

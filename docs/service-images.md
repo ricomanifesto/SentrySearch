@@ -19,8 +19,12 @@ Inputs are pinned: the multi-architecture Python 3.11 base image by digest, the
 build-only `uv` installer by PyPI wheel hashes, the runtime dependencies by
 `uv.lock` (`uv sync --locked --no-dev`), and the static `tini` v0.19.0 init by
 SHA-256 for `amd64` and `arm64`. Those checksums match the release's published
-`.sha256sum` files; its GPG signature has not been verified yet. Update a pin
-deliberately and rerun the proof below. Image digests are not bit-for-bit
+`.sha256sum` files. Both release binaries' detached GPG signatures were verified
+on October 6, 2026 against the upstream-published signing fingerprint
+`595E85A6B1B4779EA4DAAEC70B588DFF0527A9B7`; the verified SHA-256 values match
+the Dockerfile pins. Follow [upstream signature verification](https://github.com/krallin/tini#signed-binaries)
+when changing either binary. Update a pin deliberately and rerun the proof below.
+Image digests are not bit-for-bit
 reproducible across builds.
 
 `container/Dockerfile.dockerignore` admits only `pyproject.toml`, `uv.lock`,
@@ -51,6 +55,11 @@ credentials, endpoints, or bucket names.
 Run SentryRuntime's own service and migration job from its image; see that
 repository's runtime operations document. Its migration job is separate from
 the product release job, and neither runs at service startup.
+The cross-service proof also applies the runtime repository's
+`db/roles/service.sql` after its migrations. The running runtime uses a separate
+restricted login with no DDL, deletion, migration-history writes or event updates;
+its database owner is confined to release/setup jobs. Supply a runtime checkout
+containing that grant script when running the proof.
 
 ### Configuration and privilege matrix
 
@@ -137,6 +146,9 @@ It proves:
 - the release job succeeds with the schema-owner role, is idempotent, and is
   rejected for the application role; the application role passes the read-only
   check after grants and cannot create tables;
+- the runtime serves the worker through a restricted service login, separate
+  from its migration owner; that login cannot migrate, delete runs or rewrite
+  existing events;
 - deployed plaintext database settings, unreleased schemas, untrusted database
   CAs, plaintext non-loopback runtime URLs, and shared runtime tokens fail closed
   without printing generated secrets; an untrusted runtime certificate keeps the

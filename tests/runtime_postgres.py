@@ -1,6 +1,8 @@
 """Explicit integration suite; run with dev/check_runtime_consistency.py."""
 
 import os
+import io
+import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 import threading
@@ -41,6 +43,9 @@ def reports():
     class Client:
         def put_object(self, **kwargs):
             objects[kwargs["Key"]] = kwargs["Body"]
+
+        def get_object(self, **kwargs):
+            return {"Body": io.BytesIO(objects[kwargs["Key"]])}
 
     store = S3StorageManager()
     store._initialized = True
@@ -624,6 +629,16 @@ def deadline_evaluator_worker(settings, stop, emit):
     service = ReportStorageService()
     service.db_manager = manager
 
+    class Client:
+        def get_object(self, **kwargs):
+            objects = json.loads(os.environ["SENTRYSEARCH_TEST_ARTIFACTS"])
+            return {"Body": io.BytesIO(objects[kwargs["Key"]].encode("utf-8"))}
+
+    store = S3StorageManager()
+    store._initialized = True
+    store.s3_client = cast(Any, Client())
+    service.s3_manager = store
+
     def unexpected_generation(*_args):
         raise AssertionError("saved-evidence recovery must not generate")
 
@@ -664,6 +679,10 @@ def test_evaluation_deadline_leaves_a_recoverable_product_lease(
     service.begin_runtime_attempt(report_id, lease)
     service.finalize_report(report_id, artifact, generation_lease=lease)
     runtime.complete(run.run_id, run.lease_owner, run.lease_version, {"report_id": report_id})
+    monkeypatch.setenv(
+        "SENTRYSEARCH_TEST_ARTIFACTS",
+        json.dumps({key: value.decode("utf-8") for key, value in _objects.items()}),
+    )
     monkeypatch.setenv("SENTRYSEARCH_TEST_PRODUCT_URL", str(service.db_manager.engine.url))
     supervisor = WorkerSupervisor(
         WorkerSettings(once=True, evaluation_seconds=0.5), deadline_evaluator_worker

@@ -173,8 +173,14 @@ accepted intent survives a runtime outage, then drains while admission is paused
 The regular gate also tests real TLS rejection of wrong CA/hostname, expired
 certificates, redirects, and ambient trust/proxy overrides.
 
-The storage code uses a fake S3 client; the evaluator is stubbed. These tests do
-not call AWS or a model provider and do not prove bucket policy, deployed
+The storage code uses in-memory S3 clients, including inside spawned evaluator
+children; the evaluator is stubbed. The runner disables dotenv and metadata
+credentials, removes inherited provider/database settings and proxy variables,
+replaces shared AWS configuration paths with the null device, and uses dummy AWS
+credentials plus a loopback-only S3 endpoint. A missed artifact stub therefore
+fails locally rather than falling back to the host's shared AWS credentials or
+an ambient proxy. This is harness isolation, not a general network sandbox.
+These tests do not exercise AWS or a model provider and do not prove bucket policy, deployed
 transport, provider behavior, production performance, or production recovery.
 The runner stops its processes and removes its disposable data after execution.
 

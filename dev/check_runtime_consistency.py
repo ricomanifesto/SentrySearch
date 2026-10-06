@@ -18,6 +18,46 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dev.tls_fixtures import create_certificates
 
 
+def isolated_environment() -> dict[str, str]:
+    """Use fixture authority only, including in spawned worker processes."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(
+            (
+                "AWS_",
+                "OPENROUTER_",
+                "SUPABASE_",
+                "DB_",
+                "PG",
+                "SENTRYRUNTIME_",
+                "SENTRYSEARCH_TEST_",
+            )
+        )
+        and key != "DATABASE_URL"
+        and key.lower() not in {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
+    }
+    env.update(
+        {
+            "PYTHON_DOTENV_DISABLED": "1",
+            "ENVIRONMENT": "test",
+            "NO_PROXY": "*",
+            "no_proxy": "*",
+            "AWS_EC2_METADATA_DISABLED": "true",
+            "AWS_SHARED_CREDENTIALS_FILE": os.devnull,
+            "AWS_CONFIG_FILE": os.devnull,
+            "AWS_ACCESS_KEY_ID": "disposable-test-key",
+            "AWS_SECRET_ACCESS_KEY": "disposable-test-secret",
+            "AWS_DEFAULT_REGION": "us-east-1",
+            "AWS_S3_BUCKET": "disposable-test-artifacts",
+            # A missed artifact stub must fail locally, never call real S3.
+            "AWS_ENDPOINT_URL": "http://127.0.0.1:9",
+            "AWS_ENDPOINT_URL_S3": "http://127.0.0.1:9",
+        }
+    )
+    return env
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runtime-repo", type=Path, required=True)
@@ -70,24 +110,7 @@ def main() -> None:
         )
         server = None
         try:
-            env = {
-                key: value
-                for key, value in os.environ.items()
-                if not key.startswith(
-                    (
-                        "AWS_",
-                        "OPENROUTER_",
-                        "SUPABASE_",
-                        "DB_",
-                        "PG",
-                        "SENTRYRUNTIME_",
-                        "SENTRYSEARCH_TEST_",
-                    )
-                )
-            }
-            env["PYTHON_DOTENV_DISABLED"] = "1"
-            env["ENVIRONMENT"] = "test"
-            env["AWS_EC2_METADATA_DISABLED"] = "true"
+            env = isolated_environment()
             env["SENTRYSEARCH_TEST_PG_BIN"] = str(pg_bin)
             env["SENTRYSEARCH_EXECUTION_MODE"] = "runtime"
             env["DATABASE_URL"] = f"postgres://postgres@/postgres?host={pg_socket}&sslmode=disable"

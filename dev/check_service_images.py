@@ -44,6 +44,7 @@ def main() -> None:
             "PYTHON_DOTENV_DISABLED": "1",
             "SENTRYSEARCH_TEST_IMAGE": search_image,
             "SENTRYRUNTIME_TEST_IMAGE": runtime_image,
+            "SENTRYRUNTIME_TEST_REPO": str(args.runtime_repo.resolve()),
         }
     )
     subprocess.run(
