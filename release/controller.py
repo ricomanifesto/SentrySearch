@@ -881,7 +881,7 @@ class ReleaseController:
         task_arn = recorded["worker"]
         deployment = self._deployment_id("worker")
         assert deployment is not None
-        group, stream = worker_stream(self.manifest.environment.name, task_arn)
+        group, stream = worker_stream(self.manifest.environment.name, self.release_id, task_arn)
         epoch = self.clock.now()
         earlier = [
             _time(event["deadline_at"])

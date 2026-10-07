@@ -310,19 +310,26 @@ def test_readiness_observer_reads_the_worker_stream_terraform_configures():
     task_module = configuration(TASK_MODULE)
     naming = configuration(STAGING / "modules" / "naming")
     releases = configuration(STAGING / "releases")
-    # awslogs names streams <prefix>/<container>/<task-id>; the prefix is the role key.
+    # awslogs names streams <prefix>/<container>/<task-id>. A release's worker
+    # prefix is worker/<release-id>, so each release writes and is read apart.
     assert WORKER_LOG_STREAM_PREFIX == "worker" and WORKER_CONTAINER == "app"
     assert re.search(r"^ +worker += \{ uid = ", task_module, re.MULTILINE)
+    assert (
+        "stream_prefixes = { for name in keys(local.roles) : name => "
+        'name == "worker" && var.release_id != null ? "worker/${var.release_id}" : name }'
+    ) in task_module
     logs = between(task_module, "  log_configuration = {", "  task_contracts = {")
-    assert "awslogs-stream-prefix = name\n" in logs
+    assert "awslogs-stream-prefix = local.stream_prefixes[name]\n" in logs
+    assert 'log-stream:${local.stream_prefixes[name]}/*"]' in task_module
     app = between(task_module, "  task_contracts = {", "  assume_task_role =").split("},\n", 1)[1]
     assert f'name                   = "{WORKER_CONTAINER}"' in app
     # The group is the naming module's /<prefix>/worker; manifests name the prefix.
     assert 'name => "/${local.prefix}/${name}"' in block(naming, 'output "log_groups"')
     task = "arn:aws:ecs:us-east-1:111122223333:task/c/" + "a" * 32
-    assert worker_stream("sentry-staging", task) == (
+    release = "0b9f7c1e-4d2a-4f6b-9a3e-2c1d0e9f8a7b"
+    assert worker_stream("sentry-staging", release, task) == (
         "/sentry-staging/worker",
-        "worker/app/" + "a" * 32,
+        f"worker/{release}/app/" + "a" * 32,
     )
     stream = block(task_module, 'output "readiness_log_stream"')
     assert 'local.log_configuration.worker.options["awslogs-stream-prefix"]' in stream

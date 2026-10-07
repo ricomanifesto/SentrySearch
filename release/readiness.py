@@ -25,7 +25,8 @@ WORKER_RECEIPT_KIND = "sentry.worker-readiness.v1"
 # The one manifest operational check the controller proves from these receipts.
 WORKER_READINESS_CHECK = "worker-readiness"
 WORKER_RECEIPT_MARKER = "SENTRY_WORKER_READINESS"
-# The worker's awslogs stream prefix and container name in deploy/aws-platform-fit.
+# The worker's awslogs stream prefix (followed by its release id) and container
+# name in deploy/aws-platform-fit.
 WORKER_LOG_STREAM_PREFIX = "worker"
 WORKER_CONTAINER = "app"
 MAX_RECEIPT_BYTES = 2048
@@ -204,14 +205,18 @@ def _parse(body: str) -> WorkerReceipt:
     )
 
 
-def worker_stream(environment_name: str, task_arn: str) -> tuple[str, str]:
-    """The observed task's configured stream; never a worker-supplied location."""
+def worker_stream(environment_name: str, release_id: str, task_arn: str) -> tuple[str, str]:
+    """The observed task's configured stream; never a worker-supplied location.
+
+    The approved manifest's release id and the ECS task identify it: each
+    release's worker writes under its own immutable prefix.
+    """
     task_id = task_arn.rsplit("/", 1)[-1]
-    if not _TASK_ID.fullmatch(task_id):
-        raise ValueError("unexpected task identifier")
+    if not _UUID.fullmatch(release_id) or not _TASK_ID.fullmatch(task_id):
+        raise ValueError("unexpected release or task identifier")
     return (
         f"/{environment_name}/worker",
-        f"{WORKER_LOG_STREAM_PREFIX}/{WORKER_CONTAINER}/{task_id}",
+        f"{WORKER_LOG_STREAM_PREFIX}/{release_id}/{WORKER_CONTAINER}/{task_id}",
     )
 
 

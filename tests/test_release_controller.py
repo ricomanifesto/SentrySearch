@@ -630,7 +630,8 @@ def test_worker_readiness_needs_sixty_seconds_of_receipts_observed_after_the_epo
     assert FakeLogs.observed(task, 1) < epoch <= FakeLogs.observed(task, 2)
     assert any('"sequence":1,' in message for message in r.logs.delivered)
     # Reads name only the recorded task's fixed app stream, bounded by endTime.
-    stream = "worker/app/" + task.arn.rsplit("/", 1)[1]
+    # The approved manifest's release and the ECS task fix the stream.
+    stream = f"worker/{r.document['release_id']}/app/" + task.arn.rsplit("/", 1)[1]
     assert {(c["log_group"], c["log_stream"]) for c in r.logs.calls} == {
         ("/staging/worker", stream)
     }

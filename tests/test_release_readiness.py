@@ -142,11 +142,14 @@ def test_ready_requires_alive_no_drain_or_error_valid_phase_and_unexpired_budget
     assert receipt is not None and receipt.eligible is eligible
 
 
-def test_the_stream_is_derived_from_the_environment_and_observed_task_only():
-    assert worker_stream("sentry-staging", TASK) == (
+def test_the_stream_is_derived_from_the_manifest_release_and_observed_task_only():
+    assert worker_stream("sentry-staging", RELEASE_ID, TASK) == (
         "/sentry-staging/worker",
-        "worker/app/" + "f" * 32,
+        f"worker/{RELEASE_ID}/app/" + "f" * 32,
     )
+    for release_id, task in (("../worker", TASK), (RELEASE_ID, TASK[:-1] + "*")):
+        with pytest.raises(ValueError):
+            worker_stream("sentry-staging", release_id, task)
 
 
 # --- window policy -----------------------------------------------------------------

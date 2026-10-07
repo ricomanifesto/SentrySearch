@@ -89,17 +89,21 @@ choice is a separate approval. They allow:
   (`<job>/<container>/*`) in the two release log groups, to read receipts. The log
   groups are shared by releases, so the controller reads the exact stream of the
   task it observed and rejects any receipt whose release, job or task differs;
-- `logs:GetLogEvents` on the worker app container's streams
-  (`/<name_prefix>/worker`, `worker/app/*`) for the worker readiness gate. Every
-  retained worker writes there; the controller derives the recorded task's exact
-  stream and rejects receipts naming another release. Each release's worker
-  revision fixes its `release_id` as `SENTRYSEARCH_RELEASE_ID` and logs with
-  explicit non-blocking delivery and a 4 MiB buffer. **This read also exposes
-  the worker's other application output** (report identifiers, request lines,
-  exception text) for every retained release within log retention, which the
-  launcher could not read before. That widens the release/app boundary and needs
-  explicit approval before these policies are attached; a dedicated receipt
-  destination would remove it.
+- `logs:GetLogEvents` only on the **current** release's worker app-container
+  streams (`/<name_prefix>/worker`, `worker/<release-id>/app/*`) for the worker
+  readiness gate. Each release's worker revision fixes its `release_id` as
+  `SENTRYSEARCH_RELEASE_ID` and as an immutable stream prefix
+  (`worker/<release-id>`), and its execution role writes only under that prefix,
+  so a retained rollback release's streams are outside the read. The controller
+  derives the recorded task's exact stream from the approved manifest and the
+  ECS task. Worker logs use explicit non-blocking delivery and a 4 MiB buffer.
+  **This read still exposes all application output of the current release's
+  worker tasks** (report identifiers, request lines, exception text) within log
+  retention, which the launcher could not read before. It is neither
+  receipt-only nor exact-task authority: exact-task access would need trusted
+  per-task credential issuance, and receipt-only access a separate sanitized
+  destination. Michael must choose attended whole-release log access or a
+  separate receipt destination before these policies are attached.
 
 They deny `ExecuteCommand` and any `RunTask`/`UpdateService` that enables Exec, on
 every resource. They grant no secret read, image push, log write, IAM change or

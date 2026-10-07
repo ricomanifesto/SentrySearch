@@ -151,7 +151,8 @@ controller proves this check itself from the worker supervisor's own
 
 Identity comes from ECS, never from the worker: the recorded deployment and task,
 whose revision and image digests are checked again on every poll, and the fixed
-stream `/<environment>/worker`, `worker/app/<task-id>`, derived from that task.
+stream `/<environment>/worker`, `worker/<release-id>/app/<task-id>`, derived from
+the approved manifest's release id and that task.
 The proposed policy (`release.readiness.GatePolicy`), not measured AWS guarantees:
 
 - Each attempt is a new epoch: receipts observed before it never count. The gate
@@ -249,11 +250,13 @@ unattached launcher policies allow each `EcsPort` call for the definitions that
 exist: deploys must name a retained revision of that service, scale-to-zero
 requests carry no task definition, only the current release's jobs (migrations,
 grants, proofs and reconciliation) run, only job-tagged tasks can be stopped and
-receipts are read only from those jobs' and the worker's app-container log
-streams. The worker stream also carries its other application output, so that
-read widens the release/app boundary and needs approval before the policies are
-attached. Each worker revision fixes its release's `SENTRYSEARCH_RELEASE_ID` and
-non-blocking logging. A release still cannot complete: there is no AWS adapter or
+receipts are read only from those jobs' and the current release's worker
+app-container log streams. Those worker streams also carry all of the current
+release's worker application output, so the read widens the release/app
+boundary: Michael must choose attended whole-release log access or a separate
+sanitized receipt destination before the policies are attached. Each worker
+revision fixes its release's `SENTRYSEARCH_RELEASE_ID`, its
+`worker/<release-id>` stream prefix and non-blocking logging. A release still cannot complete: there is no AWS adapter or
 log reader, the migration images emit no receipts and the Runtime and API
 operational observers do not exist.
 The manifest's environment name must equal the roots' `name_prefix` so the lock

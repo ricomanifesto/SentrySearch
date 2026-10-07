@@ -301,6 +301,9 @@ run "retained_current_and_rollback_releases" {
       { for item in release.task_contracts.worker[1].environment : item.name => item.value }["SENTRYSEARCH_RELEASE_ID"] == var.releases[key].release_id &&
       release.task_contracts.worker[1].logConfiguration.options.mode == "non-blocking" &&
       release.task_contracts.worker[1].logConfiguration.options["max-buffer-size"] == "4m" &&
+      # Each retained release writes only under its own immutable worker prefix.
+      release.task_contracts.worker[1].logConfiguration.options["awslogs-stream-prefix"] == "worker/${var.releases[key].release_id}" &&
+      release.execution_policies.worker.Statement[2].Resource == ["arn:aws:logs:us-east-1:111122223333:log-group:/sentry-staging/worker:log-stream:worker/${var.releases[key].release_id}/*"] &&
       alltrue([for name in ["runtime", "api", "worker"] :
         alltrue([for secret in release.task_contracts[name][1].secrets : endswith(secret.valueFrom, "::${var.releases[key].environment_bundles[name].version_id}")])
       ])
@@ -391,10 +394,14 @@ run "launcher_policies_name_exact_releases_roles_and_services" {
       },
       {
         Sid      = "ReadWorkerReadinessReceipts", Effect = "Allow", Action = ["logs:GetLogEvents"]
-        Resource = ["arn:aws:logs:us-east-1:111122223333:log-group:/sentry-staging/worker:log-stream:worker/app/*"]
+        Resource = ["arn:aws:logs:us-east-1:111122223333:log-group:/sentry-staging/worker:log-stream:worker/22222222-2222-4222-8222-222222222222/app/*"]
       },
     ])
-    error_message = "Receipts are read only from job and worker app-container streams, never init, API or Runtime logs, and never written."
+    error_message = "Receipts are read only from job and the current release's worker app-container streams, never init, API, Runtime or another release's logs, and never written."
+  }
+  assert {
+    condition     = !strcontains(jsonencode(output.release_launcher_policies), "11111111-1111-4111-8111-111111111111")
+    error_message = "The retained rollback release's worker streams are outside the launcher's read scope."
   }
   assert {
     condition = jsonencode(output.release_launcher_policies.tasks.Statement) == jsonencode([
@@ -417,7 +424,7 @@ run "launcher_policies_name_exact_releases_roles_and_services" {
       "logs:GetLogEvents",
       ]) && alltrue(flatten([for document in values(output.release_launcher_policies) : [for statement in document.Statement : [for resource in statement.Resource :
         (startswith(resource, "arn:aws:ecs:us-east-1:111122223333:") || startswith(resource, "arn:aws:iam::111122223333:role/sentry-staging-r") ||
-        can(regex("^arn:aws:logs:us-east-1:111122223333:log-group:/sentry-staging/((runtime|product)-release:log-stream:[a-z-]+/[a-z]+|worker:log-stream:worker/app)/\\*$", resource))) &&
+        can(regex("^arn:aws:logs:us-east-1:111122223333:log-group:/sentry-staging/((runtime|product)-release:log-stream:[a-z-]+/[a-z]+|worker:log-stream:worker/22222222-2222-4222-8222-222222222222/app)/\\*$", resource))) &&
         (!strcontains(resource, "*") || resource == "arn:aws:ecs:us-east-1:111122223333:task/sentry-staging/*" || startswith(resource, "arn:aws:logs:"))
     ] if statement.Effect == "Allow" && statement.Sid != "ListClusterTasks"]])))
     error_message = "Allowed resources stay in this account, region and cluster; task IDs and job and worker receipt streams are the only wildcards. No definition registration, secret read, image push, log write or Exec."

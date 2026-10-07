@@ -73,16 +73,20 @@ locals {
   }
   # Explicit non-blocking delivery, so the account default cannot make worker
   # output block; overflow drops lines, which the observer sees as sequence gaps.
-  # 4 MiB holds about 18 hours of locally measured receipt output; application
-  # log volume and Fargate behavior are unmeasured (docs/runtime-consistency.md).
+  # 4 MiB holds about 18 hours of locally measured receipt output alone; mixed
+  # application log volume, buffer memory and Fargate behavior are unmeasured, so
+  # this is not a sizing for the worker's whole output (docs/runtime-consistency.md).
   # Runtime and API modes await their own budget.
   worker_log_options = { mode = "non-blocking", max-buffer-size = "4m" }
+  # A release's worker streams are worker/<release-id>/<container>/<task-id>, an
+  # immutable prefix per revision: each release writes, and is read, apart.
+  stream_prefixes = { for name in keys(local.roles) : name => name == "worker" && var.release_id != null ? "worker/${var.release_id}" : name }
   log_configuration = { for name in keys(local.roles) : name => {
     logDriver = "awslogs"
     options = merge({
       awslogs-group         = var.log_groups[name]
       awslogs-region        = var.region
-      awslogs-stream-prefix = name
+      awslogs-stream-prefix = local.stream_prefixes[name]
     }, name == "worker" ? local.worker_log_options : {})
   } }
   task_contracts = { for name, role in local.roles : name => [
@@ -170,7 +174,7 @@ locals {
       },
       {
         Sid      = "TaskLogs", Effect = "Allow", Action = ["logs:CreateLogStream", "logs:PutLogEvents"]
-        Resource = ["arn:aws:logs:${var.region}:${var.account_id}:log-group:${var.log_groups[name]}:log-stream:${name}/*"]
+        Resource = ["arn:aws:logs:${var.region}:${var.account_id}:log-group:${var.log_groups[name]}:log-stream:${local.stream_prefixes[name]}/*"]
       },
       {
         Sid       = "PinnedEnvironment", Effect = "Allow", Action = ["secretsmanager:GetSecretValue"]

@@ -93,9 +93,10 @@ locals {
       )
     }
     # Receipts are read only from each current job's app-container stream and
-    # the worker app container's stream; the controller names the exact stream
-    # of the task it observed. Missing, stale or ambiguous receipts hold the
-    # release. Every retained worker writes the same configured stream prefix.
+    # the current release's worker app-container streams (worker/<release-id>/);
+    # the controller names the exact stream of the task it observed. Missing,
+    # stale or ambiguous receipts hold the release. This still exposes all of the
+    # current release's worker application output; attaching it needs approval.
     receipts = {
       Version = "2012-10-17"
       Statement = [

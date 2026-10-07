@@ -192,9 +192,11 @@ replays `run_worker_loop`'s emits):
 | Runtime-unavailable cycle, 60 s | 10 receipts, 66 B/s |
 | Blocked writer, 1,000 emits | 935 dropped as gaps, 43 KiB peak traced memory |
 
-At 66 B/s, 4 MiB holds about 18 hours of receipts. Not measured: the real
-worker's application logging during generation and evaluation (it needs Runtime,
-PostgreSQL and S3) and so the buffer's real headroom, the awslogs driver's memory
+At 66 B/s, 4 MiB holds about 18 hours of receipts alone. The receipt rate does
+not size the buffer: receipts share it with all worker application output.
+Not measured: the real worker's mixed application logging during generation
+and evaluation (it needs Runtime, PostgreSQL and S3) and so the buffer's real
+headroom and memory, the awslogs driver's memory
 and delivery on Fargate (including whether the buffer counts against task
 memory), CloudWatch ingestion latency, and ARM64. Docker 29.8.2 accepted the two
 options with its `local` driver; that shows option syntax only, not awslogs or ECS

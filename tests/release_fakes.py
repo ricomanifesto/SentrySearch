@@ -815,7 +815,7 @@ class FakeLogs:
                 item
                 for item in self.ecs.tasks.values()
                 if item.group == "service:worker"
-                and log_stream == "worker/app/" + item.arn.rsplit("/", 1)[1]
+                and log_stream == f"worker/{self.release_id}/app/" + item.arn.rsplit("/", 1)[1]
             ),
             None,
         )
