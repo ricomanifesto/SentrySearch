@@ -893,6 +893,48 @@ def test_controller_clock_rollback_at_final_success_holds(monkeypatch):
     assert not gate_events(r, "operational_passed")
 
 
+def test_controller_clock_rollback_before_the_gate_holds(monkeypatch):
+    r = rig()
+    original = ReleaseController._await_worker_readiness
+
+    def roll_back_first(self, check_id, recorded_tasks):
+        r.clock.moment -= timedelta(seconds=120)
+        return original(self, check_id, recorded_tasks)
+
+    monkeypatch.setattr(ReleaseController, "_await_worker_readiness", roll_back_first)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "controller_clock_rollback", "services_started")
+    assert not gate_events(r, "readiness_observing")
+
+
+def test_ecs_loss_after_a_slow_read_clears_from_when_ecs_was_observed(monkeypatch):
+    r = rig()
+    describe = r.ecs._describe
+    state = {}
+
+    def slow_then_check():
+        if len(r.logs.calls) == 5:
+            r.clock.advance(seconds=25)  # a slow read that still completes
+            state["observed"] = r.clock.now()
+        elif "observed" in state and r.clock.now() > state["observed"]:
+            state["healthy"] = True
+
+    def unhealthy_once(task):
+        result = describe(task)
+        if task.group == "service:worker" and "observed" in state and "healthy" not in state:
+            result["healthStatus"] = "UNHEALTHY"
+        return result
+
+    r.logs.before_read = slow_then_check
+    monkeypatch.setattr(r.ecs, "_describe", unhealthy_once)
+    outcome = r.controller().run()
+    assert outcome.state == "held_paused", outcome
+    [passed] = gate_events(r, "operational_passed")
+    first = FakeLogs.observed(recorded(r), passed["first_sequence"])
+    assert passed["last_reset"] == "task_unhealthy"
+    assert first > state["observed"] + timedelta(seconds=5)
+
+
 def test_a_resumed_gate_attempt_starts_a_new_epoch():
     r = rig()
 

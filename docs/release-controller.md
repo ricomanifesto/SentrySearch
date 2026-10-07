@@ -155,9 +155,10 @@ stream `/<environment>/worker`, `worker/<release-id>/app/<task-id>`, derived fro
 the approved manifest's release id and that task.
 The proposed policy (`release.readiness.GatePolicy`), not measured AWS guarantees:
 
-- Each attempt is a new epoch: receipts observed before it never count. The gate
-  ends within 600 seconds and the release window; a resumed attempt keeps the
-  first attempt's deadline.
+- Each attempt is a new epoch: receipts observed before it never count, and a
+  window starts only with a receipt observed more than 5 s (the allowed worker
+  clock skew) after it. The gate ends within 600 seconds and the release window;
+  a resumed attempt keeps the first attempt's deadline.
 - Pass: 60 seconds of consecutive eligible receipts from one boot (alive, ready,
   not draining, no error, a working phase within its budget), measured by both
   the worker's wall clock and its monotonic uptime, adjacent samples at most 15 s
@@ -172,9 +173,10 @@ The proposed policy (`release.readiness.GatePolicy`), not measured AWS guarantee
   more than 5 s; equal times from a burst of transitions are allowed). Identical
   replays are ignored; past 8,192 distinct receipts a replay resets instead.
 - Clear: freshness expiry, a denied, missing or malformed log read, incomplete
-  pagination, or ECS health or visibility loss. A new window needs receipts
-  observed more than 5 s (the allowed worker clock skew) after the clear, even
-  when late receipts carry consecutive sequences.
+  pagination, or ECS health or visibility loss. A clear is dated when the failed
+  read returns or ECS was observed, so time spent in a slow failed read never
+  counts. A new window needs receipts observed more than 5 s after the clear,
+  even when late receipts carry consecutive sequences.
 - Reads follow forward tokens from the gate's start to `endTime` = now, at most
   20 pages of 100 events and 1 MiB per poll. A page that returns the caller's own
   token ends the stream; empty pages with a new token do not. Sustained worker
@@ -182,8 +184,11 @@ The proposed policy (`release.readiness.GatePolicy`), not measured AWS guarantee
   application log volume is unmeasured.
 - Hold at once: a failed or superseded deployment, definition or image mismatch,
   a desired count other than one, an extra task, or replacement of the recorded
-  task. At the deadline the hold is `worker_readiness_not_proven`, with the last
-  reason and receipt count journaled.
+  task. `controller_clock_rollback` holds when controller time moves backwards,
+  against the journal's latest event or within the gate, because deadlines and
+  freshness depend on it (see the `Clock` port contract). At the deadline the hold
+  is `worker_readiness_not_proven`, with the last reason and receipt count
+  journaled.
 
 Success is a bounded observation, not continuing readiness, report completion,
 auth or S3 proof, nor proof against a compromised worker. Final readiness and

@@ -18,9 +18,12 @@ class AmbiguousResponse(Exception):
 class Clock(Protocol):
     """UTC wall time that never moves backwards within a controller session.
 
-    Deadlines, freshness and journal order rely on it. An adapter must enforce
-    this (for example, by anchoring wall time to a monotonic clock); the
-    readiness gate holds if it observes time moving backwards.
+    Deadlines, freshness and journal order rely on it, and the readiness gate
+    compares it with worker clocks within a 5 s skew, so it must also stay within
+    a small bounded offset of true UTC. An adapter must enforce both (anchoring to
+    a monotonic clock alone would keep any initial offset). The readiness gate
+    holds if it observes controller time moving backwards, including against the
+    journal's latest event.
     """
 
     def now(self) -> datetime: ...

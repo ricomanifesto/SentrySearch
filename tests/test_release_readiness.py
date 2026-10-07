@@ -218,7 +218,8 @@ def test_any_negative_invalid_or_anomalous_receipt_restarts_the_window(bad, reas
     readiness.ingest(steady(1, 21, first_sequence=5), at(22))  # sequences 5-7
     readiness.ingest([bad], at(32))
     assert readiness.reason == reason
-    # Without the reset, the receipts that follow would complete a 70 s window.
+    # Without the reset, the receipts that follow would complete a 60 s window
+    # (from +11 s, the first receipt after the epoch floor, to +71 s).
     readiness.ingest(later, at(72))
     assert not readiness.stable(at(72)), "a reset needs a complete new window"
 
