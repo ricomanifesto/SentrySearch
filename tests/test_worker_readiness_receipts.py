@@ -1,10 +1,14 @@
 """Supervisor readiness receipts: schema, cadence, gaps and non-blocking delivery."""
 
 import json
+import os
 import re
+import subprocess
+import sys
 import threading
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import httpx
 import pytest
@@ -21,6 +25,7 @@ from src.execution.readiness_receipts import (
 from src.execution.supervisor import WorkerSettings, WorkerSupervisor
 
 RELEASE_ID = "0b9f7c1e-4d2a-4f6b-9a3e-2c1d0e9f8a7b"
+FIXTURE = Path(__file__).resolve().parent / "receipt_shutdown_fixture.py"
 FIELDS = {
     "kind",
     "release_id",
@@ -347,6 +352,45 @@ def test_a_blocked_log_pipe_never_delays_drain_or_reaping():
         thread.join(5)
 
 
+def no_core_dumps():
+    import resource
+
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+
+@pytest.mark.parametrize("unbuffered", [False, True], ids=["buffered", "unbuffered"])
+def test_the_worker_process_exits_cleanly_with_an_unread_full_stdout_pipe(tmp_path, unbuffered):
+    """Real interpreter shutdown while the receipt writer is blocked on stdout."""
+    env = {
+        key: value for key, value in os.environ.items() if not key.startswith(("AWS_", "PYTHON"))
+    }
+    env.update({"PYTHON_DOTENV_DISABLED": "1", "SENTRYSEARCH_RELEASE_ID": RELEASE_ID})
+    command = [sys.executable, *(["-u"] if unbuffered else []), str(FIXTURE)]
+    stderr = tmp_path / "stderr.txt"
+    with stderr.open("wb") as errors:
+        # stdout is deliberately not read until the process has exited.
+        child = subprocess.Popen(
+            command, cwd=tmp_path, env=env, stdout=subprocess.PIPE, stderr=errors,
+            preexec_fn=no_core_dumps,
+        )  # fmt: skip
+        try:
+            returncode = child.wait(timeout=30)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=10)
+            output = child.stdout.read() if child.stdout else b""
+            if child.stdout:
+                child.stdout.close()
+    log = stderr.read_text()
+    assert "CLOSE_RETURNED" in log and "Fatal Python error" not in log, log
+    assert returncode == 0, log
+    assert "STDOUT_BLOCKING=True" in log, "application stdout keeps its blocking mode"
+    assert output.startswith(b"APPLICATION_OUTPUT\n")
+    assert RECEIPT_MARKER.encode() in output
+    assert int(log.split("DROPPED=")[1].split()[0]) >= 100, "the pipe really filled"
+
+
 def quick_exit(settings, stop, emit):
     return 0
 
@@ -376,6 +420,7 @@ def test_worker_entrypoint_wires_receipts_from_the_environment(monkeypatch):
     assert run_runtime_worker.main() == 0
     assert isinstance(built["receipts"], ReadinessReceipts)
     assert built["receipts"].release_id == RELEASE_ID
+    assert isinstance(built["receipts"]._sink, receipts_module.DescriptorSink)
     monkeypatch.setenv("SENTRYSEARCH_RELEASE_ID", "not-a-release")
     with pytest.raises(SystemExit):
         run_runtime_worker.main()

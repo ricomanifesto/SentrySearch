@@ -6,14 +6,15 @@ snapshot, the same state /readyz serves. A receipt is emitted at startup, every
 entering or leaving a working phase). A stalled loop therefore stops emitting
 instead of looking fresh. The sequence advances before a bounded, nonblocking
 enqueue; a full queue drops the receipt and leaves a visible gap. A separate
-writer thread owns stdout, so a blocked log pipe never delays signals, drain or
-reaping. Receipts carry no user, report, URL, credential or exception data.
+writer thread owns its own duplicate of the stdout descriptor, so a blocked log
+pipe never delays signals, drain, reaping or interpreter shutdown. Receipts carry no user, report, URL, credential or exception data.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import os
 import queue
 import re
 import secrets
@@ -50,6 +51,31 @@ class Sink(Protocol):
     def write(self, text: str, /) -> int: ...
 
     def flush(self) -> None: ...
+
+
+class DescriptorSink:
+    """Receipts written straight to a private duplicate of a file descriptor.
+
+    It never uses the interpreter's buffered ``sys.stdout``, so a writer blocked
+    on a full pipe holds no lock that interpreter shutdown needs, and application
+    output keeps its own buffering and blocking mode. Each receipt is one write
+    of at most 2 KiB, which a pipe delivers atomically between other writers.
+    """
+
+    def __init__(self, fd: int) -> None:
+        self._fd = os.dup(fd)
+
+    def write(self, text: str, /) -> int:
+        data = memoryview(text.encode())
+        while data:
+            data = data[os.write(self._fd, data) :]
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+    def close(self) -> None:
+        os.close(self._fd)
 
 
 def release_id_from_environment(environ: Mapping[str, str]) -> str | None:
@@ -139,13 +165,19 @@ class ReadinessReceipts:
             self._emit(snapshot)
 
     def close(self, snapshot: Mapping[str, Any], *, timeout: float = 1.0) -> None:
-        """Best-effort stopped receipt and flush, bounded by ``timeout``."""
+        """Best-effort stopped receipt and flush, bounded by ``timeout``.
+
+        A writer still blocked on its sink is left to process exit; its sink is
+        only closed once the writer has stopped using it.
+        """
         self._emit(snapshot)
         try:
             self._queue.put_nowait(_STOP)
         except queue.Full:
             pass
         self._writer.join(timeout)
+        if not self._writer.is_alive() and isinstance(self._sink, DescriptorSink):
+            self._sink.close()
 
     def _emit(self, snapshot: Mapping[str, Any]) -> None:
         # The sequence advances even when the receipt is dropped: the gap is the

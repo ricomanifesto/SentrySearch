@@ -166,7 +166,11 @@ SENTRY_WORKER_READINESS {"kind":"sentry.worker-readiness.v1","release_id":"…",
   (about 780 B/s) before this rule. A stalled loop stops emitting.
 - The sequence advances before a nonblocking put into a 64-entry queue. A full
   queue drops the receipt, which leaves a visible gap. A separate writer thread
-  owns stdout, so a blocked log pipe never delays signals, drain or reaping.
+  writes each receipt in one call to its own duplicate of the stdout descriptor,
+  never through the buffered `sys.stdout` object. A blocked log pipe therefore
+  never delays signals, drain, reaping or interpreter shutdown, and application
+  output keeps its own buffering and blocking mode. A real worker process with
+  an unread, full stdout pipe exits cleanly with and without `python -u`.
   Shutdown writes a best-effort stopped receipt and waits at most one second.
 
 Receipts support a bounded release observation. They are not proof against a
