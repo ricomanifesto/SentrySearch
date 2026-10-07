@@ -1,4 +1,7 @@
 locals {
+  # Release-scoped identities let a retained rollback release keep its own
+  # exact-version policies; unscoped names are unchanged.
+  identity_prefix = var.release_scope == null ? var.name_prefix : "${var.name_prefix}-${var.release_scope}"
   roles = {
     runtime = { uid = "65532:65532", profile = "runtime", cpu = "256", memory = "512", stop = 30, image = var.images.runtime, command = ["/app/sentryruntime"] }
     api     = { uid = "10001:10001", profile = "search", cpu = "256", memory = "1024", stop = 60, image = var.images.search, command = ["python", "/app/run_api.py"] }
@@ -174,28 +177,43 @@ locals {
 
 resource "aws_iam_role" "task" {
   for_each           = local.roles
-  name               = "${var.name_prefix}-${each.key}-task"
+  name               = "${local.identity_prefix}-${each.key}-task"
   assume_role_policy = local.assume_task_role
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
+# A retained release is immutable: policy names bind their exact content, so a
+# changed grant is a replacement, and prevent_destroy rejects replacing or
+# removing any role, policy or revision. New versions are a new release scope.
 resource "aws_iam_role_policy" "task" {
   for_each = local.roles
-  name     = "bounded-task-access"
+  name     = "bounded-task-access-${substr(sha256(jsonencode(local.task_policies[each.key])), 0, 16)}"
   role     = aws_iam_role.task[each.key].id
   policy   = jsonencode(local.task_policies[each.key])
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_iam_role" "execution" {
   for_each           = local.roles
-  name               = "${var.name_prefix}-${each.key}-execution"
+  name               = "${local.identity_prefix}-${each.key}-execution"
   assume_role_policy = local.assume_task_role
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_iam_role_policy" "execution" {
   for_each = local.roles
-  name     = "bounded-bootstrap-access"
+  name     = "bounded-bootstrap-access-${substr(sha256(jsonencode(local.execution_policies[each.key])), 0, 16)}"
   role     = aws_iam_role.execution[each.key].id
   policy   = jsonencode(local.execution_policies[each.key])
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_ecs_task_definition" "service" {
@@ -208,6 +226,8 @@ resource "aws_ecs_task_definition" "service" {
   task_role_arn            = aws_iam_role.task[each.key].arn
   execution_role_arn       = aws_iam_role.execution[each.key].arn
   container_definitions    = jsonencode(local.task_contracts[each.key])
+  # Keep superseded revisions registered for compatible rollback.
+  skip_destroy = true
   runtime_platform {
     cpu_architecture        = "ARM64"
     operating_system_family = "LINUX"
@@ -219,6 +239,9 @@ resource "aws_ecs_task_definition" "service" {
     }
   }
   depends_on = [aws_iam_role_policy.task, aws_iam_role_policy.execution]
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 output "task_contracts" {
@@ -231,4 +254,22 @@ output "task_policies" {
 
 output "execution_policies" {
   value = local.execution_policies
+}
+
+output "iam_role_names" {
+  description = "Every task and execution role this module creates, keyed by task and role kind."
+  value = merge(
+    { for name, role in aws_iam_role.task : "${name}-task" => role.name },
+    { for name, role in aws_iam_role.execution : "${name}-execution" => role.name },
+    { for name, role in aws_iam_role.release_task : "${name}-release-task" => role.name },
+    { for name, role in aws_iam_role.release_execution : "${name}-release-execution" => role.name },
+  )
+}
+
+output "task_definition_arns" {
+  description = "Exact registered revisions, keyed like the task families."
+  value = merge(
+    { for name, task in aws_ecs_task_definition.service : name => task.arn },
+    { for name, task in aws_ecs_task_definition.release : "${name}-release" => task.arn },
+  )
 }

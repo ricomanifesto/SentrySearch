@@ -132,7 +132,9 @@ proof does not authorize any of those actions.
 Fargate tasks, pinned images and secret versions, init SUCCESS dependencies,
 read-only roots and scoped task/execution policies. It contains no service,
 network, database, bucket or release-job provisioning. Mocked Terraform validation
-does not establish real IAM enforcement or Fargate acceptance.
+does not establish real IAM enforcement or Fargate acceptance. The separate
+[staging roots](../deploy/aws-staging/README.md) now model that environment, also
+mock-tested only and never applied.
 
 The original October 6, 2026 local ARM64 Search image was **not release-clean**:
 Trivy 0.75.0 reported 4 critical and 64 high package/advisory occurrences,

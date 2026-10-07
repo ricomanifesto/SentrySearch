@@ -165,8 +165,24 @@ scheduling or real log ingestion.
 - Fixed per-job deadline guards in images, a release-tools image, the product
   grant script, bootstrap jobs and session-identity reconciliation jobs.
 - Supervisor-emitted worker readiness receipts and the readiness-window observer.
-- Staging infrastructure roots, rollback execution and teardown.
+- Rollback execution and teardown.
 
 These remain separate implementation and approval gates. See
 [`deploy/aws-platform-fit`](../deploy/aws-platform-fit/README.md) for the owner
 task definitions that the manifest references.
+
+## Infrastructure boundary
+
+The mock-tested [staging roots](../deploy/aws-staging/README.md) declare the
+environment this controller would operate. Terraform creates the three services at
+desired count zero and ignores only their task definition and desired count,
+which this controller changes. Its deploy request also re-sends Exec disabled and
+the circuit breaker without rollback, matching Terraform's settings. The roots'
+unattached launcher policies allow each `EcsPort` call for the definitions that
+exist: deploys must name a retained revision of that service, scale-to-zero
+requests carry no task definition, only the current release's owner jobs run and
+only job-tagged tasks can be stopped. Grant and proof job definitions and the
+log reads behind receipt collection do not exist yet, so no release can complete.
+The manifest's environment name must equal the roots' `name_prefix` so the lock
+key matches the release-evidence policy. These roots are not applied, and mocked
+plans do not prove IAM behavior.

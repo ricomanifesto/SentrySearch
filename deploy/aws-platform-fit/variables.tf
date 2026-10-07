@@ -23,6 +23,19 @@ variable "name_prefix" {
   }
 }
 
+variable "release_scope" {
+  type        = string
+  default     = null
+  description = "Optional short release key. When set, task/execution role names are release-scoped so a retained rollback keeps its own exact-version roles; task families stay stable."
+  validation {
+    condition = var.release_scope == null ? true : (
+      can(regex("^[a-z][a-z0-9]{1,11}$", var.release_scope)) &&
+      length("${var.name_prefix}-${var.release_scope}-runtime-release-execution") <= 64
+    )
+    error_message = "Use 2-12 lowercase letters/digits starting with a letter, short enough that every scoped IAM role name fits in 64 characters."
+  }
+}
+
 variable "images" {
   type        = object({ runtime = string, search = string })
   description = "Previously built ARM64 images in pre-existing same-account regional ECR repositories, pinned by digest."

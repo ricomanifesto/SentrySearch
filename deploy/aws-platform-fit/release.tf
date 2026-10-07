@@ -144,28 +144,40 @@ locals {
 
 resource "aws_iam_role" "release_task" {
   for_each           = local.release_roles
-  name               = "${var.name_prefix}-${each.key}-release-task"
+  name               = "${local.identity_prefix}-${each.key}-release-task"
   assume_role_policy = local.assume_task_role
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_iam_role_policy" "release_task" {
   for_each = local.release_roles
-  name     = "bounded-release-material"
+  name     = "bounded-release-material-${substr(sha256(jsonencode(local.release_task_policies[each.key])), 0, 16)}"
   role     = aws_iam_role.release_task[each.key].id
   policy   = jsonencode(local.release_task_policies[each.key])
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_iam_role" "release_execution" {
   for_each           = local.release_roles
-  name               = "${var.name_prefix}-${each.key}-release-execution"
+  name               = "${local.identity_prefix}-${each.key}-release-execution"
   assume_role_policy = local.assume_task_role
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_iam_role_policy" "release_execution" {
   for_each = local.release_roles
-  name     = "bounded-release-bootstrap"
+  name     = "bounded-release-bootstrap-${substr(sha256(jsonencode(local.release_execution_policies[each.key])), 0, 16)}"
   role     = aws_iam_role.release_execution[each.key].id
   policy   = jsonencode(local.release_execution_policies[each.key])
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_ecs_task_definition" "release" {
@@ -178,12 +190,16 @@ resource "aws_ecs_task_definition" "release" {
   task_role_arn            = aws_iam_role.release_task[each.key].arn
   execution_role_arn       = aws_iam_role.release_execution[each.key].arn
   container_definitions    = jsonencode(local.release_task_contracts[each.key])
+  skip_destroy             = true
   runtime_platform {
     cpu_architecture        = "ARM64"
     operating_system_family = "LINUX"
   }
   volume { name = "material" }
   depends_on = [aws_iam_role_policy.release_task, aws_iam_role_policy.release_execution]
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 output "release_task_contracts" {

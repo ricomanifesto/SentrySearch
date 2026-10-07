@@ -8,6 +8,11 @@ application canary. `release_jobs = null` is the default: existing callers retai
 exactly the three service definitions and no owner-job identities or definitions.
 The existing `terraform/` topology is not reused or modified.
 
+The [staging roots](../aws-staging/README.md) use this directory as a module:
+`aws-staging/releases` instantiates it once per retained release with a
+`release_scope`. The module therefore declares no provider configuration; its
+callers supply the region and `allowed_account_ids` guard.
+
 Only task definitions, IAM roles and inline policies are declared. There are no
 services, clusters, networks, databases, buckets, registries, secrets, log groups,
 DNS, load balancers or schedulers. References to those dependencies require
@@ -16,29 +21,51 @@ limited module would mutate AWS; no apply or unmocked plan is part of local proo
 
 ## Local validation
 
-From this directory, with Terraform 1.9.8 or newer:
+From this directory, with Terraform 1.9.8 or newer (tested with 1.9.8 and 1.16.5):
 
 ```sh
-terraform init -backend=false -input=false
+terraform init -backend=false -input=false -lockfile=readonly
 terraform fmt -check -recursive
 terraform validate
 terraform test
 ```
 
 The provider is pinned to `hashicorp/aws` 6.65.0 and its generated lock file is
-tracked. Init downloads a signed provider from its registry; it does not query an
-AWS account. Every test uses `mock_provider "aws"` with `command = plan`, fake
-identifiers and no credentials. Do not substitute a real provider or use these
-fixtures as staging configuration.
+tracked, with package hashes for Linux and macOS on amd64 and arm64. Init
+downloads the signed provider package; it does not query an AWS account. Every
+test uses `mock_provider "aws"` with `command = plan`, fake identifiers and no
+credentials. Do not substitute a real provider or use these fixtures as staging
+configuration.
 
 Tests inspect the actual task-definition and IAM-resource attributes, plus
 rendered container and policy contracts. They cover process ordering, UID and
 mount boundaries, liveness/grace, paused admission, secret versions, IAM scoping,
-and rejection of mutable image tags, cross-account secrets, shared bundles,
-moving secret stages and non-DNS TLS identity. Release tests also cover opt-in,
+and rejection of mutable image tags, cross-account secrets, shared bundles, moving
+secret stages and non-DNS TLS identity. Release tests also cover opt-in,
 owner/service and material/environment separation, DB-only commands, fixed
-operator grant provenance, and invalid release refs/log groups. They do not execute IAM policy
+operator grant provenance, and invalid release refs/log groups. Retention tests
+cover unchanged unscoped role names, release-scoped roles, stable families,
+retained revisions and content-bound policy names. They do not execute IAM policy
 evaluation, fetch real secrets, run Fargate or verify network reachability.
+
+## Release scope and retained revisions
+
+`release_scope` is optional and defaults to `null`, which keeps every existing
+role name. When set (2–12 lowercase letters or digits, starting with a letter),
+task and execution roles become `<name_prefix>-<release_scope>-<task>-task` and
+`...-execution`, so a retained rollback keeps its own exact-version policies while
+a newer release uses new secret versions. Task families do not change: each
+release registers a revision of the same family. Validation rejects a scope whose
+longest role name would exceed IAM's 64 characters.
+
+A retained release is immutable. Task definitions set `skip_destroy`, and roles,
+inline policies and task definitions set `prevent_destroy`. Each inline policy's
+name ends in a hash of its content, so changing a grant is a replacement. Any
+change that would replace a role, grant or revision, or remove the release, fails
+the plan instead of silently breaking a launchable rollback; new images or secret
+versions belong to a new scope. Retirement is an explicit state removal followed
+by an approved deletion. `iam_role_names` and `task_definition_arns` report the
+exact roles and registered revisions.
 
 ## Tasks and process ownership
 
@@ -254,9 +281,10 @@ checks, observe readiness, schedule promotion or provision the enclosing platfor
 4. Prove certificate issuance, trusted SAN/CA distribution, token scope and
    rotation. Runtime loads files at startup; secret renewal is not a running
    process rotation. Keep a compatible pinned rollback version.
-5. Implement the actual network, DNS, services, restart/replacement behavior,
-   health gates, startup ownership and task volume lifecycle. Mocked plans cannot
-   establish Fargate secret injection or service operation.
+5. The [staging roots](../aws-staging/README.md) now declare the network, DNS
+   and services, mock-tested only. Restart/replacement behavior, health gates,
+   startup ownership and task volume lifecycle still need deployed proof. Mocked
+   plans cannot establish Fargate secret injection or service operation.
 6. Prove bounded S3 Get/Put/Delete permissions, no cross-prefix access, accepted
    encryption, backup/restore, compatible rollback and delivered operator alerts.
 7. Build and approve isolated auth/fake-provider canaries. Live provider calls,
