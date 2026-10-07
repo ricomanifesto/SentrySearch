@@ -25,6 +25,45 @@ ADD --checksum=sha256:eae1d3aa50c48fb23b8cbdf4e369d0910dfc538566bfd09df89a774aa8
 FROM init-${TARGETARCH} AS init
 FROM ${RUNTIME_IMAGE} AS runtime-base
 
+# TODO(liblzma-backport): remove the local package stages after an authenticated
+# fixed Trixie package passes docs/liblzma-backport.md replacement gates.
+FROM ${PYTHON_IMAGE} AS liblzma-source
+WORKDIR /work
+COPY container/liblzma /inputs
+COPY container/liblzma/debian.sources /etc/apt/sources.list.d/debian.sources
+# Historical dated snapshots retain signature verification. Verify their exact
+# Release hashes too, then authenticate and hash-pin the original Debian source.
+RUN --mount=type=secret,id=build_ca,required=false \
+    if [ -s /run/secrets/build_ca ]; then \
+        export SSL_CERT_FILE=/run/secrets/build_ca; \
+        printf 'Acquire::https::CaInfo "/run/secrets/build_ca";\n' > /tmp/apt-ca.conf; \
+        export APT_CONFIG=/tmp/apt-ca.conf; \
+    fi && \
+    apt-get update --error-on=any && python /inputs/recipe.py indexes && \
+    apt-get install -y --no-install-recommends dpkg-dev && \
+    apt-get build-dep -y --arch-only --no-install-recommends xz-utils=5.8.1-1+deb13u1 && \
+    apt-get source --download-only xz-utils=5.8.1-1+deb13u1 && \
+    python /inputs/recipe.py prepare && rm -f /tmp/apt-ca.conf
+
+FROM liblzma-source AS liblzma-build
+# Fixed changelog time plus SOURCE_DATE_EPOCH stabilizes package timestamps.
+ENV SOURCE_DATE_EPOCH=1791331140
+WORKDIR /work/xz
+RUN --network=none dpkg-buildpackage -B -us -uc -j2 && \
+    python /inputs/recipe.py export
+RUN --network=none mkdir -p /probe && \
+    cc -std=c11 -Wall -Wextra -Werror -O2 -fstack-protector-strong \
+        -D_FORTIFY_SOURCE=2 -Wl,-z,relro,-z,now \
+        -I/work/xz/src/liblzma/api /inputs/decoder_reinit_test.c \
+        -Wl,-l:liblzma.so.5 -o /probe/decoder_reinit_test && \
+    cp /work/xz/tests/files/good-unknown_size-with_eopm.lzma /probe/
+
+# Exportable evidence and test tools never enter the service image.
+FROM scratch AS liblzma-package
+COPY --from=liblzma-build /out/ /
+FROM scratch AS liblzma-test-tools
+COPY --from=liblzma-build /probe/ /probe/
+
 FROM ${PYTHON_IMAGE} AS build
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never \
     UV_PROJECT_ENVIRONMENT=/app/.venv PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -44,6 +83,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     rm -f /app/.venv/.lock && chmod -R go-w /app/.venv
 
 FROM ${PYTHON_IMAGE} AS runtime-files
+COPY --from=liblzma-build /out/liblzma5.deb /tmp/liblzma5.deb
+# Fail on donor drift: do not replace a future official fix with this older fork.
+RUN --network=none test "$(dpkg-query -W -f='${Version}' liblzma5)" = '5.8.1-1+deb13u1' && \
+    dpkg --path-include='/usr/share/doc/liblzma5/*' -i /tmp/liblzma5.deb && \
+    rm /tmp/liblzma5.deb
+COPY --from=liblzma-build /out/liblzma-backport.json /runtime-extra/usr/share/sentrysearch/liblzma-backport.json
 COPY --from=runtime-base /var/lib/dpkg/status.d /tmp/base-status
 # These exact revisions were reviewed together. Fail rather than overlay libc or
 # silently mix different native TLS/loader versions when either pin changes.
@@ -99,7 +144,7 @@ RUN groupadd --system --gid 10001 sentrysearch && \
         --shell /usr/sbin/nologin sentrysearch && \
     install -d -o 10001 -g 10001 -m 0700 /var/lib/sentrysearch
 
-FROM runtime-base
+FROM runtime-base AS service
 COPY --from=runtime-files /runtime-extra/ /
 COPY --from=runtime-files /usr/local/ /usr/local/
 COPY --from=runtime-files /etc/passwd /etc/group /etc/

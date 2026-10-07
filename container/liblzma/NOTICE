@@ -1,0 +1,19 @@
+The three .patch files are unmodified upstream XZ Utils commits by Lasse Collin:
+https://github.com/tukaani-project/xz
+The standalone decoder_reinit_test.c is adapted from upstream test_alone_decoder.c
+(commit ff834f25ae4f9b3e6270d41b4c843b8b1183346c), with attribution in its header.
+These liblzma changes and tests are licensed under 0BSD. The complete Debian
+source package retains its upstream and distribution license files; the final
+image preserves /usr/share/doc/liblzma5/copyright.
+
+Permission to use, copy, modify, and/or distribute this
+software for any purpose with or without fee is hereby granted.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL
+WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL
+THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR
+CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT,
+NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.

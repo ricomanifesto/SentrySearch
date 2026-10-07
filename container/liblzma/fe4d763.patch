@@ -1,0 +1,28 @@
+From fe4d763d566a38ad61d4c5022520c25578a3a464 Mon Sep 17 00:00:00 2001
+From: Lasse Collin <lasse.collin@tukaani.org>
+Date: Wed, 9 Sep 2026 14:14:40 +0300
+Subject: [PATCH] liblzma: Make lzma_lz_decoder_init() safe to reinit after
+ alloc failure
+
+If memory allocation fails and the resulting coder state is reused,
+ensure that memory allocation is attempted again. However, coders that
+are initialized via lzma_next_filter_init() shouldn't be reinitialized
+after failure; they should be cleaned up with lzma_next_end().
+
+Reported-by: GitHub user christos-cantina-security (christos-spearbit)
+---
+ src/liblzma/lz/lz_decoder.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/liblzma/lz/lz_decoder.c b/src/liblzma/lz/lz_decoder.c
+index 1cb120ab3..6dc4cefb7 100644
+--- a/src/liblzma/lz/lz_decoder.c
++++ b/src/liblzma/lz/lz_decoder.c
+@@ -278,6 +278,7 @@ lzma_lz_decoder_init(lzma_next_coder *next, const lzma_allocator *allocator,
+ 
+ 	// Allocate and initialize the dictionary.
+ 	if (coder->dict.size != alloc_size) {
++		coder->dict.size = 0;
+ 		lzma_free(coder->dict.buf, allocator);
+ 
+ 		// The LZ_DICT_EXTRA bytes at the end of the buffer aren't

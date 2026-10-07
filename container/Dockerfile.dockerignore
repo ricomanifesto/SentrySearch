@@ -11,6 +11,7 @@
 !dev/prepare_service_volumes.py
 !certs/**
 !container/build-requirements.txt
+!container/liblzma/**
 **/__pycache__
 **/*.py[cod]
 **/.env

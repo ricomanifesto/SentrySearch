@@ -1,6 +1,50 @@
 # Image security remediation — October 6, 2026
 
-## Current candidate: OS-package minimization
+## Current candidate: maintained local liblzma backport
+
+The default service-image recipe now builds the bounded backport described in
+[liblzma maintenance and replacement](liblzma-backport.md). The current ARM64
+local image is
+`sha256:1acd566a7fd4921aa8305604144d3159467be1d214e69b6ca6a0e80a384df4c0`.
+It is not a published registry manifest or a production repair.
+
+Two clean package compilations with pinned donor, authenticated dated Debian
+snapshots, source/patch hashes and fixed timestamps produced identical
+`liblzma5.deb` bytes, SHA-256
+`15ba9ce2b135332d4a143b71a6861197ee744e6b94db1c0523b313c26aab51b9`.
+The shared library is byte-identical to the previously evaluated two-fix library.
+Both exported source bundles pass member checksums and extract successfully;
+build-date fields differ, and whole-image bit reproducibility is not claimed.
+The package is local `5.8.1-1+deb13u1+sentry1`, not an official Debian update.
+
+The integrated native tests reproduce exit 139 on the stock image and recover
+correctly on the final image in alone and auto-to-alone modes. All ten final-image
+liblzma checks pass: two bounded allocator regressions, seven Python compatibility
+cases and installed package/linkage/provenance validation. The packaging guard
+caught slim-base documentation filtering; installation now restores every listed
+liblzma package file. Debian normal/static/xzdec build tests pass, and the setup
+gate passes 737 tests plus lint, formatting, types and API smoke.
+The final image passes all 30 container checks together: ten liblzma, thirteen
+service-image and seven named-volume cases (92 seconds), with local stub providers.
+
+The final exact-image scan/SBOM uses Trivy 0.75.0, database update
+`2026-10-06T19:11:49Z`, all severities, no ignore file and no telemetry/upload:
+**C0/H7/M27/L14/U1**, 29 Debian records, no Python findings. All 49
+advisory/package/severity tuples are unchanged. The scanner still flags
+`TEMP-1147318-639065` against the honest local version; upstream rates it HIGH.
+Retain that raw match alongside source and behavioral evidence, not a suppression.
+
+**Release remains held.** Resolve the other component/build/range dispositions
+below and the environment-specific contract. No release exception is granted.
+The project owns this temporary package until a verified official Trixie fix
+passes the documented replacement gates. ARM64 evidence does not prove AMD64,
+direct lzip/MicroLZMA allocation-failure behavior, sanitizer coverage or cloud
+execution. Application pushes, publication and deployment are separate actions.
+
+## Historical candidate: OS-package minimization
+
+The following image, counts and next step record the predecessor. The local
+backport above supersedes its unpatched-liblzma status, not the remaining risks.
 
 The latest ARM64 image is
 `sha256:275b21b7f3ffebfd6b257bff20626c2ed09f8b59dbd17fd77c2f42737ce068f1`

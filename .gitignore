@@ -65,6 +65,7 @@ Thumbs.db
 !/docs/service-images.md
 !/docs/platform-fit.md
 !/docs/image-security.md
+!/docs/liblzma-backport.md
 backup_*/
 # Legacy main files (keep API files)
 /main.py

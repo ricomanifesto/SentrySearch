@@ -2,8 +2,9 @@
 
 `container/Dockerfile` builds one backend image for the API, the durable-generation
 worker, and the product release job. Each role runs as an independent process
-and service. This is a locally proven build and process contract, not a published
-image, a deployment, or evidence of a production cutover.
+and service. Local build/process checks are separate from image publication,
+deployment, or evidence of a production cutover; each changed image must rerun
+the checks below.
 
 The existing Railway service is unchanged: `railway.json` still selects Railpack
 and `python run_api.py`. The image definition lives outside the repository root
@@ -28,6 +29,12 @@ when changing either binary. Update a pin deliberately and rerun the proof below
 Image digests are not bit-for-bit
 reproducible across builds.
 
+The temporary [liblzma backport](liblzma-backport.md) additionally pins Debian
+snapshot release hashes, source archives and upstream patches. It produces the
+honestly named local package `5.8.1-1+deb13u1+sentry1`, retains provenance and
+licenses, and has an explicit official-package replacement gate. Its test tools
+and source exports are separate build targets, not runtime files.
+
 The runtime contains no shell, package manager or administrative/build commands.
 It keeps the existing Python interpreter/stdlib, locked application environment,
 and required native-library package files. Distroless owns libc, core OpenSSL,
@@ -40,11 +47,15 @@ this composition when either base pin changes; an upstream Python version upgrad
 is a separate decision. Use exec-form Python commands, never shell-form probes.
 
 `container/Dockerfile.dockerignore` admits only `pyproject.toml`, `uv.lock`,
-`.python-version`, `run_api.py`, `src/`, `certs/`, and the three explicit service
-points from `dev/`. Tests, fixtures, the frontend, Terraform, and `.env` files
-never enter the build context. Behind a TLS-intercepting build proxy, pass its
+`.python-version`, `run_api.py`, `src/`, `certs/`, the three explicit service
+entry points from `dev/`, `container/build-requirements.txt`, and curated
+`container/liblzma/` recipe/patch/probe inputs. The latter enter build/test stages;
+the native fixture is extracted from authenticated source there. Neither native
+test tools nor fixtures enter the final service image. The general `tests/`
+tree, frontend, Terraform, and `.env` files remain outside the build context.
+Behind a TLS-intercepting build proxy, pass its
 complete PEM trust bundle as `--secret id=build_ca,src=<bundle>`; it is used only
-while downloading dependencies and is not stored in a layer.
+while downloading dependencies/source and is not stored in a layer.
 
 ## Roles
 
@@ -150,14 +161,16 @@ The initializer exits before application startup, which depends on its success.
 uv run python dev/check_service_images.py --runtime-repo ../sentryruntime
 ```
 
-The command builds this image and the SentryRuntime image, then runs
-`tests/service_images.py` against containers on an internal Docker network with
-no outbound route. It generates disposable credentials and separate CAs for
-PostgreSQL and the runtime, uses verified TLS for both product and runtime
-databases and verified HTTPS with scoped tokens to the runtime, and replaces the
+The command builds this image, the SentryRuntime image, and the separate
+`liblzma-test-tools` target, then pins their immutable local image IDs. It runs
+`tests/service_images.py`, `tests/platform_fit.py`, and
+`tests/liblzma_backport.py`. The cross-service tests use containers on an internal
+Docker network with no outbound route. They generate disposable credentials and
+separate CAs for PostgreSQL and the runtime, use verified TLS for both product and
+runtime databases and verified HTTPS with scoped tokens to the runtime, and replace the
 model provider with a local stub that accepts connections and never responds.
 
-It proves:
+The suites check:
 
 - the image contents match tracked `src/`, `certs/`, and the release entry points;
   application files are root-owned; the image has no default command, baked
@@ -167,6 +180,9 @@ It proves:
   and multiprocessing-spawn compatibility, plus package checksums and licenses
   for actually loaded system libraries; a metadata-masking negative control
   proves the provenance assertion detects missing inventory;
+- controlled native liblzma allocation-failure/reinitialization and Python
+  compatibility in separate network-disabled, capped containers, plus honest
+  local-package metadata; see [the backport procedure and coverage limits](liblzma-backport.md);
 - the release job succeeds with the schema-owner role, is idempotent, and is
   rejected for the application role; the application role passes the read-only
   check after grants and cannot create tables;

@@ -1,0 +1,39 @@
+{
+  "advisory": "GHSA-5qpq-xqfv-j9pg",
+  "debian_tracker": "TEMP-1147318-639065",
+  "original_source_version": "5.8.1-1+deb13u1",
+  "patched_version": "5.8.1-1+deb13u1+sentry1",
+  "source_date_epoch": 1791331140,
+  "snapshots": {
+    "debian": "https://snapshot.debian.org/archive/debian/20261006T203214Z/",
+    "debian-security": "https://snapshot.debian.org/archive/debian-security/20261006T205323Z/"
+  },
+  "snapshot_release_sha256": {
+    "trixie": "0584fba32e13e0ab8285fb16c27adea1ec03a73669c18702821094fd6ca86675",
+    "trixie-updates": "09efe67a4892d8b94393f21a628a51f94ae9d92ad364de8645c965a1a2c1533c",
+    "trixie-security": "a3ed6f5fa240f62d421e4afe1987ae35a5b1aceee52d44149f7d58bb3282af4a"
+  },
+  "source_sha256": {
+    "xz-utils_5.8.1-1+deb13u1.dsc": "ddadd9d9f7c4bb80b08f9f17409e2701a29a4cf8fe25e15d19605e5281c1fc1b",
+    "xz-utils_5.8.1.orig.tar.xz": "0b54f79df85912504de0b14aec7971e3f964491af1812d83447005807513cd9e",
+    "xz-utils_5.8.1.orig.tar.xz.asc": "4138f4ceca1aa7fd2085fb15a23f6d495d27bca6d3c49c429a8520ea622c27ae",
+    "xz-utils_5.8.1-1+deb13u1.debian.tar.xz": "0e48427971a9ce674ddbba26e34ac1dd009c683f3816ce17852d99dc7b0a8e46"
+  },
+  "patches": [
+    {
+      "file": "fe4d763.patch",
+      "commit": "fe4d763d566a38ad61d4c5022520c25578a3a464",
+      "sha256": "393ff9e4b6a1de28a4db6e1191169645b15fa4f6d73ae23ba0a63fab3021edce"
+    },
+    {
+      "file": "e5e63d5.patch",
+      "commit": "e5e63d50eac1b4357a5a7a0abd3c5f99a5c47881",
+      "sha256": "2b618f5a6e1b8b6473503345fe47c468c230d0216262280f3c16c156fb39e1b2"
+    },
+    {
+      "file": "ff834f2.patch",
+      "commit": "ff834f25ae4f9b3e6270d41b4c843b8b1183346c",
+      "sha256": "6c0fe59b43c887ed4d8a8eb8283b901c9bbac0221f01dc651ebee897f5f26961"
+    }
+  ]
+}
