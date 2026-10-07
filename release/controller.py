@@ -900,9 +900,20 @@ class ReleaseController:
                              task_arn=task_arn)  # fmt: skip
         start = epoch - timedelta(seconds=policy.max_future_skew_seconds)
         token: str | None = None
+        latest = epoch
+
+        def observed_now() -> datetime:
+            # Deadlines and freshness assume the clock never moves backwards.
+            nonlocal latest
+            current = self.clock.now()
+            if current < latest:
+                raise _Hold("controller_clock_rollback")
+            latest = current
+            return current
+
         while True:
             self._guard()
-            now = self.clock.now()
+            now = observed_now()
             if now >= deadline:
                 reason = gate.reason or (
                     "window_incomplete" if gate.received else "receipt_missing"
@@ -916,24 +927,25 @@ class ReleaseController:
             except Exception:
                 # Denied, missing or malformed reads prove nothing for this poll.
                 # Visibility was lost until the read returned, however long it took.
-                gate.clear("readiness_logs_unavailable", self.clock.now())
+                gate.clear("readiness_logs_unavailable", observed_now())
             else:
                 token = read.token
                 gate.ingest(read.messages, now)
                 if not read.complete:
-                    gate.clear("readiness_logs_incomplete", self.clock.now())
+                    gate.clear("readiness_logs_incomplete", observed_now())
             status, detail, arns = self._service_snapshot("worker", deployment)
             if status == "failed" or detail == "task_count_drift":
                 raise _Hold(detail)
             if task_arn not in arns or (status == "ready" and detail != task_arn):
                 raise _Hold("task_replaced")
             if status != "ready":
-                gate.clear(detail, self.clock.now())  # when ECS was observed
-            elif gate.stable(self.clock.now()):
+                gate.clear(detail, observed_now())  # when ECS was observed
+            elif gate.stable(observed_now()):
                 # Re-enumerate every recorded service immediately before success;
                 # success still needs the deadline and fresh receipts after it.
                 self._require_recorded_tasks(recorded)
-                if self.clock.now() < deadline and gate.stable(self.clock.now()):
+                checked = observed_now()
+                if checked < deadline and gate.stable(checked):
                     self._guard()
                     self._observe(check_id, "operational_passed", task_arn=task_arn,
                                   last_reset=gate.reason, **gate.summary())  # fmt: skip

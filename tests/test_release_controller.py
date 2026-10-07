@@ -875,6 +875,23 @@ def test_success_needs_fresh_receipts_after_the_final_enumeration(monkeypatch):
     assert passed["last_reset"] == "receipt_stale" and passed["first_sequence"] > 8
 
 
+def test_controller_clock_rollback_at_final_success_holds(monkeypatch):
+    r = rig()
+    original = ReleaseController._require_recorded_tasks
+    calls = []
+
+    def roll_back(self, recorded_tasks):
+        calls.append(1)
+        if len(calls) == 2:  # the gate's final enumeration
+            r.clock.moment -= timedelta(seconds=30)
+        return original(self, recorded_tasks)
+
+    monkeypatch.setattr(ReleaseController, "_require_recorded_tasks", roll_back)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "controller_clock_rollback", "services_started")
+    assert not gate_events(r, "operational_passed")
+
+
 def test_a_resumed_gate_attempt_starts_a_new_epoch():
     r = rig()
 

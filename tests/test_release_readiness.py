@@ -154,10 +154,10 @@ def test_the_stream_is_derived_from_the_environment_and_observed_task_only():
 
 def test_sixty_seconds_of_consecutive_fresh_eligible_receipts_pass():
     readiness = gate()
-    readiness.ingest(steady(1, 51), at(52))
-    assert not readiness.stable(at(52))
-    readiness.ingest([line(7, 61)], at(62))
-    assert readiness.stable(at(62))
+    readiness.ingest(steady(11, 61), at(62))
+    assert not readiness.stable(at(62))
+    readiness.ingest([line(7, 71)], at(72))
+    assert readiness.stable(at(72))
     assert readiness.summary() == {
         "boot_id": BOOT, "first_sequence": 1, "last_sequence": 7, "stable_seconds": 60.0,
     }  # fmt: skip
@@ -231,11 +231,11 @@ def test_a_window_never_starts_on_a_receipt_that_is_not_ready():
 def test_worker_reported_uptime_cannot_shorten_the_wall_clock_window():
     readiness = gate()
     # Each step is within the skew tolerance (14.9 s of uptime per 10 s of wall time).
-    readiness.ingest([line(i + 1, 1 + 10 * i, uptime=100.0 + 14.9 * i) for i in range(6)], at(52))
+    readiness.ingest([line(i + 1, 11 + 10 * i, uptime=100.0 + 14.9 * i) for i in range(6)], at(62))
     assert readiness.reason is None
-    assert not readiness.stable(at(52)), "74.5 s of reported uptime in 50 s of wall time"
-    readiness.ingest([line(7, 61, uptime=189.4)], at(62))
-    assert readiness.stable(at(62))
+    assert not readiness.stable(at(62)), "74.5 s of reported uptime in 50 s of wall time"
+    readiness.ingest([line(7, 71, uptime=189.4)], at(72))
+    assert readiness.stable(at(72))
 
 
 def test_a_burst_of_transitions_at_one_instant_is_not_a_clock_anomaly():
@@ -248,11 +248,31 @@ def test_a_burst_of_transitions_at_one_instant_is_not_a_clock_anomaly():
     assert readiness.stable(at(92)) and readiness.summary()["first_sequence"] == 6
 
 
+def test_a_fast_worker_clock_cannot_seed_the_window_before_the_attempt():
+    readiness = gate()
+    # The worker runs 5 s ahead: receipt 1 was emitted 4 s before the attempt,
+    # but its observed time is just after the epoch.
+    for i in range(7):
+        readiness.ingest([line(i + 1, 1 + i * 10)], at(max(0, -4 + i * 10)))
+    assert not readiness.stable(at(56)), "a pre-attempt sample started the window"
+    readiness.ingest([line(8, 71)], at(66))
+    assert readiness.stable(at(66)) and readiness.summary()["first_sequence"] == 2
+
+
+def test_controller_clock_rollback_is_never_stable():
+    readiness = gate()
+    readiness.ingest(steady(11, 71, first_sequence=2), at(72))
+    assert readiness.stable(at(72))
+    assert not readiness.stable(at(50)), "time moved backwards after ingestion"
+    assert readiness.reason == "controller_clock_rollback"
+    assert not readiness.stable(at(72)), "a rollback needs a complete new window"
+
+
 def test_identical_replays_are_deduplicated_not_counted_twice():
     readiness = gate()
-    history = steady(1, 61)
-    readiness.ingest(history + history[:3], at(62))
-    assert readiness.reason is None and readiness.stable(at(62))
+    history = steady(11, 71)
+    readiness.ingest(history + history[:3], at(72))
+    assert readiness.reason is None and readiness.stable(at(72))
 
 
 def test_consecutive_sequences_across_a_stall_still_reset():
@@ -266,12 +286,12 @@ def test_consecutive_sequences_across_a_stall_still_reset():
 
 def test_a_stale_last_receipt_clears_stability_even_without_new_events():
     readiness = gate()
-    readiness.ingest(steady(1, 61), at(62))
-    assert readiness.stable(at(91))
-    assert not readiness.stable(at(92)), "older than 30 s by observation time"
+    readiness.ingest(steady(11, 71), at(72))
+    assert readiness.stable(at(101))
+    assert not readiness.stable(at(102)), "older than 30 s by observation time"
     assert readiness.reason == "receipt_stale"
-    readiness.ingest([line(8, 93)], at(94))
-    assert not readiness.stable(at(94)), "freshness expiry restarts the window"
+    readiness.ingest([line(8, 103)], at(104))
+    assert not readiness.stable(at(104)), "freshness expiry restarts the window"
     assert readiness.received == 8
 
 

@@ -286,7 +286,11 @@ class ReadinessGate:
         self.received = 0
         self._last: WorkerReceipt | None = None
         self._window: WorkerReceipt | None = None
-        self._floor = epoch_start
+        # A worker clock may run ahead by the allowed skew, so a receipt observed
+        # just after the epoch may have been emitted before the attempt began.
+        skew = timedelta(seconds=policy.max_future_skew_seconds)
+        self._floor = epoch_start + skew
+        self._latest = epoch_start  # controller time never moves backwards
         self._seen: dict[tuple[str, int], bytes] = {}
 
     def _start(self, receipt: WorkerReceipt | None) -> WorkerReceipt | None:
@@ -309,8 +313,18 @@ class ReadinessGate:
         self._reset(reason)
         skew = timedelta(seconds=self.policy.max_future_skew_seconds)
         self._floor = max(self._floor, at + skew)
+        self._latest = max(self._latest, at)
+
+    def _advance(self, now: datetime) -> bool:
+        """Record controller time; False if it moved backwards (and clear)."""
+        if now < self._latest:
+            self.clear("controller_clock_rollback", self._latest)
+            return False
+        self._latest = now
+        return True
 
     def ingest(self, messages: Iterable[str], now: datetime) -> None:
+        self._advance(now)
         for message in messages:
             try:
                 receipt = parse_line(message)
@@ -380,6 +394,8 @@ class ReadinessGate:
             self._window = self._start(receipt)
 
     def stable(self, now: datetime) -> bool:
+        if not self._advance(now):
+            return False
         last, window = self._last, self._window
         if last is None or window is None:
             return False
