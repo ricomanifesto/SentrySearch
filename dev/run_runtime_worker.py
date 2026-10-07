@@ -7,7 +7,6 @@ import argparse
 import logging
 import os
 import socket
-import sys
 import threading
 import time
 
@@ -31,6 +30,7 @@ from src.execution.worker import DurableGenerationWorker
 from src.execution.supervisor import Emit, WorkerSettings, WorkerSupervisor
 
 logger = logging.getLogger(__name__)
+STDOUT_FILENO = 1
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,11 +61,12 @@ def main() -> int:
         settings = WorkerSettings(**vars(parse_args()))
         # A release task definition fixes the release identity; local runs emit none.
         release_id = release_id_from_environment(os.environ)
-        # Receipts never share the buffered sys.stdout object or its lock.
+        # Receipts go to the process's standard output descriptor, which the log
+        # driver reads, never through the buffered sys.stdout object or its lock.
         receipts = (
             None
             if release_id is None
-            else ReadinessReceipts(release_id, DescriptorSink(sys.stdout.fileno()))
+            else ReadinessReceipts(release_id, DescriptorSink(STDOUT_FILENO))
         )
         return WorkerSupervisor(settings, run_worker_loop, receipts=receipts).run()
     except ValueError as error:

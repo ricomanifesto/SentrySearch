@@ -59,7 +59,10 @@ class DescriptorSink:
     It never uses the interpreter's buffered ``sys.stdout``, so a writer blocked
     on a full pipe holds no lock that interpreter shutdown needs, and application
     output keeps its own buffering and blocking mode. Each receipt is one write
-    of at most 2 KiB, which a pipe delivers atomically between other writers.
+    call (marker, JSON of at most 2 KiB and a newline). A pipe keeps a write
+    whole only up to its atomic size (4096 bytes on Linux, 512 on macOS), so
+    another writer's output could split a rare large receipt; the observer then
+    sees an invalid line or a gap.
     """
 
     def __init__(self, fd: int) -> None:
@@ -75,7 +78,10 @@ class DescriptorSink:
         pass
 
     def close(self) -> None:
-        os.close(self._fd)
+        # Idempotent: a second close must never hit a reused descriptor number.
+        if self._fd >= 0:
+            fd, self._fd = self._fd, -1
+            os.close(fd)
 
 
 def release_id_from_environment(environ: Mapping[str, str]) -> str | None:

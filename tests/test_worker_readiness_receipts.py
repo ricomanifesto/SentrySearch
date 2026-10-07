@@ -1,5 +1,6 @@
 """Supervisor readiness receipts: schema, cadence, gaps and non-blocking delivery."""
 
+import io
 import json
 import os
 import re
@@ -352,10 +353,58 @@ def test_a_blocked_log_pipe_never_delays_drain_or_reaping():
         thread.join(5)
 
 
-def no_core_dumps():
-    import resource
+def test_a_descriptor_sink_writes_a_private_duplicate_and_closes_once():
+    read_end, write_end = os.pipe()
+    try:
+        sink = receipts_module.DescriptorSink(write_end)
+        sink.write("receipt\n")
+        sink.close()
+        reused = os.pipe()  # may reuse the closed duplicate's number
+        sink.close()  # a second close must not close an unrelated descriptor
+        for fd in reused:
+            os.fstat(fd)
+            os.close(fd)
+        os.write(write_end, b"application\n")  # the original stays open
+        assert os.read(read_end, 100) == b"receipt\napplication\n"
+    finally:
+        os.close(read_end)
+        os.close(write_end)
 
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+def test_a_writer_still_blocked_after_close_keeps_its_descriptor():
+    read_end, write_end = os.pipe()
+    sink = receipts_module.DescriptorSink(write_end)
+    receipts = ReadinessReceipts(RELEASE_ID, sink, queue_size=4)
+    try:
+        ready = True
+        deadline = time.monotonic() + 10
+        while receipts.dropped < 20 and time.monotonic() < deadline:
+            ready = not ready
+            receipts.observe(snapshot(ready=ready))
+            time.sleep(0.001)
+        assert receipts.dropped >= 20, "the unread pipe filled"
+        receipts.close(snapshot(alive=False), timeout=0.1)
+        assert receipts._writer.is_alive()
+        os.fstat(sink._fd)  # not closed under the blocked writer
+    finally:
+        # Drain the pipe so the writer can finish, then stop it: a full queue may
+        # have refused close()'s stop marker.
+        drained = threading.Event()
+
+        def drain():
+            while not drained.is_set():
+                if not os.read(read_end, 65536):
+                    return
+
+        reader = threading.Thread(target=drain, daemon=True)
+        reader.start()
+        receipts._queue.put(receipts_module._STOP, timeout=5)
+        receipts._writer.join(5)
+        drained.set()
+        sink.close()
+        os.close(write_end)  # ends the reader's blocking read
+        reader.join(5)
+        os.close(read_end)
 
 
 @pytest.mark.parametrize("unbuffered", [False, True], ids=["buffered", "unbuffered"])
@@ -369,9 +418,9 @@ def test_the_worker_process_exits_cleanly_with_an_unread_full_stdout_pipe(tmp_pa
     stderr = tmp_path / "stderr.txt"
     with stderr.open("wb") as errors:
         # stdout is deliberately not read until the process has exited.
+        # The fixture disables its own core dumps; no preexec_fn in a threaded parent.
         child = subprocess.Popen(
-            command, cwd=tmp_path, env=env, stdout=subprocess.PIPE, stderr=errors,
-            preexec_fn=no_core_dumps,
+            command, cwd=tmp_path, env=env, stdout=subprocess.PIPE, stderr=errors
         )  # fmt: skip
         try:
             returncode = child.wait(timeout=30)
@@ -386,6 +435,7 @@ def test_the_worker_process_exits_cleanly_with_an_unread_full_stdout_pipe(tmp_pa
     assert "CLOSE_RETURNED" in log and "Fatal Python error" not in log, log
     assert returncode == 0, log
     assert "STDOUT_BLOCKING=True" in log, "application stdout keeps its blocking mode"
+    assert "WRITER_ALIVE=True" in log, "the writer was still blocked at shutdown"
     assert output.startswith(b"APPLICATION_OUTPUT\n")
     assert RECEIPT_MARKER.encode() in output
     assert int(log.split("DROPPED=")[1].split()[0]) >= 100, "the pipe really filled"
@@ -417,6 +467,9 @@ def test_worker_entrypoint_wires_receipts_from_the_environment(monkeypatch):
     monkeypatch.setattr(run_runtime_worker, "load_dotenv", lambda: None)
     monkeypatch.setattr("sys.argv", ["run_runtime_worker"])
     monkeypatch.setenv("SENTRYSEARCH_RELEASE_ID", RELEASE_ID)
+    # Receipts go to the process's standard output descriptor, even when
+    # sys.stdout has been replaced in-process by an object without one.
+    monkeypatch.setattr("sys.stdout", io.StringIO())
     assert run_runtime_worker.main() == 0
     assert isinstance(built["receipts"], ReadinessReceipts)
     assert built["receipts"].release_id == RELEASE_ID

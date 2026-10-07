@@ -8,9 +8,12 @@ Executed by tests/test_worker_readiness_receipts.py.
 """
 
 import os
+import resource
 import sys
 import time
 from pathlib import Path
+
+resource.setrlimit(resource.RLIMIT_CORE, (0, 0))  # an abort leaves no core file
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -39,6 +42,7 @@ class FillingSupervisor:
             time.sleep(0.001)
         print(f"DROPPED={receipts.dropped}", file=sys.stderr, flush=True)
         receipts.close({"alive": False, "ready": False, "phase": "stopped"}, timeout=0.1)
+        print(f"WRITER_ALIVE={receipts._writer.is_alive()}", file=sys.stderr)
         print(f"STDOUT_BLOCKING={os.get_blocking(sys.stdout.fileno())}", file=sys.stderr)
         print("CLOSE_RETURNED", file=sys.stderr, flush=True)
         return 0
