@@ -43,3 +43,23 @@ class EvidencePort(Protocol):
     def job_receipt(self, release_id: str, job_id: str, task_arn: str) -> dict[str, Any] | None: ...
 
     def operational_receipt(self, release_id: str, check_id: str) -> dict[str, Any] | None: ...
+
+
+class LogPort(Protocol):
+    """GetLogEvents on one controller-derived stream, read forward from its head.
+
+    Returns ``{"events": [{"timestamp", "message"}...], "nextForwardToken"}``.
+    The adapter passes the bounds and token through unchanged; the caller owns
+    pagination, so an adapter must not page internally or drop events.
+    """
+
+    def get_log_events(
+        self,
+        log_group: str,
+        log_stream: str,
+        *,
+        start_time_ms: int,
+        end_time_ms: int,
+        next_token: str | None,
+        limit: int,
+    ) -> dict[str, Any]: ...

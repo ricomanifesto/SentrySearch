@@ -26,6 +26,8 @@ from pydantic import (
     ValidationError,
 )
 
+from release.readiness import WORKER_CONTAINER, WORKER_READINESS_CHECK, WORKER_RECEIPT_KIND
+
 SCHEMA_VERSION = 1
 MILESTONE = "operational-paused"
 # The reviewed Runtime service-grant script. Change only after reviewing new source.
@@ -405,8 +407,7 @@ def _check_manifest(manifest: Manifest) -> None:
     _check_jobs(manifest)
     _check_release_tools_jobs(manifest)
     _check_secret_separation(manifest)
-    if len({check.id for check in manifest.operational_checks}) != len(manifest.operational_checks):
-        raise ReleaseRejected("invalid_field", "operational_checks")
+    _check_operational(manifest)
     rollback = manifest.rollback
     if isinstance(rollback, CompatibleRelease) and rollback.release_id == manifest.release_id:
         raise ReleaseRejected("rollback_not_prior_release", "rollback.release_id")
@@ -541,6 +542,25 @@ def _check_release_tools_jobs(manifest: Manifest) -> None:
             or proof["schema"] != migrate["schema"]
         ):
             raise ReleaseRejected("job_expectation_inconsistent", f"jobs.{database}")
+
+
+def _check_operational(manifest: Manifest) -> None:
+    """The controller proves worker readiness from the worker's own receipts.
+
+    Those receipts are read from the configured stream of the worker's search
+    application container, so the manifest must name that exact container.
+    """
+    checks = manifest.operational_checks
+    if len({check.id for check in checks}) != len(checks):
+        raise ReleaseRejected("invalid_field", "operational_checks")
+    if WORKER_READINESS_CHECK not in {check.id for check in checks} or any(
+        (check.id == WORKER_READINESS_CHECK) != (check.receipt_schema == WORKER_RECEIPT_KIND)
+        for check in checks
+    ):
+        raise ReleaseRejected("worker_readiness_check_invalid", "operational_checks")
+    images = {item.name: item.image for item in manifest.services.worker.containers}
+    if images.get(WORKER_CONTAINER) != "search":
+        raise ReleaseRejected("worker_container_invalid", "services.worker.containers")
 
 
 def _check_secret_separation(manifest: Manifest) -> None:

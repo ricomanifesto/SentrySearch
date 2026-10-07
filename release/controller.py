@@ -34,7 +34,14 @@ from release.manifest import (
     canonical_sha256,
     verify_approval,
 )
-from release.ports import AmbiguousResponse, Clock, EcsPort, EvidencePort
+from release.ports import AmbiguousResponse, Clock, EcsPort, EvidencePort, LogPort
+from release.readiness import (
+    WORKER_READINESS_CHECK,
+    GatePolicy,
+    ReadinessGate,
+    read_stream,
+    worker_stream,
+)
 
 SERVICE_KEYS = ("runtime", "api", "worker")
 TOKEN = re.compile(r"[A-Za-z0-9_-]{16,64}")
@@ -42,6 +49,7 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 IDENTICAL_RETRIES = 3
 VISIBILITY_POLLS = 3
 STOP_CONFIRMATION_MARGIN = timedelta(seconds=30)
+READINESS_POLICY = GatePolicy()
 
 
 def _iso(moment: datetime) -> str:
@@ -95,6 +103,7 @@ class ReleaseController:
         store: ObjectStore,
         ecs: EcsPort,
         evidence: EvidencePort,
+        logs: LogPort,
         clock: Clock,
         tokens: Callable[[], str],
         session_id: str,
@@ -105,6 +114,7 @@ class ReleaseController:
         self.store = store
         self.ecs = ecs
         self.evidence = evidence
+        self.logs = logs
         self.clock = clock
         self.tokens = tokens
         self.session_id = session_id
@@ -837,6 +847,9 @@ class ReleaseController:
             recorded[key] = ready["task_arn"]
         self._require_recorded_tasks(recorded)
         for check in self.manifest.operational_checks:
+            if check.id == WORKER_READINESS_CHECK:
+                self._await_worker_readiness(check.id, recorded)
+                continue
             receipt = self.evidence.operational_receipt(self.release_id, check.id)
             if receipt is None:
                 raise _Hold("operational_evidence_missing")
@@ -853,6 +866,78 @@ class ReleaseController:
         # Re-enumerate immediately before success: a replacement needs a fresh window.
         self._require_recorded_tasks(recorded)
         self._transition(State.OPERATIONAL_VERIFIED)
+
+    def _await_worker_readiness(self, check_id: str, recorded: dict[str, str]) -> None:
+        """Observe the recorded worker task's own receipts for one bounded gate attempt.
+
+        Identity comes from ECS: the recorded deployment and task, whose revision
+        and image digests ``evaluate_service`` checks on every poll, and the fixed
+        app-container stream derived from that task. Each attempt is a new epoch;
+        resumed attempts keep the first attempt's deadline. Missing logs, denied or
+        incomplete reads and ECS visibility loss only clear stability, so they end
+        as not proven at the deadline. Platform identity changes hold at once.
+        """
+        policy = READINESS_POLICY
+        task_arn = recorded["worker"]
+        deployment = self._deployment_id("worker")
+        assert deployment is not None
+        group, stream = worker_stream(self.manifest.environment.name, task_arn)
+        epoch = self.clock.now()
+        earlier = [
+            _time(event["deadline_at"])
+            for event in self._results(check_id)
+            if event["result"] == "readiness_observing"
+        ]
+        # A resumed attempt never gets a later deadline. Enforce exactly the
+        # recorded whole-second (rounded-down) value.
+        limit = min(
+            [epoch + timedelta(seconds=policy.gate_seconds), self._window_deadline(), *earlier]
+        )
+        deadline = _time(_iso(limit))
+        self._observe(check_id, "readiness_observing", task_arn=task_arn,
+                      epoch_at=_iso(epoch), deadline_at=_iso(deadline))  # fmt: skip
+        gate = ReadinessGate(policy, release_id=self.release_id, epoch_start=epoch,
+                             task_arn=task_arn)  # fmt: skip
+        start = epoch - timedelta(seconds=policy.max_future_skew_seconds)
+        token: str | None = None
+        while True:
+            self._guard()
+            now = self.clock.now()
+            if now >= deadline:
+                reason = gate.reason or (
+                    "window_incomplete" if gate.received else "receipt_missing"
+                )
+                self._observe(check_id, "readiness_not_proven", task_arn=task_arn,
+                              last_reason=reason, receipts=gate.received)  # fmt: skip
+                raise _Hold("worker_readiness_not_proven")
+            try:
+                read = read_stream(self.logs, group, stream, token=token, start=start, end=now,
+                                   policy=policy)  # fmt: skip
+            except Exception:
+                # Denied, missing or malformed reads prove nothing for this poll.
+                gate.clear("readiness_logs_unavailable", now)
+            else:
+                token = read.token
+                gate.ingest(read.messages, now)
+                if not read.complete:
+                    gate.clear("readiness_logs_incomplete", now)
+            status, detail, arns = self._service_snapshot("worker", deployment)
+            if status == "failed" or detail == "task_count_drift":
+                raise _Hold(detail)
+            if task_arn not in arns or (status == "ready" and detail != task_arn):
+                raise _Hold("task_replaced")
+            if status != "ready":
+                gate.clear(detail, self.clock.now())  # when ECS was observed
+            elif gate.stable(self.clock.now()):
+                # Re-enumerate every recorded service immediately before success;
+                # success still needs the deadline and fresh receipts after it.
+                self._require_recorded_tasks(recorded)
+                if self.clock.now() < deadline and gate.stable(self.clock.now()):
+                    self._guard()
+                    self._observe(check_id, "operational_passed", task_arn=task_arn,
+                                  last_reset=gate.reason, **gate.summary())  # fmt: skip
+                    return
+            self.clock.sleep(self.poll)
 
     def _require_recorded_tasks(self, recorded: dict[str, str]) -> None:
         for key in SERVICE_KEYS:

@@ -46,7 +46,7 @@ locals {
       # Disabled generation scaffold: a reserved local discard port, no live key.
       OPENROUTER_BASE_URL = "http://127.0.0.1:9"
       OPENROUTER_API_KEY  = "disabled-local-platform-fit"
-    })
+    }, var.release_id == null ? {} : { SENTRYSEARCH_RELEASE_ID = var.release_id })
   }
   mounts = {
     runtime = [{ sourceVolume = "material", containerPath = "/run/material", readOnly = true }]
@@ -71,13 +71,19 @@ locals {
     api     = [{ containerPort = 8001, protocol = "tcp" }]
     worker  = []
   }
+  # Explicit non-blocking delivery, so the account default cannot make worker
+  # output block; overflow drops lines, which the observer sees as sequence gaps.
+  # 4 MiB holds about 18 hours of locally measured receipt output; application
+  # log volume and Fargate behavior are unmeasured (docs/runtime-consistency.md).
+  # Runtime and API modes await their own budget.
+  worker_log_options = { mode = "non-blocking", max-buffer-size = "4m" }
   log_configuration = { for name in keys(local.roles) : name => {
     logDriver = "awslogs"
-    options = {
+    options = merge({
       awslogs-group         = var.log_groups[name]
       awslogs-region        = var.region
       awslogs-stream-prefix = name
-    }
+    }, name == "worker" ? local.worker_log_options : {})
   } }
   task_contracts = { for name, role in local.roles : name => [
     {
@@ -246,6 +252,11 @@ resource "aws_ecs_task_definition" "service" {
 
 output "task_contracts" {
   value = local.task_contracts
+}
+
+output "readiness_log_stream" {
+  description = "The worker app container's configured stream ARN pattern: the only place the attended gate reads readiness receipts (release.readiness.worker_stream)."
+  value       = "arn:aws:logs:${var.region}:${var.account_id}:log-group:${var.log_groups.worker}:log-stream:${local.log_configuration.worker.options["awslogs-stream-prefix"]}/${local.task_contracts.worker[1].name}/*"
 }
 
 output "task_policies" {

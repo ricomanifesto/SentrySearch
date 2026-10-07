@@ -10,7 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from release.ports import EcsPort, EvidencePort
+from release.ports import EcsPort, EvidencePort, LogPort
+from release.readiness import WORKER_CONTAINER, WORKER_LOG_STREAM_PREFIX, worker_stream
+from src.execution.readiness_receipts import release_id_from_environment
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 STAGING = DEPLOY / "aws-staging"
@@ -263,9 +265,11 @@ LAUNCHER_ACTIONS = {
 }
 
 
-# Job receipts are read from the observed task's own log stream. Operational
-# receipts belong to the pending supervisor-readiness observer, not this launcher.
+# Job receipts are read from the observed task's own log stream. Runtime and API
+# operational receipts still await their own observers; worker readiness is read
+# through LogPort from the worker app container's stream.
 EVIDENCE_ACTIONS = {"job_receipt": ("logs:GetLogEvents",), "operational_receipt": ()}
+LOG_ACTIONS = {"get_log_events": ("logs:GetLogEvents",)}
 
 
 def test_launcher_policy_covers_every_controller_ecs_call():
@@ -274,6 +278,7 @@ def test_launcher_policy_covers_every_controller_ecs_call():
     assert {name for name in vars(EvidencePort) if not name.startswith("_")} == set(
         EVIDENCE_ACTIONS
     )
+    assert {name for name in vars(LogPort) if not name.startswith("_")} == set(LOG_ACTIONS)
     plan_test = (STAGING / "releases" / "tests" / "releases.tftest.hcl").read_text()
     allowed = re.search(
         r'statement\.Effect == "Allow"\]\]\)\) == toset\(\[(.*?)\]\)', plan_test, re.DOTALL
@@ -282,7 +287,11 @@ def test_launcher_policy_covers_every_controller_ecs_call():
     asserted = set(re.findall(r'"([a-z]+:[A-Za-z]+)"', allowed[1]))
     assert asserted == {
         action
-        for actions in (*LAUNCHER_ACTIONS.values(), *EVIDENCE_ACTIONS.values())
+        for actions in (
+            *LAUNCHER_ACTIONS.values(),
+            *EVIDENCE_ACTIONS.values(),
+            *LOG_ACTIONS.values(),
+        )
         for action in actions
     }
     # Scale-to-zero updates omit taskDefinition; deploys must name a retained revision.
@@ -290,3 +299,38 @@ def test_launcher_policy_covers_every_controller_ecs_call():
     assert (
         'ArnEqualsIfExists = { "ecs:task-definition" = local.service_revisions[name] }' in services
     )
+
+
+def between(text: str, start: str, end: str) -> str:
+    return text[text.index(start) : text.index(end, text.index(start))]
+
+
+def test_readiness_observer_reads_the_worker_stream_terraform_configures():
+    """The controller derives the stream; Terraform must configure exactly that one."""
+    task_module = configuration(TASK_MODULE)
+    naming = configuration(STAGING / "modules" / "naming")
+    releases = configuration(STAGING / "releases")
+    # awslogs names streams <prefix>/<container>/<task-id>; the prefix is the role key.
+    assert WORKER_LOG_STREAM_PREFIX == "worker" and WORKER_CONTAINER == "app"
+    assert re.search(r"^ +worker += \{ uid = ", task_module, re.MULTILINE)
+    logs = between(task_module, "  log_configuration = {", "  task_contracts = {")
+    assert "awslogs-stream-prefix = name\n" in logs
+    app = between(task_module, "  task_contracts = {", "  assume_task_role =").split("},\n", 1)[1]
+    assert f'name                   = "{WORKER_CONTAINER}"' in app
+    # The group is the naming module's /<prefix>/worker; manifests name the prefix.
+    assert 'name => "/${local.prefix}/${name}"' in block(naming, 'output "log_groups"')
+    task = "arn:aws:ecs:us-east-1:111122223333:task/c/" + "a" * 32
+    assert worker_stream("sentry-staging", task) == (
+        "/sentry-staging/worker",
+        "worker/app/" + "a" * 32,
+    )
+    stream = block(task_module, 'output "readiness_log_stream"')
+    assert 'local.log_configuration.worker.options["awslogs-stream-prefix"]' in stream
+    assert "local.task_contracts.worker[1].name" in stream
+    assert "Resource = [local.current.readiness_log_stream]" in releases
+    # The worker revision fixes the identity its supervisor reads, explicitly non-blocking.
+    assert "{ SENTRYSEARCH_RELEASE_ID = var.release_id }" in task_module
+    uuid = "0b9f7c1e-4d2a-4f6b-9a3e-2c1d0e9f8a7b"
+    assert release_id_from_environment({"SENTRYSEARCH_RELEASE_ID": uuid}) == uuid
+    assert 'worker_log_options = { mode = "non-blocking", max-buffer-size = "4m" }' in task_module
+    assert "release_id          = each.value.release_id" in releases

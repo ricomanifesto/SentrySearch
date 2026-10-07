@@ -141,6 +141,62 @@ cancellation, or dollar-spend guarantees. Work already accepted by a provider
 may continue or incur charges after its local connection closes. No new model
 route or billing setting is introduced by this worker change.
 
+### Readiness receipts
+
+When the task definition sets `SENTRYSEARCH_RELEASE_ID` (the release's lowercase
+UUID, fixed in each staging worker revision), the supervisor also writes
+readiness receipts to stdout for the attended release gate. Local runs without it
+emit none; an invalid value refuses to start.
+
+```text
+SENTRY_WORKER_READINESS {"kind":"sentry.worker-readiness.v1","release_id":"…","boot_id":"…","sequence":7,…}
+```
+
+- Schema v1, at most 2 KiB: kind, release id, a random per-process `boot_id`, a
+  strictly increasing `sequence`, UTC `observed_at` and monotonic
+  `uptime_seconds` (both to the microsecond),
+  `alive`/`ready`/`draining`, phase with elapsed time and budget, and an
+  enumerated error code. Unknown phases and codes become `unknown`. Receipts carry
+  no user or report identifier, URL, credential or exception text.
+- The supervisor main loop emits from the same cached `WorkerStatus.snapshot()`
+  that `/readyz` serves: at startup, every 10 seconds and on each readiness
+  transition (alive, ready, draining, error code, or entering or leaving a working
+  phase). Moving between working phases rides the interval: an idle 2-second poll
+  cycle changes phase four times, which measured about two receipts a second
+  (about 780 B/s) before this rule. A stalled loop stops emitting.
+- The sequence advances before a nonblocking put into a 64-entry queue. A full
+  queue drops the receipt, which leaves a visible gap. A separate writer thread
+  owns stdout, so a blocked log pipe never delays signals, drain or reaping.
+  Shutdown writes a best-effort stopped receipt and waits at most one second.
+
+Receipts support a bounded release observation. They are not proof against a
+compromised worker, nor report-completion, auth or S3 proof. They share the app
+container's log stream with the worker's other output, so a reader of receipts
+can read that output too.
+
+The staging worker revision sets awslogs `mode=non-blocking` and
+`max-buffer-size=4m` explicitly, so neither the account's default mode nor a slow
+log service can block the process. On overflow the driver drops lines; the
+observer sees the gaps and does not pass. Local measurements (2026-10-07, x86_64
+container, Python 3.11, the real supervisor and receipt writer with a target that
+replays `run_worker_loop`'s emits):
+
+| Measured | Result |
+| --- | --- |
+| Receipt line, typical / worst case | 382–401 / 440 bytes |
+| Idle 2-second poll cycle, 60 s | 9 receipts, 57 B/s |
+| Runtime-unavailable cycle, 60 s | 10 receipts, 66 B/s |
+| Blocked writer, 1,000 emits | 935 dropped as gaps, 43 KiB peak traced memory |
+
+At 66 B/s, 4 MiB holds about 18 hours of receipts. Not measured: the real
+worker's application logging during generation and evaluation (it needs Runtime,
+PostgreSQL and S3) and so the buffer's real headroom, the awslogs driver's memory
+and delivery on Fargate (including whether the buffer counts against task
+memory), CloudWatch ingestion latency, and ARM64. Docker 29.8.2 accepted the two
+options with its `local` driver; that shows option syntax only, not awslogs or ECS
+behavior. Runtime and API keep their existing log configuration until their own
+output is measured.
+
 ## Local proof
 
 Run the regular no-services gate first:
@@ -195,8 +251,8 @@ The runner stops its processes and removes its disposable data after execution.
 - Validate the locally tested health, drain, deadlines, and restart behavior in
   the target platform, starting from the packaged process contract in
   [backend service images](service-images.md). Wire alerts for stale backlog
-  samples, missing runs, exhausted evaluation recovery, and terminal-state
-  mismatches. Test the actual platform's termination grace and provider cost
+  samples, stale readiness receipts, missing runs, exhausted evaluation recovery,
+  and terminal-state mismatches; the attended release gate is not a monitor. Test the actual platform's termination grace and provider cost
   controls.
 - Define retention for unreferenced content without deleting any live artifact.
   This slice does not add automatic object cleanup or alter bucket policies.

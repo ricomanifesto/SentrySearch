@@ -116,6 +116,18 @@ a writable root filesystem and is not a valid promotion mechanism for these
 read-only task definitions. A managed readiness/promotion observation path is
 still a deployment gate; local Docker execution is not evidence of that path.
 
+For the attended release gate, `release_id` (the manifest's release UUID; it must
+equal `release_tools.release_id` when jobs are set) is fixed in the worker
+revision as `SENTRYSEARCH_RELEASE_ID`. The supervisor then writes
+[readiness receipts](../../docs/runtime-consistency.md#readiness-receipts) to its
+app container's stream, which `readiness_log_stream` names for the launcher's
+read policy. That stream also carries the worker's other output. The worker's
+awslogs configuration sets `mode = non-blocking` and `max-buffer-size = 4m`
+explicitly instead of relying on the account default; overflow drops lines,
+which the observer sees as gaps. Non-blocking delivery on Fargate and the
+buffer's real headroom are not yet measured. Runtime and API logging is unchanged.
+Without `release_id` the worker emits no receipts.
+
 ## Version-pinned secret bundles
 
 Only full secret ARNs and exact lowercase UUID VersionIds are inputs, never

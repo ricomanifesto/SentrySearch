@@ -130,7 +130,7 @@ def task(arn: str, deployment: str, *, status="RUNNING", health="HEALTHY", defin
         "startedBy": deployment,
         "containers": [
             {"name": "init", "imageDigest": DIGESTS["search"]},
-            {"name": "api", "imageDigest": DIGESTS["search"]},
+            {"name": "app", "imageDigest": DIGESTS["search"]},
         ],
     }
 

@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 from release.journal import PreconditionFailed
 from release.ports import AmbiguousResponse
+from release.readiness import WORKER_RECEIPT_KIND, WORKER_RECEIPT_MARKER
 
 ACCOUNT = "111122223333"
 REGION = "us-east-1"
@@ -97,10 +98,11 @@ def job(job_id: str, phase: str, database: str, *, image: str, expect: dict, sql
 
 
 def services(revision: int = 7) -> dict:
+    # deploy/aws-platform-fit names every service's application container "app".
     return {
-        "runtime": task_spec("runtime", "runtime", revision=revision),
-        "api": task_spec("api", "search", revision=revision),
-        "worker": task_spec("worker", "search", revision=revision),
+        "runtime": task_spec("runtime", "runtime", revision=revision, app="app"),
+        "api": task_spec("api", "search", revision=revision, app="app"),
+        "worker": task_spec("worker", "search", revision=revision, app="app"),
     }
 
 
@@ -179,7 +181,7 @@ def manifest_document(*, rollback: str = "empty_hold") -> dict:
                         "schema": "sentrysearch:1:" + sha("001_release.sql")[:16]}),
         ],  # fmt: skip
         "operational_checks": [
-            {"id": "worker-readiness", "receipt_schema": "sentry.release.worker-readiness.v1"},
+            {"id": "worker-readiness", "receipt_schema": "sentry.worker-readiness.v1"},
             {
                 "id": "runtime-protected-readiness",
                 "receipt_schema": "sentry.release.runtime-ready.v1",
@@ -715,3 +717,126 @@ class FakeEvidence:
         }
         receipt.update(self.check_changes.get(check_id, {}))
         return receipt
+
+
+class FakeLogs:
+    """Worker supervisor receipts as GetLogEvents pages for the observed task.
+
+    Receipts follow the producer contract: one every 10 s from one second after
+    task start, with uptime from process start. Knobs drop, edit, duplicate, delay
+    or stall them, or make reads fail. Nothing here models CloudWatch ingestion,
+    retention or IAM; ``delay`` is a fixed stand-in for ingestion latency.
+    """
+
+    def __init__(self, ecs: FakeEcs, document: dict) -> None:
+        self.ecs = ecs
+        self.release_id = document["release_id"]
+        self.group = f"/{document['environment']['name']}/worker"
+        self.delay = 1.0
+        self.page_size = 100
+        self.empty_pages = 0
+        self.denied = False
+        self.missing = False
+        self.endless = False
+        # (after_sequence, seconds): the loop stalls, then resumes without a gap.
+        self.stall: tuple[int, float] | None = None
+        # Replace each receipt with zero or more receipts (drop, edit, duplicate).
+        self.edit: Callable[[int, dict], list[dict]] | None = None
+        self.before_read: Callable[[], None] | None = None
+        self.calls: list[dict] = []
+        self.delivered: list[str] = []
+
+    @staticmethod
+    def boot_id(task: FakeTask) -> str:
+        return hashlib.md5(task.arn.encode()).hexdigest()
+
+    @staticmethod
+    def observed(task: FakeTask, sequence: int, offset: float = 0) -> datetime:
+        return task.created + timedelta(seconds=1 + 10 * (sequence - 1) + offset)
+
+    def _events(self, task: FakeTask) -> list[tuple[datetime, str]]:
+        now = self.ecs.clock.now()
+        end = min(task.stopped_at or now, now)
+        events, sequence, offset = [], 1, 0.0
+        while True:
+            if self.stall is not None and sequence == self.stall[0] + 1:
+                offset += self.stall[1]
+            at = self.observed(task, sequence, offset)
+            if at > end:
+                return events
+            receipt = {
+                "kind": WORKER_RECEIPT_KIND,
+                "release_id": self.release_id,
+                "boot_id": self.boot_id(task),
+                "sequence": sequence,
+                "observed_at": at.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                "uptime_seconds": 0.5 + (at - self.observed(task, 1)).total_seconds(),
+                "alive": True,
+                "ready": True,
+                "draining": False,
+                "phase": "generation" if sequence % 2 else "idle",
+                "phase_elapsed_seconds": 1.0,
+                "phase_budget_seconds": 62.0,
+                "error_code": None,
+            }
+            for item in [receipt] if self.edit is None else self.edit(sequence, receipt):
+                body = json.dumps(item, separators=(",", ":"))
+                events.append((at, f"{WORKER_RECEIPT_MARKER} {body}"))
+            events.append((at, "INFO sentrysearch worker loop"))  # ordinary output
+            sequence += 1
+
+    def get_log_events(
+        self,
+        log_group: str,
+        log_stream: str,
+        *,
+        start_time_ms: int,
+        end_time_ms: int,
+        next_token: str | None,
+        limit: int,
+    ) -> dict:
+        self.calls.append(
+            {
+                "log_group": log_group,
+                "log_stream": log_stream,
+                "start_time_ms": start_time_ms,
+                "end_time_ms": end_time_ms,
+                "next_token": next_token,
+                "limit": limit,
+                "at": self.ecs.clock.now(),
+            }
+        )
+        if self.before_read is not None:
+            self.before_read()
+        if self.denied:
+            raise PermissionError("AccessDeniedException")
+        task = next(
+            (
+                item
+                for item in self.ecs.tasks.values()
+                if item.group == "service:worker"
+                and log_stream == "worker/app/" + item.arn.rsplit("/", 1)[1]
+            ),
+            None,
+        )
+        if self.missing or log_group != self.group or task is None:
+            raise LookupError("ResourceNotFoundException")
+        now = self.ecs.clock.now()
+        visible = [
+            {"timestamp": int(at.timestamp() * 1000), "message": message}
+            for at, message in self._events(task)
+            if start_time_ms <= at.timestamp() * 1000 < end_time_ms
+            and at + timedelta(seconds=self.delay) <= now
+        ]
+        parts = (next_token or "f/0").split("/")
+        position = int(parts[1])
+        empty = int(parts[2][1:]) if len(parts) > 2 else 0
+        if self.endless:
+            return {"events": [], "nextForwardToken": f"f/{position}/x{len(self.calls)}"}
+        if empty < self.empty_pages:
+            # A new token with no events: not the end of the stream.
+            return {"events": [], "nextForwardToken": f"f/{position}/e{empty + 1}"}
+        page = visible[position : position + min(limit, self.page_size)]
+        self.delivered.extend(str(event["message"]) for event in page)
+        token = f"f/{position + len(page)}" if page else (next_token or "f/0")
+        return {"events": page, "nextForwardToken": token}

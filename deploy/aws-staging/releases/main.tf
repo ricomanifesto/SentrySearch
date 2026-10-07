@@ -17,6 +17,7 @@ module "release" {
   region              = var.region
   name_prefix         = var.name_prefix
   release_scope       = each.key
+  release_id          = each.value.release_id
   runtime_server_name = module.names.runtime_server_name
   artifact_bucket     = module.names.report_bucket
   images              = each.value.images
@@ -91,13 +92,15 @@ locals {
         ],
       )
     }
-    # Receipts are read only from each current job's app-container stream; the
-    # controller names the exact stream of the task it observed. Missing, stale
-    # or ambiguous receipts hold the release.
+    # Receipts are read only from each current job's app-container stream and
+    # the worker app container's stream; the controller names the exact stream
+    # of the task it observed. Missing, stale or ambiguous receipts hold the
+    # release. Every retained worker writes the same configured stream prefix.
     receipts = {
       Version = "2012-10-17"
       Statement = [
         { Sid = "ReadCurrentJobReceipts", Effect = "Allow", Action = ["logs:GetLogEvents"], Resource = sort(values(local.current.receipt_log_streams)) },
+        { Sid = "ReadWorkerReadinessReceipts", Effect = "Allow", Action = ["logs:GetLogEvents"], Resource = [local.current.readiness_log_stream] },
       ]
     }
     tasks = {

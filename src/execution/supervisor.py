@@ -15,6 +15,7 @@ import time
 from typing import Any
 
 from src.domain.execution import EVALUATION_LEASE_SECONDS
+from src.execution.readiness_receipts import ReadinessReceipts
 
 logger = logging.getLogger(__name__)
 PHASES = {"starting", "maintenance", "generation", "evaluation", "idle", "stopped"}
@@ -222,10 +223,19 @@ def _run_child(
 
 
 class WorkerSupervisor:
-    def __init__(self, settings: WorkerSettings, target: WorkerTarget) -> None:
+    def __init__(
+        self,
+        settings: WorkerSettings,
+        target: WorkerTarget,
+        *,
+        receipts: ReadinessReceipts | None = None,
+    ) -> None:
         self.settings = settings
         self.target = target
         self.status = WorkerStatus(settings)
+        # Readiness receipts are emitted only from the main loop below, so a
+        # stalled supervisor stops emitting rather than looking fresh.
+        self.receipts = receipts
         self.health_address: str | None = None
         self._drain = threading.Event()
         self._signal_drain = False
@@ -294,6 +304,8 @@ class WorkerSupervisor:
             self.status.set_alive(True)
             server_thread.start()
             logger.info("Worker health available at %s", self.health_address)
+            if self.receipts is not None:
+                self.receipts.observe(self.status.snapshot())
             drain_sent = False
             channel_open = True
             while True:
@@ -334,6 +346,8 @@ class WorkerSupervisor:
                         self.status.fail("worker_exited")
                     break
                 snapshot = self.status.snapshot()
+                if self.receipts is not None:
+                    self.receipts.observe(snapshot)
                 if (
                     snapshot["draining"]
                     and snapshot["drain_elapsed_seconds"] >= self.settings.drain_seconds
@@ -356,6 +370,9 @@ class WorkerSupervisor:
                     raise RuntimeError("worker could not be reaped")
                 process.close()
             self.status.set_alive(False)
+            if self.receipts is not None:
+                # Stopped is best-effort and bounded: never wait on a blocked pipe.
+                self.receipts.close(self.status.snapshot(), timeout=1.0)
             for connection in (receive, send, control_receive, control_send):
                 connection.close()
             if server_thread.is_alive():

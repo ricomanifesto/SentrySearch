@@ -88,7 +88,18 @@ choice is a separate approval. They allow:
 - `logs:GetLogEvents` only on the current jobs' app-container streams
   (`<job>/<container>/*`) in the two release log groups, to read receipts. The log
   groups are shared by releases, so the controller reads the exact stream of the
-  task it observed and rejects any receipt whose release, job or task differs.
+  task it observed and rejects any receipt whose release, job or task differs;
+- `logs:GetLogEvents` on the worker app container's streams
+  (`/<name_prefix>/worker`, `worker/app/*`) for the worker readiness gate. Every
+  retained worker writes there; the controller derives the recorded task's exact
+  stream and rejects receipts naming another release. Each release's worker
+  revision fixes its `release_id` as `SENTRYSEARCH_RELEASE_ID` and logs with
+  explicit non-blocking delivery and a 4 MiB buffer. **This read also exposes
+  the worker's other application output** (report identifiers, request lines,
+  exception text) for every retained release within log retention, which the
+  launcher could not read before. That widens the release/app boundary and needs
+  explicit approval before these policies are attached; a dedicated receipt
+  destination would remove it.
 
 They deny `ExecuteCommand` and any `RunTask`/`UpdateService` that enables Exec, on
 every resource. They grant no secret read, image push, log write, IAM change or
@@ -97,10 +108,11 @@ character limit at the longest allowed names. RunTask overrides cannot be fully
 constrained by IAM: this is a trusted launcher whose controller rejects overrides,
 not a command sandbox.
 
-**A release cannot complete yet.** The grant, proof and reconciliation jobs, their
-roles and receipt reads now exist (mock-tested), but there is no AWS adapter or
-log reader, the migration images emit no receipts, and the operational observer
-does not exist. Missing, stale or ambiguous receipts hold the release.
+**A release cannot complete yet.** The grant, proof and reconciliation jobs, the
+worker readiness gate, their roles and receipt reads now exist (mock-tested), but
+there is no AWS adapter or log reader, the migration images emit no receipts, and
+the Runtime and API operational observers do not exist. Missing, stale or
+ambiguous receipts hold the release.
 
 The release journal and environment lock use the separate `release-evidence`
 policy from `bootstrap/`, which requires the manifest's environment name to equal
@@ -205,8 +217,8 @@ an approved apply.
 Not implemented here: secret containers (created by the credential owner),
 alarms, SNS, budgets and VPC flow logs (recipient, cost and retention approvals),
 DNS Firewall, the bootstrap job definition and its administrator path, a
-published and scanned release-tools image, explicit non-blocking log delivery
-with a measured buffer, the readiness-observer policy and any operator trust
-policy or role. Release journals, lockfile versions and the proposed 90-day
+published and scanned release-tools image, measured log buffers for Runtime and
+API (the worker's is [set](../../docs/runtime-consistency.md#readiness-receipts)),
+and any operator trust policy or role. Release journals, lockfile versions and the proposed 90-day
 evidence retention have no lifecycle rule: evidence is kept until a reviewed
 retention decision.

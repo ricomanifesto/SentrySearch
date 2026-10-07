@@ -37,6 +37,7 @@ variables {
       sql_sha256    = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     }
   }
+  release_id = "22222222-2222-4222-8222-222222222222"
   release_tools = {
     release_id     = "22222222-2222-4222-8222-222222222222"
     image          = "111122223333.dkr.ecr.us-east-1.amazonaws.com/sentry-release-tools@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
@@ -330,6 +331,26 @@ run "reject_moving_proof_bundle_version" {
     release_tools = merge(var.release_tools, { runtime = merge(var.release_tools.runtime, { proof_bundle = merge(var.release_tools.runtime.proof_bundle, { version_id = "AWSCURRENT" }) }) })
   }
   expect_failures = [var.release_tools]
+}
+
+run "worker_and_tools_share_the_release_identity" {
+  command = plan
+  assert {
+    condition     = { for item in output.task_contracts.worker[1].environment : item.name => item.value }["SENTRYSEARCH_RELEASE_ID"] == var.release_tools.release_id
+    error_message = "The worker receipts and the release-tools jobs must name the same release."
+  }
+}
+
+run "reject_worker_release_id_differing_from_tools" {
+  command = plan
+  variables { release_id = "33333333-3333-4333-8333-333333333333" }
+  expect_failures = [var.release_id]
+}
+
+run "reject_tools_release_without_worker_release_id" {
+  command = plan
+  variables { release_id = null }
+  expect_failures = [var.release_id]
 }
 
 run "reject_release_id_not_uuid" {

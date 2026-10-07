@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import json
 
 import pytest
@@ -12,16 +12,19 @@ from release.controller import RecoveryAuthorization, ReleaseController, Release
 from release.manifest import load_approval, load_manifest
 from release.ports import AmbiguousResponse
 from tests.release_fakes import (
+    PRIOR_RELEASE_ID,
     START,
     FakeClock,
     FakeEcs,
     FakeEvidence,
+    FakeLogs,
     FakeStore,
     JobPlan,
     SimulatedCrash,
     Tokens,
     Trace,
     approval_document,
+    digest,
     encode,
     iso,
     manifest_document,
@@ -50,6 +53,7 @@ class Rig:
     store: FakeStore
     ecs: FakeEcs
     evidence: FakeEvidence
+    logs: FakeLogs
     tokens: Tokens
     approval_raw: bytes
 
@@ -60,6 +64,7 @@ class Rig:
             store=self.store,
             ecs=self.ecs,
             evidence=self.evidence,
+            logs=self.logs,
             clock=self.clock,
             tokens=self.tokens,
             session_id=session,
@@ -113,6 +118,7 @@ def rig(*, rollback: str = "empty_hold", running_prior: bool = False, **approval
         store=store,
         ecs=ecs,
         evidence=FakeEvidence(ecs, document),
+        logs=FakeLogs(ecs, document),
         tokens=Tokens(),
         approval_raw=encode({**approval_document(loaded.sha256), **approval}),
     )
@@ -519,11 +525,12 @@ def test_failed_deployment_holds_without_automatic_rollback():
 @pytest.mark.parametrize(
     "configure, reason",
     [
-        (lambda r: r.evidence.missing_checks.add("worker-readiness"), "operational_evidence_missing"),
+        (lambda r: r.evidence.missing_checks.add("runtime-protected-readiness"),
+         "operational_evidence_missing"),
         (lambda r: r.evidence.check_changes.update({"api-operational": {"status": "failed"}}),
          "operational_receipt_mismatch"),
-        (lambda r: r.evidence.check_changes.update(
-            {"worker-readiness": {"tasks": {"worker": "arn:aws:ecs:us-east-1:111122223333:task/x"}}}),
+        (lambda r: r.evidence.check_changes.update({"runtime-protected-readiness": {
+            "tasks": {"worker": "arn:aws:ecs:us-east-1:111122223333:task/x"}}}),
          "operational_receipt_mismatch"),
     ],
 )  # fmt: skip
@@ -547,6 +554,319 @@ def test_replacement_during_observation_requires_a_fresh_window(monkeypatch):
     monkeypatch.setattr(r.evidence, "operational_receipt", replace_worker)
     outcome = r.controller().run()
     assert_held(r, outcome, "task_replaced", "services_started")
+
+
+# Worker readiness gate --------------------------------------------------------
+
+GATE = "worker-readiness"
+STAMP = "%Y-%m-%dT%H:%M:%S.%fZ"
+
+
+def gate_events(r: Rig, result: str) -> list[dict]:
+    return r.events("observation", subject=GATE, result=result)
+
+
+def moment(value: str) -> datetime:
+    return datetime.fromisoformat(value)
+
+
+def recorded(r: Rig, key: str = "worker"):
+    return r.ecs.tasks[r.events("observation", subject=key, result="service_ready")[0]["task_arn"]]
+
+
+def service_of(r: Rig, key: str):
+    return r.ecs.services[r.document["environment"]["services"][key]]
+
+
+def shifted(receipt: dict, seconds: float) -> dict:
+    observed = datetime.strptime(receipt["observed_at"], STAMP).replace(tzinfo=timezone.utc)
+    return {**receipt, "observed_at": (observed + timedelta(seconds=seconds)).strftime(STAMP)}
+
+
+def only(sequence: int, change):
+    return lambda current, receipt: change(receipt) if current == sequence else [receipt]
+
+
+def reorder(first: int):
+    held = {}
+
+    def edit(sequence, receipt):
+        if sequence == first:
+            held["receipt"] = receipt
+            return []
+        return [receipt, held["receipt"]] if sequence == first + 1 else [receipt]
+
+    return edit
+
+
+def reboot(at: int):
+    def edit(sequence, receipt):
+        if sequence < at:
+            return [receipt]
+        uptime = receipt["uptime_seconds"] - 10 * (at - 1)
+        return [{**receipt, "boot_id": "b" * 32, "sequence": sequence - at + 1,
+                 "uptime_seconds": uptime}]  # fmt: skip
+
+    return edit
+
+
+def test_worker_readiness_needs_sixty_seconds_of_receipts_observed_after_the_epoch():
+    r = rig()
+    outcome = r.controller().run()
+    assert outcome.state == "held_paused", outcome
+    [started] = gate_events(r, "readiness_observing")
+    [passed] = gate_events(r, "operational_passed")
+    task = recorded(r)
+    epoch = moment(started["epoch_at"])
+    assert started["task_arn"] == passed["task_arn"] == task.arn
+    assert moment(started["deadline_at"]) == epoch + timedelta(seconds=600)
+    assert {key: passed[key] for key in
+            ("boot_id", "first_sequence", "last_sequence", "stable_seconds", "last_reset")} == {
+        "boot_id": FakeLogs.boot_id(task), "first_sequence": 2, "last_sequence": 8,
+        "stable_seconds": 60.0, "last_reset": None,
+    }  # fmt: skip
+    assert moment(passed["at"]) == epoch + timedelta(seconds=70)
+    # The pre-gate receipt was read but could not seed the window.
+    assert FakeLogs.observed(task, 1) < epoch <= FakeLogs.observed(task, 2)
+    assert any('"sequence":1,' in message for message in r.logs.delivered)
+    # Reads name only the recorded task's fixed app stream, bounded by endTime.
+    stream = "worker/app/" + task.arn.rsplit("/", 1)[1]
+    assert {(c["log_group"], c["log_stream"]) for c in r.logs.calls} == {
+        ("/staging/worker", stream)
+    }
+    start = int((epoch - timedelta(seconds=5)).timestamp() * 1000)
+    assert all(c["limit"] == 100 and c["start_time_ms"] == start
+               and c["end_time_ms"] == int(c["at"].timestamp() * 1000)
+               for c in r.logs.calls)  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "configure, last_reason",
+    [
+        (lambda logs: setattr(logs, "denied", True), "readiness_logs_unavailable"),
+        (lambda logs: setattr(logs, "missing", True), "readiness_logs_unavailable"),
+        (lambda logs: setattr(logs, "endless", True), "readiness_logs_incomplete"),
+        (lambda logs: setattr(logs, "edit", lambda s, receipt: []), "receipt_missing"),
+        (lambda logs: setattr(logs, "delay", 45.0), "receipt_stale"),
+        (lambda logs: setattr(logs, "edit", lambda s, receipt: [{**receipt, "ready": False}]),
+         "receipt_not_ready"),
+        (lambda logs: setattr(logs, "edit", lambda s, receipt: [
+            {**receipt, "draining": True, "phase": "stopped"}]), "receipt_not_ready"),
+        (lambda logs: setattr(logs, "edit", lambda s, receipt: [
+            {**receipt, "error_code": "runtime_unavailable"}]), "receipt_not_ready"),
+        (lambda logs: setattr(logs, "edit", lambda s, receipt: [
+            {**receipt, "phase_elapsed_seconds": 62.0}]), "receipt_not_ready"),
+        (lambda logs: setattr(logs, "edit", lambda s, receipt: [
+            {**receipt, "release_id": PRIOR_RELEASE_ID}]), "receipt_release_mismatch"),
+        (lambda logs: setattr(logs, "edit", lambda s, receipt: [receipt] if s % 2 else []),
+         "receipt_gap"),
+        (lambda logs: setattr(logs, "edit", lambda s, receipt: [shifted(receipt, 60)]),
+         "receipt_from_future"),
+        (lambda logs: setattr(logs, "edit", lambda s, receipt: [
+            {**receipt, "kind": "sentry.worker-readiness.v0"}]), "receipt_invalid"),
+        (lambda logs: setattr(logs, "edit", lambda s, receipt: [
+            {**receipt, "uptime_seconds": 5.0}]), "receipt_clock_anomaly"),
+    ],
+)  # fmt: skip
+def test_unproven_worker_readiness_holds_at_the_fixed_gate_deadline(configure, last_reason):
+    r = rig()
+    configure(r.logs)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "worker_readiness_not_proven", "services_started")
+    [started] = gate_events(r, "readiness_observing")
+    [unproven] = gate_events(r, "readiness_not_proven")
+    assert unproven["last_reason"] == last_reason
+    deadline = moment(started["epoch_at"]) + timedelta(seconds=600)
+    assert moment(unproven["at"]) == moment(started["deadline_at"]) == deadline
+    assert not gate_events(r, "operational_passed")
+    assert r.transitions()[-2:] == ["services_started", "hold"]
+
+
+@pytest.mark.parametrize(
+    "configure, first, last, last_reset",
+    [
+        (lambda logs: setattr(logs, "edit", lambda s, receipt: [receipt, receipt]), 2, 8, None),
+        (lambda logs: setattr(logs, "edit", only(4, lambda receipt: [{**receipt, "ready": False}])),
+         5, 11, "receipt_not_ready"),
+        (lambda logs: setattr(logs, "edit", only(4, lambda receipt: [])), 5, 11, "receipt_gap"),
+        (lambda logs: setattr(logs, "stall", (4, 20.0)), 5, 11, "receipt_interval_exceeded"),
+        (lambda logs: setattr(logs, "edit", reorder(4)), 6, 12, "receipt_reordered"),
+        (lambda logs: setattr(logs, "edit", only(5, lambda receipt: [
+            receipt, {**receipt, "ready": False}])), 6, 12, "receipt_conflict"),
+        (lambda logs: setattr(logs, "edit", reboot(4)), 1, 7, "worker_rebooted"),
+        # A wrongly typed marked line resets like any invalid receipt; 5 then gaps.
+        (lambda logs: setattr(logs, "edit", only(4, lambda receipt: [
+            {**receipt, "phase": []}])), 5, 11, "receipt_gap"),
+        (lambda logs: setattr(logs, "page_size", 1) or setattr(logs, "empty_pages", 3),
+         2, 8, None),
+    ],
+)  # fmt: skip
+def test_an_anomaly_restarts_the_window_and_only_a_full_new_window_passes(
+    configure, first, last, last_reset
+):
+    r = rig()
+    configure(r.logs)
+    outcome = r.controller().run()
+    assert outcome.state == "held_paused", outcome
+    [started] = gate_events(r, "readiness_observing")
+    [passed] = gate_events(r, "operational_passed")
+    assert (passed["first_sequence"], passed["last_sequence"]) == (first, last)
+    assert passed["last_reset"] == last_reset and passed["stable_seconds"] >= 60
+    # Each anomaly happened after the epoch, so it belongs to this attempt.
+    assert FakeLogs.observed(recorded(r), 4) > moment(started["epoch_at"])
+
+
+def test_ecs_health_loss_clears_stability_even_with_consecutive_receipts(monkeypatch):
+    r = rig()
+    describe = r.ecs._describe
+
+    def flaky_health(task):
+        result = describe(task)
+        since = r.clock.now() - task.created
+        if task.group == "service:worker" and timedelta(seconds=35) <= since < timedelta(
+            seconds=45
+        ):
+            result["healthStatus"] = "UNHEALTHY"
+        return result
+
+    monkeypatch.setattr(r.ecs, "_describe", flaky_health)
+    outcome = r.controller().run()
+    assert outcome.state == "held_paused", outcome
+    [passed] = gate_events(r, "operational_passed")
+    # Receipts 4-6 are consecutive. 4 predates recovery and 5 is within the 5 s a
+    # worker clock may run ahead of the last unhealthy poll, so the window starts at 6.
+    assert passed["first_sequence"] == 6 and passed["last_reset"] == "task_unhealthy"
+
+
+def test_incomplete_pagination_clears_stability_until_a_complete_read():
+    r = rig()
+    r.logs.page_size = 1
+
+    def deny_then_backlog():
+        r.logs.denied = len(r.logs.calls) <= 24
+
+    r.logs.before_read = deny_then_backlog
+    outcome = r.controller().run()
+    assert outcome.state == "held_paused", outcome
+    [started] = gate_events(r, "readiness_observing")
+    [passed] = gate_events(r, "operational_passed")
+    epoch = moment(started["epoch_at"])
+    assert passed["last_reset"] == "readiness_logs_incomplete"
+    # The backlog exceeded 20 one-event pages at +120 s; the window starts after it.
+    assert FakeLogs.observed(recorded(r), passed["first_sequence"]) > epoch + timedelta(seconds=120)
+
+
+@pytest.mark.parametrize(
+    "change, reason",
+    [
+        (lambda r: setattr(service_of(r, "worker"), "replace_after", 0), "task_replaced"),
+        (lambda r: setattr(service_of(r, "worker"), "desired", 0), "task_count_drift"),
+        (lambda r: setattr(service_of(r, "worker"), "extra_tasks", 1), "task_count_drift"),
+        (lambda r: r.ecs._deployment(service_of(r, "worker"),
+                                     service_of(r, "worker").task_definition, 1),
+         "deployment_superseded"),
+        (lambda r: recorded(r).containers[1].update(imageDigest=digest("other")),
+         "task_image_mismatch"),
+        # Success re-enumerates every recorded service first.
+        (lambda r: setattr(service_of(r, "api"), "replace_after", 0), "task_replaced"),
+    ],
+)  # fmt: skip
+def test_platform_identity_changes_during_the_gate_hold_without_waiting(change, reason):
+    r = rig()
+
+    def change_once():
+        if len(r.logs.calls) == 3:
+            change(r)
+
+    r.logs.before_read = change_once
+    outcome = r.controller().run()
+    assert_held(r, outcome, reason, "services_started")
+    assert not gate_events(r, "operational_passed")
+    assert not gate_events(r, "readiness_not_proven")
+    [started] = gate_events(r, "readiness_observing")
+    held = moment(r.events("transition", to="hold")[0]["at"])
+    assert held - moment(started["epoch_at"]) <= timedelta(seconds=70)
+
+
+def slow_final_enumeration(r: Rig, monkeypatch, seconds: float) -> None:
+    """The first re-enumeration inside the gate takes ``seconds`` of clock time."""
+    original = ReleaseController._require_recorded_tasks
+    calls = []
+
+    def enumerate_slowly(self, recorded_tasks):
+        calls.append(1)
+        if len(calls) == 2:  # the first call precedes the gate
+            r.clock.advance(seconds=seconds)
+        return original(self, recorded_tasks)
+
+    monkeypatch.setattr(ReleaseController, "_require_recorded_tasks", enumerate_slowly)
+
+
+def test_success_needs_the_deadline_after_the_final_enumeration(monkeypatch):
+    r = rig()
+    # Ready only from receipt 54, so the window completes 10 s before the deadline;
+    # a 10 s enumeration then crosses it while the receipts are still fresh.
+    r.logs.edit = lambda sequence, receipt: [{**receipt, "ready": sequence >= 54}]
+    slow_final_enumeration(r, monkeypatch, 10)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "worker_readiness_not_proven", "services_started")
+    assert not gate_events(r, "operational_passed")
+    [started] = gate_events(r, "readiness_observing")
+    assert FakeLogs.observed(recorded(r), 60) == moment(started["deadline_at"]) - timedelta(
+        seconds=14
+    )
+
+
+def test_success_needs_fresh_receipts_after_the_final_enumeration(monkeypatch):
+    r = rig()
+    slow_final_enumeration(r, monkeypatch, 40)
+    outcome = r.controller().run()
+    assert outcome.state == "held_paused", outcome
+    [passed] = gate_events(r, "operational_passed")
+    assert passed["last_reset"] == "receipt_stale" and passed["first_sequence"] > 8
+
+
+def test_a_resumed_gate_attempt_starts_a_new_epoch():
+    r = rig()
+
+    def crash_midway():
+        if len(r.logs.calls) == 16:
+            r.logs.before_read = None
+            raise SimulatedCrash("controller lost mid-gate")
+
+    r.logs.before_read = crash_midway
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    outcome = r.controller().run()
+    assert outcome.state == "held_paused", outcome
+    first, second = gate_events(r, "readiness_observing")
+    [passed] = gate_events(r, "operational_passed")
+    epoch = moment(second["epoch_at"])
+    assert epoch > moment(first["epoch_at"])
+    # Receipts from the lost attempt cannot seed the new window.
+    assert FakeLogs.observed(recorded(r), passed["first_sequence"]) >= epoch
+    assert moment(second["deadline_at"]) == moment(first["deadline_at"])
+
+
+def test_resumed_attempts_never_extend_the_whole_gate_deadline():
+    r = rig()
+    r.logs.denied = True
+
+    def crash_midway():
+        if len(r.logs.calls) == 40:
+            r.logs.before_read = None
+            raise SimulatedCrash("controller lost mid-gate")
+
+    r.logs.before_read = crash_midway
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    outcome = r.controller().run()
+    assert_held(r, outcome, "worker_readiness_not_proven", "services_started")
+    first, second = gate_events(r, "readiness_observing")
+    [unproven] = gate_events(r, "readiness_not_proven")
+    assert moment(second["epoch_at"]) - moment(first["epoch_at"]) == timedelta(seconds=195)
+    assert moment(unproven["at"]) == moment(first["epoch_at"]) + timedelta(seconds=600)
+    assert moment(second["deadline_at"]) == moment(first["deadline_at"])
 
 
 def test_unrelated_standalone_writer_blocks_quiescence():

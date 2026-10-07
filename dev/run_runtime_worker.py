@@ -7,6 +7,7 @@ import argparse
 import logging
 import os
 import socket
+import sys
 import threading
 import time
 
@@ -21,6 +22,7 @@ from src.execution.runtime_client import (
     RuntimeUnavailable,
     validate_runtime_token,
 )
+from src.execution.readiness_receipts import ReadinessReceipts, release_id_from_environment
 from src.execution.worker import DurableGenerationWorker
 from src.execution.supervisor import Emit, WorkerSettings, WorkerSupervisor
 
@@ -53,7 +55,10 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
         settings = WorkerSettings(**vars(parse_args()))
-        return WorkerSupervisor(settings, run_worker_loop).run()
+        # A release task definition fixes the release identity; local runs emit none.
+        release_id = release_id_from_environment(os.environ)
+        receipts = None if release_id is None else ReadinessReceipts(release_id, sys.stdout)
+        return WorkerSupervisor(settings, run_worker_loop, receipts=receipts).run()
     except ValueError as error:
         raise SystemExit(str(error)) from error
 

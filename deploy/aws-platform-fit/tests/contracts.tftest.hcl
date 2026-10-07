@@ -167,6 +167,61 @@ run "least_privilege_identity_contract" {
   }
 }
 
+run "worker_readiness_receipts_contract" {
+  command = plan
+  variables { release_id = "0b9f7c1e-4d2a-4f6b-9a3e-2c1d0e9f8a7b" }
+  assert {
+    condition = (
+      { for item in output.task_contracts.worker[1].environment : item.name => item.value }["SENTRYSEARCH_RELEASE_ID"] == var.release_id &&
+      alltrue([for name in ["runtime", "api"] : !contains([for item in output.task_contracts[name][1].environment : item.name], "SENTRYSEARCH_RELEASE_ID")]) &&
+      jsondecode(aws_ecs_task_definition.service["worker"].container_definitions) == output.task_contracts.worker
+    )
+    error_message = "Only the worker revision fixes the release identity its supervisor receipts echo."
+  }
+  assert {
+    condition = alltrue([for container in output.task_contracts.worker : container.logConfiguration == {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = var.log_groups.worker
+        awslogs-region        = var.region
+        awslogs-stream-prefix = "worker"
+        mode                  = "non-blocking"
+        max-buffer-size       = "4m"
+      }
+    }])
+    error_message = "Worker logging must be explicitly non-blocking with the measured 4 MiB buffer, never the account default mode."
+  }
+  assert {
+    condition = (
+      output.readiness_log_stream == "arn:aws:logs:us-east-1:111122223333:log-group:/sentry-fit-staging/worker:log-stream:worker/app/*" &&
+      output.task_contracts.worker[1].name == "app" &&
+      output.execution_policies.worker.Statement[2].Resource == ["arn:aws:logs:us-east-1:111122223333:log-group:/sentry-fit-staging/worker:log-stream:worker/*"]
+    )
+    error_message = "Receipts are read only from the worker app container's configured stream, which its execution role writes."
+  }
+}
+
+run "local_runs_emit_no_receipts" {
+  command = plan
+  assert {
+    condition     = !contains([for item in output.task_contracts.worker[1].environment : item.name], "SENTRYSEARCH_RELEASE_ID")
+    error_message = "Without a release identity the worker emits no readiness receipts."
+  }
+  assert {
+    condition = alltrue([for name in ["runtime", "api"] :
+      !can(output.task_contracts[name][1].logConfiguration.options.mode) &&
+      !can(output.task_contracts[name][1].logConfiguration.options["max-buffer-size"])
+    ])
+    error_message = "Runtime and API log modes are unchanged until their own output is measured."
+  }
+}
+
+run "reject_release_id_not_uuid" {
+  command = plan
+  variables { release_id = "LATEST" }
+  expect_failures = [var.release_id]
+}
+
 run "reject_mutable_image_tag" {
   command = plan
   variables {

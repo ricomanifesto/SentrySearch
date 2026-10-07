@@ -16,6 +16,7 @@ from release.manifest import (
     load_manifest,
     verify_approval,
 )
+from release.readiness import WORKER_READINESS_CHECK, WORKER_RECEIPT_KIND
 from tests.release_fakes import (
     ACCOUNT,
     REGION,
@@ -207,6 +208,32 @@ def test_release_tools_jobs_use_the_tools_image_and_receipt_schema():
     document["jobs"][4]["task"]["containers"][1]["image"] = "search"
     assert rejected(encode(document)).code == "job_image_invalid"
     assert RELEASE_TOOLS_RECEIPT_SCHEMA == "sentry.release-tools.job.v1"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda checks: checks.pop(0),
+        lambda checks: checks[0].update(receipt_schema="sentry.release.worker-readiness.v1"),
+        lambda checks: checks[1].update(receipt_schema=WORKER_RECEIPT_KIND),
+    ],
+)
+def test_worker_readiness_is_proven_only_from_supervisor_receipts(change):
+    document = manifest_document()
+    assert document["operational_checks"][0] == {
+        "id": WORKER_READINESS_CHECK,
+        "receipt_schema": WORKER_RECEIPT_KIND,
+    }
+    change(document["operational_checks"])
+    assert rejected(encode(document)).code == "worker_readiness_check_invalid"
+
+
+@pytest.mark.parametrize(("name", "image"), [("worker", "search"), ("app", "runtime")])
+def test_worker_receipts_come_from_its_search_app_container_stream(name, image):
+    document = manifest_document()
+    assert document["services"]["worker"]["containers"][1] == {"name": "app", "image": "search"}
+    document["services"]["worker"]["containers"][1] = {"name": name, "image": image}
+    assert rejected(encode(document)).code == "worker_container_invalid"
 
 
 def test_release_tools_job_ids_match_the_fixed_task_definition_ids():

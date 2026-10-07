@@ -18,6 +18,7 @@ ALLOWED_IMPORTS = {
     "enum",
     "hashlib",
     "json",
+    "math",
     "re",
     "typing",
     "types",

@@ -78,9 +78,11 @@ def test_worker_cli_loads_environment_before_spawning(monkeypatch):
     calls = []
     monkeypatch.setattr(runner, "load_dotenv", lambda: calls.append("environment"), raising=False)
     monkeypatch.setattr(runner, "parse_args", lambda: SimpleNamespace())
+    monkeypatch.delenv("SENTRYSEARCH_RELEASE_ID", raising=False)
 
     class Supervisor:
-        def __init__(self, *_args):
+        def __init__(self, *_args, receipts=None):
+            assert receipts is None, "no release identity means no readiness receipts"
             calls.append("supervisor")
 
         def run(self):

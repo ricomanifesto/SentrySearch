@@ -92,6 +92,7 @@ containing that grant script when running the proof.
 | Application DB credentials | yes | yes | no | yes |
 | Schema-owner DB credentials | no | no | yes | no |
 | `SENTRYSEARCH_EXECUTION_MODE` | yes | no | no | no |
+| `SENTRYSEARCH_RELEASE_ID` (enables [readiness receipts](runtime-consistency.md#readiness-receipts)) | no | release revisions only | no | no |
 | Runtime URL and CA file | in `runtime` mode, validated only | yes | no | no |
 | Runtime producer and worker tokens | no | yes, distinct | no | no |
 | OpenRouter key | legacy mode only | yes | no | no |

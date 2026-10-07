@@ -298,11 +298,14 @@ run "retained_current_and_rollback_releases" {
         runtime = "/sentry-staging/runtime-release", product = "/sentry-staging/product-release"
       } &&
       release.release_grant_contract.source_commit == var.releases[key].release_jobs.runtime_grants.source_commit &&
+      { for item in release.task_contracts.worker[1].environment : item.name => item.value }["SENTRYSEARCH_RELEASE_ID"] == var.releases[key].release_id &&
+      release.task_contracts.worker[1].logConfiguration.options.mode == "non-blocking" &&
+      release.task_contracts.worker[1].logConfiguration.options["max-buffer-size"] == "4m" &&
       alltrue([for name in ["runtime", "api", "worker"] :
         alltrue([for secret in release.task_contracts[name][1].secrets : endswith(secret.valueFrom, "::${var.releases[key].environment_bundles[name].version_id}")])
       ])
     ])
-    error_message = "Each release binds the foundation's names, private Runtime SAN, report bucket, paused admission and its own exact secret versions."
+    error_message = "Each release binds the foundation's names, private Runtime SAN, report bucket, paused admission, its own exact secret versions and the release identity its worker receipts echo."
   }
 }
 
@@ -377,15 +380,21 @@ run "launcher_policies_name_exact_releases_roles_and_services" {
     error_message = "Each service can point only at its own retained revisions (current or compatible rollback); scale-to-zero requests carry no definition."
   }
   assert {
-    condition = jsonencode(output.release_launcher_policies.receipts.Statement) == jsonencode([{
-      Sid = "ReadCurrentJobReceipts", Effect = "Allow", Action = ["logs:GetLogEvents"]
-      Resource = sort(concat(
-        [for name in ["runtime", "product"] : "arn:aws:logs:us-east-1:111122223333:log-group:/sentry-staging/${name}-release:log-stream:${name}-release/migration/*"],
-        flatten([for name in ["runtime", "product"] : [for kind in ["grant", "proof", "reconcile"] :
-        "arn:aws:logs:us-east-1:111122223333:log-group:/sentry-staging/${name}-release:log-stream:${name}-${kind}/${kind}/*"]]),
-      ))
-    }])
-    error_message = "Receipts are read only from the current release's job app-container streams, never init or service logs, and never written."
+    condition = jsonencode(output.release_launcher_policies.receipts.Statement) == jsonencode([
+      {
+        Sid = "ReadCurrentJobReceipts", Effect = "Allow", Action = ["logs:GetLogEvents"]
+        Resource = sort(concat(
+          [for name in ["runtime", "product"] : "arn:aws:logs:us-east-1:111122223333:log-group:/sentry-staging/${name}-release:log-stream:${name}-release/migration/*"],
+          flatten([for name in ["runtime", "product"] : [for kind in ["grant", "proof", "reconcile"] :
+          "arn:aws:logs:us-east-1:111122223333:log-group:/sentry-staging/${name}-release:log-stream:${name}-${kind}/${kind}/*"]]),
+        ))
+      },
+      {
+        Sid      = "ReadWorkerReadinessReceipts", Effect = "Allow", Action = ["logs:GetLogEvents"]
+        Resource = ["arn:aws:logs:us-east-1:111122223333:log-group:/sentry-staging/worker:log-stream:worker/app/*"]
+      },
+    ])
+    error_message = "Receipts are read only from job and worker app-container streams, never init, API or Runtime logs, and never written."
   }
   assert {
     condition = jsonencode(output.release_launcher_policies.tasks.Statement) == jsonencode([
@@ -408,10 +417,10 @@ run "launcher_policies_name_exact_releases_roles_and_services" {
       "logs:GetLogEvents",
       ]) && alltrue(flatten([for document in values(output.release_launcher_policies) : [for statement in document.Statement : [for resource in statement.Resource :
         (startswith(resource, "arn:aws:ecs:us-east-1:111122223333:") || startswith(resource, "arn:aws:iam::111122223333:role/sentry-staging-r") ||
-        can(regex("^arn:aws:logs:us-east-1:111122223333:log-group:/sentry-staging/(runtime|product)-release:log-stream:[a-z-]+/[a-z]+/\\*$", resource))) &&
+        can(regex("^arn:aws:logs:us-east-1:111122223333:log-group:/sentry-staging/((runtime|product)-release:log-stream:[a-z-]+/[a-z]+|worker:log-stream:worker/app)/\\*$", resource))) &&
         (!strcontains(resource, "*") || resource == "arn:aws:ecs:us-east-1:111122223333:task/sentry-staging/*" || startswith(resource, "arn:aws:logs:"))
     ] if statement.Effect == "Allow" && statement.Sid != "ListClusterTasks"]])))
-    error_message = "Allowed resources stay in this account, region and cluster; task IDs and job receipt streams are the only wildcards. No definition registration, secret read, image push, log write or Exec."
+    error_message = "Allowed resources stay in this account, region and cluster; task IDs and job and worker receipt streams are the only wildcards. No definition registration, secret read, image push, log write or Exec."
   }
   assert {
     # IAM managed policies hold 6,144 non-whitespace characters. Bound each

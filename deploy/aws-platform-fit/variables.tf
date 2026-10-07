@@ -36,6 +36,20 @@ variable "release_scope" {
   }
 }
 
+variable "release_id" {
+  type        = string
+  default     = null
+  description = "Manifest release UUID fixed in the worker revision as SENTRYSEARCH_RELEASE_ID. Its supervisor then emits readiness receipts for the attended gate (docs/release-controller.md). Null, for local fit checks, emits none."
+  validation {
+    condition     = var.release_id == null ? true : can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", var.release_id))
+    error_message = "Use the manifest's lowercase release UUID."
+  }
+  validation {
+    condition     = var.release_tools == null ? true : try(var.release_id == var.release_tools.release_id, false)
+    error_message = "A release with release-tools jobs must fix the same release_id in its worker revision."
+  }
+}
+
 variable "images" {
   type        = object({ runtime = string, search = string })
   description = "Previously built ARM64 images in pre-existing same-account regional ECR repositories, pinned by digest."

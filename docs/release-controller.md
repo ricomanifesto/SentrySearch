@@ -140,6 +140,54 @@ Operational receipts must pass and bind the recorded task ARNs. The task set is
 enumerated again before and after the checks; a replacement holds because it
 needs a fresh observation window.
 
+### Worker readiness gate
+
+The manifest must include the `worker-readiness` check with receipt schema
+`sentry.worker-readiness.v1`, no other check may use that schema, and the worker
+service's application container must be the Search image named `app`. The
+controller proves this check itself from the worker supervisor's own
+[readiness receipts](runtime-consistency.md#readiness-receipts) through
+`LogPort` (GetLogEvents); Runtime and API checks still use `EvidencePort`.
+
+Identity comes from ECS, never from the worker: the recorded deployment and task,
+whose revision and image digests are checked again on every poll, and the fixed
+stream `/<environment>/worker`, `worker/app/<task-id>`, derived from that task.
+The proposed policy (`release.readiness.GatePolicy`), not measured AWS guarantees:
+
+- Each attempt is a new epoch: receipts observed before it never count. The gate
+  ends within 600 seconds and the release window; a resumed attempt keeps the
+  first attempt's deadline.
+- Pass: 60 seconds of consecutive eligible receipts from one boot (alive, ready,
+  not draining, no error, a working phase within its budget), measured by both
+  the worker's wall clock and its monotonic uptime, adjacent samples at most 15 s
+  apart, the last no more than 30 s old by observation time and none more than
+  5 s in the future. Every recorded service is enumerated again immediately
+  before success, after which the deadline and freshness are checked again. The
+  journal records the boot, first and last sequence, stable seconds and the last
+  reset reason.
+- Reset: a negative or malformed receipt of any shape, a gap, reordering, a
+  conflicting replay, a new boot, another release, a future receipt or a clock
+  anomaly (time running backwards, or monotonic and wall intervals differing by
+  more than 5 s; equal times from a burst of transitions are allowed). Identical
+  replays are ignored; past 8,192 distinct receipts a replay resets instead.
+- Clear: freshness expiry, a denied, missing or malformed log read, incomplete
+  pagination, or ECS health or visibility loss. A new window needs receipts
+  observed more than 5 s (the allowed worker clock skew) after the clear, even
+  when late receipts carry consecutive sequences.
+- Reads follow forward tokens from the gate's start to `endTime` = now, at most
+  20 pages of 100 events and 1 MiB per poll. A page that returns the caller's own
+  token ends the stream; empty pages with a new token do not. Sustained worker
+  output above those limits per poll can never pass and holds; worker
+  application log volume is unmeasured.
+- Hold at once: a failed or superseded deployment, definition or image mismatch,
+  a desired count other than one, an extra task, or replacement of the recorded
+  task. At the deadline the hold is `worker_readiness_not_proven`, with the last
+  reason and receipt count journaled.
+
+Success is a bounded observation, not continuing readiness, report completion,
+auth or S3 proof, nor proof against a compromised worker. Final readiness and
+canary checks remain before any later, separately approved admission change.
+
 ## Holds and rollback planning
 
 A hold keeps the lock and records a rollback plan, which is never executed
@@ -156,12 +204,15 @@ restore into isolated copies.
 
 ```bash
 uv run python -m pytest tests/test_release_manifest.py tests/test_release_machine.py \
-  tests/test_release_controller.py tests/test_release_offline.py
+  tests/test_release_controller.py tests/test_release_offline.py \
+  tests/test_release_readiness.py tests/test_worker_readiness_receipts.py
 ```
 
 Fakes in `tests/release_fakes.py` reproduce ECS response shapes, client-token
 idempotency, delayed visibility, crashes before and after requests, ambiguous
 transport and conditional object writes with a deterministic clock and tokens.
+`FakeLogs` pages worker receipts for the observed task's stream and can drop,
+edit, duplicate, reorder, delay or stall them, deny reads or never complete.
 `tests/test_release_offline.py` runs complete releases in a separate interpreter
 with poisoned AWS variables and all socket connections denied, and checks that no
 AWS SDK or HTTP client module is imported. The fakes do not model IAM, networking,
@@ -172,11 +223,15 @@ scheduling or real log ingestion.
 - An AWS adapter, pagination-complete listing, receipt collection from logs and
   an operator CLI. The adapter must read only the observed task's stream and parse
   it with `release_tools.receipt.extract_receipt`, reporting an ambiguous stream
-  as `AmbiguousResponse`.
+  as `AmbiguousResponse`. Its `LogPort` must read forward from the head
+  (`startFromHead=true`; the API default reads the tail), pass bounds and forward
+  tokens through unchanged and never page internally. How GetLogEvents tokens
+  behave as `endTime` advances is unverified.
+- RunTask override checking beyond the exact request the controller builds.
 - In-image deadline guards and receipt producers for the two migration images,
   and wiring of the bootstrap job (the grant, proof and reconciliation jobs are
   [implemented](release-tools.md) and mock-wired).
-- Supervisor-emitted worker readiness receipts and the readiness-window observer.
+- Observers for the Runtime and API operational checks.
 - Rollback execution and teardown.
 
 These remain separate implementation and approval gates. See
@@ -194,9 +249,13 @@ unattached launcher policies allow each `EcsPort` call for the definitions that
 exist: deploys must name a retained revision of that service, scale-to-zero
 requests carry no task definition, only the current release's jobs (migrations,
 grants, proofs and reconciliation) run, only job-tagged tasks can be stopped and
-receipts are read only from those jobs' app-container log streams. A release
-still cannot complete: there is no AWS adapter, the migration images emit no
-receipts and the operational observer does not exist.
+receipts are read only from those jobs' and the worker's app-container log
+streams. The worker stream also carries its other application output, so that
+read widens the release/app boundary and needs approval before the policies are
+attached. Each worker revision fixes its release's `SENTRYSEARCH_RELEASE_ID` and
+non-blocking logging. A release still cannot complete: there is no AWS adapter or
+log reader, the migration images emit no receipts and the Runtime and API
+operational observers do not exist.
 The manifest's environment name must equal the roots' `name_prefix` so the lock
 key matches the release-evidence policy. These roots are not applied, and mocked
 plans do not prove IAM behavior.
