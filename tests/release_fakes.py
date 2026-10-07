@@ -685,7 +685,7 @@ class FakeEvidence:
             "job_id": task.tags.get("sentry:job-id"),
             "task_arn": task_arn,
             "status": "succeeded",
-            **item["expect"],
+            "result": copy.deepcopy(item["expect"]),
         }
         receipt.update(self.job_changes.get(job_id, {}))
         return receipt

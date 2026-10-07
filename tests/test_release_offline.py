@@ -20,6 +20,7 @@ ALLOWED_IMPORTS = {
     "json",
     "re",
     "typing",
+    "types",
     "pydantic",
     "release",
 }

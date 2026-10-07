@@ -7,11 +7,13 @@ JSON. Approval is a separate receipt bound to that hash, never a manifest field.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import re
+from types import MappingProxyType
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -19,6 +21,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PlainSerializer,
     StringConstraints,
     ValidationError,
 )
@@ -39,6 +42,9 @@ JOB_ORDER = (
     ("grant", "product"),
     ("proof", "runtime"),
     ("proof", "product"),
+)
+RECEIPT_CONTROL_FIELDS = frozenset(
+    {"release_id", "job_id", "task_arn", "status", "result", "receipt_schema", "schema_version"}
 )
 
 
@@ -76,6 +82,19 @@ PlatformVersion = _pattern(r"[0-9]+\.[0-9]+\.[0-9]+")
 ExpectKey = _pattern(r"[a-z][a-z_]{0,31}")
 SqlPath = _pattern(r"[A-Za-z0-9_./-]{1,200}")
 ExpectValue = _pattern(r"[A-Za-z0-9_.:,/-]{1,256}")
+
+
+def _immutable_expectation(value: Mapping[str, str]) -> Mapping[str, str]:
+    # Frozen models do not freeze nested dictionaries. Copy before wrapping so
+    # neither the parser's input nor any caller can edit an approved candidate.
+    return MappingProxyType(dict(value))
+
+
+Expectation = Annotated[
+    Mapping[ExpectKey, ExpectValue],
+    AfterValidator(_immutable_expectation),
+    PlainSerializer(lambda value: dict(value), return_type=dict[str, str]),
+]
 UtcTime = Annotated[datetime, AfterValidator(_utc)]
 ImageKey = Literal["runtime", "search", "release_tools"]
 
@@ -180,7 +199,7 @@ class Job(Strict):
     deadline_seconds: int = Field(ge=60, le=3600)
     stop_grace_seconds: int = Field(ge=1, le=120)
     receipt_schema: SchemaId
-    expect: dict[ExpectKey, ExpectValue] = Field(min_length=1, max_length=16)
+    expect: Expectation = Field(min_length=1, max_length=16)
     sql: SqlPin | None = None
 
 
@@ -454,6 +473,8 @@ def _check_jobs(manifest: Manifest) -> None:
     if len({job.id for job in jobs}) != len(jobs):
         raise ReleaseRejected("job_plan_invalid", "jobs")
     for job in jobs:
+        if RECEIPT_CONTROL_FIELDS & job.expect.keys():
+            raise ReleaseRejected("job_expectation_reserved", f"jobs.{job.id}.expect")
         required = {"database", "principal"} | ({"schema"} if job.phase == "migrate" else set())
         if not required <= job.expect.keys():
             raise ReleaseRejected("job_expectation_incomplete", f"jobs.{job.id}.expect")

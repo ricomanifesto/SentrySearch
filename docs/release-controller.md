@@ -36,6 +36,8 @@ Every ARN, role, secret, repository and snapshot must belong to the manifest's
 account and region. Floating references fail: image tags, unrevisioned task
 definitions, staging labels instead of VersionIds, branch names and `LATEST`.
 Service secret bundles are pairwise disjoint and owner jobs never reuse one.
+Loaded expectations are defensively copied into immutable mappings: editing
+an input document or a serialized copy cannot change the approved candidate.
 
 **Approval receipt.** A separate document binding the manifest hash, release,
 environment, account, region, milestone and a validity interval that ends no
@@ -58,7 +60,7 @@ API admission paused; nothing in this package enables admission.
 The journal is one object advanced by ETag-conditional replacement. Each event
 records its sequence and the hash of its predecessor, so a reordered or edited
 journal is rejected. Polling is not journaled; intents, observations and
-transitions are. Before every mutation the controller re-checks approval and
+transitions are. Before every forward mutation the controller re-checks approval and
 the release window, then appends an intent (request hash, stable token, deadline)
 and only then calls the port. A lost CAS race halts before any mutation.
 
@@ -69,6 +71,20 @@ of fencing evidence; it transfers the journal and lock without executing anythin
 The next run reconciles outstanding intents before any new action. CAS
 coordinates cooperative controllers only; it cannot fence a call a stale process
 already sent.
+
+If approval or the release window expires, forward progress stops. Cleanup can
+still discover already-launched jobs by the recorded token and stop only tasks
+whose token and task definition match. It never retries RunTask, mints a token,
+starts a service or promotes a result. Failed or empty observations are recorded
+as unknown and require operator reconciliation; stopping a process does not
+prove that its SQL stopped. A hold retains the lock.
+
+Successful finalization journals the exact lock ETag before deletion and confirms
+release afterwards. A crash on either side of deletion resumes only this cleanup,
+even after approval expiry. A different session still needs explicit recovery;
+a changed or foreign lock is never deleted. The controller returns successful
+`held_paused` only after confirming lock release. A persisted terminal transition
+without that observation is incomplete finalization, not an operator success receipt.
 
 ## Launch and job completion
 
@@ -86,10 +102,20 @@ eventually consistent listing is not proof that nothing ran.
 A job succeeds only when its task is `STOPPED` with
 `EssentialContainerExited`, the expected task definition, token, container set
 and image digests, integer exit code 0 for every container including init, and an
-exact sanitized receipt for the same release, job and task. A waiter return or
-a stopped task alone is not success. At the deadline the controller journals and
-sends a stop, confirms it, records `sql_outcome: unknown` and holds. Stopping a
-client process never proves that a submitted SQL statement stopped.
+exact sanitized receipt for the same release, job and task. The fixed receipt
+envelope contains `schema`, `release_id`, `job_id`, `task_arn`, `status` and
+`result`. Its schema is the receipt version; `result.schema` is the migrated
+database revision. Manifest expectations cannot replace envelope identity or
+control fields. Legacy flat receipts are rejected.
+
+The complete stopped-task evidence and receipt must be observed **before** the
+recorded job deadline. These ports do not supply trusted completion timestamps,
+so recovery after the deadline holds conservatively even when the task might
+have finished earlier. A slow receipt read cannot extend the budget. At the
+deadline a live or unseen known task receives a journaled stop and bounded
+confirmation; an already stopped task needs no redundant stop. Both paths record
+`sql_outcome: unknown` and hold. A waiter return or stopped client alone never
+proves success or SQL cancellation. Missing receipts exhaust the same deadline.
 
 ## Services and operational evidence
 

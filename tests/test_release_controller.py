@@ -238,7 +238,8 @@ def test_stopped_task_with_zero_exits_but_no_receipt_is_not_success():
     r = rig()
     r.evidence.missing_jobs.add("runtime-proof")
     outcome = r.controller().run()
-    assert_held(r, outcome, "job_receipt_missing", "migrated")
+    assert_held(r, outcome, "job_deadline_exceeded", "migrated")
+    assert not r.events("observation", subject="runtime-proof", result="job_succeeded")
 
 
 @pytest.mark.parametrize(
@@ -247,7 +248,7 @@ def test_stopped_task_with_zero_exits_but_no_receipt_is_not_success():
         {"status": "failed"},
         {"task_arn": "arn:aws:ecs:us-east-1:111122223333:task/sentry-staging/forged"},
         {"release_id": "11111111-2222-4333-8444-555555555555"},
-        {"principal": "product_owner"},
+        {"result": {"database": "product_db", "principal": "product_owner"}},
         {"schema": "sentry.release.other.v1"},
     ],
 )
@@ -650,3 +651,175 @@ def test_journal_is_created_with_its_first_event_in_one_write():
     with pytest.raises(ReleaseHalted) as error:
         r.controller().run()
     assert error.value.code == "journal_integrity"
+
+
+@pytest.mark.parametrize("when", ["before", "after"])
+@pytest.mark.parametrize("elapsed", [100, 1000])
+def test_expired_recovery_cleans_up_owned_jobs_without_launching(when, elapsed):
+    r = rig(not_after=iso(START + timedelta(seconds=50)))
+    definition = r.document["jobs"][0]["task"]["task_definition"]
+    r.ecs.plans[definition] = JobPlan(hang=True)
+    r.ecs.crash[("run_task", when)] = 1
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    launches = len(r.calls("run_task"))
+    r.clock.advance(seconds=elapsed)
+    outcome = r.recover().run()
+    assert_held(r, outcome, "approval_expired", "quiesced")
+    assert len(r.calls("run_task")) == launches
+    assert r.calls("update_service") == []
+    assert len(r.calls("stop_task")) == (1 if when == "after" else 0)
+    if when == "after":
+        assert r.ecs._status(r.job_tasks("runtime-migrate")[0]) == "STOPPED"
+        assert r.events("observation", result="stop_confirmed")[-1]["sql_outcome"] == "unknown"
+
+
+def test_expiry_during_a_running_job_stops_it_before_hold():
+    r = rig(not_after=iso(START + timedelta(seconds=50)))
+    r.ecs.plans[r.document["jobs"][0]["task"]["task_definition"]] = JobPlan(hang=True)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "approval_expired", "quiesced")
+    assert len(r.calls("stop_task")) == 1
+    assert r.clock.now() < START + timedelta(seconds=900)
+
+
+def test_expired_recovery_does_not_stop_an_unrelated_task(monkeypatch):
+    r = rig(not_after=iso(START + timedelta(seconds=50)))
+    r.ecs.crash[("run_task", "before")] = 1
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    foreign = r.ecs.standalone(r.document["jobs"][0]["task"]["task_definition"])
+    monkeypatch.setattr(r.ecs, "list_tasks", lambda *args, **kwargs: [foreign.arn])
+    r.clock.advance(seconds=1000)
+    outcome = r.recover().run()
+    assert outcome.state == "hold"
+    assert not r.calls("run_task") and not r.calls("stop_task")
+    assert r.ecs._status(foreign) == "RUNNING"
+
+
+@pytest.mark.parametrize("duration", [899, 900, 901])
+def test_recovery_cannot_promote_a_job_without_timely_observation(monkeypatch, duration):
+    r = rig()
+    definition = r.document["jobs"][0]["task"]["task_definition"]
+    r.ecs.plans[definition] = JobPlan(seconds=duration)
+    original = r.ecs.describe_tasks
+
+    def crash_first_read(*args):
+        raise SimulatedCrash("after launch record")
+
+    monkeypatch.setattr(r.ecs, "describe_tasks", crash_first_read)
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    monkeypatch.setattr(r.ecs, "describe_tasks", original)
+    r.clock.advance(seconds=905)
+    outcome = r.recover().run()
+    assert_held(r, outcome, "job_deadline_exceeded", "quiesced")
+    assert len(r.calls("run_task")) == 1
+    assert not r.events("observation", result="job_succeeded")
+    assert not r.calls("stop_task"), "the observed stopped task needs no StopTask"
+
+
+def test_receipt_read_crossing_deadline_cannot_promote(monkeypatch):
+    r = rig()
+    original = r.evidence.job_receipt
+
+    def slow_receipt(*args):
+        receipt = original(*args)
+        r.clock.advance(seconds=901)
+        return receipt
+
+    monkeypatch.setattr(r.evidence, "job_receipt", slow_receipt)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "job_deadline_exceeded", "quiesced")
+    assert not r.events("observation", result="job_succeeded")
+
+
+@pytest.mark.parametrize("when", ["before", "after"])
+@pytest.mark.parametrize("new_session", [False, True])
+def test_finalization_crash_resumes_exact_lock_cleanup(monkeypatch, when, new_session):
+    r = rig()
+    original = r.store.delete
+
+    def crash_delete(key, *, if_match):
+        if when == "after":
+            original(key, if_match=if_match)
+        raise SimulatedCrash("lock release")
+
+    monkeypatch.setattr(r.store, "delete", crash_delete)
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    monkeypatch.setattr(r.store, "delete", original)
+    mutations = len(r.ecs.mutations)
+    # Cleanup remains legal after approval expiry; no service/job can restart.
+    r.clock.advance(seconds=20_000)
+    controller = r.controller()
+    if new_session:
+        controller = r.controller("session-b")
+        controller.recover(
+            RecoveryAuthorization(
+                prior_session_id="session-a",
+                lock_etag=r.lock_etag() if when == "before" else "",
+                fence_evidence_sha256=sha("fenced"),
+                authorized_by="fixture-operator",
+            )
+        )
+    assert controller.run().state == "held_paused"
+    assert LOCK not in r.store.objects
+    assert len(r.ecs.mutations) == mutations
+    assert r.events("observation", subject="environment", result="lock_released")
+
+
+def test_pending_finalization_does_not_delete_a_replacement_lock(monkeypatch):
+    r = rig()
+
+    def crash_delete(*args, **kwargs):
+        raise SimulatedCrash("before delete")
+
+    monkeypatch.setattr(r.store, "delete", crash_delete)
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    foreign = (encode({"release_id": "other", "session_id": "other"}), '"new-lock"')
+    r.store.objects[LOCK] = foreign
+    with pytest.raises(ReleaseHalted):
+        r.controller().run()
+    assert r.store.objects[LOCK] == foreign
+
+
+def test_pending_finalization_needs_explicit_session_recovery(monkeypatch):
+    r = rig()
+
+    def crash_delete(*args, **kwargs):
+        raise SimulatedCrash("before delete")
+
+    monkeypatch.setattr(r.store, "delete", crash_delete)
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    with pytest.raises(ReleaseHalted) as error:
+        r.controller("session-b").run()
+    assert error.value.code == "session_conflict"
+
+
+def test_expiry_cleanup_records_unknown_when_lock_read_fails(monkeypatch):
+    r = rig(not_after=iso(START + timedelta(seconds=50)))
+    r.ecs.plans[r.document["jobs"][0]["task"]["task_definition"]] = JobPlan(hang=True)
+    r.ecs.crash[("run_task", "after")] = 1
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    r.clock.advance(seconds=1000)
+    controller = r.recover()
+    original = r.store.read
+    lock_reads = 0
+
+    def flaky_read(key):
+        nonlocal lock_reads
+        if key == LOCK:
+            lock_reads += 1
+            if lock_reads == 2:  # Open succeeded; cleanup cannot prove ownership.
+                raise RuntimeError("temporary read failure")
+        return original(key)
+
+    monkeypatch.setattr(r.store, "read", flaky_read)
+    outcome = controller.run()
+    assert_held(r, outcome, "approval_expired", "quiesced")
+    assert not r.calls("stop_task")
+    assert r.events("observation", result="cleanup_unconfirmed")[-1]["sql_outcome"] == "unknown"

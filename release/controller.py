@@ -145,6 +145,10 @@ class ReleaseController:
             while self.state not in TERMINAL_STATES:
                 steps[self.state]()
         except _Hold as hold:
+            if hold.code in {"approval_expired", "release_window_exceeded"}:
+                # Expiry forbids forward progress, not cleanup of this release's
+                # already-launched work. Never retry a launch during cleanup.
+                self._cleanup_expired_jobs()
             self._hold(hold.code)
         except ReleaseHalted:
             raise
@@ -153,6 +157,8 @@ class ReleaseController:
             self._hold("observation_ambiguous")
         except Exception:
             # Any other port or evaluation error is uncertainty, never success.
+            if self.state == State.HELD_PAUSED:
+                raise ReleaseHalted("finalization_unconfirmed") from None
             self._hold("controller_error")
         return self._outcome()
 
@@ -253,7 +259,14 @@ class ReleaseController:
             except PreconditionFailed:
                 raise ReleaseHalted("journal_conflict") from None
             return True
-        if self.state in TERMINAL_STATES:
+        if self.state == State.HOLD:
+            return False
+        if self.state == State.HELD_PAUSED:
+            if self._last("environment", "lock_released") is not None:
+                return False
+            if self.journal.document.get("session_id") != self.session_id:
+                raise ReleaseHalted("session_conflict")
+            self._release_environment_lock()
             return False
         if self.journal.document.get("session_id") != self.session_id:
             raise ReleaseHalted("session_conflict")
@@ -624,11 +637,26 @@ class ReleaseController:
         arn = launched["task_arn"]
         deadline = _time(intent["deadline_at"])
         while True:
+            self._guard()
             # A missing task is eventual consistency, not proof that it never ran.
             task = self._describe_task(arn)
             now = self.clock.now()
+            if now >= deadline:
+                if task is None or task.get("lastStatus") != "STOPPED":
+                    self._stop_after_deadline(job, arn)
+                self._observe(job.id, "job_failed", task_arn=arn,
+                              reason="job_deadline_exceeded", sql_outcome="unknown")  # fmt: skip
+                raise _Hold("job_deadline_exceeded")
+            self._guard()
             if task is not None and task.get("lastStatus") == "STOPPED":
                 receipt = self.evidence.job_receipt(self.release_id, job.id, arn)
+                # There is no trusted completion timestamp in this port contract.
+                # Even a timely task needs its complete receipt before the deadline.
+                if self.clock.now() >= deadline:
+                    self._observe(job.id, "job_failed", task_arn=arn,
+                                  reason="job_deadline_exceeded", sql_outcome="unknown")  # fmt: skip
+                    raise _Hold("job_deadline_exceeded")
+                self._guard()
                 failure = evaluate_job(
                     job, self.digests, release_id=self.release_id, token=intent["token"],
                     task=task, receipt=receipt,
@@ -637,16 +665,63 @@ class ReleaseController:
                     self._observe(job.id, "job_succeeded", task_arn=arn,
                                   receipt_sha256=canonical_sha256(receipt))  # fmt: skip
                     return
-                if failure != "job_receipt_missing" or now >= deadline:
+                if failure != "job_receipt_missing":
                     self._observe(job.id, "job_failed", task_arn=arn, reason=failure)
                     raise _Hold(failure)
-            elif now >= deadline:
-                self._stop_after_deadline(job, arn)
             self.clock.sleep(self.poll)
 
     def _stop_after_deadline(self, job: Job, arn: str) -> None:
         """Request a stop and confirm it. A stopped client never proves SQL stopped."""
-        reason = "release job deadline exceeded"
+        self._stop_job(job, arn, "release job deadline exceeded")
+        raise _Hold("job_deadline_exceeded")
+
+    def _cleanup_expired_jobs(self) -> None:
+        """Best-effort safety cleanup only; no launch retry or success promotion.
+
+        An empty listing or failed observation leaves SQL outcome unknown and
+        needs operator reconciliation. It never proves that nothing ran.
+        """
+        try:
+            owns_lock = self._lock_is_ours()
+        except Exception:
+            # No ownership proof means no stop authority. Persist the uncertainty
+            # if journal CAS is still available; its failure remains a hard halt.
+            self._observe("environment", "cleanup_unconfirmed", sql_outcome="unknown")
+            return
+        if not owns_lock:
+            return
+        for job in self.manifest.jobs:
+            intents = [e for e in self.journal.events
+                       if e["kind"] == "intent" and e["action"] == "run_task"
+                       and e["subject"] == job.id]  # fmt: skip
+            if not intents or self._last(job.id, "job_succeeded", "launch_failed") is not None:
+                continue
+            intent = intents[-1]
+            try:
+                launched = self._last(job.id, "launched")
+                arns = ([launched["task_arn"]] if launched else
+                        self.ecs.list_tasks(self.cluster, started_by=intent["token"]))  # fmt: skip
+                if not arns:
+                    self._observe(job.id, "cleanup_unconfirmed", sql_outcome="unknown")
+                for arn in arns:
+                    task = self._describe_task(arn)
+                    if task is None or (
+                        task.get("taskDefinitionArn") != job.task.task_definition
+                        or task.get("startedBy") != intent["token"]
+                    ):
+                        self._observe(job.id, "cleanup_unconfirmed", sql_outcome="unknown")
+                        continue
+                    if task.get("lastStatus") != "STOPPED":
+                        self._stop_job(job, arn, "release authorization window expired")
+                    else:
+                        self._observe(job.id, "cleanup_stopped", task_arn=arn,
+                                      sql_outcome="unknown")  # fmt: skip
+            except ReleaseHalted:
+                raise
+            except Exception:
+                self._observe(job.id, "cleanup_unconfirmed", sql_outcome="unknown")
+
+    def _stop_job(self, job: Job, arn: str, reason: str) -> None:
         request = {"cluster": self.cluster, "task": arn, "reason": reason}
         # Stopping the release's own job is a covered safety action, even after expiry.
         self._intent("stop_task", job.id, request, guard=False, task_arn=arn)
@@ -667,7 +742,6 @@ class ReleaseController:
                 self._observe(job.id, "stop_unconfirmed", task_arn=arn, sql_outcome="unknown")
                 break
             self.clock.sleep(self.poll)
-        raise _Hold("job_deadline_exceeded")
 
     # Services ------------------------------------------------------------------
 
@@ -795,14 +869,44 @@ class ReleaseController:
         if self._outstanding():
             raise _Hold("outstanding_actions")
         self._transition(State.HELD_PAUSED, admission="paused")
-        record = self._lock_record()
-        if record is None or not self._lock_is_ours():
-            raise ReleaseHalted("lock_not_held")
+        self._release_environment_lock()
+
+    def _release_environment_lock(self) -> None:
+        """Resume terminal finalization using only the exact owned lock.
+
+        Persist deletion intent before deleting. A missing lock after that intent
+        is safe to confirm; a replacement lock is never removed. A recovered
+        session records a fresh intent for its explicitly transferred lock.
+        """
         try:
-            self.store.delete(self.lock, if_match=record[1])
+            intents = [e for e in self.journal.events
+                       if e["kind"] == "intent" and e["action"] == "release_lock"]  # fmt: skip
+            prior = intents[-1] if intents else None
+            record = self._lock_record()
+            if record is None:
+                if prior is None:
+                    raise ReleaseHalted("lock_not_held")
+            else:
+                body, etag = record
+                if (body.get("release_id"), body.get("session_id")) != (
+                    self.release_id,
+                    self.session_id,
+                ):
+                    raise ReleaseHalted("lock_release_conflict")
+                if prior is not None and prior["session_id"] == self.session_id:
+                    if prior["lock_etag"] != etag:
+                        raise ReleaseHalted("lock_release_conflict")
+                else:
+                    self._intent("release_lock", "environment", {"key": self.lock, "etag": etag},
+                                 guard=False, lock_etag=etag, session_id=self.session_id)  # fmt: skip
+                self.store.delete(self.lock, if_match=etag)
+            self._observe("environment", "lock_released", resolves="release_lock")
         except PreconditionFailed:
             raise ReleaseHalted("lock_release_conflict") from None
-        self._observe("environment", "lock_released")
+        except ReleaseHalted:
+            raise
+        except Exception:
+            raise ReleaseHalted("finalization_unconfirmed") from None
 
     # Hold ----------------------------------------------------------------------
 

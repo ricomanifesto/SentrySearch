@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from datetime import timedelta
 
 import pytest
@@ -10,7 +11,9 @@ from release.machine import (
     FORWARD_STATES,
     State,
     check_transition,
+    evaluate_job,
     evaluate_service,
+    migration_schemas,
     token_expires_at,
 )
 from release.manifest import ReleaseRejected, load_manifest
@@ -20,6 +23,76 @@ DOCUMENT = manifest_document()
 MANIFEST = load_manifest(encode(DOCUMENT)).manifest
 SPEC = MANIFEST.services.api
 DIGESTS = {name: DOCUMENT["images"][name]["arm64_digest"] for name in DOCUMENT["images"]}
+
+
+def migration_evidence():
+    """Independent receipt producer: literal envelope, not the evaluator's merge."""
+    observed_task = {
+        "taskArn": "arn:aws:ecs:us-east-1:111122223333:task/sentry-staging/migration",
+        "taskDefinitionArn": DOCUMENT["jobs"][0]["task"]["task_definition"],
+        "lastStatus": "STOPPED",
+        "startedBy": "launch-token",
+        "stopCode": "EssentialContainerExited",
+        "containers": [
+            {"name": "init", "imageDigest": DIGESTS["search"], "exitCode": 0},
+            {"name": "migration", "imageDigest": DIGESTS["runtime"], "exitCode": 0},
+        ],
+    }
+    receipt = {
+        "schema": "sentry.release.migrate.v1",
+        "release_id": DOCUMENT["release_id"],
+        "job_id": "runtime-migrate",
+        "task_arn": observed_task["taskArn"],
+        "status": "succeeded",
+        "result": {
+            "database": "runtime_db",
+            "principal": "runtime_owner",
+            "schema": "goose:1,2,3",
+        },
+    }
+    return observed_task, receipt
+
+
+def evaluate_migration(receipt):
+    observed_task, _ = migration_evidence()
+    return evaluate_job(
+        MANIFEST.jobs[0],
+        DIGESTS,
+        release_id=MANIFEST.release_id,
+        token="launch-token",
+        task=observed_task,
+        receipt=receipt,
+    )
+
+
+def test_job_receipt_keeps_versioned_envelope_and_database_schema_separate():
+    _, receipt = migration_evidence()
+    assert evaluate_migration(receipt) is None
+    assert receipt["schema"] != receipt["result"]["schema"]
+    assert migration_schemas(MANIFEST, {"runtime-migrate": "succeeded"})["runtime"] == (
+        receipt["result"]["schema"]
+    )
+
+
+@pytest.mark.parametrize("field", ["schema", "release_id", "job_id", "task_arn", "status"])
+def test_job_receipt_rejects_wrong_envelope_even_with_correct_result(field):
+    _, receipt = migration_evidence()
+    receipt[field] = "forged"
+    assert evaluate_migration(receipt) == "job_receipt_mismatch"
+
+
+@pytest.mark.parametrize("field", ["database", "principal", "schema"])
+def test_job_receipt_rejects_wrong_result_even_with_correct_envelope(field):
+    _, receipt = migration_evidence()
+    receipt["result"][field] = "forged"
+    assert evaluate_migration(receipt) == "job_receipt_mismatch"
+
+
+def test_old_flat_receipt_cannot_substitute_database_schema_for_envelope_version():
+    _, receipt = migration_evidence()
+    old_flat = copy.deepcopy(receipt)
+    old_flat.update(old_flat.pop("result"))
+    assert evaluate_migration(old_flat) == "job_receipt_mismatch"
 
 
 def test_states_only_advance_one_proven_step_or_hold():

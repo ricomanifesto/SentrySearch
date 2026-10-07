@@ -107,7 +107,9 @@ def evaluate_job(
         "job_id": job.id,
         "task_arn": task.get("taskArn"),
         "status": "succeeded",
-        **job.expect,
+        # Result data can never replace the versioned receipt envelope. In
+        # particular result.schema is the database revision, not receipt.schema.
+        "result": dict(job.expect),
     }
     if dict(receipt) != wanted:
         return "job_receipt_mismatch"

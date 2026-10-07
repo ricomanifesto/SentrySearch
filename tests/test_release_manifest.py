@@ -64,6 +64,41 @@ def test_valid_manifest_has_a_canonical_hash_independent_of_formatting():
     assert loaded.manifest.release_id == document["release_id"]
 
 
+def test_loaded_job_expectations_are_immutable_and_do_not_change_the_approval_binding():
+    document = manifest_document()
+    loaded = load_manifest(encode(document))
+    approval = load_approval(encode(approval_document(loaded.sha256)))
+    expected = dict(document["jobs"][0]["expect"])
+    original_sha256 = loaded.sha256
+
+    with pytest.raises(TypeError):
+        loaded.manifest.jobs[0].expect[
+            "schema"
+        ] = "unapproved-schema"  # ty: ignore[invalid-assignment]
+    with pytest.raises(TypeError):
+        del loaded.manifest.jobs[0].expect["principal"]  # ty: ignore[not-subscriptable]
+    # Neither the input document nor a serialized copy is an authority to edit
+    # the already loaded and approved release candidate.
+    document["jobs"][0]["expect"]["schema"] = "changed-input"
+    serialized = loaded.manifest.model_dump(mode="json")
+    serialized["jobs"][0]["expect"]["schema"] = "changed-output"
+    assert dict(loaded.manifest.jobs[0].expect) == expected
+    assert loaded.sha256 == original_sha256
+    verify_approval(loaded, approval, START)
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["release_id", "job_id", "task_arn", "status", "result", "receipt_schema", "schema_version"],
+)
+def test_expectations_cannot_override_receipt_envelope_identity_or_control_fields(key):
+    document = manifest_document()
+    document["jobs"][0]["expect"][key] = "forged"
+    error = rejected(encode(document))
+    assert error.code == "job_expectation_reserved"
+    assert error.detail == "jobs.runtime-migrate.expect"
+
+
 @pytest.mark.parametrize(
     "raw, code",
     [
