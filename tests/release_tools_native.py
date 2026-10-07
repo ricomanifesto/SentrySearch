@@ -1,0 +1,188 @@
+"""Opt-in SQL behavior tests on a disposable, Unix-socket-only PostgreSQL 16.
+
+Run explicitly with PG_BINDIR and SENTRYRUNTIME_REPO set. No existing database is
+contacted. This is SQL evidence, not image/TLS/job-lifecycle validation. The fresh
+cluster is stopped in finally and retained at the printed path for inspection.
+"""
+
+from __future__ import annotations
+
+import os
+import shlex
+import shutil
+import subprocess
+import tempfile
+from collections.abc import Iterator
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.engine import URL
+
+from src.storage.schema import migrate
+from tests.release_tools_privilege_cases import PrivilegeDrift, privilege_drifts
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+@dataclass
+class NativePostgres:
+    root: Path
+    bindir: Path
+
+    def command(self, name: str, *args: str, sql: str | None = None):
+        return subprocess.run(
+            [str(self.bindir / name), *args],
+            input=sql,
+            text=True,
+            capture_output=True,
+            timeout=60,
+            env={"HOME": str(self.root), "PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+        )
+
+    def sql(self, dbname: str, sql: str, *, user: str = "postgres", check: bool = True):
+        result = self.command(
+            "psql", "-X", "-w", "-qAt", "-v", "ON_ERROR_STOP=1", "-v", "VERBOSITY=verbose",
+            "-h", str(self.root), "-p", "55439", "-U", user, "-d", dbname, sql=sql,
+        )  # fmt: skip
+        if check:
+            assert result.returncode == 0, result.stderr
+        return result
+
+    def proof(self, database: str):
+        dbname, owner, service = identities(database)
+        source = (REPO / f"release_tools/sql/{database}/proof.sql").read_text()
+        return self.sql(dbname, f"\\set owner_role {owner}\n" + source, user=service, check=False)
+
+
+def identities(database: str) -> tuple[str, str, str]:
+    return (
+        ("sentryruntime", "runtime_owner", "runtime_app")
+        if database == "runtime"
+        else ("sentrysearch", "search_owner", "search_app")
+    )
+
+
+@pytest.fixture(scope="module")
+def postgres() -> Iterator[NativePostgres]:
+    bindir, runtime = os.environ.get("PG_BINDIR"), os.environ.get("SENTRYRUNTIME_REPO")
+    if not bindir or not runtime:
+        pytest.fail("Explicit PG_BINDIR and SENTRYRUNTIME_REPO are required")
+    if shutil.disk_usage(tempfile.gettempdir()).free < 512 * 1024 * 1024:
+        pytest.fail("At least 512 MiB free is required for a disposable PostgreSQL cluster")
+    # Short socket path, private directory, no inherited PostgreSQL/AWS settings.
+    root = Path(tempfile.mkdtemp(prefix="release-sql-"))
+    server = NativePostgres(root, Path(bindir))
+    print(f"\nRetained native PostgreSQL test cluster: {root}")
+    version = server.command("postgres", "--version")
+    assert version.returncode == 0 and " 16." in version.stdout, version.stdout
+    init = server.command(
+        "initdb", "-D", str(root / "data"), "-U", "postgres", "--no-locale", "-E", "UTF8",
+        "--auth-local=trust", "--auth-host=reject",
+    )  # fmt: skip
+    assert init.returncode == 0, init.stderr
+    options = shlex.join(
+        [
+            "-c",
+            "listen_addresses=",
+            "-c",
+            f"unix_socket_directories={root}",
+            "-c",
+            "unix_socket_permissions=0700",
+            "-p",
+            "55439",
+        ]
+    )
+    try:
+        started = server.command(
+            "pg_ctl", "-D", str(root / "data"), "-l", str(root / "server.log"),
+            "-o", options, "-w", "start",
+        )  # fmt: skip
+        assert started.returncode == 0, started.stderr
+        assert server.sql("postgres", "SHOW listen_addresses").stdout.strip() == ""
+        server.sql("postgres", "REVOKE CONNECT ON DATABASE postgres FROM PUBLIC")
+        for database in ("runtime", "product"):
+            dbname, owner, service = identities(database)
+            server.sql("postgres", f"CREATE ROLE {owner} LOGIN; CREATE ROLE {service} LOGIN;")
+            server.sql("postgres", f"CREATE DATABASE {dbname} OWNER {owner} TEMPLATE template0")
+            if database == "runtime":
+                migrations = sorted((Path(runtime) / "db/migrations").glob("*.sql"))
+                assert [p.name[:5] for p in migrations] == ["00001", "00002", "00003"]
+                for migration in migrations:
+                    up = migration.read_text().split("-- +goose Up\n", 1)[1]
+                    server.sql(dbname, up.split("-- +goose Down", 1)[0], user=owner)
+                # Same columns/sequence as Goose's PostgreSQL version table;
+                # this fixture applies the pinned migration SQL, not the Go binary.
+                server.sql(
+                    dbname,
+                    "CREATE TABLE goose_db_version(id integer PRIMARY KEY GENERATED BY DEFAULT"
+                    " AS IDENTITY, version_id bigint NOT NULL, is_applied boolean NOT NULL,"
+                    " tstamp timestamp NOT NULL DEFAULT now());"
+                    "INSERT INTO goose_db_version(version_id, is_applied)"
+                    " VALUES (0, true), (1, true), (2, true), (3, true);",
+                    user=owner,
+                )
+            else:
+                engine = create_engine(
+                    URL.create(
+                        "postgresql+psycopg",
+                        username=owner,
+                        database=dbname,
+                        query={"host": str(root), "port": "55439", "sslmode": "disable"},
+                    )
+                )
+                try:
+                    migrate(engine)
+                finally:
+                    engine.dispose()
+            grant_file = "runtime/service.sql" if database == "runtime" else "product/grants.sql"
+            server.sql(
+                dbname,
+                f"\\set database_name {dbname}\n\\set service_role {service}\n"
+                + (REPO / "release_tools/sql" / grant_file).read_text(),
+                user=owner,
+            )
+        yield server
+    finally:
+        if (root / "data/postmaster.pid").exists():
+            stopped = server.command("pg_ctl", "-D", str(root / "data"), "-m", "fast", "-w", "stop")
+            assert stopped.returncode == 0, stopped.stderr
+
+
+@pytest.mark.parametrize("database", ["runtime", "product"])
+def test_native_baseline(postgres: NativePostgres, database: str):
+    result = postgres.proof(database)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "database,drift",
+    [
+        (database, drift)
+        for database in ("runtime", "product")
+        for drift in privilege_drifts(database)
+    ],
+    ids=[
+        f"{database}-{drift.name}"
+        for database in ("runtime", "product")
+        for drift in privilege_drifts(database)
+    ],
+)
+def test_native_excess_privilege_is_exercisable_but_proof_refuses(
+    postgres: NativePostgres, database: str, drift: PrivilegeDrift
+):
+    dbname, _, service = identities(database)
+    baseline = postgres.proof(database)
+    assert baseline.returncode == 0, baseline.stderr
+    postgres.sql(dbname, drift.setup)
+    try:
+        exercised = postgres.sql(dbname, drift.exercise, user=service)
+        assert exercised.stdout.strip() == drift.expected, exercised.stdout
+        result = postgres.proof(database)
+        assert result.returncode != 0, f"proof accepted real excess authority: {drift.name}"
+        assert drift.sqlstate in result.stderr, result.stderr
+    finally:
+        postgres.sql(dbname, drift.cleanup)
+        restored = postgres.proof(database)
+        assert restored.returncode == 0, restored.stderr

@@ -29,6 +29,7 @@ from sqlalchemy.engine import URL
 from dev.tls_fixtures import create_certificates
 from release_tools import digest, receipt, session
 from src.storage.schema import migrate
+from tests.release_tools_privilege_cases import privilege_drifts
 
 REPO = Path(__file__).resolve().parents[1]
 # Keep aligned with tests/service_images.py and the SentryRuntime development image.
@@ -739,6 +740,31 @@ def test_proofs_detect_excess_privileges(stack, released):
             "sql_outcome": "unknown",
         }
     assert stack.job("proof", "runtime").code == 0
+
+
+@pytest.mark.parametrize("database", ["runtime", "product"])
+def test_proofs_reject_column_reads_and_delegation(stack, released, database):
+    dbname, service = (
+        ("sentryruntime", "runtime_app")
+        if database == "runtime"
+        else ("sentrysearch", "search_app")
+    )
+    for drift in privilege_drifts(database):
+        stack.sql(dbname, drift.setup)
+        try:
+            # psql's -c mode also prints command tags for the delegation GRANT.
+            assert (
+                stack.sql(dbname, drift.exercise, user=service).splitlines()[-1] == drift.expected
+            )
+            run = stack.job("proof", database)
+            assert run.code == 11, (drift.name, run.stdout, run.stderr)
+            assert run.receipt["result"] == {
+                "reason": "privilege_inventory_mismatch",
+                "sql_outcome": "unknown",
+            }
+        finally:
+            stack.sql(dbname, drift.cleanup)
+        assert stack.job("proof", database).code == 0, drift.name
 
 
 def test_product_grant_rejects_a_privileged_owner_without_changing_privileges(stack, released):

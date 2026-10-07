@@ -99,7 +99,8 @@ def _port(value: str) -> int:
 def _from_url(url: str) -> Connection:
     try:
         parts = urlsplit(url)
-        port = parts.port or 5432
+        parsed_port = parts.port
+        port = 5432 if parsed_port is None else _port(str(parsed_port))
         host = parts.hostname or ""
     except ValueError as error:
         raise ConfigError("database_url_invalid") from error

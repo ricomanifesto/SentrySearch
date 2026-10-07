@@ -161,6 +161,34 @@ def test_non_ascii_port_digits_are_a_configuration_error():
         config.load("grant", environment("grant", "product", DB_PORT="\u0665\u0664\u0663\u0662"))
 
 
+@pytest.mark.parametrize(
+    ("port", "expected"), [("", 5432), (":1", 1), (":5433", 5433), (":65535", 65535)]
+)
+def test_database_url_uses_default_port_only_when_omitted(port, expected):
+    values = environment(
+        "grant",
+        DATABASE_URL=f"postgres://runtime_owner:s3cret-pw@db.internal.example{port}/sentryruntime",
+    )
+    assert config.load("grant", values).connection.port == expected
+
+
+@pytest.mark.parametrize("port", ["0", "65536", "-1", "invalid"])
+def test_invalid_database_url_port_fails_before_psql(fake_psql, metadata, capsys, port):
+    _, recorded = fake_psql
+    values = environment(
+        "grant",
+        DATABASE_URL=f"postgres://runtime_owner:s3cret-pw@db.internal.example:{port}/sentryruntime",
+        ECS_CONTAINER_METADATA_URI_V4=metadata,
+    )
+    result = jobs.main(["grant"], values, now=lambda: NOW)
+    captured = capsys.readouterr()
+    assert result == jobs.EXIT_CONFIG
+    assert recorded() == []
+    assert receipt.RECEIPT_MARKER not in captured.out
+    assert json.loads(captured.err.splitlines()[-1])["reason"] == "database_url_invalid"
+    assert "s3cret-pw" not in captured.out + captured.err
+
+
 def test_proof_principal_cannot_be_the_owner():
     values = environment(
         "proof", "product", RELEASE_EXPECT_PRINCIPAL="search_owner", DB_USER="search_owner"

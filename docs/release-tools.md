@@ -36,6 +36,9 @@ requires its SHA-256 to equal the manifest pin
 Every setting comes from the task definition; anything unexpected fails before a
 connection with exit 2.
 
+An omitted URL port defaults to 5432. Explicit ports must be in 1–65535;
+port zero is invalid and never selects a different target by falling back.
+
 | Variable | Rule |
 | --- | --- |
 | `RELEASE_ID` | Manifest release UUID |
@@ -134,7 +137,10 @@ five product tables and `SELECT` on `sentrysearch_schema_migrations`.
 inventories: login attributes, no memberships or owned objects, no `CREATE` or
 `TEMPORARY` on the database, `USAGE` on `public` only, no other connectable
 database except `template1`, table privileges equal to the grant contract,
-column-only privileges equal to the Runtime script's column lists, no sequence
+column-only privileges equal to the Runtime script's column lists (including
+SELECT checks on ordinary/partitioned tables, views and foreign tables, and
+system columns), no grant options on database CONNECT, schema USAGE, tables or
+columns, no sequence
 privileges, no callable function outside the system schemas and no member of the
 service login or owner other than an administrator (`RT101`–`RT108`). Intended reads and writes run on fixture rows. Each
 forbidden operation must fail with `42501` (`RT110`–`RT131`): history deletion,
@@ -184,6 +190,22 @@ RDS-managed administrator secret and a separately approved administrator path.
 uv run python -m pytest tests/test_release_tools.py
 uv run python dev/check_release_tools.py --runtime-repo ../sentryruntime
 ```
+
+For SQL-only regression coverage without Docker, explicitly run:
+
+```bash
+PG_BINDIR=/path/to/postgresql-16/bin SENTRYRUNTIME_REPO=../sentryruntime \
+  uv run python -m pytest tests/release_tools_native.py -v
+```
+
+This creates a fresh private, Unix-socket-only PostgreSQL 16 cluster, applies the
+Runtime migration SQL and product migration code, and stops the cluster in
+`finally`. The stopped cluster is retained at the printed path. It never uses an
+existing database. Shared native/container cases first demonstrate real excess
+read or delegation authority, then require the proof to reject it and pass again
+after cleanup. Column grant options are checked even when normal table access
+masks the column privilege. This native suite does not prove image packaging,
+verified TLS, the migration executable or job lifecycle behavior.
 
 The unit suite drives real subprocesses (process-group kill of a SIGTERM-ignoring
 grandchild, signal forwarding) and a fake psql. The container suite builds the

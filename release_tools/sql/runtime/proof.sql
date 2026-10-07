@@ -46,9 +46,13 @@ BEGIN
     IF has_database_privilege(current_database(), 'CREATE')
        OR has_database_privilege(current_database(), 'TEMPORARY')
        OR EXISTS (SELECT FROM pg_database
+                  WHERE has_database_privilege(oid, 'CONNECT WITH GRANT OPTION'))
+       OR EXISTS (SELECT FROM pg_database
                   WHERE datname NOT IN (current_database(), 'template1') AND datallowconn
                     AND has_database_privilege(oid, 'CONNECT'))
        OR EXISTS (SELECT FROM pg_namespace WHERE has_schema_privilege(oid, 'CREATE'))
+       OR EXISTS (SELECT FROM pg_namespace
+                  WHERE has_schema_privilege(oid, 'USAGE WITH GRANT OPTION'))
        OR ARRAY(SELECT nspname::text FROM pg_namespace
                 WHERE nspname !~ '^pg_' AND nspname <> 'information_schema'
                   AND has_schema_privilege(oid, 'USAGE')) <> ARRAY['public'] THEN
@@ -64,6 +68,13 @@ BEGIN
               AND has_table_privilege(c.oid, p.privilege)) AS observed(entry))
        IS DISTINCT FROM
        ARRAY['goose_db_version:SELECT', 'runtime_run_events:SELECT', 'runtime_runs:SELECT']
+       -- An allowed operation does not include authority to delegate it.
+       OR EXISTS (SELECT FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                  CROSS JOIN unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE',
+                                          'REFERENCES', 'TRIGGER']) AS p(privilege)
+                  WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+                    AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+                    AND has_table_privilege(c.oid, p.privilege || ' WITH GRANT OPTION'))
        OR EXISTS (SELECT FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
                   WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
                     AND c.relkind = 'S'
@@ -72,13 +83,14 @@ BEGIN
                          OR has_sequence_privilege(c.oid, 'UPDATE'))) THEN
         RAISE EXCEPTION USING ERRCODE = 'RT105', MESSAGE = 'table privileges differ';
     END IF;
+    -- System columns (for example ctid) also support column grants.
     IF (SELECT array_agg(entry ORDER BY entry COLLATE "C") FROM (
             SELECT c.relname || '.' || a.attname || ':' || p.privilege
             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-            JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
-            CROSS JOIN unnest(ARRAY['INSERT', 'UPDATE', 'REFERENCES']) AS p(privilege)
+            JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum <> 0 AND NOT a.attisdropped
+            CROSS JOIN unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'REFERENCES']) AS p(privilege)
             WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
-              AND c.relkind IN ('r', 'p')
+              AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
               AND has_column_privilege(c.oid, a.attnum, p.privilege)
               AND NOT has_table_privilege(c.oid, p.privilege)) AS observed(entry))
        IS DISTINCT FROM (SELECT array_agg(entry ORDER BY entry COLLATE "C") FROM unnest(ARRAY[
@@ -97,7 +109,15 @@ BEGIN
             'runtime_run_events.actor_id:INSERT', 'runtime_run_events.from_state:INSERT',
             'runtime_run_events.to_state:INSERT', 'runtime_run_events.attempt:INSERT',
             'runtime_run_events.lease_version:INSERT', 'runtime_run_events.error_code:INSERT',
-            'runtime_run_events.metadata:INSERT']) AS expected(entry)) THEN
+            'runtime_run_events.metadata:INSERT']) AS expected(entry))
+       -- Check grant options independently: ordinary table access must not mask
+       -- an explicitly grantable column privilege on that same table.
+       OR EXISTS (SELECT FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                  JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum <> 0 AND NOT a.attisdropped
+                  CROSS JOIN unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'REFERENCES']) AS p(privilege)
+                  WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+                    AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+                    AND has_column_privilege(c.oid, a.attnum, p.privilege || ' WITH GRANT OPTION')) THEN
         RAISE EXCEPTION USING ERRCODE = 'RT106', MESSAGE = 'column privileges differ';
     END IF;
     -- The release defines no functions; none may be callable, including any
