@@ -436,6 +436,28 @@ def test_a_reconciled_launch_must_be_the_approved_unmodified_task():
     assert not r.events("observation", subject="runtime-migrate", result="launched")
 
 
+def test_a_reconciled_task_briefly_invisible_to_describe_is_polled_not_held(monkeypatch):
+    r = rig()
+    r.ecs.crash[("run_task", "after")] = 1
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    original = FakeEcs.describe_tasks
+    misses = {"left": 2}
+
+    def lagging(self, cluster, task_arns):
+        if misses["left"]:
+            misses["left"] -= 1
+            return {
+                "tasks": [],
+                "failures": [{"arn": arn, "reason": "MISSING"} for arn in task_arns],
+            }
+        return original(self, cluster, task_arns)
+
+    monkeypatch.setattr(FakeEcs, "describe_tasks", lagging)
+    assert r.recover().run().state == "held_paused"
+    assert r.events("observation", subject="runtime-migrate", result="launched")[0]["reconciled"]
+
+
 def test_a_refused_launch_is_never_launched_again_when_its_hold_was_lost():
     r = rig()
     migrate = r.document["jobs"][0]["task"]["task_definition"]
@@ -500,7 +522,7 @@ def test_a_failed_hold_write_never_chains_to_the_error_that_caused_it(monkeypatc
     assert not any("fixture-secret" in repr(item.args) for item in seen), seen
 
 
-def test_quiesce_waits_for_a_stopping_writer_and_holds_on_a_running_one():
+def test_quiesce_waits_for_a_writer_whose_stop_is_in_progress():
     r = rig()
     writer = r.ecs.standalone(r.document["services"]["worker"]["task_definition"])
     writer.stopped_at = r.clock.now() + timedelta(seconds=110)
@@ -537,6 +559,10 @@ def test_observed_override_or_exec_on_a_launched_job_holds(quirk):
     assert_held(r, outcome, reason, "quiesced")
     assert r.events("observation", subject="runtime-migrate", result="launched_unexpected")
     assert not r.events("observation", subject="runtime-migrate", result="job_succeeded")
+    # Launched under this release's token but not as approved: it is stopped.
+    [task] = r.job_tasks("runtime-migrate")
+    assert [c["task"] for c in r.calls("stop_task")] == [task.arn]
+    assert r.events("observation", subject="runtime-migrate", result="stop_confirmed")
 
 
 @pytest.mark.parametrize("quirk", [CLEAN_QUIRKS[0], CLEAN_QUIRKS[4], CLEAN_QUIRKS[-2]])

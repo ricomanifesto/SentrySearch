@@ -444,6 +444,12 @@ class ReleaseController:
             if len(arns) == 1:
                 # A listing proves only the token; the task must be the approved one.
                 task = self._describe_task(arns[0])
+                for _ in range(VISIBILITY_POLLS - 1):
+                    if task is not None:
+                        break
+                    # Briefly invisible right after launch is eventual consistency.
+                    self.clock.sleep(self.poll)
+                    task = self._describe_task(arns[0])
                 if task is None:
                     raise _Hold("launch_outcome_unknown")
                 self._verify_launched(job, intent["token"], task, arns, reconciled=True)
@@ -668,6 +674,11 @@ class ReleaseController:
         if reason is not None:
             self._observe(job.id, "launched_unexpected", resolves="run_task", task_arns=arns,
                           reason=reason)  # fmt: skip
+            arn = task.get("taskArn")
+            if task.get("startedBy") == token and arn and task.get("lastStatus") != "STOPPED":
+                # Launched under this release's token but not as approved: stop it
+                # rather than leave it running under the job's role.
+                self._stop_job(job, str(arn), "release job launched outside its approved shape")
             raise _Hold(reason)
         self._observe(job.id, "launched", resolves="run_task", task_arn=arns[0], **data)
 

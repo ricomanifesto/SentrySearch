@@ -38,7 +38,7 @@ future operator CLI needs the same isolation.
 | --- | --- |
 | Throttling codes, HTTP 5xx, connection loss, timeouts, unparseable responses | `AmbiguousResponse`: the request may have applied; the controller reconciles or holds |
 | Other 4xx (access denied, invalid parameter, client error) | `AwsRequestRejected` carrying only the AWS error code |
-| S3 412/409 on a conditional write; 404 on a conditional replace/delete | `PreconditionFailed` |
+| S3 412/409 on a conditional write; `NoSuchKey` on a conditional replace/delete | `PreconditionFailed` |
 | S3 404 on read | absent (`None`); 403 is a refusal, never "absent" |
 | Logs `ResourceNotFoundException` | `LogStreamMissing` |
 
@@ -82,11 +82,16 @@ chains to provider or log content.
     desired status at once while the process may run for up to the stop
     timeout.
   - **Ambiguity.** A desired-`STOPPED` task that cannot be described makes
-    either listing ambiguous.
+    either listing ambiguous. So does more than 2,000 retained tasks in one
+    listing (20 pages of 100). Each quiesce poll and token listing lists and
+    describes every retained stopped task.
 - **Observed tasks.** The controller, not IAM, rejects launched, reconciled,
-  completed or service tasks that report any override or Exec. A reconciled
-  launch is described and verified like a direct one, and a refused launch is
-  never relaunched, even if its hold was never journaled. Quiesce waits until
+  completed or service tasks that report any override or Exec.
+  - **Reconciled launches.** A reconciled launch is described (polled briefly
+    while not yet visible) and verified like a direct one.
+  - **Refused launches.** A refused launch is never relaunched, even if its
+    hold was never journaled. If the refused task carries the release's token
+    and is still running, it receives a journaled stop. Quiesce waits until
   every listed task has stopped and holds on any task ECS still intends to run.
 
 **`CloudWatchLogs`** (`LogPort`). One `GetLogEvents` call per port call:
@@ -105,8 +110,11 @@ ambiguous.
   - stream `<database>-<phase>/<phase>/<task-id>` for grants and proofs.
 - **Reading.** It reads from the head to the stream end within the manifest's
   fixed window, bounded to 20 pages and 256 KiB. Overflow is ambiguous.
-- **Parsing.** It parses with `release_tools.receipt.extract_receipt`. It
-  returns only the parsed receipt. Ordinary application lines (report IDs,
+- **Parsing.** It parses with `release_tools.receipt.extract_receipt`. That
+  parser's `ReceiptAmbiguous` still chains the JSON error, which quotes the
+  raw line. The adapter drops that chain, and any other caller must do the
+  same. The parser is left unchanged here because it ships in the accepted
+  release-tools image. It returns only the parsed receipt. Ordinary application lines (report IDs,
   request lines, tracebacks) are read but never returned or put into an
   exception.
 - **Outcomes.** A missing stream or receipt is missing evidence, so the

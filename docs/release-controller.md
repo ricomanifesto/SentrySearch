@@ -106,7 +106,8 @@ also `startedBy`. There are no overrides. Each of these holds:
 - a task that ECS reports with any override or with Exec enabled.
 
 A job whose launch was refused this way is never launched again, even if its
-hold was never journaled.
+hold was never journaled. A refused task still running under the release's own
+token receives a journaled stop rather than continuing under the job's role.
 
 After a crash or ambiguous response the controller looks for the task by token.
 A task found that way is described and verified like a direct launch. Only
