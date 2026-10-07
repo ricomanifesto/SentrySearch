@@ -30,8 +30,9 @@ See [Fargate task definition parameters](https://docs.aws.amazon.com/AmazonECS/l
 Do not put material and scratch on the same volume, even through distinct mount
 paths. The helper rejects equal device/inode roots as well as nested paths,
 symlinked paths, nonempty roots, and roots not owned by its effective UID. Mount
-fresh roots without copying image contents. Search needs all three independent
-volumes; runtime needs material only. Runtime migrations and Search releases
+fresh roots without copying image contents. The Search serving profile needs all
+three independent volumes; runtime and release profiles need material only.
+Runtime migrations and Search releases
 remain independent one-shot processes with separate database-owner authority.
 
 ## File-secret contract
@@ -47,6 +48,14 @@ Only these exact filenames are accepted:
 | --- | --- | --- |
 | `runtime` | `server-cert.pem`, `server-key.pem`, `runtime-ca.pem`, `postgres-ca.pem`, `probe-token` | `65532:65532` |
 | `search` | `runtime-ca.pem`, `postgres-ca.pem` | `10001:10001` |
+| `runtime-release` | `postgres-ca.pem` | `65532:65532` |
+| `search-release` | `postgres-ca.pem` | `10001:10001` |
+
+The two release profiles are for database-only migration/check jobs. They reject
+runtime TLS keys, runtime CA/probe tokens, and scratch-volume arguments. Each
+initializes only its fresh material volume; release jobs do not receive unrelated
+application credentials merely to obtain the PostgreSQL CA. All profiles retain
+the same strict material validation, ownership and immutable-version rules.
 
 Example command shape (placeholders, not live identifiers):
 

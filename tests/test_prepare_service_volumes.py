@@ -55,6 +55,50 @@ def test_search_initializes_all_named_volume_roots(tmp_path, materials, monkeypa
     assert list(roots[1].iterdir()) == list(roots[2].iterdir()) == []
 
 
+@pytest.mark.parametrize("profile,uid", [("runtime-release", 65532), ("search-release", 10001)])
+def test_release_profile_writes_only_database_ca(tmp_path, materials, monkeypatch, profile, uid):
+    destination = tmp_path / "material"
+    destination.mkdir()
+    ownership = []
+    monkeypatch.setattr(os, "fchown", lambda fd, user, group: ownership.append((user, group)))
+    payload = {"postgres-ca.pem": materials["postgres-ca.pem"]}
+    bootstrap.prepare(profile, json.dumps(payload), destination)
+    assert [path.name for path in destination.iterdir()] == ["postgres-ca.pem"]
+    assert (destination / "postgres-ca.pem").read_text() == payload["postgres-ca.pem"]
+    assert stat.S_IMODE((destination / "postgres-ca.pem").stat().st_mode) == 0o400
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o700
+    assert ownership == [(uid, uid), (uid, uid)]
+
+
+@pytest.mark.parametrize("profile", ["runtime-release", "search-release"])
+@pytest.mark.parametrize("extra", ["runtime-ca.pem", "server-key.pem", "probe-token"])
+def test_release_profiles_reject_unneeded_material(tmp_path, materials, profile, extra):
+    destination = tmp_path / "material"
+    destination.mkdir()
+    payload = {"postgres-ca.pem": materials["postgres-ca.pem"], extra: materials[extra]}
+    with pytest.raises(ValueError):
+        bootstrap.prepare(profile, json.dumps(payload), destination)
+    assert list(destination.iterdir()) == []
+
+
+@pytest.mark.parametrize("profile", ["runtime-release", "search-release"])
+@pytest.mark.parametrize("scratch", ["tmp", "work"])
+def test_release_profiles_reject_scratch_before_writes(tmp_path, materials, profile, scratch):
+    destination = tmp_path / "material"
+    destination.mkdir()
+    scratch_root = tmp_path / "scratch"
+    scratch_root.mkdir()
+    with pytest.raises(ValueError):
+        bootstrap.prepare(
+            profile,
+            json.dumps({"postgres-ca.pem": materials["postgres-ca.pem"]}),
+            destination,
+            tmp_dir=scratch_root if scratch == "tmp" else None,
+            work_dir=scratch_root if scratch == "work" else None,
+        )
+    assert list(destination.iterdir()) == list(scratch_root.iterdir()) == []
+
+
 @pytest.mark.parametrize(
     "mutation", ["missing", "extra", "bad-ca", "bad-token", "oversize", "duplicate"]
 )

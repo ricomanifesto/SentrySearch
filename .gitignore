@@ -66,6 +66,7 @@ Thumbs.db
 !/docs/platform-fit.md
 !/docs/image-security.md
 !/docs/image-risk-dispositions.md
+!/docs/local-canary.md
 !/docs/liblzma-backport.md
 backup_*/
 # Legacy main files (keep API files)

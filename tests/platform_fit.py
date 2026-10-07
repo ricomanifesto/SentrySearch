@@ -32,10 +32,9 @@ class VolumeStack(images.Stack):
             "/run/material",
             "--fixture-stdin",
         ]
-        payload = {
-            "runtime-ca.pem": (self.trust / "runtime-ca.pem").read_text(),
-            "postgres-ca.pem": (self.trust / "postgres-ca.pem").read_text(),
-        }
+        payload = {"postgres-ca.pem": (self.trust / "postgres-ca.pem").read_text()}
+        if profile in {"runtime", "search"}:
+            payload["runtime-ca.pem"] = (self.trust / "runtime-ca.pem").read_text()
         scratch_mounts = []
         if profile == "runtime":
             payload.update(
@@ -45,7 +44,7 @@ class VolumeStack(images.Stack):
                     "probe-token": self.secrets["producer"],
                 }
             )
-        else:
+        elif profile == "search":
             for suffix, target, argument in (
                 ("tmp", "/tmp", "--tmp-dir"),
                 ("work", "/var/lib/sentrysearch", "--work-dir"),
@@ -92,6 +91,10 @@ class VolumeStack(images.Stack):
         # launch is unreachable on init failure. ECS itself is not running here.
         runtime = image == images.RUNTIME_IMAGE and not command
         profile = "runtime" if image == images.RUNTIME_IMAGE else "search"
+        if command == ["/app/migrate"]:
+            profile = "runtime-release"
+        elif command[:3] == images.RELEASE:
+            profile = "search-release"
         initialized, mounts = self.initialize(profile, name)
         assert initialized.returncode == 0, initialized.stderr
         env = {key: value.replace("/run/trust/", "/run/material/") for key, value in env.items()}
@@ -187,6 +190,36 @@ print('named-volume permissions verified')
     )
     assert result.returncode == 0, result.stderr
     assert "named-volume permissions verified" in result.stdout
+
+
+@pytest.mark.parametrize("profile,uid", [("runtime-release", 65532), ("search-release", 10001)])
+def test_release_material_contains_only_database_ca(stack, profile, uid):
+    initialized, mounts = stack.initialize(profile, stack.name("release-material"))
+    assert initialized.returncode == 0, initialized.stderr
+    assert len(mounts) == 2  # No runtime identity, probe token or writable scratch.
+    inspected = images.docker(
+        "run",
+        "--rm",
+        "--network=none",
+        "--user",
+        f"{uid}:{uid}",
+        "--read-only",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges",
+        *mounts,
+        images.SEARCH_IMAGE,
+        "python",
+        "-c",
+        "import pathlib,os,stat; p=pathlib.Path('/run/material'); "
+        "assert {v.name for v in p.iterdir()} == {'postgres-ca.pem'}; "
+        "assert p.stat().st_uid == os.getuid(); "
+        "assert stat.S_IMODE(p.stat().st_mode) == 0o700; "
+        "c=p/'postgres-ca.pem'; assert c.stat().st_uid == os.getuid(); "
+        "assert stat.S_IMODE(c.stat().st_mode) == 0o400; "
+        "assert c.read_text().startswith('-----BEGIN CERTIFICATE-----')",
+        check=False,
+    )
+    assert inspected.returncode == 0, inspected.stderr
 
 
 def test_init_failure_blocks_modeled_service_start_without_exposing_secret(stack, monkeypatch):

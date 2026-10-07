@@ -9,6 +9,7 @@
 !dev/run_runtime_worker.py
 !dev/migrate_storage.py
 !dev/prepare_service_volumes.py
+!dev/check_worker_readiness.py
 !certs/**
 !container/build-requirements.txt
 !container/liblzma/**

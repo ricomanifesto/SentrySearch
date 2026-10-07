@@ -155,7 +155,7 @@ COPY --from=init --chmod=0755 /tini /usr/local/bin/tini
 COPY --from=build /app/.venv /app/.venv
 COPY run_api.py /app/
 COPY src /app/src
-COPY dev/run_runtime_worker.py dev/migrate_storage.py dev/prepare_service_volumes.py /app/dev/
+COPY dev/run_runtime_worker.py dev/migrate_storage.py dev/prepare_service_volumes.py dev/check_worker_readiness.py /app/dev/
 COPY certs /app/certs
 # Code imports only from /app; PYTHONSAFEPATH keeps the writable working
 # directory off sys.path so it cannot shadow application modules.

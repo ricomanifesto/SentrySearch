@@ -137,14 +137,29 @@ platform; the supervisor does not restart itself.
   schema revision; it is suitable for an HTTP readiness check. `GET /api/health`
   is a degraded/connected summary, not a readiness gate.
 - **Worker:** `/healthz`, `/readyz`, and `/status` listen on loopback only and must
-  not be exposed through a service port. Use an exec probe inside the container:
+  not be exposed through a service port. For a bounded readiness receipt in the
+  worker's own container or task network namespace, run:
 
   ```bash
-  python -c "import http.client as h;c=h.HTTPConnection('127.0.0.1',8081,timeout=2);c.request('GET','/readyz');raise SystemExit(c.getresponse().status!=200)"
+  python -m dev.check_worker_readiness --address 127.0.0.1:8081 --deadline-seconds 2
   ```
 
-  Use `/healthz` the same way for liveness. A platform whose only health check is
-  the API's web endpoint is not supervising the worker.
+  These are the defaults. This Linux/macOS one-shot process accepts only numeric
+  loopback addresses, requests only `/readyz`, caps the response at 4096 bytes,
+  and enforces a positive total deadline of at most 10 seconds, including slow
+  headers and body delivery. It validates the supervisor's cached JSON rather
+  than checking HTTP status alone. It prints only a sanitized JSON result:
+  exit `0` means ready; `1` means unready, timeout, unavailable or invalid response;
+  `2` means invalid invocation. It ignores proxy environment variables, makes no
+  dependency/provider calls, retries nothing, and opens no listener.
+
+  `/healthz` is liveness only and can remain healthy during drain while this
+  readiness check fails. A standalone task cannot use its own loopback address
+  to inspect a different worker task. Platform-native in-container probes or an
+  explicitly designed same-task one-shot invocation are separate deployment
+  decisions; this command does not require ECS Exec or a long-lived sidecar.
+  A platform whose only health check is the API's web endpoint is not supervising
+  the worker.
 - **Release job:** use its exit status. It exposes no probe.
 
 Platform-specific probe, restart, and termination settings belong to the
@@ -156,6 +171,10 @@ It exercises a Fargate-shaped filesystem contract without deploying anything.
 The initializer exits before application startup, which depends on its success.
 
 ## Local proof
+
+For completed authenticated synthetic report flow, run the separate
+[deterministic local canary](local-canary.md). It uses the real report pipeline
+with test-only external I/O fixtures; fixture files are not shipped in this image.
 
 ```bash
 uv run python dev/check_service_images.py --runtime-repo ../sentryruntime

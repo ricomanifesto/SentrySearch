@@ -468,6 +468,7 @@ def test_image_contract_ships_only_root_owned_release_files():
         "app/dev/run_runtime_worker.py",
         "app/dev/migrate_storage.py",
         "app/dev/prepare_service_volumes.py",
+        "app/dev/check_worker_readiness.py",
     }
     shipped = {name for name in members if name.startswith("app/") and "/.venv/" not in name}
     assert shipped == expected
@@ -872,6 +873,8 @@ def test_busy_worker_drain_deadline_kills_child_and_restart_recovers_lease(stack
         f" coalesce(generation_failure::text, '') FROM reports WHERE id = '{report_id}'",
     )
     assert status["phase"] == "generation" and status["ready"], f"{status}\n{report}"
+    ready_probe = docker("exec", first, "python", "-m", "dev.check_worker_readiness", check=False)
+    assert ready_probe.returncode == 0 and json.loads(ready_probe.stdout)["ready"] is True
     # Generation is blocked on the local stub, not on any external provider.
     assert "provider stub accepted a connection" in logs(stack.provider)
 
@@ -880,6 +883,8 @@ def test_busy_worker_drain_deadline_kills_child_and_restart_recovers_lease(stack
     assert draining[0] == 503 and draining[1]["draining"], draining
     # Readiness withdraws admission while the living child is still draining.
     assert local_probe(first, "/healthz")[0] == 200
+    drain_probe = docker("exec", first, "python", "-m", "dev.check_worker_readiness", check=False)
+    assert drain_probe.returncode == 1 and json.loads(drain_probe.stdout)["ready"] is False
     code = int(docker("wait", first, timeout=30).stdout.strip())
     output = logs(first)
     assert code == 124, output

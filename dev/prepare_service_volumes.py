@@ -25,6 +25,8 @@ PROFILES = {
         {"server-cert.pem", "server-key.pem", "runtime-ca.pem", "postgres-ca.pem", "probe-token"},
     ),
     "search": (10001, {"runtime-ca.pem", "postgres-ca.pem"}),
+    "runtime-release": (65532, {"postgres-ca.pem"}),
+    "search-release": (10001, {"postgres-ca.pem"}),
 }
 
 
@@ -103,7 +105,7 @@ def prepare(
 ) -> None:
     material = _material(profile, payload)
     if (profile == "search" and (tmp_dir is None or work_dir is None)) or (
-        profile == "runtime" and (tmp_dir is not None or work_dir is not None)
+        profile != "search" and (tmp_dir is not None or work_dir is not None)
     ):
         raise ValueError("Scratch volumes are required only for the search profile")
     paths = [material_dir, *([tmp_dir, work_dir] if profile == "search" else [])]
