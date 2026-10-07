@@ -34,8 +34,15 @@ advisory/package/severity tuples are unchanged. The scanner still flags
 `TEMP-1147318-639065` against the honest local version; upstream rates it HIGH.
 Retain that raw match alongside source and behavioral evidence, not a suppression.
 
-**Release remains held.** Resolve the other component/build/range dispositions
-below and the environment-specific contract. No release exception is granted.
+The subsequent [exact-image disposition review](image-risk-dispositions.md)
+accounts for every raw match: 21 narrow exclusions, one locally backported fix,
+16 affected-code matches and 11 unresolved/disputed matches. All seven scanner-HIGH
+matches concern absent components; that does not clear differently rated native
+advisories or the remaining 27 matches. The review adds no scanner suppression.
+
+**Release remains held.** The remaining matches need compatible fixes, specific
+closure evidence or an explicit bounded release-owner decision, plus the staging
+contract and acceptance gates. No release exception is granted.
 The project owns this temporary package until a verified official Trixie fix
 passes the documented replacement gates. ARM64 evidence does not prove AMD64,
 direct lzip/MicroLZMA allocation-failure behavior, sanitizer coverage or cloud
