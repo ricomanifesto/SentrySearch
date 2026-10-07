@@ -178,9 +178,10 @@ authority. Source images must actually include the two release-only initializer
 profiles. Never use the broad service material profiles for an owner job.
 
 Registering these definitions does not run them. A separately approved operator
-or future controller must prevent concurrent releases, impose a measured whole-job
+or controller must prevent concurrent releases, impose a measured whole-job
 deadline, wait for task `STOPPED`, inspect stopped/start-failure reasons, and require
-both init and migration exit 0. A 30-second `stopTimeout` is termination grace,
+both init and migration exit 0. The [offline release controller](../../docs/release-controller.md)
+encodes these rules against fake ports only; it has no AWS adapter. A 30-second `stopTimeout` is termination grace,
 **not** a whole-migration deadline. A missing migration exit code, failed init,
 killed/timed-out task or incompatible schema is a failed release, even if no
 container remains running. No scheduler retry or automatic down-migration is
@@ -230,7 +231,8 @@ The release order is explicit:
    separately approved synthetic canary before any admission decision.
 
 The two DB migrations are independent; this conservative ordered checklist is an
-operator contract, not a cross-database transaction or implemented orchestrator.
+operator contract, not a cross-database transaction. The offline controller
+models its ordering and holds but is not a deployed orchestrator.
 The module does not create principals, launch jobs, execute grants, run service-role
 checks, observe readiness, schedule promotion or provision the enclosing platform.
 

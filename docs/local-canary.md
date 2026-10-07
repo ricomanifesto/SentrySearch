@@ -75,8 +75,9 @@ The readiness helper is a bounded POSIX one-shot CLI, not a listener or sidecar.
 It returns sanitized JSON and nonzero for unready, malformed, slow or unavailable
 peers. Run it in the worker's network namespace. A separate Fargate task cannot
 reach that loopback listener. Controlled same-task invocation and release receipt
-collection still need deployment-orchestration design; ECS Exec remains disabled
-and liveness is not redefined as readiness.
+collection are not implemented; the [offline release controller](release-controller.md)
+only defines the receipts it requires. ECS Exec remains disabled and liveness is not
+redefined as readiness.
 
 The optional owner-only task definitions and operator grant ordering are in
 [`deploy/aws-platform-fit`](../deploy/aws-platform-fit/README.md). Mocks and

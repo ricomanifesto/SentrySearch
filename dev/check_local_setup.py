@@ -15,6 +15,7 @@ PYTHON_VALIDATION_PATHS = [
     "run_api.py",
     "src",
     "dev",
+    "release",
     "tests",
 ]
 
