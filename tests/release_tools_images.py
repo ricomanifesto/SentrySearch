@@ -23,12 +23,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.engine import URL
 
 from dev.tls_fixtures import create_certificates
 from release_tools import digest, receipt, session
-from src.storage.schema import migrate
 from tests.release_tools_privilege_cases import privilege_drifts
 
 REPO = Path(__file__).resolve().parents[1]
@@ -39,6 +36,7 @@ POSTGRES_IMAGE = (
 )
 TOOLS_IMAGE = os.environ.get("RELEASE_TOOLS_TEST_IMAGE", "")
 RUNTIME_IMAGE = os.environ.get("SENTRYRUNTIME_TEST_IMAGE", "")
+SEARCH_IMAGE = os.environ.get("SENTRYSEARCH_TEST_IMAGE", "")
 SUBNET = "169.254.170.0/24"
 METADATA_IP = "169.254.170.2"
 POSTGRES_IP = "169.254.170.10"
@@ -421,34 +419,53 @@ def _migrate(stack: Stack) -> None:
         "/app/migrate",
         timeout=180,
     )
-    # The product migration runs from this checkout over verified TLS, as the owner.
-    engine = create_engine(
-        URL.create(
-            "postgresql+psycopg",
-            username="search_owner",
-            password=stack.secrets["search_owner"],
-            host="postgres",
-            port=5432,
-            database="sentrysearch",
-            query={
-                "sslmode": "verify-full",
-                "sslrootcert": str(stack.root / "postgres" / "ca.pem"),
-                "hostaddr": POSTGRES_IP,
-                "gssencmode": "disable",
-            },
-        ),
-        hide_parameters=True,
+    # Keep both real migration entry points inside the isolated network. Hosts
+    # running Docker Desktop cannot route directly to the VM's bridge addresses.
+    product_env = {
+        "ENVIRONMENT": "production",
+        "DB_HOST": "postgres",
+        "DB_PORT": "5432",
+        "DB_NAME": "sentrysearch",
+        "DB_USER": "search_owner",
+        "DB_PASSWORD": stack.secrets["search_owner"],
+        "DB_SSLMODE": "verify-full",
+        "DB_SSLROOTCERT": "/run/material/postgres-ca.pem",
+    }
+    env_file = stack.root / "product-migrate.env"
+    env_file.write_text("".join(f"{key}={value}\n" for key, value in product_env.items()))
+    env_file.chmod(0o600)
+    docker(
+        "run",
+        "--rm",
+        "--name",
+        stack.name("product-migrate"),
+        "--network",
+        stack.network,
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--user",
+        f"{PRODUCT_UID}:{PRODUCT_UID}",
+        "--mount",
+        f"type=volume,source={stack.material['product']},target=/run/material,readonly,volume-nocopy",
+        "--env-file",
+        str(env_file),
+        SEARCH_IMAGE,
+        "python",
+        "-m",
+        "dev.migrate_storage",
+        timeout=180,
     )
-    try:
-        migrate(engine)
-    finally:
-        engine.dispose()
 
 
 @pytest.fixture(scope="module")
 def stack() -> Iterator[Stack]:
-    if not TOOLS_IMAGE or not RUNTIME_IMAGE:
-        pytest.fail("RELEASE_TOOLS_TEST_IMAGE and SENTRYRUNTIME_TEST_IMAGE are required")
+    if not TOOLS_IMAGE or not RUNTIME_IMAGE or not SEARCH_IMAGE:
+        pytest.fail(
+            "RELEASE_TOOLS_TEST_IMAGE, SENTRYRUNTIME_TEST_IMAGE and SENTRYSEARCH_TEST_IMAGE are required"
+        )
     names = ("postgres", "runtime_owner", "runtime_app", "search_owner", "search_app")
     with tempfile.TemporaryDirectory(prefix="release-tools-") as directory:
         root = Path(directory)

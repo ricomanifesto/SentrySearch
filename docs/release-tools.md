@@ -4,8 +4,9 @@
 jobs the [release controller](release-controller.md) runs after migrations:
 Runtime and product **grants**, least-authority **proofs**, a same-database
 **reconciliation** job and a **bootstrap** job for a fresh instance. The image is
-local and mock-wired only: it has not been published to a registry, scanned,
-built for ARM64 or run in AWS, and nothing here grants access to a real database.
+local and mock-wired only: ARM64 build, container tests and exact-image scanning
+have run, but it has not been published to a registry or run in AWS. Findings
+remain unaccepted, and nothing here grants access to a real database.
 
 ## Image
 
@@ -188,7 +189,7 @@ RDS-managed administrator secret and a separately approved administrator path.
 
 ```bash
 uv run python -m pytest tests/test_release_tools.py
-uv run python dev/check_release_tools.py --runtime-repo ../sentryruntime
+uv run python -m dev.check_release_tools --runtime-repo ../sentryruntime
 ```
 
 For SQL-only regression coverage without Docker, explicitly run:
@@ -206,6 +207,13 @@ read or delegation authority, then require the proof to reject it and pass again
 after cleanup. Column grant options are checked even when normal table access
 masks the column privilege. This native suite does not prove image packaging,
 verified TLS, the migration executable or job lifecycle behavior.
+
+The image runner builds release-tools and both service images and passes their
+immutable IDs to the tests. Both actual migration entry points run inside the
+internal network: Runtime's `/app/migrate` and Search's
+`python -m dev.migrate_storage`. They use separate owner credentials, verified
+TLS and private read-only CA volumes. No database port is published and no host
+connection to a Docker bridge address is required, including on Docker Desktop.
 
 The unit suite drives real subprocesses (process-group kill of a SIGTERM-ignoring
 grandchild, signal forwarding) and a fake psql. The container suite builds the
@@ -225,6 +233,23 @@ an RDS-like administrator, no shipped bytecode and redacted output. Pass
 `--build-ca-file` behind a
 TLS-intercepting proxy.
 
+October 7, 2026 ARM64 acceptance ran all **22 container cases** successfully.
+The newly built release-tools local image index is
+`sha256:729e62ccc8d68fa93af5b27f72b9c8af114053a38e3daea35b2565fd70e6c40d`;
+its ARM64 manifest is
+`sha256:78428a0531093b4baa3cd5f5700936ffbf46ddbecf629a5732d2848fcd928d0c`.
+The rebuilt Runtime fixture and a retained Search fixture with 51 matching
+packaged source files supplied the real migration entry points. Search's image
+and dependency inputs were unchanged; this was not a fresh product-image build.
+Local image identities are not registry publication receipts.
+
+Trivy 0.75.0 with database updated `2026-10-07T07:38:55Z` reported **54 matches**
+across 36 advisory IDs: **0 critical, 1 high, 23 medium, 30 low, 0 unknown**.
+All were OS-package matches; none had a scanner-supplied fixed version. No ignore
+file, finding suppression or risk acceptance was applied. The rebuilt Runtime
+fixture had zero matches in the same database. See [image security](image-security.md#guarded-release-tools)
+for the component and inventory limits.
+
 ## Not proven
 
 The Terraform module caps the fixed deadline at seven days after the plan. IAM
@@ -232,10 +257,12 @@ cannot forbid `RunTask` overrides that would replace a job's environment; the
 attended launcher sends none, and checking observed task overrides belongs to the
 AWS adapter.
 
-- ARM64 build and run, registry publication, provenance/SBOM and an exact-image
-  scan of these new bytes. Docker Hub inputs were pulled through `mirror.gcr.io`
-  by digest; recheck them against Docker Hub. The 27 retained Search-image scan
-  matches are unaffected and remain unaccepted.
+- Registry publication, signed provenance, cloud behavior and release approval.
+  Docker Hub index pins were independently checked against Docker Hub; local
+  build evidence, exported image bytes and SBOMs are retained. Scanner coverage
+  does not independently clear the copied interpreter or static init binary.
+  Tools-specific findings and the 27 retained Search-image matches remain
+  unaccepted. Counts from different images or database dates are not additive.
 - RDS behavior: the real administrator's memberships and ownership of `postgres`
   and `template1` (modelled locally by a CREATEROLE/CREATEDB login), `require_auth`
   with RDS authentication, `client_connection_check_interval` and statement

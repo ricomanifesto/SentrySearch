@@ -1,4 +1,4 @@
-"""Build the release-tools and SentryRuntime images, then prove the guarded jobs.
+"""Build release-tools and both service images, then prove the guarded jobs.
 
 Disposable TLS PostgreSQL and a stand-in ECS metadata endpoint run on an internal
 Docker network. No AWS request, registry push or real credential is involved.
@@ -28,6 +28,12 @@ def main() -> None:
         repo / "container" / "release-tools.Dockerfile",
         args.build_ca_file,
     )
+    search_image = build(
+        repo,
+        "sentrysearch:release-tools-product",
+        repo / "container" / "Dockerfile",
+        args.build_ca_file,
+    )
     # Containers receive only explicit disposable settings; never forward host secrets.
     env = {
         key: value
@@ -39,6 +45,7 @@ def main() -> None:
             "PYTHON_DOTENV_DISABLED": "1",
             "RELEASE_TOOLS_TEST_IMAGE": tools_image,
             "SENTRYRUNTIME_TEST_IMAGE": runtime_image,
+            "SENTRYSEARCH_TEST_IMAGE": search_image,
         }
     )
     subprocess.run(

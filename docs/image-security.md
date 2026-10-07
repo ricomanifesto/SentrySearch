@@ -1,5 +1,39 @@
 # Image security remediation — October 6, 2026
 
+## Guarded release-tools
+
+October 7 ARM64 [release-tools validation](release-tools.md#local-proof) added a
+separate image; it does not replace the service-image evidence below. Its scan
+retains 54 matches across 36 advisory IDs (C0/H1/M23/L30/U0), with no fixed
+versions supplied by the scanner. Source families are glibc (21 matches), GCC
+runtime (8), Kerberos (16), OpenLDAP (5), ncurses (2) and zlib (2).
+
+The sole high match, [CVE-2025-69720](https://security-tracker.debian.org/tracker/CVE-2025-69720),
+names `progs/infocmp.c`. Inspection found no `infocmp` in these exact bytes,
+supporting only an affected-component-absent candidate disposition. This is not
+a patched-package claim or risk acceptance. The separate
+[CVE-2025-6141](https://security-tracker.debian.org/tracker/CVE-2025-6141) parser
+finding needs retained-code review: `libtic.so.6.5` and its parser symbol are
+present. Library families cannot inherit exclusions for absent command-line tools.
+
+Twenty-seven advisory IDs overlap the service-image disposition ledger. Nine
+additional low advisory IDs come from the psql client's Kerberos/OpenLDAP
+dependencies. They need tools-specific component/caller review, not a blanket
+waiver. All raw matches are preserved and remain unaccepted for release.
+
+The generated SBOM identifies 27 Debian packages and `packaging=26.3`, but not the
+copied CPython interpreter/stdlib, static tini's embedded dependencies or the
+application source as independent components. A separate inventory records
+executed CPython **3.11.17**, psql **16.15**, tini **0.19.0**, executable hashes
+and the pinned input indexes. Tini's bytes match the recipe checksum. This closes
+the basic identity gap, not independent vulnerability coverage or signed
+provenance. Zero detected Python-package findings does not clear the interpreter.
+
+These findings do not authorize a registry publication or deployment. Complete
+the retained-code and component coverage review, any required remediation, and
+the explicit release-risk decision before staging. Existing 27 retained
+service-image matches remain a separate gate; do not add counts across images.
+
 ## Current candidate: maintained local liblzma backport
 
 The default service-image recipe now builds the bounded backport described in
