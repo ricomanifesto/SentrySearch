@@ -915,12 +915,13 @@ class ReleaseController:
                                    policy=policy)  # fmt: skip
             except Exception:
                 # Denied, missing or malformed reads prove nothing for this poll.
-                gate.clear("readiness_logs_unavailable", now)
+                # Visibility was lost until the read returned, however long it took.
+                gate.clear("readiness_logs_unavailable", self.clock.now())
             else:
                 token = read.token
                 gate.ingest(read.messages, now)
                 if not read.complete:
-                    gate.clear("readiness_logs_incomplete", now)
+                    gate.clear("readiness_logs_incomplete", self.clock.now())
             status, detail, arns = self._service_snapshot("worker", deployment)
             if status == "failed" or detail == "task_count_drift":
                 raise _Hold(detail)

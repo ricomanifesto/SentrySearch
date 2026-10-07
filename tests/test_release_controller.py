@@ -756,6 +756,55 @@ def test_incomplete_pagination_clears_stability_until_a_complete_read():
     assert FakeLogs.observed(recorded(r), passed["first_sequence"]) > epoch + timedelta(seconds=120)
 
 
+def slow_read(r: Rig, *, failure: str, seconds: float) -> dict:
+    """The fifth log request takes ``seconds``, then is denied or never completes."""
+    returned: dict = {}
+
+    def stall():
+        calls = len(r.logs.calls)
+        if calls == 5:
+            r.clock.advance(seconds=seconds)
+            returned["at"] = r.clock.now()  # later pages take no fake time
+            if failure == "denied":
+                raise PermissionError("AccessDeniedException")
+            r.logs.endless = True  # pages 5-24 hit the 20-page bound
+        elif calls == 25:
+            r.logs.endless = False
+
+    r.logs.before_read = stall
+    return returned
+
+
+# 60 s reproduces the acceptance probe; 25 s stays inside the 30 s freshness
+# bound, so only the read-completion clear can exclude the unavailable time.
+@pytest.mark.parametrize(
+    ("failure", "seconds"),
+    [("denied", 60), ("denied", 25), ("incomplete", 60), ("incomplete", 25)],
+)
+def test_time_spent_in_a_failed_read_never_counts_toward_stability(failure, seconds):
+    r = rig()
+    returned = slow_read(r, failure=failure, seconds=seconds)
+    outcome = r.controller().run()
+    assert outcome.state == "held_paused", outcome
+    [started] = gate_events(r, "readiness_observing")
+    [passed] = gate_events(r, "operational_passed")
+    epoch, completion = moment(started["epoch_at"]), returned["at"]
+    # Visibility was lost until the read returned: the window starts with a
+    # receipt observed after completion plus the allowed skew, and lasts 60 s.
+    first = FakeLogs.observed(recorded(r), passed["first_sequence"])
+    assert first > completion + timedelta(seconds=5)
+    assert moment(passed["at"]) >= first + timedelta(seconds=60)
+    assert (
+        passed["last_reset"]
+        == {
+            "denied": "readiness_logs_unavailable",
+            "incomplete": "readiness_logs_incomplete",
+        }[failure]
+    )
+    # The fixed deadline is unchanged by the slow read.
+    assert moment(started["deadline_at"]) == epoch + timedelta(seconds=600)
+
+
 @pytest.mark.parametrize(
     "change, reason",
     [
