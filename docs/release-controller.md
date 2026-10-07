@@ -130,8 +130,20 @@ proves success or SQL cancellation. Missing receipts exhaust the same deadline.
 
 Writers are scaled to zero (journaled) and must drain, and no other task may
 remain in the cluster. Services then start in order (Runtime, API, worker) with
-a forced new deployment and the deployment circuit breaker enabled but automatic
-rollback disabled. A service is ready only when exactly one healthy running task
+a forced new deployment. The deploy request carries only the controller-owned
+fields: cluster, service, task definition, desired count one and the forced
+deployment. Terraform alone writes every deployment setting. Before each deploy,
+and on every later service observation, the controller holds with
+`service_settings_drift` unless ECS reports exactly Terraform's values:
+- minimum healthy 0% and maximum 100% (no overlap);
+- the circuit breaker enabled with rollback disabled (no automatic return to a
+  binary that may not match migrated schemas);
+- no alarm rollback;
+- the rolling strategy;
+- the ECS deployment controller;
+- Exec disabled.
+
+A missing value counts as drift. A service is ready only when exactly one healthy running task
 of that new deployment exists, with exact definition and digests. Tasks from an
 older deployment of the same revision never count. Count drift, a failed or
 superseded deployment, or timeout holds.
@@ -249,8 +261,9 @@ task definitions that the manifest references.
 The mock-tested [staging roots](../deploy/aws-staging/README.md) declare the
 environment this controller would operate. Terraform creates the three services at
 desired count zero and ignores only their task definition and desired count,
-which this controller changes. Its deploy request also re-sends Exec disabled and
-the circuit breaker without rollback, matching Terraform's settings. The roots'
+which this controller changes. Deployment settings and Exec have one owner,
+Terraform: the controller never sends them (a partial `deploymentConfiguration`
+could reset the omitted percentages), and it verifies them instead. The roots'
 unattached launcher policies allow each `EcsPort` call for the definitions that
 exist: deploys must name a retained revision of that service, scale-to-zero
 requests carry no task definition, only the current release's jobs (migrations,

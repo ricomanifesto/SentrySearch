@@ -5,9 +5,10 @@ module "names" {
   name_prefix = var.name_prefix
 }
 
-# Terraform owns placement, networking, discovery and supervision settings.
-# The release controller alone owns the task definition and desired count:
-# Terraform never starts a service and never reverts a controller release.
+# Terraform owns placement, networking, discovery, supervision and deployment
+# settings; the release controller verifies but never writes them. The
+# controller alone owns the task definition and desired count: Terraform never
+# starts a service and never reverts a controller release.
 resource "aws_ecs_service" "this" {
   for_each                           = module.names.service_names
   name                               = each.value

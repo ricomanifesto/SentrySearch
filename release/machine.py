@@ -41,6 +41,14 @@ TERMINAL_STATES = frozenset({State.HELD_PAUSED, State.HOLD})
 TOKEN_MAX_LIFETIME = timedelta(hours=24)
 TOKEN_TASK_MARGIN = timedelta(hours=1)
 SUCCESSFUL_STOP_CODES = frozenset({"EssentialContainerExited"})
+# deploy/aws-staging/services owns these settings and the controller never writes
+# them: no overlap during a deploy, and a failed deployment holds instead of
+# rolling back to a binary that may not match the migrated schemas.
+SERVICE_DEPLOYMENT_SETTINGS = {
+    "minimumHealthyPercent": 0,
+    "maximumPercent": 100,
+    "deploymentCircuitBreaker": {"enable": True, "rollback": False},
+}
 
 
 def check_transition(current: State, target: State) -> None:
@@ -116,6 +124,29 @@ def evaluate_job(
     return None
 
 
+def service_settings_drift(service: Mapping[str, Any]) -> bool:
+    """True unless ECS reports exactly the Terraform-owned settings the release relies on.
+
+    Additional reported structures pass only when they cannot roll back or change
+    the rolling strategy. A missing value is drift: it cannot be shown to match.
+    """
+    configuration = service.get("deploymentConfiguration")
+    if not isinstance(configuration, Mapping):
+        return True
+    if any(configuration.get(key) != value for key, value in SERVICE_DEPLOYMENT_SETTINGS.items()):
+        return True
+    alarms = configuration.get("alarms")
+    if alarms is not None and (
+        not isinstance(alarms, Mapping) or alarms.get("rollback") is not False
+    ):
+        return True
+    return (
+        configuration.get("strategy", "ROLLING") != "ROLLING"
+        or service.get("deploymentController") != {"type": "ECS"}
+        or service.get("enableExecuteCommand") is not False
+    )
+
+
 def evaluate_service(
     spec: TaskSpec,
     digests: Mapping[str, str],
@@ -127,7 +158,10 @@ def evaluate_service(
 
     Only a task started by the recorded deployment can count. A task from an older
     deployment of the same revision, a partial task set or count drift cannot.
+    Terraform-owned setting drift fails at once.
     """
+    if service_settings_drift(service):
+        return "failed", "service_settings_drift"
     deployments = {item.get("id"): item for item in service.get("deployments") or []}
     mine = deployments.get(deployment_id)
     if mine is None:

@@ -38,12 +38,21 @@ Terraform owns networking, discovery, deployment settings and every other servic
 attribute. The [release controller](../../docs/release-controller.md) changes only
 each service's task definition and desired count: `services/` creates services at
 zero and ignores exactly `task_definition` and `desired_count`. Applying Terraform
-never starts a service, resumes traffic or reverts a controller release. The
-controller's deploy request also re-sends Exec disabled and the circuit breaker
-without rollback, matching Terraform. Whether a partial `deploymentConfiguration`
-resets Terraform's minimum/maximum percent is unverified; a deploy from desired
-zero cannot overlap writers either way, and the next plan would show the drift.
-Settling that ownership is a gate before any AWS adapter is built.
+never starts a service, resumes traffic or reverts a controller release.
+Deployment settings and Exec have exactly one writer, Terraform. The controller's
+deploy request carries only cluster, service, task definition, desired count and
+a forced new deployment. It never sends `deploymentConfiguration` or
+`enableExecuteCommand`, so it cannot reset omitted percentages. Before each
+deploy and on every later service observation, it holds with
+`service_settings_drift` unless ECS reports this root's values:
+- minimum 0% and maximum 100%;
+- circuit breaker on, rollback off;
+- no alarm rollback;
+- the rolling strategy;
+- the ECS controller;
+- Exec off.
+
+A static test ties those expected values to this file.
 
 ### Retained releases
 

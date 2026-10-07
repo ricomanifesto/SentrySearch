@@ -25,6 +25,20 @@ REGISTRY = f"{ACCOUNT}.dkr.ecr.{REGION}.amazonaws.com"
 START = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
 RELEASE_ID = "0b9f7c1e-4d2a-4f6b-9a3e-2c1d0e9f8a7b"
 PRIOR_RELEASE_ID = "5e6f7a8b-1c2d-4e3f-8a9b-0c1d2e3f4a5b"
+# The settings deploy/aws-staging/services gives every service. Terraform owns
+# them; the controller only reads them.
+TERRAFORM_SERVICE_SETTINGS: dict[str, Any] = {
+    "deploymentConfiguration": {
+        "deploymentCircuitBreaker": {"enable": True, "rollback": False},
+        "maximumPercent": 100,
+        "minimumHealthyPercent": 0,
+    },
+    "deploymentController": {"type": "ECS"},
+    "enableExecuteCommand": False,
+}
+# ECS defaults that a deploymentConfiguration without percentages may restore.
+# Whether it does is unverified; the fake assumes the pessimistic case.
+ECS_DEFAULT_PERCENTS = {"maximumPercent": 200, "minimumHealthyPercent": 100}
 RUNTIME_GRANT = {
     "path": "db/roles/service.sql",
     "source_commit": "bb6e523da3c6f4bb186a548f3be696a40798fae9",
@@ -350,6 +364,7 @@ class FakeService:
     fail_rollout: bool = False
     replace_after: float | None = None
     linger_old: bool = False
+    settings: dict = field(default_factory=lambda: copy.deepcopy(TERRAFORM_SERVICE_SETTINGS))
 
 
 class FakeEcs:
@@ -560,6 +575,14 @@ class FakeEcs:
         self.mutations.append(("update_service", copy.deepcopy(request)))
         self.trace.append(("ecs", "update_service", request["service"]))
         service = self.services[request["service"]]
+        if "deploymentConfiguration" in request:
+            # A partial structure replaces Terraform's, percentages included.
+            service.settings["deploymentConfiguration"] = {
+                **ECS_DEFAULT_PERCENTS,
+                **copy.deepcopy(request["deploymentConfiguration"]),
+            }
+        if "enableExecuteCommand" in request:
+            service.settings["enableExecuteCommand"] = request["enableExecuteCommand"]
         if "taskDefinition" in request:
             service.task_definition = request["taskDefinition"]
         service.desired = request["desiredCount"]
@@ -644,6 +667,7 @@ class FakeEcs:
             "runningCount": len(running),
             "pendingCount": len(pending),
             "deployments": deployments,
+            **copy.deepcopy(service.settings),
         }
 
     def describe_services(self, cluster: str, services: list[str]) -> list[dict]:

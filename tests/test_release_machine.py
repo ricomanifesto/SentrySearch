@@ -14,10 +14,11 @@ from release.machine import (
     evaluate_job,
     evaluate_service,
     migration_schemas,
+    service_settings_drift,
     token_expires_at,
 )
 from release.manifest import ReleaseRejected, load_manifest
-from tests.release_fakes import START, encode, manifest_document
+from tests.release_fakes import TERRAFORM_SERVICE_SETTINGS, START, encode, manifest_document
 
 DOCUMENT = manifest_document()
 MANIFEST = load_manifest(encode(DOCUMENT)).manifest
@@ -137,6 +138,7 @@ def task(arn: str, deployment: str, *, status="RUNNING", health="HEALTHY", defin
 
 def service(*deployments, desired=1):
     return {
+        **copy.deepcopy(TERRAFORM_SERVICE_SETTINGS),
         "desiredCount": desired,
         "deployments": [
             {"id": ident, "status": status, "taskDefinition": SPEC.task_definition,
@@ -181,6 +183,47 @@ def test_exactly_one_healthy_task_of_the_recorded_deployment_is_ready():
 )  # fmt: skip
 def test_partial_stale_or_drifting_service_observations_are_not_ready(snapshot, tasks, expected):
     assert evaluate_service(SPEC, DIGESTS, snapshot, tasks, "new") == expected
+
+
+def test_terraform_setting_drift_fails_even_with_a_ready_task():
+    snapshot = service(("new", "PRIMARY", "COMPLETED"))
+    snapshot["deploymentConfiguration"]["minimumHealthyPercent"] = 100
+    assert evaluate_service(SPEC, DIGESTS, snapshot, [task("a", "new")], "new") == (
+        "failed",
+        "service_settings_drift",
+    )
+
+
+@pytest.mark.parametrize(
+    "change, drift",
+    [
+        ({}, False),
+        ({"deploymentConfiguration": None}, True),
+        ({"deploymentConfiguration": "ROLLING"}, True),
+        ({"deploymentController": None}, True),
+        ({"enableExecuteCommand": "false"}, True),
+        ({"enableExecuteCommand": 0}, True),
+    ],
+)
+def test_service_settings_drift_requires_exact_reported_types(change, drift):
+    snapshot = {**copy.deepcopy(TERRAFORM_SERVICE_SETTINGS), **change}
+    assert service_settings_drift(snapshot) is drift
+
+
+@pytest.mark.parametrize(
+    "alarms, drift",
+    [
+        ({"alarmNames": [], "enable": False, "rollback": False}, False),
+        ({"alarmNames": ["x"], "enable": True, "rollback": False}, False),
+        ({"alarmNames": ["x"], "enable": True, "rollback": True}, True),
+        ({"alarmNames": [], "enable": False}, True),
+        ([], True),
+    ],
+)
+def test_reported_alarms_may_fail_a_deployment_but_never_roll_it_back(alarms, drift):
+    snapshot = copy.deepcopy(TERRAFORM_SERVICE_SETTINGS)
+    snapshot["deploymentConfiguration"]["alarms"] = alarms
+    assert service_settings_drift(snapshot) is drift
 
 
 def test_wrong_image_digest_is_a_failure_not_a_wait():

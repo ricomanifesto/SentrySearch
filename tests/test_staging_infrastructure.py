@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from release.machine import SERVICE_DEPLOYMENT_SETTINGS
 from release.ports import EcsPort, EvidencePort, LogPort
 from release.readiness import WORKER_CONTAINER, WORKER_LOG_STREAM_PREFIX, worker_stream
 from src.execution.readiness_receipts import release_id_from_environment
@@ -207,6 +208,26 @@ def test_release_controller_alone_owns_service_revision_and_count():
         "ignore_changes = [task_definition, desired_count]"
     )
     assert all_configuration().count("ignore_changes") == 1
+
+
+def test_terraform_alone_writes_the_deployment_settings_the_controller_verifies():
+    """One owner: Terraform writes these; the controller holds unless ECS reports them."""
+    service = block(configuration(STAGING / "services"), 'resource "aws_ecs_service" "this"')
+    values = settings(service)
+    breaker = settings(block(service, "deployment_circuit_breaker"))
+    assert {
+        "minimumHealthyPercent": int(values["deployment_minimum_healthy_percent"]),
+        "maximumPercent": int(values["deployment_maximum_percent"]),
+        "deploymentCircuitBreaker": {
+            "enable": breaker["enable"] == "true",
+            "rollback": breaker["rollback"] == "true",
+        },
+    } == SERVICE_DEPLOYMENT_SETTINGS
+    assert values["enable_execute_command"] == "false"
+    assert settings(block(service, "deployment_controller")) == {"type": '"ECS"'}
+    # No alarm rollback, alternative strategy or second writer of these settings.
+    assert not re.search(r"^\s+(alarms|deployment_configuration)\b", service, re.MULTILINE)
+    assert "strategy" not in values
 
 
 @pytest.mark.parametrize(

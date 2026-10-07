@@ -209,11 +209,12 @@ def test_launch_requests_are_exact_and_never_override():
         "taskDefinition": r.document["services"]["runtime"]["task_definition"],
         "desiredCount": 1,
         "forceNewDeployment": True,
-        "enableExecuteCommand": False,
-        "deploymentConfiguration": {
-            "deploymentCircuitBreaker": {"enable": True, "rollback": False}
-        },
     }
+    # Terraform alone writes deployment settings; the controller sends none of them.
+    assert all(
+        set(call) <= {"cluster", "service", "taskDefinition", "desiredCount", "forceNewDeployment"}
+        for call in r.calls("update_service")
+    )
 
 
 # Job completion evidence -----------------------------------------------------
@@ -518,8 +519,86 @@ def test_failed_deployment_holds_without_automatic_rollback():
     r.ecs.services[r.document["environment"]["services"]["worker"]].fail_rollout = True
     outcome = r.controller().run()
     assert_held(r, outcome, "deployment_failed", "grants_verified")
-    assert all(c["deploymentConfiguration"]["deploymentCircuitBreaker"]["rollback"] is False
-               for c in r.calls("update_service"))  # fmt: skip
+    # Rollback stays disabled because the controller never rewrites Terraform's breaker.
+    worker = r.ecs.services[r.document["environment"]["services"]["worker"]]
+    assert worker.settings["deploymentConfiguration"]["deploymentCircuitBreaker"] == {
+        "enable": True,
+        "rollback": False,
+    }
+    assert all("deploymentConfiguration" not in c for c in r.calls("update_service"))
+
+
+def _drift(path: tuple[str, ...], value):
+    def apply(settings: dict) -> None:
+        target = settings
+        for key in path[:-1]:
+            target = target[key]
+        if value is _ABSENT:
+            del target[path[-1]]
+        else:
+            target[path[-1]] = value
+
+    return apply
+
+
+_ABSENT = object()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        _drift(("deploymentConfiguration", "minimumHealthyPercent"), 100),
+        _drift(("deploymentConfiguration", "maximumPercent"), 200),
+        _drift(("deploymentConfiguration", "maximumPercent"), _ABSENT),
+        _drift(("deploymentConfiguration", "deploymentCircuitBreaker"), {"enable": True, "rollback": True}),
+        _drift(("deploymentConfiguration", "deploymentCircuitBreaker"), {"enable": False, "rollback": False}),
+        _drift(("deploymentConfiguration", "alarms"), {"alarmNames": ["a"], "enable": True, "rollback": True}),
+        _drift(("deploymentConfiguration", "strategy"), "BLUE_GREEN"),
+        _drift(("deploymentController",), {"type": "CODE_DEPLOY"}),
+        _drift(("enableExecuteCommand",), True),
+        _drift(("enableExecuteCommand",), _ABSENT),
+    ],
+    ids=[
+        "minimum", "maximum", "maximum-missing", "breaker-rollback", "breaker-off", "alarm-rollback",
+        "blue-green", "controller", "exec-on", "exec-missing",
+    ],
+)  # fmt: skip
+def test_terraform_owned_setting_drift_holds_before_the_service_is_deployed(change):
+    r = rig()
+    api = r.document["environment"]["services"]["api"]
+    change(r.ecs.services[api].settings)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "service_settings_drift", "grants_verified")
+    assert [c["service"] for c in r.calls("update_service") if c["desiredCount"] == 1] == [
+        r.document["environment"]["services"]["runtime"]
+    ]
+    assert r.ecs.services[api].desired == 0
+
+
+def test_reported_alarm_or_rolling_settings_that_cannot_roll_back_are_accepted():
+    r = rig()
+    for service in r.ecs.services.values():
+        service.settings["deploymentConfiguration"].update(
+            alarms={"alarmNames": [], "enable": False, "rollback": False}, strategy="ROLLING"
+        )
+    outcome = r.controller().run()
+    assert outcome.state == "held_paused"
+
+
+def test_setting_drift_while_observing_a_started_service_holds():
+    r = rig()
+    runtime = r.ecs.services[r.document["environment"]["services"]["runtime"]]
+    original = r.ecs.update_service
+
+    def update(request: dict) -> dict:
+        response = original(request)
+        if request["service"] == r.document["environment"]["services"]["worker"]:
+            runtime.settings["deploymentConfiguration"]["maximumPercent"] = 200
+        return response
+
+    setattr(r.ecs, "update_service", update)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "service_settings_drift", "services_started")
 
 
 @pytest.mark.parametrize(

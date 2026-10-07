@@ -23,6 +23,7 @@ from release.machine import (
     evaluate_job,
     evaluate_service,
     plan_rollback,
+    service_settings_drift,
     token_expires_at,
 )
 from release.manifest import (
@@ -756,6 +757,8 @@ class ReleaseController:
     # Services ------------------------------------------------------------------
 
     def _deploy_request(self, key: str) -> dict[str, Any]:
+        # Only the controller-owned fields. Terraform alone writes deployment
+        # settings and Exec; resending any part of them could reset the rest.
         return {
             "cluster": self.cluster,
             "service": self._service_arn(key),
@@ -763,11 +766,6 @@ class ReleaseController:
             "desiredCount": 1,
             # A fresh deployment ID: tasks of an older deployment never count.
             "forceNewDeployment": True,
-            "enableExecuteCommand": False,
-            # The prior binary may be schema-incompatible, so ECS never rolls back.
-            "deploymentConfiguration": {
-                "deploymentCircuitBreaker": {"enable": True, "rollback": False}
-            },
         }
 
     def _new_deployment(self, key: str, service: dict[str, Any], prior: list[str]) -> str | None:
@@ -794,9 +792,11 @@ class ReleaseController:
         self._transition(State.SERVICES_STARTED)
 
     def _deploy(self, key: str) -> str:
-        prior = [
-            str(item.get("id")) for item in self._describe_services()[key].get("deployments") or []
-        ]
+        service = self._describe_services()[key]
+        # Verify, never write, the Terraform-owned settings the release relies on.
+        if service_settings_drift(service):
+            raise _Hold("service_settings_drift")
+        prior = [str(item.get("id")) for item in service.get("deployments") or []]
         request = self._deploy_request(key)
         now = self.clock.now()
         deadline = min(now + timedelta(seconds=self.manifest.window.service_start_seconds),
