@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from release.ports import EcsPort
+from release.ports import EcsPort, EvidencePort
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 STAGING = DEPLOY / "aws-staging"
@@ -183,16 +183,19 @@ def test_state_and_data_resources_prevent_destroy(root, header):
     [
         f'resource "{kind}" "{name}"'
         for kind in ("aws_iam_role", "aws_iam_role_policy")
-        for name in ("task", "execution", "release_task", "release_execution")
+        for name in ("task", "execution", "release_task", "release_execution", "tools_execution")
     ]
     + [
         'resource "aws_ecs_task_definition" "service"',
         'resource "aws_ecs_task_definition" "release"',
+        'resource "aws_ecs_task_definition" "tools"',
     ],
 )
 def test_retained_release_identities_and_revisions_cannot_be_replaced(header):
     resource = block(configuration(TASK_MODULE), header)
     assert block(resource, "lifecycle").strip() == "prevent_destroy = true"
+    if "aws_ecs_task_definition" in header:
+        assert "skip_destroy" in settings(resource)
 
 
 def test_release_controller_alone_owns_service_revision_and_count():
@@ -260,16 +263,28 @@ LAUNCHER_ACTIONS = {
 }
 
 
+# Job receipts are read from the observed task's own log stream. Operational
+# receipts belong to the pending supervisor-readiness observer, not this launcher.
+EVIDENCE_ACTIONS = {"job_receipt": ("logs:GetLogEvents",), "operational_receipt": ()}
+
+
 def test_launcher_policy_covers_every_controller_ecs_call():
-    """Tie each EcsPort call to the Allow set the mocked plan asserts on rendered policies."""
+    """Tie each port call to the Allow set the mocked plan asserts on rendered policies."""
     assert {name for name in vars(EcsPort) if not name.startswith("_")} == set(LAUNCHER_ACTIONS)
+    assert {name for name in vars(EvidencePort) if not name.startswith("_")} == set(
+        EVIDENCE_ACTIONS
+    )
     plan_test = (STAGING / "releases" / "tests" / "releases.tftest.hcl").read_text()
     allowed = re.search(
         r'statement\.Effect == "Allow"\]\]\)\) == toset\(\[(.*?)\]\)', plan_test, re.DOTALL
     )
     assert allowed
     asserted = set(re.findall(r'"([a-z]+:[A-Za-z]+)"', allowed[1]))
-    assert asserted == {action for actions in LAUNCHER_ACTIONS.values() for action in actions}
+    assert asserted == {
+        action
+        for actions in (*LAUNCHER_ACTIONS.values(), *EVIDENCE_ACTIONS.values())
+        for action in actions
+    }
     # Scale-to-zero updates omit taskDefinition; deploys must name a retained revision.
     services = block(configuration(STAGING / "releases"), "services =")
     assert (

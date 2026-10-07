@@ -28,6 +28,7 @@ module "release" {
     product        = merge(each.value.release_jobs.product, { log_group = module.names.log_groups["product-release"] })
     runtime_grants = each.value.release_jobs.runtime_grants
   }
+  release_tools = merge(each.value.release_tools, { release_id = each.value.release_id })
 }
 
 locals {
@@ -40,14 +41,17 @@ locals {
   pass_to_ecs   = { StringEquals = { "iam:PassedToService" = "ecs-tasks.amazonaws.com" } }
   exec_enabled  = { StringEqualsIgnoreCase = { "ecs:enable-execute-command" = "true" } }
 
-  # Only the current release runs owner jobs: a rollback never re-runs
-  # migrations. Services may use either retained release's own revision.
-  current_jobs = sort([local.current.task_definition_arns["runtime-release"], local.current.task_definition_arns["product-release"]])
+  # Only the current release runs jobs (migrations, grants, proofs and
+  # reconciliation): a rollback never re-runs them. Services may use either
+  # retained release's own revision.
+  services      = ["runtime", "api", "worker"]
+  service_kinds = flatten([for name in local.services : ["${name}-task", "${name}-execution"]])
+  current_jobs  = sort([for name, arn in local.current.task_definition_arns : arn if !contains(local.services, name)])
   current_job_roles = sort([for kind, name in local.current.iam_role_names :
-    "arn:aws:iam::${var.account_id}:role/${name}" if strcontains(kind, "-release-")
+    "arn:aws:iam::${var.account_id}:role/${name}" if !contains(local.service_kinds, kind)
   ])
   service_roles = sort(flatten([for release in module.release : [for kind, name in release.iam_role_names :
-    "arn:aws:iam::${var.account_id}:role/${name}" if !strcontains(kind, "-release-")
+    "arn:aws:iam::${var.account_id}:role/${name}" if contains(local.service_kinds, kind)
   ]]))
   service_revisions = { for name in ["runtime", "api", "worker"] : name => sort([for release in module.release : release.task_definition_arns[name]]) }
 
@@ -58,7 +62,7 @@ locals {
     jobs = {
       Version = "2012-10-17"
       Statement = [
-        { Sid = "RunCurrentOwnerJobs", Effect = "Allow", Action = ["ecs:RunTask"], Resource = local.current_jobs, Condition = local.in_cluster },
+        { Sid = "RunCurrentReleaseJobs", Effect = "Allow", Action = ["ecs:RunTask"], Resource = local.current_jobs, Condition = local.in_cluster },
         {
           Sid       = "TagReleaseTasksOnLaunch", Effect = "Allow", Action = ["ecs:TagResource"], Resource = [local.task_wildcard]
           Condition = { StringEquals = { "ecs:CreateAction" = "RunTask" } }
@@ -87,6 +91,15 @@ locals {
         ],
       )
     }
+    # Receipts are read only from each current job's app-container stream; the
+    # controller names the exact stream of the task it observed. Missing, stale
+    # or ambiguous receipts hold the release.
+    receipts = {
+      Version = "2012-10-17"
+      Statement = [
+        { Sid = "ReadCurrentJobReceipts", Effect = "Allow", Action = ["logs:GetLogEvents"], Resource = sort(values(local.current.receipt_log_streams)) },
+      ]
+    }
     tasks = {
       Version = "2012-10-17"
       Statement = [
@@ -100,7 +113,7 @@ locals {
 }
 
 # Unattached: attaching them to a short-lived operator session is a separate
-# trust/operator approval. Attach all three together.
+# trust/operator approval. Attach all four together.
 resource "aws_iam_policy" "release_launcher" {
   for_each    = local.release_launcher_policies
   name        = "${var.name_prefix}-release-launcher-${each.key}"

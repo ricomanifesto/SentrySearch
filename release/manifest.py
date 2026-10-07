@@ -34,6 +34,15 @@ RUNTIME_GRANT_PIN = {
     "source_commit": "bb6e523da3c6f4bb186a548f3be696a40798fae9",
     "sha256": "02a2b55161506254b1977f26351ec3bbba4de7c94a54b3b697153d622ae02aa0",
 }
+# Grant and proof jobs run the release-tools image. Its receipt schema, the product
+# grant script path and the result keys each job reports are fixed here; the
+# tools emit exactly these keys, so an expectation must name all of them.
+RELEASE_TOOLS_RECEIPT_SCHEMA = "sentry.release-tools.job.v1"
+PRODUCT_GRANT_PATH = "release_tools/sql/product/grants.sql"
+RELEASE_TOOLS_RESULT_KEYS = {
+    "grant": frozenset({"database", "principal", "service_role", "sql_digest"}),
+    "proof": frozenset({"database", "principal", "schema"}),
+}
 MAX_VALIDITY = timedelta(days=7)
 JOB_ORDER = (
     ("migrate", "runtime"),
@@ -43,6 +52,7 @@ JOB_ORDER = (
     ("proof", "runtime"),
     ("proof", "product"),
 )
+PHASES = ("migrate", "grant", "proof")
 RECEIPT_CONTROL_FIELDS = frozenset(
     {"release_id", "job_id", "task_arn", "status", "result", "receipt_schema", "schema_version"}
 )
@@ -393,6 +403,7 @@ def _check_manifest(manifest: Manifest) -> None:
         raise ReleaseRejected("invalid_field", "network.platform_version")
     _check_scope(manifest)
     _check_jobs(manifest)
+    _check_release_tools_jobs(manifest)
     _check_secret_separation(manifest)
     if len({check.id for check in manifest.operational_checks}) != len(manifest.operational_checks):
         raise ReleaseRejected("invalid_field", "operational_checks")
@@ -488,6 +499,48 @@ def _check_jobs(manifest: Manifest) -> None:
             raise ReleaseRejected("grant_pin_mismatch", f"jobs.{job.id}.sql")
         if job.database == "product" and job.sql.source_commit != manifest.sources.search:
             raise ReleaseRejected("grant_pin_mismatch", f"jobs.{job.id}.sql")
+
+
+def _check_release_tools_jobs(manifest: Manifest) -> None:
+    """Grant/proof jobs run the tools image and agree with the migrated identity.
+
+    A grant receipt echoes the SQL digest the image verified before connecting, so
+    the expectation binds the executed script to the reviewed pin.
+    """
+    jobs = {(job.phase, job.database): job for job in manifest.jobs}
+    for job in manifest.jobs:
+        if job.phase == "migrate":
+            continue
+        where = f"jobs.{job.id}"
+        # The task definition fixes RELEASE_JOB_ID; the receipt echoes it.
+        if job.id != f"{job.database}-{job.phase}":
+            raise ReleaseRejected("job_id_invalid", where)
+        if job.receipt_schema != RELEASE_TOOLS_RECEIPT_SCHEMA:
+            raise ReleaseRejected("job_receipt_schema_invalid", where)
+        if any(c.image != "release_tools" for c in job.task.containers if c.name != "init"):
+            raise ReleaseRejected("job_image_invalid", f"{where}.task.containers")
+        if set(job.expect) != RELEASE_TOOLS_RESULT_KEYS[job.phase]:
+            raise ReleaseRejected("job_expectation_invalid", f"{where}.expect")
+        if job.sql is None:
+            continue
+        if job.expect["sql_digest"] != job.sql.sha256:
+            raise ReleaseRejected("grant_pin_mismatch", f"{where}.sql")
+        if job.database == "product" and (
+            job.sql.path != PRODUCT_GRANT_PATH
+            or job.sql.source_commit != manifest.sources.release_tools
+        ):
+            raise ReleaseRejected("grant_pin_mismatch", f"{where}.sql")
+    for database in ("runtime", "product"):
+        migrate, grant, proof = (jobs[(phase, database)].expect for phase in PHASES)
+        if (
+            grant["database"] != migrate["database"]
+            or proof["database"] != migrate["database"]
+            or grant["principal"] != migrate["principal"]
+            or grant["service_role"] != proof["principal"]
+            or proof["principal"] == migrate["principal"]
+            or proof["schema"] != migrate["schema"]
+        ):
+            raise ReleaseRejected("job_expectation_inconsistent", f"jobs.{database}")
 
 
 def _check_secret_separation(manifest: Manifest) -> None:

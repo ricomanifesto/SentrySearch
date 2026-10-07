@@ -48,6 +48,13 @@ passes the documented replacement gates. ARM64 evidence does not prove AMD64,
 direct lzip/MicroLZMA allocation-failure behavior, sanitizer coverage or cloud
 execution. Application pushes, publication and deployment are separate actions.
 
+## Release-tools image
+
+The separate [release-tools image](release-tools.md) (psql 16.15 and Python 3.11 on
+the distroless base) has **no scan, SBOM or provenance yet**. It ships no
+liblzma, and the Search-image matches above are neither changed nor accepted by
+it. Scan the exact ARM64 bytes before any release decision.
+
 ## Historical candidate: OS-package minimization
 
 The following image, counts and next step record the predecessor. The local

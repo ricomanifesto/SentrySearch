@@ -263,6 +263,7 @@ output "iam_role_names" {
     { for name, role in aws_iam_role.execution : "${name}-execution" => role.name },
     { for name, role in aws_iam_role.release_task : "${name}-release-task" => role.name },
     { for name, role in aws_iam_role.release_execution : "${name}-release-execution" => role.name },
+    { for key, role in aws_iam_role.tools_execution : "${local.tools_jobs[key].database}-${local.tools_jobs[key].role}-execution" => role.name },
   )
 }
 
@@ -271,5 +272,6 @@ output "task_definition_arns" {
   value = merge(
     { for name, task in aws_ecs_task_definition.service : name => task.arn },
     { for name, task in aws_ecs_task_definition.release : "${name}-release" => task.arn },
+    { for key, task in aws_ecs_task_definition.tools : key => task.arn },
   )
 }

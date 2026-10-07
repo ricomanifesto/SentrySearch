@@ -63,6 +63,19 @@ variable "releases" {
       product        = object({ environment_bundle = object({ arn = string, version_id = string }), material_bundle = object({ arn = string, version_id = string }) })
       runtime_grants = object({ source_commit = string, sql_sha256 = string })
     })
+    # Guarded grant/proof/reconciliation jobs; deploy/aws-platform-fit validates
+    # the deadline, digests and identities. Values are fixed for the release.
+    release_tools = object({
+      image          = string
+      not_after      = string
+      budget_seconds = number
+      tools_sha256   = string
+      sql_sha256 = object({
+        runtime_grant = string, product_grant = string, runtime_proof = string, product_proof = string, reconcile = string
+      })
+      runtime = object({ database = string, owner = string, service = string, proof_bundle = object({ arn = string, version_id = string }) })
+      product = object({ database = string, owner = string, service = string, proof_bundle = object({ arn = string, version_id = string }) })
+    })
   }))
   validation {
     condition = (length(var.releases) >= 1 && length(var.releases) <= 2 &&
@@ -77,16 +90,17 @@ variable "releases" {
     error_message = "Each release key must be r plus the first eight hex digits of its lowercase manifest release UUID."
   }
   validation {
-    condition = alltrue(flatten([for release in values(var.releases) : [for name in ["runtime", "search"] :
-      can(regex("^${var.account_id}\\.dkr\\.ecr\\.${var.region}\\.amazonaws\\.com/${var.name_prefix}/${name}@sha256:[0-9a-f]{64}$", release.images[name]))
+    condition = alltrue(flatten([for release in values(var.releases) : [for name, image in merge(release.images, { "release-tools" = release.release_tools.image }) :
+      can(regex("^${var.account_id}\\.dkr\\.ecr\\.${var.region}\\.amazonaws\\.com/${var.name_prefix}/${name}@sha256:[0-9a-f]{64}$", image))
     ]]))
-    error_message = "Images must be digest-pinned from this environment's own runtime/search ECR repositories in the selected account and region."
+    error_message = "Images must be digest-pinned from this environment's own runtime, search and release-tools ECR repositories in the selected account and region."
   }
   validation {
     condition = alltrue(flatten([for release in values(var.releases) : [for bundle in concat(
       values(release.environment_bundles), values(release.material_bundles),
       [release.release_jobs.runtime.environment_bundle, release.release_jobs.runtime.material_bundle,
-      release.release_jobs.product.environment_bundle, release.release_jobs.product.material_bundle]) :
+        release.release_jobs.product.environment_bundle, release.release_jobs.product.material_bundle,
+      release.release_tools.runtime.proof_bundle, release.release_tools.product.proof_bundle]) :
       can(regex("^arn:aws:secretsmanager:${var.region}:${var.account_id}:secret:${var.name_prefix}/[A-Za-z0-9/_+=.@-]+-[A-Za-z0-9]{6}$", bundle.arn)) &&
       can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", bundle.version_id))
     ]]))
@@ -96,9 +110,10 @@ variable "releases" {
     condition = alltrue([for release in values(var.releases) : length(distinct([for bundle in concat(
       values(release.environment_bundles), values(release.material_bundles),
       [release.release_jobs.runtime.environment_bundle, release.release_jobs.runtime.material_bundle,
-      release.release_jobs.product.environment_bundle, release.release_jobs.product.material_bundle]) : bundle.arn
-    ])) == 10])
-    error_message = "Within a release, all ten service, material and owner bundle ARNs must be distinct."
+        release.release_jobs.product.environment_bundle, release.release_jobs.product.material_bundle,
+      release.release_tools.runtime.proof_bundle, release.release_tools.product.proof_bundle]) : bundle.arn
+    ])) == 12])
+    error_message = "Within a release, all twelve service, material, owner and proof bundle ARNs must be distinct."
   }
   validation {
     # A secret may hold several releases' versions, but always for the same
@@ -109,6 +124,7 @@ variable "releases" {
         [for name, bundle in release.material_bundles : { arn = bundle.arn, purpose = "material/${name}" }],
         [for name in ["runtime", "product"] : { arn = release.release_jobs[name].environment_bundle.arn, purpose = "owner-environment/${name}" }],
         [for name in ["runtime", "product"] : { arn = release.release_jobs[name].material_bundle.arn, purpose = "owner-material/${name}" }],
+        [for name in ["runtime", "product"] : { arn = release.release_tools[name].proof_bundle.arn, purpose = "proof-environment/${name}" }],
       )]) : pair.arn => pair.purpose...
     } : length(distinct(purposes)) == 1])
     error_message = "A secret ARN must keep the same task and purpose in every retained release."

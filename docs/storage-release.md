@@ -39,8 +39,10 @@ The application role needs schema USAGE and SELECT/INSERT/UPDATE/DELETE on
 `report_searches`, and `report_tags`, plus SELECT on
 `sentrysearch_schema_migrations`. It must not own those objects or have schema
 CREATE, role-management, or superuser privileges. The schema-owner role is never
-an API/worker secret. Actual role provisioning and privilege auditing remain
-deployment tasks; the local proof exercises this split in a disposable database.
+an API/worker secret. The [release-tools](release-tools.md) `product-grant` job
+applies exactly this contract and the `product-proof` job audits it; provisioning
+the logins and running those jobs remain deployment tasks. The local proofs
+exercise this split in disposable databases.
 
 Rollback means pause, drain, and restore a schema-compatible binary/configuration.
 There is no down-migration command. Do not unstamp a revision or restore an older

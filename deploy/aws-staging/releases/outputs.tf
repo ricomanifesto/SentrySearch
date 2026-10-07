@@ -5,6 +5,7 @@ output "releases" {
     task_definition_arns = release.task_definition_arns
     iam_role_names       = release.iam_role_names
     grant_contract       = release.release_grant_contract
+    tools_bindings       = release.release_tools_bindings
   } }
 }
 

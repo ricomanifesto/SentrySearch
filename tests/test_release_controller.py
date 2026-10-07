@@ -259,6 +259,24 @@ def test_receipt_must_bind_release_job_task_and_expectations(change):
     assert_held(r, outcome, "job_receipt_mismatch", "migrated")
 
 
+def test_ambiguous_receipt_stream_holds_and_never_counts_as_success(monkeypatch):
+    # An adapter that finds two receipts (or a malformed one) in a task's stream
+    # reports uncertainty; a grant whose outcome is unknown must hold.
+    r = rig()
+    original = r.evidence.job_receipt
+
+    def ambiguous(release_id, job_id, task_arn):
+        if job_id == "runtime-grant":
+            raise AmbiguousResponse("receipt stream is ambiguous")
+        return original(release_id, job_id, task_arn)
+
+    monkeypatch.setattr(r.evidence, "job_receipt", ambiguous)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "observation_ambiguous", "migrated")
+    assert not r.events("observation", subject="runtime-grant", result="job_succeeded")
+    assert r.calls("update_service") == [], "no service starts after an unproven grant"
+
+
 def test_partial_migration_holds_without_repair_or_down_migration():
     r = rig()
     r.ecs.plans[r.document["jobs"][1]["task"]["task_definition"]] = JobPlan(exits={"migration": 1})

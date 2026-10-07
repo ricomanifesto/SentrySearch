@@ -1,8 +1,9 @@
 # Local AWS platform-fit draft
 
-This directory models three independent ARM64 Fargate service task definitions
-and an optional pair of separate one-shot owner migration task definitions, each
-with distinct task/execution IAM roles. It is a **local, disabled-generation
+This directory models three independent ARM64 Fargate service task definitions,
+an optional pair of separate one-shot owner migration task definitions and,
+optionally, six guarded release-tools job definitions, each with distinct
+task/execution IAM roles. It is a **local, disabled-generation
 scaffold**, not a deployed environment, release orchestrator or completed
 application canary. `release_jobs = null` is the default: existing callers retain
 exactly the three service definitions and no owner-job identities or definitions.
@@ -43,7 +44,11 @@ mount boundaries, liveness/grace, paused admission, secret versions, IAM scoping
 and rejection of mutable image tags, cross-account secrets, shared bundles, moving
 secret stages and non-DNS TLS identity. Release tests also cover opt-in,
 owner/service and material/environment separation, DB-only commands, fixed
-operator grant provenance, and invalid release refs/log groups. Retention tests
+operator grant provenance, and invalid release refs/log groups. Release-tools
+tests cover opt-in, the six job contracts, fixed deadline/digest/identity values,
+per-job execution roles and receipt streams, and rejection of tags, foreign
+images, non-UTC, impossible or far-future deadlines, out-of-range budgets, unpinned digests,
+a Runtime grant digest differing from its pin and aliased proof bundles. Retention tests
 cover unchanged unscoped role names, release-scoped roles, stable families,
 retained revisions and content-bound policy names. They do not execute IAM policy
 evaluation, fetch real secrets, run Fargate or verify network reachability.
@@ -216,7 +221,41 @@ configured. Preserve failure receipts and verify transaction/schema state before
 an intentional rerun; the existing migrators handle idempotent reruns, not generic
 infrastructure success detection.
 
-### Runtime grants: separate source-controlled operator action
+## Optional guarded release-tools jobs
+
+`release_tools` (default `null`; requires `release_jobs`) adds one task definition
+per job: `runtime-grant`, `product-grant`, `runtime-proof`, `product-proof`,
+`runtime-reconcile` and `product-reconcile`. Each runs the digest-pinned
+[release-tools](../../docs/release-tools.md) image after the same CA-only init as
+the owner migration, with the job's fixed command, a read-only root, no
+capabilities, the database's release UID, no ports, health checks or restart, a
+30-second stop timeout above the in-image grace, and logs in that database's
+release log group under stream prefix `<job>`.
+
+| Input | Rule |
+| --- | --- |
+| `release_id` | The manifest's release UUID |
+| `image` | Same-account, same-region ECR image by digest |
+| `not_after`, `budget_seconds` | Absolute UTC deadline at most seven days after the plan; whole seconds, 60–3600 |
+| `tools_sha256`, `sql_sha256` | From the image's `digest` report; `runtime_grant` must equal `release_jobs.runtime_grants.sql_sha256` |
+| `runtime`, `product` | Database, owner and distinct service identifiers, and a `proof_bundle` holding only the service login at an exact version |
+
+The release and job ids, deadline, budget, digests and expected identity are
+container environment values, so the registered revision binds them; the image
+rejects a mismatch before connecting. Changing any of them replaces the revision,
+which `prevent_destroy` refuses for a retained release: use a new release scope.
+
+Grant and reconciliation jobs read the owner environment bundle; proofs read only
+their `proof_bundle`. Each job has its own execution role (`<db>-grant`,
+`<db>-proof` or `<db>-recon`): pull the Search (init) and release-tools
+repositories, write its own log streams and read its one bundle version. The task
+role is the release's CA-only task role. `receipt_log_streams` lists each job's
+app-container stream pattern for the launcher's receipt reads, and
+`release_tools_bindings` gives the manifest's grant and proof expectations. The
+bootstrap job is not wired: it needs the administrator secret and a separately
+approved administrator path.
+
+### Runtime grants: pinned source
 
 `release_grant_contract` is review metadata, not SQL execution or a permission
 grant. Its fixed path is `db/roles/service.sql` in the Runtime repository. The
@@ -240,28 +279,27 @@ The release order is explicit:
    separate DB owner and unprivileged service principals outside these jobs.
 2. Run the Runtime owner migration task against its **dedicated Runtime DB**;
    require successful task/container receipts and the image's exact schema.
-3. Through a separately controlled, verified-TLS owner connection, apply the
-   verified `db/roles/service.sql` using its documented `psql -X`,
-   `ON_ERROR_STOP=1`, explicit database and service-role parameters. This script
-   revokes PUBLIC privileges database-wide: never run it against the product DB
-   or a shared database. It must follow Runtime migrations and precede starting
-   the restricted Runtime service. Do not put owner credentials in shell history,
-   Terraform state, command logs or application configuration.
-4. Run the product owner migration task against its **separate product DB** and
-   require both successful exits. Apply/audit the product service grants described
-   in `docs/storage-release.md` through a separately controlled owner step; no
-   product grants are silently supplied by this module. Run
-   `python -m dev.migrate_storage --check` with service credentials separately.
-5. Verify service roles can perform intended operations and cannot perform DDL,
-   own objects, mutate migration history or access the other database. Start
-   service tasks with service credentials only; evaluate readiness and the
-   separately approved synthetic canary before any admission decision.
+3. Run the `runtime-grant` job: it applies the vendored, hash-verified
+   `db/roles/service.sql` with `psql -X`, `ON_ERROR_STOP=1` and explicit database
+   and service-role parameters, as the owner, over verified TLS. The script
+   revokes PUBLIC privileges database-wide; the job refuses the product database
+   (the script requires the Runtime tables and database ownership).
+4. Run the product owner migration task against its **separate product DB**, then
+   the `product-grant` job, which applies the product contract in
+   `docs/storage-release.md`. Run `python -m dev.migrate_storage --check` with
+   service credentials separately.
+5. Run both proof jobs: each service login performs its intended operations and
+   fails to perform DDL, own or transfer objects, mutate migration history, change
+   roles or reach another database. Start service tasks with service credentials
+   only; evaluate readiness and the separately approved synthetic canary before
+   any admission decision.
 
 The two DB migrations are independent; this conservative ordered checklist is an
 operator contract, not a cross-database transaction. The offline controller
 models its ordering and holds but is not a deployed orchestrator.
-The module does not create principals, launch jobs, execute grants, run service-role
-checks, observe readiness, schedule promotion or provision the enclosing platform.
+The module does not create principals, launch jobs, observe readiness, schedule
+promotion or provision the enclosing platform; registering the job definitions
+runs nothing.
 
 ## Release preflight and omitted deployment gates
 
@@ -275,9 +313,10 @@ checks, observe readiness, schedule promotion or provision the enclosing platfor
 3. Review/opt into the two owner-job definitions and execute the separate release
    order above only under deployment authorization. Runtime owner `DATABASE_URL`
    also requires `sslmode=verify-full&sslrootcert=/run/material/postgres-ca.pem`;
-   its plaintext and DB ownership are not verified by Terraform. Provisioning,
-   operator grants, task launch/completion, service-role checks and promotion
-   remain omitted gates; job definitions alone do not satisfy them.
+   its plaintext and DB ownership are not verified by Terraform; the release-tools
+   jobs reject any other URL form before connecting. Provisioning, task
+   launch/completion and promotion remain omitted gates; job definitions alone do
+   not satisfy them.
 4. Prove certificate issuance, trusted SAN/CA distribution, token scope and
    rotation. Runtime loads files at startup; secret renewal is not a running
    process rotation. Keep a compatible pinned rollback version.

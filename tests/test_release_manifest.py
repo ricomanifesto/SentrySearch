@@ -9,6 +9,7 @@ from datetime import timedelta
 import pytest
 
 from release.manifest import (
+    RELEASE_TOOLS_RECEIPT_SCHEMA,
     ReleaseRejected,
     canonical_sha256,
     load_approval,
@@ -196,6 +197,82 @@ def test_runtime_grant_requires_the_reviewed_pinned_source():
     document = manifest_document()
     document["jobs"][0]["sql"] = document["jobs"][2]["sql"]
     assert rejected(encode(document)).code == "unexpected_sql"
+
+
+def test_release_tools_jobs_use_the_tools_image_and_receipt_schema():
+    document = manifest_document()
+    document["jobs"][2]["receipt_schema"] = "sentry.release.grant.v1"
+    assert rejected(encode(document)).code == "job_receipt_schema_invalid"
+    document = manifest_document()
+    document["jobs"][4]["task"]["containers"][1]["image"] = "search"
+    assert rejected(encode(document)).code == "job_image_invalid"
+    assert RELEASE_TOOLS_RECEIPT_SCHEMA == "sentry.release-tools.job.v1"
+
+
+def test_release_tools_job_ids_match_the_fixed_task_definition_ids():
+    document = manifest_document()
+    document["jobs"][3]["id"] = "product-grants"
+    assert rejected(encode(document)).code == "job_id_invalid"
+
+
+def test_grant_receipts_must_echo_the_pinned_sql_digest():
+    document = manifest_document()
+    document["jobs"][2]["expect"]["sql_digest"] = "0" * 64
+    assert rejected(encode(document)).code == "grant_pin_mismatch"
+    document = manifest_document()
+    document["jobs"][3]["sql"]["sha256"] = "0" * 64
+    assert rejected(encode(document)).code == "grant_pin_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("job", "change"),
+    [
+        (2, {"service_role": None}),
+        (3, {"sql_digest": None}),
+        (4, {"schema": None}),
+        (5, {"extra": "value"}),
+        (2, {"schema": "goose:1,2,3"}),
+    ],
+)
+def test_release_tools_expectations_are_exactly_what_the_tools_report(job, change):
+    document = manifest_document()
+    for key, value in change.items():
+        if value is None:
+            del document["jobs"][job]["expect"][key]
+        else:
+            document["jobs"][job]["expect"][key] = value
+    assert rejected(encode(document)).code == "job_expectation_invalid"
+
+
+@pytest.mark.parametrize(
+    ("job", "key", "value"),
+    [
+        (4, "schema", "goose:1,2"),
+        (5, "database", "other_db"),
+        (2, "principal", "someone_else"),
+        (3, "service_role", "someone_else"),
+    ],
+)
+def test_grant_and_proof_must_agree_with_the_migrated_identity_and_schema(job, key, value):
+    document = manifest_document()
+    document["jobs"][job]["expect"][key] = value
+    assert rejected(encode(document)).code == "job_expectation_inconsistent"
+
+
+def test_proof_principal_cannot_be_the_migration_owner():
+    document = manifest_document()
+    document["jobs"][2]["expect"]["service_role"] = "runtime_owner"
+    document["jobs"][4]["expect"]["principal"] = "runtime_owner"
+    assert rejected(encode(document)).code == "job_expectation_inconsistent"
+
+
+def test_product_grant_is_the_tools_script_from_the_reviewed_search_source():
+    document = manifest_document()
+    document["sources"]["release_tools"] = "e" * 40
+    assert rejected(encode(document)).code == "grant_pin_mismatch"
+    document = manifest_document()
+    document["jobs"][3]["sql"]["path"] = "deploy/release/product_grants.sql"
+    assert rejected(encode(document)).code == "grant_pin_mismatch"
 
 
 @pytest.mark.parametrize("drop", [0, 3, 5])

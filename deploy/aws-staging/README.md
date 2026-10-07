@@ -13,7 +13,7 @@ an account-specific plan, a reachability proof or deployment approval.
 | --- | --- | --- |
 | `bootstrap/` | Local and encrypted on the bootstrap operator's machine until a reviewed migration to `state/bootstrap.tfstate` | Private versioned control bucket (`state/`, `releases/`, `locks/`); unattached per-root state policies and the release-evidence policy |
 | `foundation/` | `state/foundation.tfstate` | Two-AZ private VPC, routes, endpoints, security groups, both PostgreSQL 16 instances, report bucket, three ECR repositories, log groups, ECS cluster, private DNS |
-| `releases/` | `state/releases.tfstate` | The current release and at most one compatible rollback, each a keyed instance of [`../aws-platform-fit`](../aws-platform-fit/README.md); three unattached release-launcher policies |
+| `releases/` | `state/releases.tfstate` | The current release and at most one compatible rollback, each a keyed instance of [`../aws-platform-fit`](../aws-platform-fit/README.md) with its guarded release-tools jobs; four unattached release-launcher policies |
 | `services/` | `state/services.tfstate` | The three ECS services, created at desired count zero |
 | `modules/naming/` | none | Shared names derived from account, region and prefix |
 
@@ -43,6 +43,7 @@ controller's deploy request also re-sends Exec disabled and the circuit breaker
 without rollback, matching Terraform. Whether a partial `deploymentConfiguration`
 resets Terraform's minimum/maximum percent is unverified; a deploy from desired
 zero cannot overlap writers either way, and the next plan would show the drift.
+Settling that ownership is a gate before any AWS adapter is built.
 
 ### Retained releases
 
@@ -51,7 +52,10 @@ zero cannot overlap writers either way, and the next plan would show the drift.
 task/execution role names. A first deployment holds only the current release
 (`empty_hold`); an upgrade retains exactly one explicitly compatible rollback.
 A secret can hold several releases' versions, but always for the same task and
-purpose.
+purpose. Each release also fixes its `release_tools` inputs: the release-tools
+image from this environment's repository, the absolute deadline and budget, the
+tools and SQL digests, database identities and two proof bundles (twelve distinct
+bundles per release). See [release tools](../../docs/release-tools.md).
 
 A retained release is immutable. Revisions use `skip_destroy`; roles, inline
 policies and revisions use `prevent_destroy`; and each inline policy's name binds
@@ -64,12 +68,13 @@ then deletes its roles and deregisters its revisions as a separate, approved ste
 
 ### Release launcher
 
-Three unattached policies, `release-launcher-jobs`, `-services` and `-tasks`, are
-attached together to the attended launcher session; that trust choice is a
-separate approval. They allow:
+Four unattached policies, `release-launcher-jobs`, `-services`, `-tasks` and
+`-receipts`, are attached together to the attended launcher session; that trust
+choice is a separate approval. They allow:
 
-- `RunTask` on the **current** release's owner-job revisions in this cluster, with
-  `TagResource` only during `RunTask`. A rollback never re-runs migrations;
+- `RunTask` on the **current** release's job revisions (migrations, grants,
+  proofs and reconciliation) in this cluster, with `TagResource` only during
+  `RunTask`. A rollback never re-runs migrations or grants;
 - `StopTask` only on cluster tasks that carry the controller's `sentry:job-id`
   tag;
 - `UpdateService` per service, limited to that service's own retained revisions
@@ -79,20 +84,23 @@ separate approval. They allow:
   and `ListTasks` (`*`, conditioned on this cluster, because Fargate tasks have no
   listable resource);
 - `iam:PassRole` for exactly the current release's job roles and both retained
-  releases' service roles, with `iam:PassedToService = ecs-tasks.amazonaws.com`.
+  releases' service roles, with `iam:PassedToService = ecs-tasks.amazonaws.com`;
+- `logs:GetLogEvents` only on the current jobs' app-container streams
+  (`<job>/<container>/*`) in the two release log groups, to read receipts. The log
+  groups are shared by releases, so the controller reads the exact stream of the
+  task it observed and rejects any receipt whose release, job or task differs.
 
 They deny `ExecuteCommand` and any `RunTask`/`UpdateService` that enables Exec, on
-every resource. They grant no secret read, image push, IAM change or
+every resource. They grant no secret read, image push, log write, IAM change or
 task-definition registration. A test bounds each document within IAM's 6,144
 character limit at the longest allowed names. RunTask overrides cannot be fully
 constrained by IAM: this is a trusted launcher whose controller rejects overrides,
 not a command sandbox.
 
-**A release cannot complete yet.** Every manifest requires Runtime and product
-grant and proof jobs after the migrations. Their task definitions, roles and the
-log-read permissions behind receipt collection do not exist yet, so the
-controller holds after migration. They belong to the next slice and must join the
-retained release set and these policies.
+**A release cannot complete yet.** The grant, proof and reconciliation jobs, their
+roles and receipt reads now exist (mock-tested), but there is no AWS adapter or
+log reader, the migration images emit no receipts, and the operational observer
+does not exist. Missing, stale or ambiguous receipts hold the release.
 
 The release journal and environment lock use the separate `release-evidence`
 policy from `bootstrap/`, which requires the manifest's environment name to equal
@@ -196,8 +204,8 @@ an approved apply.
 
 Not implemented here: secret containers (created by the credential owner),
 alarms, SNS, budgets and VPC flow logs (recipient, cost and retention approvals),
-DNS Firewall, bootstrap/grant/proof job definitions, roles and log groups, receipt
-log-read permissions, the release-tools image, explicit non-blocking log delivery
+DNS Firewall, the bootstrap job definition and its administrator path, a
+published and scanned release-tools image, explicit non-blocking log delivery
 with a measured buffer, the readiness-observer policy and any operator trust
 policy or role. Release journals, lockfile versions and the proposed 90-day
 evidence retention have no lifecycle rule: evidence is kept until a reviewed

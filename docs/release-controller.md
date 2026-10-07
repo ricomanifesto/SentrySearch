@@ -28,6 +28,15 @@ Required content:
   deadline, stop grace, receipt schema and exact expected receipt fields.
   Migrations state their schema; grants pin SQL source and hash. The Runtime
   grant must match the reviewed `db/roles/service.sql` pin;
+- grant and proof jobs run only the [release-tools](release-tools.md) image
+  (besides init), use receipt schema `sentry.release-tools.job.v1` and job ids
+  `<database>-<phase>`, and expect exactly the keys the tools report: grants
+  `database`, `principal`, `service_role` and `sql_digest` (equal to the SQL pin),
+  proofs `database`, `principal` and `schema`. The product grant is
+  `release_tools/sql/product/grants.sql` from the release-tools source, which
+  must equal the Search source. Per database, the grant's identity matches the
+  migration's, its service role is the proof's principal and the proof's schema
+  equals the migrated schema;
 - operational checks and a tagged rollback plan: `empty_hold` for a first
   release, or `compatible_release` with the prior release ID, images, task
   definitions, trust hash, compatible schemas and snapshot ARNs.
@@ -161,9 +170,12 @@ scheduling or real log ingestion.
 ## Not implemented
 
 - An AWS adapter, pagination-complete listing, receipt collection from logs and
-  an operator CLI.
-- Fixed per-job deadline guards in images, a release-tools image, the product
-  grant script, bootstrap jobs and session-identity reconciliation jobs.
+  an operator CLI. The adapter must read only the observed task's stream and parse
+  it with `release_tools.receipt.extract_receipt`, reporting an ambiguous stream
+  as `AmbiguousResponse`.
+- In-image deadline guards and receipt producers for the two migration images,
+  and wiring of the bootstrap job (the grant, proof and reconciliation jobs are
+  [implemented](release-tools.md) and mock-wired).
 - Supervisor-emitted worker readiness receipts and the readiness-window observer.
 - Rollback execution and teardown.
 
@@ -180,9 +192,11 @@ which this controller changes. Its deploy request also re-sends Exec disabled an
 the circuit breaker without rollback, matching Terraform's settings. The roots'
 unattached launcher policies allow each `EcsPort` call for the definitions that
 exist: deploys must name a retained revision of that service, scale-to-zero
-requests carry no task definition, only the current release's owner jobs run and
-only job-tagged tasks can be stopped. Grant and proof job definitions and the
-log reads behind receipt collection do not exist yet, so no release can complete.
+requests carry no task definition, only the current release's jobs (migrations,
+grants, proofs and reconciliation) run, only job-tagged tasks can be stopped and
+receipts are read only from those jobs' app-container log streams. A release
+still cannot complete: there is no AWS adapter, the migration images emit no
+receipts and the operational observer does not exist.
 The manifest's environment name must equal the roots' `name_prefix` so the lock
 key matches the release-evidence policy. These roots are not applied, and mocked
 plans do not prove IAM behavior.

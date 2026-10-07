@@ -1,0 +1,6 @@
+# Used only by `docker build -f container/release-tools.Dockerfile .`. Allow only
+# the release-tools programs and SQL.
+*
+!release_tools/**
+**/__pycache__
+**/*.py[cod]

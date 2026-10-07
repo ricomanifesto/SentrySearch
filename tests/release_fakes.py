@@ -86,7 +86,9 @@ def job(job_id: str, phase: str, database: str, *, image: str, expect: dict, sql
         "task": spec,
         "deadline_seconds": 900,
         "stop_grace_seconds": 30,
-        "receipt_schema": f"sentry.release.{phase}.v1",
+        "receipt_schema": (
+            f"sentry.release.{phase}.v1" if phase == "migrate" else "sentry.release-tools.job.v1"
+        ),
         "expect": expect,
     }
     if sql is not None:
@@ -138,7 +140,8 @@ def manifest_document(*, rollback: str = "empty_hold") -> dict:
             "poll_seconds": 5,
             "service_start_seconds": 600,
         },
-        "sources": {"runtime": "b" * 40, "search": "c" * 40, "release_tools": "d" * 40},
+        # The release-tools image is built from the reviewed Search source.
+        "sources": {"runtime": "b" * 40, "search": "c" * 40, "release_tools": "c" * 40},
         "images": {name: image(name) for name in ("runtime", "search", "release_tools")},
         "risk": {
             "decision_id": "fixture-risk-decision",
@@ -159,15 +162,21 @@ def manifest_document(*, rollback: str = "empty_hold") -> dict:
                 expect={**db, "schema": "goose:1,2,3"}),
             job("product-migrate", "migrate", "product", image="search",
                 expect={**product, "schema": "sentrysearch:1:" + sha("001_release.sql")[:16]}),
-            job("runtime-grant", "grant", "runtime", image="release_tools", expect=db,
+            job("runtime-grant", "grant", "runtime", image="release_tools",
+                expect={**db, "service_role": "runtime_service",
+                        "sql_digest": RUNTIME_GRANT["sha256"]},
                 sql=dict(RUNTIME_GRANT)),
-            job("product-grant", "grant", "product", image="release_tools", expect=product,
-                sql={"path": "deploy/release/product_grants.sql", "source_commit": "c" * 40,
+            job("product-grant", "grant", "product", image="release_tools",
+                expect={**product, "service_role": "product_service",
+                        "sql_digest": sha("product-grants")},
+                sql={"path": "release_tools/sql/product/grants.sql", "source_commit": "c" * 40,
                      "sha256": sha("product-grants")}),
             job("runtime-proof", "proof", "runtime", image="release_tools",
-                expect={"database": "runtime_db", "principal": "runtime_service"}),
+                expect={"database": "runtime_db", "principal": "runtime_service",
+                        "schema": "goose:1,2,3"}),
             job("product-proof", "proof", "product", image="release_tools",
-                expect={"database": "product_db", "principal": "product_service"}),
+                expect={"database": "product_db", "principal": "product_service",
+                        "schema": "sentrysearch:1:" + sha("001_release.sql")[:16]}),
         ],  # fmt: skip
         "operational_checks": [
             {"id": "worker-readiness", "receipt_schema": "sentry.release.worker-readiness.v1"},

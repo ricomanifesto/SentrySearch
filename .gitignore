@@ -69,6 +69,7 @@ Thumbs.db
 !/docs/local-canary.md
 !/docs/liblzma-backport.md
 !/docs/release-controller.md
+!/docs/release-tools.md
 backup_*/
 # Legacy main files (keep API files)
 /main.py
