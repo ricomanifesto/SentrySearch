@@ -147,6 +147,7 @@ class FakeAws:
         self.bridge = SdkBridge()
         self.ecs, self.logs, self.evidence, self.store = ecs, logs, evidence, store
         self.document = document
+        self.ecs_cluster = document["environment"]["cluster_arn"]
         self.list_page_size = 100
         self.job_page_size = 100
         # Extra ordinary lines written to each job stream, before its receipt.
@@ -175,20 +176,25 @@ class FakeAws:
 
     # ECS ------------------------------------------------------------------
     def _list_tasks(self, params: dict[str, Any]) -> dict[str, Any]:
-        arns = self.ecs.list_tasks(
-            params["cluster"],
-            started_by=params.get("startedBy"),
-            service_name=params.get("serviceName"),
-        )
+        """ListTasks over the fake's tasks: desired status defaults to RUNNING.
+
+        The service model says startedBy must be the only filter; combining it
+        with another is refused here, as the strictest reading of that rule.
+        """
+        filters = set(params) - {"cluster", "maxResults", "nextToken"}
+        if "startedBy" in filters and filters != {"startedBy"}:
+            raise ServiceError("InvalidParameterException", 400)
+        assert params["cluster"] == self.ecs_cluster
+        self.ecs._converge()
         wanted = params.get("desiredStatus", "RUNNING")
-        if params.get("startedBy") is not None:
-            arns = [
-                arn
-                for arn in arns
-                if self.ecs._describe(self.ecs.tasks[arn])["desiredStatus"] == wanted
-            ]
-        elif wanted != "RUNNING":
-            arns = []
+        arns = [
+            task.arn
+            for task in self.ecs.tasks.values()
+            if self.ecs._visible(task)
+            and self.ecs._describe(task)["desiredStatus"] == wanted
+            and params.get("startedBy", task.started_by) == task.started_by
+            and ("serviceName" not in params or task.group == f"service:{params['serviceName']}")
+        ]
         return _paged(arns, params, "taskArns", self.list_page_size)
 
     # CloudWatch Logs --------------------------------------------------------
@@ -295,6 +301,27 @@ def body_bytes(body: Any) -> bytes:
 
 def _ecs_request(params: dict[str, Any]) -> dict[str, Any]:
     return copy.deepcopy(params)
+
+
+def exception_chain(error: BaseException) -> list[BaseException]:
+    """The error and everything it carries through __cause__ or __context__."""
+    seen: list[BaseException] = []
+    pending: list[BaseException | None] = [error]
+    while pending:
+        current = pending.pop()
+        if current is None or any(current is item for item in seen):
+            continue
+        seen.append(current)
+        pending += [current.__cause__, current.__context__]
+    return seen
+
+
+def carried_text(error: BaseException) -> str:
+    """Everything an exception chain could reveal: messages, arguments and attributes."""
+    parts = []
+    for item in exception_chain(error):
+        parts += [repr(item), str(item), repr(item.args), repr(vars(item))]
+    return "\n".join(parts)
 
 
 @contextmanager

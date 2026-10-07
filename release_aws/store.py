@@ -61,6 +61,7 @@ class S3ObjectStore:
         self.owner = expected_owner
 
     def _write(self, operation: str, **params: Any) -> dict[str, Any]:
+        failure: Exception
         try:
             return getattr(self.client, operation)(
                 Bucket=self.bucket, ExpectedBucketOwner=self.owner, **params
@@ -71,12 +72,15 @@ class S3ObjectStore:
                 code in LOST_RACE_CODES
                 or http_status(error) in (409, 412)
                 # A conditional replace/delete of an object that is gone did not match.
-                or ("IfMatch" in params and (code in MISSING_CODES or http_status(error) == 404))
+                or ("IfMatch" in params and code in MISSING_CODES)
             ):
-                raise PreconditionFailed(code) from None
-            raise classify(operation, error) from None
+                failure = PreconditionFailed(code)
+            else:
+                failure = classify(operation, error)
         except BotoCoreError as error:
-            raise classify(operation, error) from None
+            failure = classify(operation, error)
+        # Raised outside the handler: no chain back to the provider's error.
+        raise failure
 
     def create(self, key: str, body: bytes) -> str:
         response = self._write(
@@ -113,12 +117,16 @@ class S3ObjectStore:
         body = response.get("Body")
         if type(length) is not int or not 0 <= length <= MAX_OBJECT_BYTES or body is None:
             raise AmbiguousResponse("GetObject: unexpected object size")
+        failure: Exception | None = None
         try:
-            data = body.read(MAX_OBJECT_BYTES + 1)
+            # A full read lets botocore verify the declared length and any checksum.
+            data = body.read()
         except BotoCoreError as error:
-            raise classify("get_object", error) from None
+            failure = classify("get_object", error)
         finally:
             body.close()
+        if failure is not None:
+            raise failure
         if len(data) != length:
             raise AmbiguousResponse("GetObject: incomplete body")
         return data, etag

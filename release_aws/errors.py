@@ -2,8 +2,9 @@
 
 An unknown outcome is ``AmbiguousResponse``: the request may have been applied,
 so the controller reconciles or holds. A definite refusal is ``AwsRequestRejected``
-carrying only the AWS error code; provider messages can quote request content
-and are never repeated into release evidence.
+carrying only the AWS error code. Provider messages can quote request content,
+so they are never repeated, and the replacement is raised outside the ``except``
+block: it carries no ``__context__`` or ``__cause__`` back to the SDK error.
 """
 
 from __future__ import annotations
@@ -14,8 +15,9 @@ from botocore.exceptions import BotoCoreError, ClientError, ParamValidationError
 
 from release.ports import AmbiguousResponse
 
-# The longest one SDK call may block the attended controller. Deadlines are
-# checked between calls, so this bounds how late a deadline can be noticed.
+# Upper bound for each connect and each socket read. Deadlines are checked
+# between calls, so a stalled call can delay noticing one; this is not a bound
+# on a whole call (DNS resolution and multi-read responses are not covered).
 MAX_CALL_TIMEOUT_SECONDS = 30
 THROTTLING_CODES = frozenset(
     {
@@ -49,8 +51,12 @@ def require_client(client: Any, *, service: str, region: str) -> None:
     if meta.region_name != region:
         raise ValueError("client region differs from the approved manifest region")
     config = meta.config
-    if (config.retries or {}).get("total_max_attempts") != 1:
+    retries = config.retries or {}
+    if retries.get("total_max_attempts") != 1:
         raise ValueError("SDK retries must be disabled: the controller owns every retry")
+    if retries.get("mode", "legacy") not in ("legacy", "standard"):
+        # Adaptive mode's client-side rate limiter can delay even a first attempt.
+        raise ValueError("SDK retries must use the legacy or standard mode")
     for name in ("connect_timeout", "read_timeout"):
         value = getattr(config, name)
         if (
@@ -90,10 +96,13 @@ def classify(operation: str, error: Exception) -> Exception:
 
 def call(client: Any, operation: str, **params: Any) -> dict[str, Any]:
     """Exactly one SDK request; the response without transport metadata."""
+    failure: Exception | None = None
     try:
         response = getattr(client, operation)(**params)
     except (BotoCoreError, ClientError) as error:
-        raise classify(operation, error) from None
+        failure = classify(operation, error)
+    if failure is not None:
+        raise failure
     if not isinstance(response, dict):
         raise AmbiguousResponse(f"{operation}: malformed response")
     return {key: value for key, value in response.items() if key != "ResponseMetadata"}

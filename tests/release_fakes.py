@@ -489,7 +489,8 @@ class FakeEcs:
             "clusterArn": CLUSTER,
             "taskDefinitionArn": task.task_definition,
             "lastStatus": status,
-            "desiredStatus": "STOPPED" if status == "STOPPED" else "RUNNING",
+            # ECS flips the desired status as soon as a stop is requested.
+            "desiredStatus": "STOPPED" if status == "STOPPED" or task.stopped_at else "RUNNING",
             "startedBy": task.started_by,
             "group": task.group,
             "containers": containers,
@@ -577,7 +578,10 @@ class FakeEcs:
                 continue
             if started_by is not None and task.started_by != started_by:
                 continue
-            if service_name is not None and task.group != f"service:{service_name}":
+            if service_name is not None and (
+                task.group != f"service:{service_name}" or task.stopped_at is not None
+            ):
+                # A service listing holds the tasks ECS still intends to run.
                 continue
             result.append(task.arn)
         return result

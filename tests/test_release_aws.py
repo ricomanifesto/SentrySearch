@@ -38,6 +38,8 @@ from tests.aws_offline import (
     ServiceError,
     Transport,
     body_bytes,
+    carried_text,
+    exception_chain,
     network_denied,
     offline_client,
 )
@@ -100,6 +102,8 @@ def test_adapters_never_create_sessions_or_read_ambient_configuration():
          "read_timeout"),
         (Config(retries={"total_max_attempts": 1}, connect_timeout=5, read_timeout=10),
          "us-west-2", "region"),
+        (Config(retries={"total_max_attempts": 1, "mode": "adaptive"}, connect_timeout=5,
+                read_timeout=10), REGION, "mode"),
     ],
 )  # fmt: skip
 def test_clients_that_retry_wait_unboundedly_or_target_another_region_are_refused(
@@ -240,15 +244,72 @@ def test_listing_follows_every_page_to_the_end():
     stub.assert_no_pending_responses()
 
 
-def test_launch_token_listing_includes_stopped_tasks():
+OTHER = TASK[:-1] + "b"
+THIRD = TASK[:-1] + "c"
+
+
+def stopped_listing(stub: Stubber, tasks: list[dict]) -> None:
+    """The cluster-wide STOPPED listing and its complete description."""
+    arns = [task["taskArn"] for task in tasks]
+    stub.add_response("list_tasks", {"taskArns": arns},
+                      {"cluster": CLUSTER, "maxResults": 100, "desiredStatus": "STOPPED"})  # fmt: skip
+    if arns:
+        stub.add_response("describe_tasks", {"tasks": tasks, "failures": []},
+                          {"cluster": CLUSTER, "tasks": arns})  # fmt: skip
+
+
+def test_launch_token_listing_uses_started_by_alone_and_adds_exited_launches():
+    # ECS takes startedBy only as the sole filter (tasks it still intends to run);
+    # a launch that already exited is found among the described stopped tasks.
     adapter, stub = ecs_adapter()
-    base = {"cluster": CLUSTER, "maxResults": 100, "startedBy": "tok-1"}
-    stub.add_response("list_tasks", {"taskArns": [TASK]}, {**base, "desiredStatus": "RUNNING"})
-    stub.add_response("list_tasks", {"taskArns": [TASK, TASK[:-1] + "b"]},
-                      {**base, "desiredStatus": "STOPPED"})  # fmt: skip
+    stub.add_response("list_tasks", {"taskArns": [TASK]},
+                      {"cluster": CLUSTER, "maxResults": 100, "startedBy": "tok-1"})  # fmt: skip
+    stopped_listing(stub, [{"taskArn": OTHER, "startedBy": "tok-1", "lastStatus": "STOPPED"},
+                           {"taskArn": THIRD, "startedBy": "tok-2", "lastStatus": "STOPPED"}])  # fmt: skip
     with stub:
-        assert adapter.list_tasks(CLUSTER, started_by="tok-1") == [TASK, TASK[:-1] + "b"]
+        assert adapter.list_tasks(CLUSTER, started_by="tok-1") == [TASK, OTHER]
     stub.assert_no_pending_responses()
+
+
+def test_cluster_listing_includes_tasks_still_stopping():
+    # A requested stop flips the desired status at once; the process may run on.
+    adapter, stub = ecs_adapter()
+    stub.add_response("list_tasks", {"taskArns": [TASK]},
+                      {"cluster": CLUSTER, "maxResults": 100, "desiredStatus": "RUNNING"})  # fmt: skip
+    stopped_listing(stub, [{"taskArn": OTHER, "lastStatus": "DEPROVISIONING"},
+                           {"taskArn": THIRD, "lastStatus": "STOPPED"}])  # fmt: skip
+    with stub:
+        assert adapter.list_tasks(CLUSTER) == [TASK, OTHER]
+    stub.assert_no_pending_responses()
+
+
+def test_a_stopped_task_that_cannot_be_described_is_ambiguous():
+    adapter, stub = ecs_adapter()
+    stub.add_response("list_tasks", {"taskArns": []})
+    stub.add_response("list_tasks", {"taskArns": [OTHER]})
+    stub.add_response(
+        "describe_tasks", {"tasks": [], "failures": [{"arn": OTHER, "reason": "MISSING"}]}
+    )
+    with stub, pytest.raises(AmbiguousResponse):
+        adapter.list_tasks(CLUSTER)
+
+
+def test_a_listing_page_without_its_task_list_is_ambiguous():
+    adapter, stub = ecs_adapter()
+    stub.add_response("list_tasks", {})
+    with stub, pytest.raises(AmbiguousResponse):
+        adapter.list_tasks(CLUSTER, service_name="worker")
+
+
+def test_descriptions_that_omit_a_requested_resource_are_ambiguous():
+    adapter, stub = ecs_adapter()
+    stub.add_response("describe_tasks", {"tasks": [{"taskArn": TASK}], "failures": []})
+    stub.add_response("describe_services", {"services": [], "failures": []})
+    with stub:
+        with pytest.raises(AmbiguousResponse):
+            adapter.describe_tasks(CLUSTER, [TASK, OTHER])
+        with pytest.raises(AmbiguousResponse):
+            adapter.describe_services(CLUSTER, ["arn:aws:ecs:us-east-1:111122223333:service/c/s"])
 
 
 @pytest.mark.parametrize("code, status", [("ThrottlingException", 400), ("ServerException", 500)])
@@ -305,8 +366,9 @@ def test_sdk_errors_are_unknown_outcomes_or_sanitized_refusals(code, status, exp
     )
     with stub, pytest.raises(expected) as error:
         adapter.run_task(launch_request())
-    assert secret not in str(error.value) and error.value.__cause__ is None
-    assert error.value.__suppress_context__
+    # Nothing chains back to the SDK error, whose message quotes the provider.
+    assert exception_chain(error.value) == [error.value]
+    assert secret not in carried_text(error.value)
 
 
 # CloudWatch Logs ----------------------------------------------------------------
@@ -459,8 +521,15 @@ def test_duplicate_or_malformed_receipts_are_ambiguous_without_echoing_content(l
     evidence = LogEvidence(PagedLogs(lines), MANIFEST)
     with pytest.raises(AmbiguousResponse) as error:
         evidence.job_receipt(RELEASE_ID, "runtime-grant", TASK)
-    assert all(line[:20] not in str(error.value) for line in SENSITIVE_LINES)
-    assert error.value.__cause__ is None and error.value.__suppress_context__
+    # The parser's errors quote the raw line; none of them may travel with this one.
+    assert exception_chain(error.value) == [error.value]
+    assert all(line[:20] not in carried_text(error.value) for line in SENSITIVE_LINES)
+
+
+def test_a_log_line_that_cannot_be_encoded_is_still_counted_without_raising():
+    lone_surrogate = "report " + chr(0xD800) + " fixture-secret-7Q2"
+    evidence = LogEvidence(PagedLogs([lone_surrogate, receipt_line(RECEIPT)]), MANIFEST)
+    assert evidence.job_receipt(RELEASE_ID, "runtime-grant", TASK) == RECEIPT
 
 
 def test_absent_stream_or_receipt_is_missing_evidence_not_success():
@@ -540,6 +609,7 @@ def test_conditional_writes_name_the_owner_and_exact_precondition():
     ],
 )
 def test_a_lost_conditional_race_is_a_precondition_failure(operation, code, status):
+    """A replaced or deleted object no longer matches: the race was lost, cleanly."""
     store, stub = store_adapter()
     method = "delete_object" if operation == "delete" else "put_object"
     stub.add_client_error(method, service_error_code=code, http_status_code=status)
@@ -557,13 +627,18 @@ def test_a_lost_conditional_race_is_a_precondition_failure(operation, code, stat
         ("InternalError", 500, AmbiguousResponse),
         ("SlowDown", 503, AmbiguousResponse),
         ("AccessDenied", 403, AwsRequestRejected),
+        # A missing bucket is a refusal, not a lost race on the object.
+        ("NoSuchBucket", 404, AwsRequestRejected),
     ],
 )
 def test_a_write_with_unknown_outcome_is_ambiguous_not_a_lost_race(code, status, expected):
     store, stub = store_adapter()
-    stub.add_client_error("put_object", service_error_code=code, http_status_code=status)
-    with stub, pytest.raises(expected):
+    stub.add_client_error("put_object", service_error_code=code, http_status_code=status,
+                          service_message="journal for report-fixture-55aa")  # fmt: skip
+    with stub, pytest.raises(expected) as error:
         store.replace(JOURNAL, b"{}", if_match='"e1"')
+    assert exception_chain(error.value) == [error.value]
+    assert "report-fixture" not in carried_text(error.value)
 
 
 def test_reads_distinguish_absent_from_refused():
@@ -861,3 +936,49 @@ def test_controller_clock_regression_during_the_gate_holds():
     outcome = controller.run()
     assert_held(r, outcome, "controller_clock_rollback", "services_started")
     assert not gate(r, "operational_passed")
+
+
+def test_quiesce_waits_for_a_writer_whose_stop_is_still_in_progress():
+    r, aws = aws_rig(checks="worker")
+    writer = r.ecs.standalone(r.document["services"]["worker"]["task_definition"])
+    writer.stopped_at = r.clock.now() + timedelta(seconds=110)
+    writer.stop_code = "UserInitiated"
+    launches: list = []
+    original = aws.bridge.handlers[("ecs", "RunTask")]
+
+    def record(params):
+        launches.append(r.ecs._status(writer))
+        return original(params)
+
+    aws.bridge.handlers[("ecs", "RunTask")] = record
+    outcome = adapted(r, aws).run()
+    assert outcome.state == "held_paused", outcome
+    assert launches and set(launches) == {"STOPPED"}, "a job ran beside a live writer"
+
+
+def test_a_writer_ecs_still_intends_to_run_holds_quiesce():
+    r, aws = aws_rig(checks="worker")
+    r.ecs.standalone(r.document["services"]["worker"]["task_definition"])
+    outcome = adapted(r, aws).run()
+    assert_held(r, outcome, "standalone_writer_present", "locked")
+
+
+def test_no_exception_escaping_a_release_carries_application_output():
+    # A malformed receipt quoting a sensitive line makes the grant ambiguous; a
+    # competing journal writer then makes the hold itself fail to journal.
+    r, aws = aws_rig(checks="worker")
+    aws.job_streams["runtime-grant"] = [*SENSITIVE_LINES, RECEIPT_MARKER + " " + SENSITIVE_LINES[0]]
+
+    def competitor(key, body):
+        if key == JOURNAL and json.loads(body)["events"][-1].get("to") == "hold":
+            r.store.before_replace = None
+            current, _ = r.store.objects[key]
+            r.store.objects[key] = (current, '"etag-competitor"')
+
+    r.store.before_replace = competitor
+    with pytest.raises(ReleaseHalted) as error:
+        adapted(r, aws).run()
+    assert error.value.code == "journal_conflict"
+    text = carried_text(error.value)
+    for fragment in ("fixture-secret", "fixture-key", "report-fixture", "fixture-user"):
+        assert fragment not in text

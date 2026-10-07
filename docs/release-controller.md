@@ -100,12 +100,18 @@ without that observation is incomplete finalization, not an operator success rec
 
 Each job launches with `count=1`, the exact task definition, fixed private
 networking, Exec disabled, release/job tags and a stable `clientToken` that is
-also `startedBy`. There are no overrides. Launch failures, a partial response or
-more than one task hold.
+also `startedBy`. There are no overrides. Each of these holds:
+- a launch failure, a partial response or more than one task;
+- a task with another definition or token;
+- a task that ECS reports with any override or with Exec enabled.
+
+A job whose launch was refused this way is never launched again, even if its
+hold was never journaled.
 
 After a crash or ambiguous response the controller looks for the task by token.
-Only inside the job's deadline and token lifetime (the shorter of 24 hours or
-task lifetime plus one hour) does it resend the identical request with the same
+A task found that way is described and verified like a direct launch. Only
+inside the job's deadline and token lifetime (the shorter of 24 hours or task
+lifetime plus one hour) does it resend the identical request with the same
 token. Otherwise an unseen launch is `launch_outcome_unknown`: an empty,
 eventually consistent listing is not proof that nothing ran.
 
@@ -129,8 +135,10 @@ proves success or SQL cancellation. Missing receipts exhaust the same deadline.
 
 ## Services and operational evidence
 
-Writers are scaled to zero (journaled) and must drain, and no other task may
-remain in the cluster. Services then start in order (Runtime, API, worker) with
+Writers are scaled to zero (journaled) and must drain. Every task in the cluster
+that has not finished stopping must then stop before any job runs. One that ECS
+still intends to run is an unaccounted writer and holds
+(`standalone_writer_present`). Services then start in order (Runtime, API, worker) with
 a forced new deployment. The deploy request carries only the controller-owned
 fields: cluster, service, task definition, desired count one and the forced
 deployment. Terraform alone writes every deployment setting. Before each deploy,
@@ -145,9 +153,10 @@ and on every later service observation, the controller holds with
 - Exec disabled.
 
 A missing value counts as drift. A service is ready only when exactly one healthy running task
-of that new deployment exists, with exact definition and digests. Tasks from an
-older deployment of the same revision never count. Count drift, a failed or
-superseded deployment, or timeout holds.
+of that new deployment exists, with exact definition and digests, and that
+observation completes before the service's start deadline. Tasks from an older
+deployment of the same revision never count. Count drift, a failed or superseded
+deployment, or timeout holds.
 
 Operational receipts must pass and bind the recorded task ARNs. The task set is
 enumerated again before and after the checks; a replacement holds because it

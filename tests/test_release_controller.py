@@ -420,6 +420,97 @@ def test_reconciliation_finds_a_launch_that_already_stopped_without_resending():
     assert r.events("observation", subject="runtime-migrate", result="launched")[0]["reconciled"]
 
 
+def test_a_reconciled_launch_must_be_the_approved_unmodified_task():
+    r = rig()
+    migrate = r.document["jobs"][0]["task"]["task_definition"]
+    r.ecs.quirks[migrate] = {
+        "overrides": {"containerOverrides": [{"name": "migration", "command": ["sh"]}]}
+    }
+    r.ecs.crash[("run_task", "after")] = 1
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    outcome = r.recover().run()
+    assert_held(r, outcome, "task_overrides_present", "quiesced")
+    [refused] = r.events("observation", subject="runtime-migrate", result="launched_unexpected")
+    assert refused["reason"] == "task_overrides_present"
+    assert not r.events("observation", subject="runtime-migrate", result="launched")
+
+
+def test_a_refused_launch_is_never_launched_again_when_its_hold_was_lost():
+    r = rig()
+    migrate = r.document["jobs"][0]["task"]["task_definition"]
+    r.ecs.quirks[migrate] = {"enableExecuteCommand": True}
+
+    def lose_the_hold(key, body):
+        if key == JOURNAL and json.loads(body)["events"][-1].get("to") == "hold":
+            r.store.before_replace = None
+            raise SimulatedCrash("hold never journaled")
+
+    r.store.before_replace = lose_the_hold
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    outcome = r.recover().run()
+    assert_held(r, outcome, "task_exec_enabled", "quiesced")
+    assert len([c for c in r.calls("run_task") if c["taskDefinition"] == migrate]) == 1
+
+
+def test_a_service_ready_only_after_its_deadline_holds(monkeypatch):
+    r = rig()
+    original = ReleaseController._service_snapshot
+
+    def slow(self, key, deployment):
+        if key == "api":
+            r.clock.advance(seconds=700)  # beyond the 600 s service start budget
+        return original(self, key, deployment)
+
+    monkeypatch.setattr(ReleaseController, "_service_snapshot", slow)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "service_start_deadline_exceeded", "grants_verified")
+    assert not r.events("observation", subject="api", result="service_ready")
+
+
+def test_a_failed_hold_write_never_chains_to_the_error_that_caused_it(monkeypatch):
+    # A port error may quote provider or log content. The hold that follows it is
+    # journaled outside the handler, so even a halt cannot carry that content.
+    r = rig()
+
+    def leaky(release_id, job_id, task_arn):
+        raise ValueError("Traceback ... password=fixture-secret-7Q2 report-fixture-55aa")
+
+    monkeypatch.setattr(r.evidence, "job_receipt", leaky)
+
+    def competitor(key, body):
+        if key == JOURNAL and json.loads(body)["events"][-1].get("to") == "hold":
+            r.store.before_replace = None
+            current, _ = r.store.objects[key]
+            r.store.objects[key] = (current, '"etag-competitor"')
+
+    r.store.before_replace = competitor
+    with pytest.raises(ReleaseHalted) as error:
+        r.controller().run()
+    assert error.value.code == "journal_conflict"
+    chained: list[BaseException | None] = [error.value]
+    seen: list[BaseException] = []
+    while chained:
+        item = chained.pop()
+        if item is None or item in seen:
+            continue
+        seen.append(item)
+        chained += [item.__cause__, item.__context__]
+    assert not any("fixture-secret" in repr(item.args) for item in seen), seen
+
+
+def test_quiesce_waits_for_a_stopping_writer_and_holds_on_a_running_one():
+    r = rig()
+    writer = r.ecs.standalone(r.document["services"]["worker"]["task_definition"])
+    writer.stopped_at = r.clock.now() + timedelta(seconds=110)
+    writer.stop_code = "UserInitiated"
+    outcome = r.controller().run()
+    assert outcome.state == "held_paused", outcome
+    first_launch = next(e for e in r.journal()["events"] if e.get("action") == "run_task")
+    assert datetime.fromisoformat(first_launch["at"]) >= writer.stopped_at
+
+
 CLEAN_QUIRKS = [
     {"overrides": {"containerOverrides": [{"name": "migration", "command": ["sh", "-c", "x"]}]}},
     {"overrides": {"containerOverrides": [{"name": "migration", "environment": [{"name": "A", "value": "1"}]}]}},

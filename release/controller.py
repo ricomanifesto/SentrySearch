@@ -51,6 +51,8 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 IDENTICAL_RETRIES = 3
 VISIBILITY_POLLS = 3
 STOP_CONFIRMATION_MARGIN = timedelta(seconds=30)
+# Observations that resolve a launch intent without a usable task.
+REFUSED_LAUNCHES = ("launch_failed", "launched_multiple", "launched_unexpected")
 READINESS_POLICY = GatePolicy()
 
 
@@ -150,6 +152,7 @@ class ReleaseController:
             State.SERVICES_STARTED: self._verify_operational,
             State.OPERATIONAL_VERIFIED: self._finish,
         }
+        code: str | None = None
         try:
             if approval_error is not None:
                 raise _Hold(approval_error)
@@ -157,21 +160,25 @@ class ReleaseController:
             while self.state not in TERMINAL_STATES:
                 steps[self.state]()
         except _Hold as hold:
-            if hold.code in {"approval_expired", "release_window_exceeded"}:
-                # Expiry forbids forward progress, not cleanup of this release's
-                # already-launched work. Never retry a launch during cleanup.
-                self._cleanup_expired_jobs()
-            self._hold(hold.code)
+            code = hold.code
         except ReleaseHalted:
             raise
         except AmbiguousResponse:
             # An uncertain read proves nothing either way.
-            self._hold("observation_ambiguous")
+            code = "observation_ambiguous"
         except Exception:
             # Any other port or evaluation error is uncertainty, never success.
-            if self.state == State.HELD_PAUSED:
-                raise ReleaseHalted("finalization_unconfirmed") from None
-            self._hold("controller_error")
+            code = "controller_error"
+        # Act outside the except blocks, so nothing journaled or raised from here
+        # chains to the original error, which may quote provider or log content.
+        if code is not None:
+            if code == "controller_error" and self.state == State.HELD_PAUSED:
+                raise ReleaseHalted("finalization_unconfirmed")
+            if code in {"approval_expired", "release_window_exceeded"}:
+                # Expiry forbids forward progress, not cleanup of this release's
+                # already-launched work. Never retry a launch during cleanup.
+                self._cleanup_expired_jobs()
+            self._hold(code)
         return self._outcome()
 
     def recover(self, authorization: RecoveryAuthorization) -> None:
@@ -435,12 +442,15 @@ class ReleaseController:
         for attempt in range(IDENTICAL_RETRIES + 1):
             arns = self.ecs.list_tasks(self.cluster, started_by=intent["token"])
             if len(arns) == 1:
-                self._observe(
-                    job.id, "launched", resolves="run_task", task_arn=arns[0], reconciled=True
-                )
+                # A listing proves only the token; the task must be the approved one.
+                task = self._describe_task(arns[0])
+                if task is None:
+                    raise _Hold("launch_outcome_unknown")
+                self._verify_launched(job, intent["token"], task, arns, reconciled=True)
                 return
             if len(arns) > 1:
-                self._observe(job.id, "launched_multiple", resolves="run_task", task_arns=arns)
+                self._observe(job.id, "launched_multiple", resolves="run_task", task_arns=arns,
+                              reason="launch_task_count")  # fmt: skip
                 raise _Hold("launch_task_count")
             # An eventually consistent empty listing is not proof that nothing launched.
             now = self.clock.now()
@@ -554,9 +564,14 @@ class ReleaseController:
         ):  # fmt: skip
             self._guard()
             self.clock.sleep(self.poll)
-        # Any remaining task in the cluster is an unaccounted writer.
-        if self.ecs.list_tasks(self.cluster):
-            raise _Hold("standalone_writer_present")
+        # Every task not yet stopped is a possible writer. One that ECS still
+        # intends to run is unaccounted for; one already stopping must finish.
+        while arns := self.ecs.list_tasks(self.cluster):
+            tasks = self.ecs.describe_tasks(self.cluster, arns).get("tasks") or []
+            if any(task.get("desiredStatus") != "STOPPED" for task in tasks):
+                raise _Hold("standalone_writer_present")
+            self._guard()
+            self.clock.sleep(self.poll)
         self._transition(State.QUIESCED)
 
     # Jobs ----------------------------------------------------------------------
@@ -590,6 +605,10 @@ class ReleaseController:
             if job.phase not in phases or self._last(job.id, "job_succeeded") is not None:
                 continue
             if self._last(job.id, "launched") is None:
+                refused = self._last(job.id, *REFUSED_LAUNCHES)
+                if refused is not None:
+                    # Its hold may never have been journaled: never launch again.
+                    raise _Hold(refused.get("reason", "launch_not_accepted"))
                 self._launch(job)
             self._await_job(job)
         self._transition(target)
@@ -621,28 +640,36 @@ class ReleaseController:
         tasks = response.get("tasks") or []
         failures = response.get("failures") or []
         if failures and not tasks:
-            self._observe(job.id, "launch_failed", resolves="run_task", failure_count=len(failures))
+            self._observe(job.id, "launch_failed", resolves="run_task",
+                          failure_count=len(failures), reason="launch_failed")  # fmt: skip
             raise _Hold("launch_failed")
         if failures or not tasks:
             raise _Hold("launch_response_incomplete")
         arns = [str(task.get("taskArn")) for task in tasks]
         if len(tasks) != 1:
-            self._observe(job.id, "launched_multiple", resolves="run_task", task_arns=arns)
+            self._observe(job.id, "launched_multiple", resolves="run_task", task_arns=arns,
+                          reason="launch_task_count")  # fmt: skip
             raise _Hold("launch_task_count")
-        task = tasks[0]
+        self._verify_launched(job, intent["token"], tasks[0], arns)
+
+    def _verify_launched(
+        self, job: Job, token: str, task: dict[str, Any], arns: list[str], **data: Any
+    ) -> None:
+        """Record the launch only for the approved revision under this token, unmodified."""
         if (
             task.get("taskDefinitionArn") != job.task.task_definition
-            or task.get("startedBy") != intent["token"]
+            or task.get("startedBy") != token
         ):
-            self._observe(job.id, "launched_unexpected", resolves="run_task", task_arns=arns)
-            raise _Hold("job_identity_mismatch")
-        # The request carried no overrides; a task reporting any did not run the
-        # reviewed revision as approved.
-        issue = task_runtime_issue(task)
-        if issue is not None:
-            self._observe(job.id, "launched_unexpected", resolves="run_task", task_arns=arns)
-            raise _Hold(issue)
-        self._observe(job.id, "launched", resolves="run_task", task_arn=arns[0])
+            reason: str | None = "job_identity_mismatch"
+        else:
+            # The request carried no overrides; a task reporting any did not run
+            # the reviewed revision as approved.
+            reason = task_runtime_issue(task)
+        if reason is not None:
+            self._observe(job.id, "launched_unexpected", resolves="run_task", task_arns=arns,
+                          reason=reason)  # fmt: skip
+            raise _Hold(reason)
+        self._observe(job.id, "launched", resolves="run_task", task_arn=arns[0], **data)
 
     def _describe_task(self, arn: str) -> dict[str, Any] | None:
         tasks = self.ecs.describe_tasks(self.cluster, [arn]).get("tasks") or []
@@ -839,11 +866,15 @@ class ReleaseController:
         deadline = _time(self._last_intent("update_service", key)["deadline_at"])
         while True:
             status, detail, _ = self._service_snapshot(key, deployment)
-            if status == "ready":
+            # One snapshot is several calls: readiness must still be inside the deadline.
+            late = self.clock.now() >= deadline
+            if status == "ready" and not late:
                 self._observe(key, "service_ready", deployment_id=deployment, task_arn=detail)
                 return
-            if status == "failed" or self.clock.now() >= deadline:
+            if status == "failed":
                 raise _Hold(detail)
+            if late:
+                raise _Hold("service_start_deadline_exceeded" if status == "ready" else detail)
             self.clock.sleep(self.poll)
 
     def _verify_operational(self) -> None:

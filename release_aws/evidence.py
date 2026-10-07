@@ -77,7 +77,8 @@ class LogEvidence:
             except LogStreamMissing:
                 return None
             for event in page["events"]:
-                size += len(event["message"].encode())
+                # Count bytes without ever raising on (and carrying) a malformed line.
+                size += len(event["message"].encode("utf-8", "surrogatepass"))
                 if size > MAX_BYTES:
                     raise AmbiguousResponse("job receipt stream exceeds its read bound")
                 messages.append(event["message"])
@@ -98,7 +99,9 @@ class LogEvidence:
         try:
             return extract_receipt(messages)
         except ReceiptAmbiguous:
-            raise AmbiguousResponse("job receipt stream is ambiguous") from None
+            pass
+        # Raised outside the handler: the parser's error chain quotes the raw line.
+        raise AmbiguousResponse("job receipt stream is ambiguous")
 
     def operational_receipt(self, release_id: str, check_id: str) -> dict[str, Any] | None:
         # Runtime and API operational observers are not implemented. Their checks

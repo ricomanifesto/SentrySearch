@@ -1,7 +1,8 @@
 """AWS SDK adapters for the release controller's ports.
 
-The core ``release`` package stays SDK-free; this package translates its port
-calls into exactly one SDK request each. Every adapter takes an injected client
+The core ``release`` package stays SDK-free; this package translates each port
+call into a fixed, bounded set of SDK requests (one, or the complete pages and
+descriptions an enumeration needs). Every adapter takes an injected client
 and never creates a session, resolves credentials, reads dotenv or chooses an
 endpoint. A caller builds that client with explicit credentials and region,
 SDK retries disabled (the controller owns retries) and bounded timeouts; the

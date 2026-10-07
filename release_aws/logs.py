@@ -58,12 +58,15 @@ class CloudWatchLogs:
         }
         if next_token is not None:
             params["nextToken"] = next_token
+        missing = False
         try:
             response = call(self.client, "get_log_events", **params)
         except AwsRequestRejected as error:
-            if error.code == "ResourceNotFoundException":
-                raise LogStreamMissing("log group or stream not found") from None
-            raise
+            if error.code != "ResourceNotFoundException":
+                raise
+            missing = True
+        if missing:
+            raise LogStreamMissing("log group or stream not found")
         events = response.get("events")
         token = response.get("nextForwardToken")
         if not isinstance(events, list) or not isinstance(token, str) or not token:

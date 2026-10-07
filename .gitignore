@@ -70,6 +70,7 @@ Thumbs.db
 !/docs/liblzma-backport.md
 !/docs/release-controller.md
 !/docs/release-tools.md
+!/docs/release-aws-adapters.md
 backup_*/
 # Legacy main files (keep API files)
 /main.py

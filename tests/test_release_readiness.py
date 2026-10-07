@@ -418,3 +418,12 @@ def test_malformed_read_responses_are_errors():
     with pytest.raises(ValueError):
         read_stream(Pages([], broken=True), "/g", "s", token=None, start=EPOCH, end=at(60),
                     policy=GatePolicy())  # fmt: skip
+
+
+def test_a_line_that_cannot_be_encoded_is_counted_without_raising():
+    # A lone surrogate in worker output must neither stop the read nor travel
+    # inside an encoding error that quotes the whole line.
+    line = "worker " + chr(0xDC80) + " report-fixture-55aa"
+    read = read_stream(Pages([line, "m1"]), "/g", "s", token=None, start=EPOCH, end=at(60),
+                       policy=GatePolicy())  # fmt: skip
+    assert read.complete and read.messages == [line, "m1"]

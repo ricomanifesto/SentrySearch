@@ -267,7 +267,7 @@ def read_stream(
             message = event.get("message") if isinstance(event, dict) else None
             if not isinstance(message, str):
                 raise ValueError("malformed log event")
-            size += len(message.encode())
+            size += len(message.encode("utf-8", "surrogatepass"))
             if size > policy.max_bytes:
                 return LogRead(messages, current, False)
             messages.append(message)

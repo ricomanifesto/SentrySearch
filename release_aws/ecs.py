@@ -83,6 +83,16 @@ def _list(value: Any, operation: str) -> list[Any]:
     return value
 
 
+def _require_covered(
+    requested: list[str], found: list[Any], key: str, failures: list[Any], operation: str
+) -> None:
+    """Every requested ARN must come back described or as an explicit failure."""
+    seen = {item.get(key) for item in found if isinstance(item, dict)}
+    seen |= {item.get("arn") for item in failures if isinstance(item, dict)}
+    if not set(requested) <= seen:
+        raise AmbiguousResponse(f"{operation}: response omitted a requested resource")
+
+
 class EcsAdapter:
     """One ECS cluster in one region; every method makes whole, unretried calls."""
 
@@ -105,14 +115,18 @@ class EcsAdapter:
         }
 
     def describe_tasks(self, cluster: str, task_arns: list[str]) -> dict[str, Any]:
+        """Every requested task, described or reported as a failure, or ambiguous."""
         self._cluster(cluster)
         tasks: list[Any] = []
         failures: list[Any] = []
         for start in range(0, len(task_arns), DESCRIBE_TASKS_BATCH):
             batch = task_arns[start : start + DESCRIBE_TASKS_BATCH]
             response = call(self.client, "describe_tasks", cluster=cluster, tasks=batch)
-            tasks += _list(response.get("tasks", []), "DescribeTasks")
-            failures += _list(response.get("failures", []), "DescribeTasks")
+            found = _list(response.get("tasks", []), "DescribeTasks")
+            missing = _list(response.get("failures", []), "DescribeTasks")
+            _require_covered(batch, found, "taskArn", missing, "DescribeTasks")
+            tasks += found
+            failures += missing
         return {"tasks": tasks, "failures": failures}
 
     def _list_all(self, **filters: Any) -> list[str]:
@@ -124,7 +138,8 @@ class EcsAdapter:
             if token is not None:
                 params["nextToken"] = token
             response = call(self.client, "list_tasks", **params)
-            page = _list(response.get("taskArns", []), "ListTasks")
+            # A page without its task list is not an empty page.
+            page = _list(response.get("taskArns"), "ListTasks")
             if not all(isinstance(arn, str) for arn in page):
                 raise AmbiguousResponse("ListTasks: malformed response")
             arns += page
@@ -135,6 +150,16 @@ class EcsAdapter:
                 raise AmbiguousResponse("ListTasks: malformed response")
         raise AmbiguousResponse("ListTasks: enumeration exceeded its page bound")
 
+    def _stopped(self) -> list[dict[str, Any]]:
+        """Every task whose desired status is STOPPED, described completely."""
+        arns = self._list_all(desiredStatus="STOPPED")
+        described = self.describe_tasks(self.cluster, arns) if arns else {"tasks": []}
+        if described.get("failures"):
+            # A listed task that cannot be described cannot be shown to be stopped
+            # or to carry a different launch token.
+            raise AmbiguousResponse("DescribeTasks: stopped task not described")
+        return [task for task in described["tasks"] if isinstance(task, dict)]
+
     def list_tasks(
         self, cluster: str, *, started_by: str | None = None, service_name: str | None = None
     ) -> list[str]:
@@ -142,17 +167,27 @@ class EcsAdapter:
         if started_by is not None and service_name is not None:
             raise ValueError("list by launch token or by service, not both")
         if started_by is not None:
-            # A launch that already exited is still the launch: include STOPPED.
-            found: list[str] = []
-            for status in ("RUNNING", "STOPPED"):
-                for arn in self._list_all(startedBy=started_by, desiredStatus=status):
-                    if arn not in found:
-                        found.append(arn)
-            return found
-        filters = {"desiredStatus": "RUNNING"}
+            # ECS accepts startedBy only as the sole filter, which lists tasks it
+            # still intends to run. A launch that already exited is still the
+            # launch, so stopped tasks carrying the token are added.
+            found = self._list_all(startedBy=started_by)
+            exited = [
+                str(task.get("taskArn"))
+                for task in self._stopped()
+                if task.get("startedBy") == started_by and task.get("taskArn") not in found
+            ]
+            return found + exited
         if service_name is not None:
-            filters["serviceName"] = service_name
-        return self._list_all(**filters)
+            return self._list_all(serviceName=service_name, desiredStatus="RUNNING")
+        # Cluster-wide: every task not yet stopped, including one whose stop was
+        # requested but which may still be running its process.
+        running = self._list_all(desiredStatus="RUNNING")
+        stopping = [
+            str(task.get("taskArn"))
+            for task in self._stopped()
+            if task.get("lastStatus") != "STOPPED" and task.get("taskArn") not in running
+        ]
+        return running + stopping
 
     def update_service(self, request: dict[str, Any]) -> dict[str, Any]:
         self._cluster(request.get("cluster", ""))
@@ -169,8 +204,11 @@ class EcsAdapter:
         for start in range(0, len(services), DESCRIBE_SERVICES_BATCH):
             batch = services[start : start + DESCRIBE_SERVICES_BATCH]
             response = call(self.client, "describe_services", cluster=cluster, services=batch)
-            # Missing services surface as absent entries; the controller holds on them.
-            found += _list(response.get("services", []), "DescribeServices")
+            described = _list(response.get("services", []), "DescribeServices")
+            missing = _list(response.get("failures", []), "DescribeServices")
+            _require_covered(batch, described, "serviceArn", missing, "DescribeServices")
+            # Reported failures surface as absent services; the controller holds on them.
+            found += described
         return found
 
     def stop_task(self, cluster: str, task_arn: str, reason: str) -> dict[str, Any]:
