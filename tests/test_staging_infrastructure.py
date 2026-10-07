@@ -322,6 +322,51 @@ def test_launcher_policy_covers_every_controller_ecs_call():
     )
 
 
+def test_job_receipts_are_read_from_the_streams_terraform_configures():
+    """The evidence adapter derives each job's stream; Terraform must write exactly there."""
+    from release.manifest import load_manifest
+    from release_aws.evidence import job_stream
+    from tests.release_fakes import encode, manifest_document
+
+    task_module = configuration(TASK_MODULE)
+    releases = configuration(STAGING / "releases")
+    # Migrations log as <database>-release from their "migration" container.
+    assert 'awslogs-stream-prefix = "${name}-release"' in task_module
+    assert re.search(r'^      name += "migration"$', task_module, re.MULTILINE)
+    assert 'log-stream:${name}-release/migration/*"' in task_module
+    # Grants and proofs log as <database>-<kind> from a container named <kind>.
+    for database in ("runtime", "product"):
+        for kind in ("grant", "proof"):
+            assert re.search(
+                rf'^    {database}-{kind} +=  ?\{{ database = "{database}", kind = "{kind}"',
+                task_module,
+                re.MULTILINE,
+            )
+    assert "awslogs-stream-prefix = key\n" in task_module
+    assert re.search(r"^      name += job\.kind$", task_module, re.MULTILINE)
+    assert 'log-stream:${key}/${job.kind}/*"' in task_module
+    # Both write to the naming module's /<prefix>/<database>-release group.
+    for database in ("runtime", "product"):
+        assert f'log_group = module.names.log_groups["{database}-release"]' in releases
+    manifest = load_manifest(encode(manifest_document())).manifest
+    task = "arn:aws:ecs:us-east-1:111122223333:task/c/" + "b" * 32
+    streams = {job.id: job_stream("sentry-staging", job, task) for job in manifest.jobs}
+    assert streams == {
+        "runtime-migrate": (
+            "/sentry-staging/runtime-release",
+            "runtime-release/migration/" + "b" * 32,
+        ),
+        "product-migrate": (
+            "/sentry-staging/product-release",
+            "product-release/migration/" + "b" * 32,
+        ),
+        "runtime-grant": ("/sentry-staging/runtime-release", "runtime-grant/grant/" + "b" * 32),
+        "product-grant": ("/sentry-staging/product-release", "product-grant/grant/" + "b" * 32),
+        "runtime-proof": ("/sentry-staging/runtime-release", "runtime-proof/proof/" + "b" * 32),
+        "product-proof": ("/sentry-staging/product-release", "product-proof/proof/" + "b" * 32),
+    }
+
+
 def between(text: str, start: str, end: str) -> str:
     return text[text.index(start) : text.index(end, text.index(start))]
 

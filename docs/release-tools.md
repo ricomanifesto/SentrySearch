@@ -117,10 +117,11 @@ requires grant/proof jobs to use this schema, the job ids `<database>-<phase>`,
 exactly these result keys, `sql_digest` equal to the pinned SQL hash, and proof
 identities and schemas that agree with the migration and grant expectations.
 
-`release_tools.receipt.extract_receipt` is the parser a log adapter must use on
-the exact stream of the observed task (`<job>/<container>/<task id>`): no marker
-is a missing receipt, and two markers, a malformed line or extra envelope fields
-are `ReceiptAmbiguous`, which the adapter reports as an ambiguous observation.
+`release_tools.receipt.extract_receipt` is the parser `release_aws.evidence` uses
+on the exact stream of the observed task (`<job>/<container>/<task id>`). No
+marker is a missing receipt. Two markers, a malformed line or extra envelope
+fields are `ReceiptAmbiguous`, which the adapter reports as an ambiguous
+observation.
 Missing, stale (another task or release), ambiguous or failed receipts all hold.
 
 ## SQL programs
@@ -253,9 +254,9 @@ for the component and inventory limits.
 ## Not proven
 
 The Terraform module caps the fixed deadline at seven days after the plan. IAM
-cannot forbid `RunTask` overrides that would replace a job's environment; the
-attended launcher sends none, and checking observed task overrides belongs to the
-AWS adapter.
+cannot forbid `RunTask` overrides that would replace a job's environment. The
+attended launcher sends none, the ECS adapter refuses to send any, and the
+controller holds when an observed task reports one.
 
 - Registry publication, signed provenance, cloud behavior and release approval.
   Docker Hub index pins were independently checked against Docker Hub; local
@@ -272,5 +273,5 @@ AWS adapter.
 - A task that never reaches its container (pending, image pull, init) is outside
   the in-image guard; the controller's deadline StopTask and the attended operator
   cover it. The 0.25 vCPU / 512 MiB allocation is unmeasured.
-- The AWS log adapter, the supervisor readiness receipts and observer, measured
-  log buffering, and any approval or risk decision.
+- The log and evidence adapters' behavior against real CloudWatch Logs (they are
+  stub-tested only), measured log buffering, and any approval or risk decision.

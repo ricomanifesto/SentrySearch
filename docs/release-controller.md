@@ -1,11 +1,12 @@
 # Offline release controller
 
 `release/` models an attended staging release as a strict manifest, a pure state
-machine and a journaled controller behind narrow ports. This slice is **offline
-only**: there is no AWS adapter, CLI entry point, credential handling or network
-code, and nothing here has launched a task, changed a service or read real logs.
-It defines and tests the rules a future adapter must satisfy; it is not evidence
-that any environment exists or that a release has run.
+machine and a journaled controller behind narrow ports. It contains no SDK,
+credential or network code. `release_aws/` adapts those ports to injected AWS SDK
+clients ([adapters](release-aws-adapters.md)), tested only against stubs. There
+is no CLI entry point or credential handling, and nothing here has launched a
+task, changed a service or read real logs. None of this is evidence that any
+environment exists or that a release has run.
 
 ## Inputs
 
@@ -238,14 +239,12 @@ scheduling or real log ingestion.
 
 ## Not implemented
 
-- An AWS adapter, pagination-complete listing, receipt collection from logs and
-  an operator CLI. The adapter must read only the observed task's stream and parse
-  it with `release_tools.receipt.extract_receipt`, reporting an ambiguous stream
-  as `AmbiguousResponse`. Its `LogPort` must read forward from the head
-  (`startFromHead=true`; the API default reads the tail), pass bounds and forward
-  tokens through unchanged and never page internally. How GetLogEvents tokens
-  behave as `endTime` advances is unverified.
-- RunTask override checking beyond the exact request the controller builds.
+- An operator CLI that builds isolated SDK clients for an approved operator
+  session, and a Clock adapter that enforces non-regression and a bounded UTC
+  offset. The [adapters](release-aws-adapters.md) exist but have run only against
+  stubs. Their AWS behavior (IAM, `GetLogEvents` tokens as `endTime` advances,
+  stopped-task listing, reported overrides, S3 conditional deletes) is
+  unverified.
 - In-image deadline guards and receipt producers for the two migration images,
   and wiring of the bootstrap job (the grant, proof and reconciliation jobs are
   [implemented](release-tools.md) and mock-wired).
@@ -271,12 +270,13 @@ grants, proofs and reconciliation) run, only job-tagged tasks can be stopped and
 receipts are read only from those jobs' and the current release's worker
 app-container log streams. Those worker streams also carry all of the current
 release's worker application output, so the read widens the release/app
-boundary: Michael must choose attended whole-release log access or a separate
-sanitized receipt destination before the policies are attached. Each worker
-revision fixes its release's `SENTRYSEARCH_RELEASE_ID`, its
-`worker/<release-id>` stream prefix and non-blocking logging. A release still cannot complete: there is no AWS adapter or
-log reader, the migration images emit no receipts and the Runtime and API
-operational observers do not exist.
+boundary. The attended whole-release read is the selected design. It covers no
+other release, no unmasking and no sharing outside the attended session.
+Attaching the policies remains a separate approval. Each worker revision fixes
+its release's `SENTRYSEARCH_RELEASE_ID`, its `worker/<release-id>` stream prefix
+and non-blocking logging. A release still cannot complete: the migration images
+emit no receipts and the Runtime and API operational observers do not exist, so
+the adapters report both as missing evidence and the release holds.
 The manifest's environment name must equal the roots' `name_prefix` so the lock
 key matches the release-evidence policy. These roots are not applied, and mocked
 plans do not prove IAM behavior.

@@ -111,8 +111,9 @@ choice is a separate approval. They allow:
   retention, which the launcher could not read before. It is neither
   receipt-only nor exact-task authority: exact-task access would need trusted
   per-task credential issuance, and receipt-only access a separate sanitized
-  destination. Michael must choose attended whole-release log access or a
-  separate receipt destination before these policies are attached.
+  destination. Attended whole-release access is the selected design: no other
+  release, no `logs:Unmask` and no sharing outside the attended session.
+  Attaching these policies remains a separate approval.
 
 They deny `ExecuteCommand` and any `RunTask`/`UpdateService` that enables Exec, on
 every resource. They grant no secret read, image push, log write, IAM change or
@@ -122,10 +123,10 @@ constrained by IAM: this is a trusted launcher whose controller rejects override
 not a command sandbox.
 
 **A release cannot complete yet.** The grant, proof and reconciliation jobs, the
-worker readiness gate, their roles and receipt reads now exist (mock-tested), but
-there is no AWS adapter or log reader, the migration images emit no receipts, and
-the Runtime and API operational observers do not exist. Missing, stale or
-ambiguous receipts hold the release.
+worker readiness gate, their roles, receipt reads and the stub-tested
+[AWS adapters](../../docs/release-aws-adapters.md) now exist. However, the
+migration images emit no receipts, and the Runtime and API operational observers
+do not exist. Missing, stale or ambiguous receipts hold the release.
 
 The release journal and environment lock use the separate `release-evidence`
 policy from `bootstrap/`, which requires the manifest's environment name to equal

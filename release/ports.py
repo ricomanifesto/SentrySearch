@@ -1,7 +1,7 @@
-"""Narrow ports the controller depends on. No implementation here talks to AWS.
+"""Narrow ports the controller depends on. Nothing in this package talks to AWS.
 
-The shapes mirror the ECS API subset the release contract needs. A future
-adapter must translate exactly these calls and add no command, environment,
+The shapes mirror the ECS API subset the release contract needs. The adapters in
+``release_aws`` translate exactly these calls and add no command, environment,
 role, volume or resource overrides.
 """
 
