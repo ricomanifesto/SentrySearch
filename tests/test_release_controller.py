@@ -403,6 +403,62 @@ def test_unknown_launch_outside_its_safe_window_holds_instead_of_minting_a_token
     assert len(r.calls("run_task")) == launches
 
 
+def test_reconciliation_finds_a_launch_that_already_stopped_without_resending():
+    # Listing by launch token must include stopped tasks: a short job that ran and
+    # exited before reconciliation is still the one launch, not a reason to retry.
+    r = rig()
+    migrate = r.document["jobs"][0]["task"]["task_definition"]
+    r.ecs.plans[migrate] = JobPlan(seconds=2)
+    r.ecs.crash[("run_task", "after")] = 1
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    r.clock.advance(seconds=5)
+    outcome = r.recover().run()
+    assert outcome.state == "held_paused"
+    launches = [c for c in r.calls("run_task") if c["taskDefinition"] == migrate]
+    assert len(launches) == 1
+    assert r.events("observation", subject="runtime-migrate", result="launched")[0]["reconciled"]
+
+
+CLEAN_QUIRKS = [
+    {"overrides": {"containerOverrides": [{"name": "migration", "command": ["sh", "-c", "x"]}]}},
+    {"overrides": {"containerOverrides": [{"name": "migration", "environment": [{"name": "A", "value": "1"}]}]}},
+    {"overrides": {"containerOverrides": [{"name": "init", "environmentFiles": [{"type": "s3", "value": "arn"}]}]}},
+    {"overrides": {"containerOverrides": [{"name": "migration", "memory": 4096}]}},
+    {"overrides": {"containerOverrides": [], "taskRoleArn": "arn:aws:iam::111122223333:role/other"}},
+    {"overrides": {"containerOverrides": [], "executionRoleArn": "arn:aws:iam::111122223333:role/other"}},
+    {"overrides": {"containerOverrides": [], "cpu": "4096"}},
+    {"overrides": {"containerOverrides": [], "ephemeralStorage": {"sizeInGiB": 100}}},
+    {"overrides": {"containerOverrides": [], "inferenceAcceleratorOverrides": [{"deviceName": "x"}]}},
+    {"overrides": None},
+    {"enableExecuteCommand": True},
+    {"enableExecuteCommand": None},
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("quirk", CLEAN_QUIRKS)
+def test_observed_override_or_exec_on_a_launched_job_holds(quirk):
+    r = rig()
+    migrate = r.document["jobs"][0]["task"]["task_definition"]
+    r.ecs.quirks[migrate] = quirk
+    outcome = r.controller().run()
+    reason = "task_exec_enabled" if "enableExecuteCommand" in quirk else "task_overrides_present"
+    assert_held(r, outcome, reason, "quiesced")
+    assert r.events("observation", subject="runtime-migrate", result="launched_unexpected")
+    assert not r.events("observation", subject="runtime-migrate", result="job_succeeded")
+
+
+@pytest.mark.parametrize("quirk", [CLEAN_QUIRKS[0], CLEAN_QUIRKS[4], CLEAN_QUIRKS[-2]])
+def test_observed_override_or_exec_on_a_service_task_holds(quirk):
+    r = rig()
+    worker = r.document["services"]["worker"]["task_definition"]
+    quirk = json.loads(json.dumps(quirk).replace('"migration"', '"app"'))
+    r.ecs.quirks[worker] = quirk
+    outcome = r.controller().run()
+    reason = "task_exec_enabled" if "enableExecuteCommand" in quirk else "task_overrides_present"
+    assert_held(r, outcome, reason, "grants_verified")
+
+
 @pytest.mark.parametrize("where", ["run_task_before", "run_task_after"])
 def test_ambiguous_transport_retries_only_the_identical_request(where):
     r = rig()

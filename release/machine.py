@@ -76,6 +76,33 @@ def _containers(task: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
     return {item.get("name"): item for item in task.get("containers") or []}
 
 
+def task_runtime_issue(task: Mapping[str, Any]) -> str | None:
+    """None only when ECS reports no override of any kind and Exec disabled.
+
+    ECS lists each container by name in ``containerOverrides``; anything beyond a
+    name (command, environment, files, resources) or any task-level override
+    (roles, CPU, memory, storage, accelerators) changes what the reviewed revision
+    runs. A missing or malformed structure cannot show the absence of overrides.
+    """
+    overrides = task.get("overrides")
+    if not isinstance(overrides, Mapping) or set(overrides) - {
+        "containerOverrides",
+        "inferenceAcceleratorOverrides",
+    }:
+        return "task_overrides_present"
+    containers = overrides.get("containerOverrides")
+    accelerators = overrides.get("inferenceAcceleratorOverrides", [])
+    if (
+        not isinstance(containers, list)
+        or any(not isinstance(item, Mapping) or set(item) != {"name"} for item in containers)
+        or accelerators != []
+    ):
+        return "task_overrides_present"
+    if task.get("enableExecuteCommand") is not False:
+        return "task_exec_enabled"
+    return None
+
+
 def evaluate_job(
     job: Job,
     digests: Mapping[str, str],
@@ -100,6 +127,9 @@ def evaluate_job(
         return "job_identity_mismatch"
     if any(containers[name].get("imageDigest") != value for name, value in expected.items()):
         return "job_image_mismatch"
+    issue = task_runtime_issue(task)
+    if issue is not None:
+        return issue
     if task.get("stopCode") not in SUCCESSFUL_STOP_CODES:
         return "job_stopped_abnormally"
     exits = [containers[name].get("exitCode") for name in expected]
@@ -184,6 +214,9 @@ def evaluate_service(
             containers[name].get("imageDigest") != value for name, value in expected.items()
         ):
             return "failed", "task_image_mismatch"
+        issue = task_runtime_issue(task)
+        if issue is not None:
+            return "failed", issue
     if not candidates:
         return "waiting", "task_missing"
     if len(tasks) != 1:

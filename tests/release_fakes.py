@@ -380,6 +380,8 @@ class FakeEcs:
         self.crash: dict[tuple[str, str], int] = {}
         self.ambiguous: dict[str, int] = {}
         self.mutations: list[tuple[str, dict]] = []
+        # Task definition -> fields replacing the observed task's (overrides, Exec).
+        self.quirks: dict[str, dict] = {}
         self.counter = 0
 
     # Test configuration -------------------------------------------------
@@ -491,6 +493,13 @@ class FakeEcs:
             "startedBy": task.started_by,
             "group": task.group,
             "containers": containers,
+            # ECS reports every container by name, with nothing overridden.
+            "overrides": {
+                "containerOverrides": [{"name": c["name"]} for c in task.containers],
+                "inferenceAcceleratorOverrides": [],
+            },
+            "enableExecuteCommand": False,
+            **copy.deepcopy(self.quirks.get(task.task_definition, {})),
         }
         if status == "RUNNING" and task.plan is None:
             healthy = self.clock.now() >= task.created + timedelta(seconds=task.health_after)
@@ -561,7 +570,10 @@ class FakeEcs:
         self._converge()
         result = []
         for task in self.tasks.values():
-            if not self._visible(task) or self._status(task) == "STOPPED":
+            if not self._visible(task):
+                continue
+            # A launch-token listing includes stopped tasks; other listings do not.
+            if started_by is None and self._status(task) == "STOPPED":
                 continue
             if started_by is not None and task.started_by != started_by:
                 continue

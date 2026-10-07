@@ -24,6 +24,7 @@ from release.machine import (
     evaluate_service,
     plan_rollback,
     service_settings_drift,
+    task_runtime_issue,
     token_expires_at,
 )
 from release.manifest import (
@@ -635,6 +636,12 @@ class ReleaseController:
         ):
             self._observe(job.id, "launched_unexpected", resolves="run_task", task_arns=arns)
             raise _Hold("job_identity_mismatch")
+        # The request carried no overrides; a task reporting any did not run the
+        # reviewed revision as approved.
+        issue = task_runtime_issue(task)
+        if issue is not None:
+            self._observe(job.id, "launched_unexpected", resolves="run_task", task_arns=arns)
+            raise _Hold(issue)
         self._observe(job.id, "launched", resolves="run_task", task_arn=arns[0])
 
     def _describe_task(self, arn: str) -> dict[str, Any] | None:

@@ -15,6 +15,7 @@ from release.machine import (
     evaluate_service,
     migration_schemas,
     service_settings_drift,
+    task_runtime_issue,
     token_expires_at,
 )
 from release.manifest import ReleaseRejected, load_manifest
@@ -24,6 +25,17 @@ DOCUMENT = manifest_document()
 MANIFEST = load_manifest(encode(DOCUMENT)).manifest
 SPEC = MANIFEST.services.api
 DIGESTS = {name: DOCUMENT["images"][name]["arm64_digest"] for name in DOCUMENT["images"]}
+
+
+def clean(*names: str) -> dict:
+    """What ECS reports for a task run without overrides and without Exec."""
+    return {
+        "overrides": {
+            "containerOverrides": [{"name": name} for name in names],
+            "inferenceAcceleratorOverrides": [],
+        },
+        "enableExecuteCommand": False,
+    }
 
 
 def migration_evidence():
@@ -38,6 +50,7 @@ def migration_evidence():
             {"name": "init", "imageDigest": DIGESTS["search"], "exitCode": 0},
             {"name": "migration", "imageDigest": DIGESTS["runtime"], "exitCode": 0},
         ],
+        **clean("init", "migration"),
     }
     receipt = {
         "schema": "sentry.release.migrate.v1",
@@ -96,6 +109,42 @@ def test_old_flat_receipt_cannot_substitute_database_schema_for_envelope_version
     assert evaluate_migration(old_flat) == "job_receipt_mismatch"
 
 
+@pytest.mark.parametrize(
+    "change, issue",
+    [
+        ({}, None),
+        ({"overrides": {"containerOverrides": []}}, None),
+        ({"overrides": {"containerOverrides": [{"name": "migration", "command": []}]}},
+         "task_overrides_present"),
+        ({"overrides": {"containerOverrides": [{"name": "migration"}], "memory": "1024"}},
+         "task_overrides_present"),
+        ({"overrides": {"containerOverrides": ["migration"]}}, "task_overrides_present"),
+        ({"overrides": {"containerOverrides": [{}]}}, "task_overrides_present"),
+        ({"overrides": {"containerOverrides": None}}, "task_overrides_present"),
+        ({"overrides": {"containerOverrides": [], "inferenceAcceleratorOverrides": None}},
+         "task_overrides_present"),
+        ({"overrides": {}}, "task_overrides_present"),
+        ({"overrides": None}, "task_overrides_present"),
+        ({"enableExecuteCommand": True}, "task_exec_enabled"),
+        ({"enableExecuteCommand": "false"}, "task_exec_enabled"),
+    ],
+)  # fmt: skip
+def test_job_evidence_requires_reported_absence_of_overrides_and_exec(change, issue):
+    observed_task, receipt = migration_evidence()
+    observed_task.update(change)
+    outcome = evaluate_job(
+        MANIFEST.jobs[0],
+        DIGESTS,
+        release_id=MANIFEST.release_id,
+        token="launch-token",
+        task=observed_task,
+        receipt=receipt,
+    )
+    assert outcome == issue
+    missing = {key: value for key, value in observed_task.items() if key != "overrides"}
+    assert task_runtime_issue(missing) == "task_overrides_present"
+
+
 def test_states_only_advance_one_proven_step_or_hold():
     for current, target in zip(FORWARD_STATES, FORWARD_STATES[1:]):
         check_transition(current, target)
@@ -129,6 +178,7 @@ def task(arn: str, deployment: str, *, status="RUNNING", health="HEALTHY", defin
         "lastStatus": status,
         "healthStatus": health,
         "startedBy": deployment,
+        **clean("init", "app"),
         "containers": [
             {"name": "init", "imageDigest": DIGESTS["search"]},
             {"name": "app", "imageDigest": DIGESTS["search"]},

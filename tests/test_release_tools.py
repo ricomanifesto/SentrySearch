@@ -814,6 +814,9 @@ def test_tool_receipt_is_accepted_by_the_controller_only_when_exact(fake_psql, m
             {"name": "init", "imageDigest": images["search"], "exitCode": 0},
             {"name": "grant", "imageDigest": images["release_tools"], "exitCode": 0},
         ],
+        # ECS names each container and reports nothing overridden, Exec off.
+        "overrides": {"containerOverrides": [{"name": "init"}, {"name": "grant"}]},
+        "enableExecuteCommand": False,
     }
     lines = captured.out.splitlines() + captured.err.splitlines()
     found = receipt.extract_receipt(lines)

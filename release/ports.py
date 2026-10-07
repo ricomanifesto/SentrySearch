@@ -32,6 +32,15 @@ class Clock(Protocol):
 
 
 class EcsPort(Protocol):
+    """Complete observations or an exception; never a silently partial answer.
+
+    ``describe_tasks`` returns ``{"tasks", "failures"}`` for every requested ARN.
+    ``list_tasks`` with ``started_by`` returns every visible task launched with that
+    token, stopped ones included, so a launch that already exited is still found.
+    Otherwise it returns the tasks ECS still intends to run (desired RUNNING). An
+    incomplete enumeration raises ``AmbiguousResponse``; it is never an empty list.
+    """
+
     def run_task(self, request: dict[str, Any]) -> dict[str, Any]: ...
 
     def describe_tasks(self, cluster: str, task_arns: list[str]) -> dict[str, Any]: ...
