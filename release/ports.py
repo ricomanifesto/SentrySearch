@@ -22,8 +22,8 @@ class Clock(Protocol):
     compares it with worker clocks within a 5 s skew, so it must also stay within
     a small bounded offset of true UTC. An adapter must enforce both (anchoring to
     a monotonic clock alone would keep any initial offset). The readiness gate
-    holds if it observes controller time moving backwards, including against the
-    journal's latest event.
+    holds if it observes controller time moving backwards, including against any
+    time already in the journal.
     """
 
     def now(self) -> datetime: ...

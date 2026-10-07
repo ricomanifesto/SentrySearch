@@ -185,7 +185,7 @@ The proposed policy (`release.readiness.GatePolicy`), not measured AWS guarantee
 - Hold at once: a failed or superseded deployment, definition or image mismatch,
   a desired count other than one, an extra task, or replacement of the recorded
   task. `controller_clock_rollback` holds when controller time moves backwards,
-  against the journal's latest event or within the gate, because deadlines and
+  against any time already in the journal or within the gate, because deadlines and
   freshness depend on it (see the `Clock` port contract). At the deadline the hold
   is `worker_readiness_not_proven`, with the last reason and receipt count
   journaled.

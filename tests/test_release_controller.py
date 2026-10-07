@@ -907,6 +907,37 @@ def test_controller_clock_rollback_before_the_gate_holds(monkeypatch):
     assert not gate_events(r, "readiness_observing")
 
 
+class SteppedClock:
+    """The controller's clock only; ECS and logs keep the real (fake) time."""
+
+    def __init__(self, base: FakeClock) -> None:
+        self.base, self.offset = base, timedelta(0)
+
+    def now(self):
+        return self.base.now() + self.offset
+
+    def sleep(self, seconds: float) -> None:
+        self.base.sleep(seconds)
+
+
+def test_controller_clock_rollback_at_an_earlier_step_holds_the_gate(monkeypatch):
+    r = rig()
+    clock = SteppedClock(r.clock)
+    original = ReleaseController._transition
+
+    def step_back_at_services_started(self, target, **data):
+        if target.value == "services_started":
+            clock.offset = -timedelta(seconds=120)
+        return original(self, target, **data)
+
+    monkeypatch.setattr(ReleaseController, "_transition", step_back_at_services_started)
+    controller = r.controller()
+    controller.clock = clock
+    outcome = controller.run()
+    assert_held(r, outcome, "controller_clock_rollback", "services_started")
+    assert not gate_events(r, "operational_passed")
+
+
 def test_ecs_loss_after_a_slow_read_clears_from_when_ecs_was_observed(monkeypatch):
     r = rig()
     describe = r.ecs._describe

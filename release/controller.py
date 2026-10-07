@@ -883,9 +883,9 @@ class ReleaseController:
         assert deployment is not None
         group, stream = worker_stream(self.manifest.environment.name, self.release_id, task_arn)
         epoch = self.clock.now()
-        # Journal times are controller time, rounded down: an epoch before the
-        # latest one means the clock moved backwards since the previous step.
-        if epoch < _time(self.journal.events[-1]["at"]):
+        # Journal times are controller time, rounded down: an epoch before any of
+        # them means the clock moved backwards at some earlier step.
+        if epoch < max(_time(event["at"]) for event in self.journal.events):
             raise _Hold("controller_clock_rollback")
         earlier = [
             _time(event["deadline_at"])
