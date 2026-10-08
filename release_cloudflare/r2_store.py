@@ -46,7 +46,7 @@ import uuid
 from botocore.exceptions import BotoCoreError, ClientError
 
 from release.journal import PreconditionFailed
-from release_cloudflare.r2_client import R2Target, validate_client
+from release_cloudflare.r2_client import R2ClientRejected, R2Target, pin_requests, validate_client
 
 ENVELOPE_VERSION = 1
 HELD = "held"
@@ -129,6 +129,7 @@ class R2ObjectStore:
 
     def __init__(self, client: Any, target: R2Target, *, ca_bundle: str | None = None) -> None:
         validate_client(client, target, ca_bundle=ca_bundle)
+        pin_requests(client, target)
         self._client = client
         self._bucket = target.bucket
 
@@ -231,6 +232,8 @@ class R2ObjectStore:
             raise ControlStoreUnavailable(f"put failed (HTTP {_status(error)})") from None
         except BotoCoreError:
             raise ControlStoreUnavailable("put outcome unknown") from None
+        except R2ClientRejected:
+            raise ControlStoreUnavailable("put refused before sending") from None
         etag = response.get("ETag")
         if not isinstance(etag, str) or not etag:
             raise ControlStoreUnavailable("put returned no ETag")
@@ -246,6 +249,8 @@ class R2ObjectStore:
             raise ControlStoreUnavailable(f"get failed (HTTP {_status(error)})") from None
         except BotoCoreError:
             raise ControlStoreUnavailable("get outcome unknown") from None
+        except R2ClientRejected:
+            raise ControlStoreUnavailable("get refused before sending") from None
         if len(raw) > MAX_OBJECT_BYTES:
             raise ControlStoreIntegrity("object exceeds the size bound")
         etag = response.get("ETag")

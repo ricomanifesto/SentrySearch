@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
+import importlib
+import json
+import os
+from pathlib import Path
 from typing import Any, cast
 from urllib.parse import parse_qs, urlsplit
 
-import pytest
+import botocore.session
 from botocore.exceptions import ClientError
+from botocore.loaders import Loader
+import pytest
 
-from release_cloudflare.r2_client import R2Target
+from release_cloudflare.r2_client import R2ClientRejected, R2Target, endpoint_for
 from src.storage.artifact_store import MAX_PRESIGN_SECONDS, artifact_key
 from src.storage.r2_artifacts import (
     ArtifactDeletionIncomplete,
     R2ArtifactStore,
     R2Credentials,
     build_client,
+    client_config,
 )
 from src.storage.s3_manager import S3StorageManager
 from tests.r2_fakes import ACCOUNT_ID, Fault, R2Backend
@@ -245,3 +252,133 @@ def test_a_configured_ca_bundle_is_the_only_bundle_accepted(tmp_path):
     empty = R2ArtifactStore(ARTIFACTS, CREDENTIALS, ca_bundle="")
     with pytest.raises(RuntimeError, match="Artifact storage unavailable"):
         empty.require_available()
+
+
+def _redirecting_ruleset(root: Path, url: str) -> None:
+    """Plant an S3 endpoint ruleset that resolves every request to ``url``."""
+    path = root / "s3" / "2006-03-01"
+    path.mkdir(parents=True)
+    endpoint = {
+        "url": url,
+        "properties": {
+            "authSchemes": [
+                {
+                    "name": "sigv4",
+                    "signingName": "s3",
+                    "signingRegion": "auto",
+                    "disableDoubleEncoding": True,
+                }
+            ]
+        },
+        "headers": {},
+    }
+    ruleset = {
+        "version": "1.0",
+        "parameters": {
+            "Region": {"builtIn": "AWS::Region", "required": False, "type": "String"},
+            "Bucket": {"required": False, "type": "String"},
+            "Endpoint": {"builtIn": "SDK::Endpoint", "required": False, "type": "String"},
+        },
+        "rules": [{"conditions": [], "endpoint": endpoint, "type": "endpoint"}],
+    }
+    (path / "endpoint-rule-set-1.json").write_text(json.dumps(ruleset))
+
+
+def test_ambient_botocore_models_and_plugins_do_not_reach_the_client(tmp_path, monkeypatch):
+    _redirecting_ruleset(tmp_path / "data", "https://attacker.invalid")
+    _redirecting_ruleset(tmp_path / "customer", "https://attacker.invalid")
+    monkeypatch.setenv("AWS_DATA_PATH", str(tmp_path / "data"))
+    monkeypatch.setattr(Loader, "CUSTOMER_DATA_PATH", str(tmp_path / "customer"))
+    (tmp_path / "cf03_plugin_probe.py").write_text(
+        "LOADED = []\n\ndef initialize_client_plugin(client):\n    LOADED.append(client)\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setenv("BOTOCORE_EXPERIMENTAL__PLUGINS", "probe=cf03_plugin_probe")
+    cf03_plugin_probe = importlib.import_module("cf03_plugin_probe")
+
+    # The planted ruleset and plugin are live for an ordinary botocore session.
+    ordinary = botocore.session.Session().create_client(
+        "s3",
+        region_name="auto",
+        endpoint_url=endpoint_for(ARTIFACTS),
+        aws_access_key_id="fixture",
+        aws_secret_access_key="fixture",
+    )
+    assert cf03_plugin_probe.LOADED == [ordinary]
+    url = ordinary.generate_presigned_url(
+        "get_object", Params={"Bucket": ARTIFACTS.bucket, "Key": "reports/r/a.md"}
+    )
+    assert urlsplit(url).hostname == "attacker.invalid"
+
+    backend = artifacts_backend()
+    store = store_for(backend)
+    key = store.upload_markdown_report("report-1", "private body")
+    # The offline model refuses any other host, so a stored object proves the target.
+    assert backend.raw(key) == b"private body"
+    assert cf03_plugin_probe.LOADED == [ordinary]
+
+
+def test_requests_resolved_off_the_target_are_refused_before_sending(tmp_path, monkeypatch):
+    _redirecting_ruleset(tmp_path, "https://attacker.invalid")
+    monkeypatch.setenv("AWS_DATA_PATH", str(tmp_path))
+    backend = artifacts_backend()
+
+    def unrestricted_client():
+        session = botocore.session.Session(
+            session_vars={
+                "profile": (None, None, None, None),
+                "config_file": (None, None, os.devnull, None),
+                "credentials_file": (None, None, os.devnull, None),
+            }
+        )
+        client = session.create_client(
+            "s3",
+            region_name="auto",
+            endpoint_url=endpoint_for(ARTIFACTS),
+            aws_access_key_id=CREDENTIALS.access_key_id,
+            aws_secret_access_key=CREDENTIALS.secret_access_key,
+            verify=True,
+            config=client_config(),
+        )
+        client.meta.events.register("before-send.s3", backend.handle)
+        return client
+
+    store = R2ArtifactStore(ARTIFACTS, CREDENTIALS, client_factory=unrestricted_client)
+    store.require_available()  # the endpoint it was given is still exact
+    with pytest.raises(R2ClientRejected) as error:
+        store.upload_markdown_report("report-1", "private body")
+    assert error.value.reason == "request_endpoint"
+    assert backend.log == []
+
+
+def test_a_listing_with_an_invalid_key_deletes_nothing():
+    backend = artifacts_backend()
+    store = store_for(backend)
+    store.upload_markdown_report("report-1", "kept")
+    backend.put_raw(f"reports/report-1/../report-2/artifacts/{'c' * 64}.md", b"x", '"1"')
+    with pytest.raises(RuntimeError, match="invalid artifact key"):
+        store.delete_report_files("report-1")
+    with pytest.raises(RuntimeError, match="invalid artifact key"):
+        store.list_report_files("report-1")
+    assert backend.deleting_requests() == []
+
+
+def test_a_listing_that_does_not_state_completeness_deletes_nothing():
+    backend = artifacts_backend(omit_is_truncated=True)
+    store = store_for(backend)
+    store.upload_markdown_report("report-1", "kept")
+    with pytest.raises(RuntimeError, match="complete"):
+        store.delete_report_files("report-1")
+    assert backend.deleting_requests() == []
+
+
+def test_downloads_are_checked_against_their_content_address():
+    backend = artifacts_backend()
+    store = store_for(backend)
+    key = store.upload_markdown_report("report-1", "original")
+    backend.put_raw(key, b"# tampered\n", backend.etag(key))
+    with pytest.raises(ValueError, match="does not match"):
+        store.download_content(key)
+    legacy = "reports/report-1/report.md"
+    backend.put_raw(legacy, b"legacy body", '"2"')
+    assert store.download_content(legacy) == "legacy body"

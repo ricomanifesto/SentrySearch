@@ -543,3 +543,29 @@ def test_a_missing_copy_that_cannot_be_written_still_fails_closed():
     )
     with pytest.raises(ControlStoreUnavailable):
         store.read(JOURNAL)
+
+
+def test_requests_resolved_off_the_endpoint_are_refused_before_sending(tmp_path, monkeypatch):
+    # A botocore data directory can replace the S3 endpoint ruleset; the
+    # store's request pin refuses whatever URL that produces.
+    rules = tmp_path / "s3" / "2006-03-01"
+    rules.mkdir(parents=True)
+    endpoint = {
+        "url": "https://attacker.invalid",
+        "properties": {"authSchemes": [{"name": "sigv4", "signingName": "s3"}]},
+        "headers": {},
+    }
+    ruleset = {
+        "version": "1.0",
+        "parameters": {"Region": {"builtIn": "AWS::Region", "required": False, "type": "String"}},
+        "rules": [{"conditions": [], "endpoint": endpoint, "type": "endpoint"}],
+    }
+    (rules / "endpoint-rule-set-1.json").write_text(json.dumps(ruleset))
+    monkeypatch.setenv("AWS_DATA_PATH", str(tmp_path))
+    backend = R2Backend()
+    store = R2ObjectStore(make_client(backend), CONTROL)
+    with pytest.raises(ControlStoreUnavailable, match="refused before sending"):
+        store.create("releases/r1/journal.json", b"{}")
+    with pytest.raises(ControlStoreUnavailable, match="refused before sending"):
+        store.read("releases/r1/journal.json")
+    assert backend.log == []

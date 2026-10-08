@@ -5,13 +5,18 @@ are deliberate and follow R2's documented S3 compatibility:
 
 * The client is built from explicit inputs only: an ``R2Target`` (account,
   bucket, optional jurisdiction) and an ``R2Credentials`` object. Profiles,
-  shared config and credential files, ambient endpoints, proxies and CA-bundle
-  environment variables are ignored. ``release_cloudflare.r2_client``
-  validates the result.
+  shared config and credential files, ambient endpoints, proxies, CA-bundle
+  environment variables, extra botocore data directories (``AWS_DATA_PATH``,
+  ``~/.aws/models``) and environment-named botocore plugins are ignored.
+  ``release_cloudflare.r2_client`` validates the result, and every request is
+  refused before sending unless its URL is the target's endpoint and bucket.
 * Checksums are calculated only when an operation requires one, so uploads send
   no ``aws-chunked`` body or checksum trailer.
 * Presigned URLs are on the S3 API domain and limited to R2's one second to
   seven days; a longer request is refused rather than shortened.
+* Listings must state whether they are truncated, and every listed key must
+  be a valid artifact key under the report prefix, or the listing fails.
+* Downloads of content-addressed keys are checked against their SHA-256.
 * Report deletion pages through the prefix listing and deletes each key with
   ``DeleteObject``. ``DeleteObjects`` requires a request checksum that R2 does
   not document for that operation, and per-key calls make every failure
@@ -25,6 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import hashlib
 import json
 import logging
 import os
@@ -35,8 +41,16 @@ from urllib.parse import urlsplit
 import botocore.session
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
+from botocore.loaders import Loader
+from botocore.plugin import PluginContext, reset_plugin_context, set_plugin_context
 
-from release_cloudflare.r2_client import R2ClientRejected, R2Target, endpoint_for, validate_client
+from release_cloudflare.r2_client import (
+    R2ClientRejected,
+    R2Target,
+    endpoint_for,
+    pin_requests,
+    validate_client,
+)
 
 from .artifact_store import MAX_PRESIGN_SECONDS, artifact_key, report_prefix
 
@@ -52,6 +66,7 @@ REPORT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 ARTIFACT_KEY = re.compile(
     r"reports/[A-Za-z0-9][A-Za-z0-9_-]{0,127}/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*"
 )
+CONTENT_ADDRESSED = re.compile(r"reports/[^/]+/artifacts/(?P<digest>[0-9a-f]{64})\.[a-z]+")
 CREDENTIAL = re.compile(r"[\x21-\x7e]{1,512}")
 UNAVAILABLE = "Artifact storage unavailable; verify R2 configuration"
 
@@ -94,18 +109,31 @@ def build_client(target: R2Target, credentials: R2Credentials, *, ca_bundle: str
             "profile": (None, None, None, None),
             "config_file": (None, None, os.devnull, None),
             "credentials_file": (None, None, os.devnull, None),
+            "data_path": (None, None, None, None),
         }
     )
-    return session.create_client(
-        "s3",
-        region_name="auto",
-        endpoint_url=endpoint_for(target),
-        aws_access_key_id=credentials.access_key_id,
-        aws_secret_access_key=credentials.secret_access_key,
-        # An explicit value: None would consult REQUESTS_CA_BUNDLE.
-        verify=ca_bundle if ca_bundle is not None else True,
-        config=client_config(),
+    # Only botocore's bundled models: a model or endpoint ruleset under
+    # ~/.aws/models could otherwise redirect requests.
+    session.register_component(
+        "data_loader",
+        Loader(extra_search_paths=[Loader.BUILTIN_DATA_PATH], include_default_search_paths=False),
     )
+    # BOTOCORE_EXPERIMENTAL__PLUGINS would import and run a named module while
+    # the client is created; botocore is pinned, so its plugin context is used.
+    token = set_plugin_context(PluginContext(plugins="DISABLED"))
+    try:
+        return session.create_client(
+            "s3",
+            region_name="auto",
+            endpoint_url=endpoint_for(target),
+            aws_access_key_id=credentials.access_key_id,
+            aws_secret_access_key=credentials.secret_access_key,
+            # An explicit value: None would consult REQUESTS_CA_BUNDLE.
+            verify=ca_bundle if ca_bundle is not None else True,
+            config=client_config(),
+        )
+    finally:
+        reset_plugin_context(token)
 
 
 def _report_id(report_id: str) -> str:
@@ -157,6 +185,7 @@ class R2ArtifactStore:
                 validate_client(
                     client, self.target, ca_bundle=self._ca_bundle, max_attempts=MAX_ATTEMPTS
                 )
+                pin_requests(client, self.target)
             except (R2ClientRejected, BotoCoreError, ValueError):
                 logger.warning("Artifact storage initialization failed")
                 raise RuntimeError(UNAVAILABLE) from None
@@ -178,12 +207,20 @@ class R2ArtifactStore:
         key = _object_key(s3_key)
         try:
             response = client.get_object(Bucket=self.target.bucket, Key=key)
-            content = response["Body"].read(MAX_DOWNLOAD_BYTES + 1)
+            body = response["Body"]
+            content = body.read(MAX_DOWNLOAD_BYTES + 1)
+            if len(content) <= MAX_DOWNLOAD_BYTES:
+                # Reading past the end makes botocore check Content-Length.
+                body.read(1)
         except (ClientError, BotoCoreError):
             logger.error("Error downloading artifact content")
             raise
         if len(content) > MAX_DOWNLOAD_BYTES:
             raise ValueError("Artifact exceeds the download bound")
+        addressed = CONTENT_ADDRESSED.fullmatch(key)
+        if addressed and hashlib.sha256(content).hexdigest() != addressed["digest"]:
+            logger.error("Downloaded artifact does not match its content address")
+            raise ValueError("Artifact content does not match its key")
         return content.decode("utf-8")
 
     def get_presigned_url(self, s3_key: str, expiration: int = 3600) -> str:
@@ -266,8 +303,14 @@ class R2ArtifactStore:
                 key = item.get("Key")
                 if not isinstance(key, str) or not key.startswith(prefix):
                     raise RuntimeError("Listing returned a key outside the report prefix")
-                keys.append(key)
-            if not page.get("IsTruncated"):
+                try:
+                    keys.append(_object_key(key))
+                except ValueError:
+                    raise RuntimeError("Listing returned an invalid artifact key") from None
+            truncated = page.get("IsTruncated")
+            if type(truncated) is not bool:
+                raise RuntimeError("Listing did not state whether it is complete")
+            if not truncated:
                 return keys
             token = page.get("NextContinuationToken")
             if not isinstance(token, str) or not token:

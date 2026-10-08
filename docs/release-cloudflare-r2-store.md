@@ -106,6 +106,13 @@ rejects an injected botocore client unless it:
   addressing and SigV4;
 - holds explicit static credentials rather than the SDK credential chain.
 
+The store then registers a guard that runs first before every send and refuses
+any request whose URL is not the target's endpoint and bucket. botocore
+resolves request URLs through endpoint rules that a data directory
+(`AWS_DATA_PATH`, `~/.aws/models`) can replace, which the client's own endpoint
+setting does not reveal. A refused request raises `ControlStoreUnavailable`
+and nothing is sent.
+
 ## Validation
 
 All tests are offline. `tests/r2_fakes.py` answers botocore's `before-send`

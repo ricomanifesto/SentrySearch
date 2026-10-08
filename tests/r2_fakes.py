@@ -167,6 +167,8 @@ class R2Backend:
     faults: list[Fault] = field(default_factory=list)
     before: Callable[[str, str, bytes], None] | None = None
     page_size: int = 1000
+    # ListObjectsV2 responses omit IsTruncated (a malformed listing).
+    omit_is_truncated: bool = False
 
     def __post_init__(self) -> None:
         self._lock = threading.Lock()
@@ -364,7 +366,8 @@ class R2Backend:
             '<?xml version="1.0" encoding="UTF-8"?><ListBucketResult>'
             f"<Name>{bucket}</Name><Prefix>{escape(prefix)}</Prefix>"
             f"<KeyCount>{len(page)}</KeyCount><MaxKeys>{limit}</MaxKeys>"
-            f"<IsTruncated>{'true' if more else 'false'}</IsTruncated>{contents}{token}"
+            + ("" if self.omit_is_truncated else f"<IsTruncated>{str(more).lower()}</IsTruncated>")
+            + f"{contents}{token}"
             "</ListBucketResult>"
         ).encode()
         headers = HeadersDict(

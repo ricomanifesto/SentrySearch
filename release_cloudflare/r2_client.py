@@ -142,3 +142,23 @@ def validate_client(
     # Static credentials supplied to the client itself, never the SDK chain.
     if credentials is None or getattr(credentials, "method", None) != "explicit":
         raise R2ClientRejected("credentials")
+
+
+def pin_requests(client: Any, target: R2Target) -> None:
+    """Refuse, before sending, any request that is not for ``target``'s bucket.
+
+    ``validate_client`` checks the endpoint the client was given, but botocore
+    resolves each request URL through its endpoint rules, which a data file
+    (``AWS_DATA_PATH`` or ``~/.aws/models``) can replace. This guard runs first
+    on every send and compares the final URL with the exact endpoint and bucket.
+    """
+    base = f"{endpoint_for(target)}/{target.bucket}"
+
+    def guard(request: Any = None, **_: Any) -> None:
+        url = getattr(request, "url", None)
+        if not isinstance(url, str) or not url.startswith(base):
+            raise R2ClientRejected("request_endpoint")
+        if url != base and url[len(base)] not in "/?":
+            raise R2ClientRejected("request_endpoint")
+
+    client.meta.events.register_first("before-send.s3", guard, unique_id="r2-request-pin")

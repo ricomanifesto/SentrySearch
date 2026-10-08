@@ -18,6 +18,7 @@ MODULES = {
         "__future__",
         "dataclasses",
         "datetime",
+        "hashlib",
         "json",
         "logging",
         "os",

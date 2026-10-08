@@ -42,9 +42,11 @@ Keys and metadata are identical to the S3 backend:
 the same key, and different bytes never overwrite a published key.
 
 The R2 client is built only from those settings. AWS profiles, shared config
-and credential files, `AWS_ENDPOINT_URL*`, `HTTP(S)_PROXY`, `AWS_CA_BUNDLE` and
-`REQUESTS_CA_BUNDLE` are ignored. It then passes the same validation as the
-release-control client:
+and credential files, `AWS_ENDPOINT_URL*`, `HTTP(S)_PROXY`, `AWS_CA_BUNDLE`,
+`REQUESTS_CA_BUNDLE`, extra botocore data directories (`AWS_DATA_PATH` and
+`~/.aws/models`, which could replace the S3 endpoint rules) and
+`BOTOCORE_EXPERIMENTAL__PLUGINS` are ignored. It then passes the same
+validation as the release-control client:
 
 - region `auto`;
 - the exact account (or jurisdictional) endpoint;
@@ -54,7 +56,9 @@ release-control client:
 - bounded timeouts;
 - explicit credentials.
 
-Idempotent calls may be attempted up to three times.
+Every request is also checked just before it is sent: its URL must be the
+target's endpoint and bucket, or it is refused. Idempotent calls may be
+attempted up to three times.
 
 Differences from the S3 backend:
 
@@ -65,7 +69,11 @@ Differences from the S3 backend:
 - **Presigned URLs** are on the R2 S3 API domain and limited to 1 second to 7
   days. A longer lifetime is refused, not shortened.
 - **Listing** follows continuation tokens, so reports with more than 1,000
-  objects are listed completely. A key outside the report's prefix is an error.
+  objects are listed completely. A page that does not state whether it is
+  truncated, or a key that is outside the report's prefix or not a valid key,
+  is an error, so nothing is deleted from an incomplete or suspect listing.
+- **Downloads** of content-addressed keys are checked against the SHA-256 in
+  the key, and the body length against `Content-Length`.
 - **Deletion** lists the report's prefix and calls `DeleteObject` once per key.
   It does not use `DeleteObjects`, because that operation requires a request
   checksum that R2's documentation does not list. Every key is attempted, and a
@@ -85,7 +93,8 @@ All tests are offline and use `tests/r2_fakes.py`, which answers botocore's
   without checksum trailers; refused keys and report ids; presign host and
   limits; paginated deletion that leaves a neighboring report alone; per-key
   failure reporting; bounded retries; isolation from ambient AWS, proxy and CA
-  settings.
+  settings, botocore data directories and plugins; requests refused when they
+  resolve off the target; suspect listings; content-address checks.
 - `tests/test_artifact_backend_selection.py`: the selection table above and
   the report service's use of the selected store.
 - `tests/test_artifact_r2_offline.py`: an import guard on the new modules, and
