@@ -53,6 +53,7 @@ from tests.release_fakes import (
     FakeEvidence,
     FakeLogs,
     FakeStore,
+    SimulatedCrash,
     Tokens,
     Trace,
     approval_document,
@@ -757,6 +758,57 @@ def test_throttled_service_observation_holds():
     outcome = adapted(r, aws).run()
     assert_held(r, outcome, "observation_ambiguous", "locked")
     assert not [call for call in aws.bridge.calls if call[1] == "RunTask"]
+
+
+@pytest.mark.parametrize(
+    "interruption, applied",
+    [("transport", False), ("transport", True), ("crash", False), ("crash", True)],
+)
+def test_reconciling_a_lost_deploy_through_the_sdk_never_proceeds_under_drift(
+    interruption, applied
+):
+    # The first forward UpdateService for Runtime is lost (connection timeout or
+    # controller crash), before or after ECS applied it, while its circuit
+    # breaker rollback is turned on. Recovery holds before any further deploy.
+    r, aws = aws_rig(checks="worker")
+    runtime_arn = r.document["environment"]["services"]["runtime"]
+    runtime = r.ecs.services[runtime_arn]
+    original = aws.bridge.handlers[("ecs", "UpdateService")]
+    forward: list[dict] = []
+
+    def lose_first_deploy(params):
+        if params["service"] != runtime_arn or params["desiredCount"] != 1:
+            return original(params)
+        forward.append(params)
+        if len(forward) > 1:
+            return original(params)
+        if applied:
+            original(params)
+        runtime.settings["deploymentConfiguration"]["deploymentCircuitBreaker"]["rollback"] = True
+        if interruption == "crash":
+            raise SimulatedCrash("controller lost after the forward intent")
+        raise Transport("forward UpdateService response lost")
+
+    aws.bridge.handlers[("ecs", "UpdateService")] = lose_first_deploy
+    if interruption == "crash":
+        with pytest.raises(SimulatedCrash):
+            adapted(r, aws).run()
+        recovering = adapted(r, aws, session="session-b")
+        recovering.recover(
+            RecoveryAuthorization(
+                prior_session_id="session-a",
+                lock_etag=r.store.objects[LOCK][1],
+                fence_evidence_sha256=sha("prior session process confirmed terminated"),
+                authorized_by="fixture-operator",
+            )
+        )
+        outcome = recovering.run()
+    else:
+        outcome = adapted(r, aws).run()
+    assert_held(r, outcome, "service_settings_drift", "grants_verified")
+    assert len(forward) == 1, "no forward resend under observed drift"
+    assert not r.events("observation", subject="runtime", result="service_deployed")
+    assert runtime.desired == (1 if applied else 0)
 
 
 @pytest.mark.parametrize("where, sends", [("run_task_before", 2), ("run_task_after", 1)])

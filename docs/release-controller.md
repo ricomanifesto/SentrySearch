@@ -142,9 +142,17 @@ still intends to run is an unaccounted writer and holds
 (`standalone_writer_present`). Services then start in order (Runtime, API, worker) with
 a forced new deployment. The deploy request carries only the controller-owned
 fields: cluster, service, task definition, desired count one and the forced
-deployment. Terraform alone writes every deployment setting. Before each deploy,
-and on every later service observation, the controller holds with
-`service_settings_drift` unless ECS reports exactly Terraform's values:
+deployment. Terraform alone writes every deployment setting. The controller holds
+with `service_settings_drift` unless ECS reports exactly Terraform's values,
+checked before any forward action:
+- before each deploy;
+- on the deploy response, so an applied deploy is not recognized under drift;
+- after a lost or crashed deploy, on every observation while the update is
+  reconciled and again just before any identical resend, whether or not the
+  lost request was applied;
+- on every later service observation.
+
+The values are:
 - minimum healthy 0% and maximum 100% (no overlap);
 - the circuit breaker enabled with rollback disabled (no automatic return to a
   binary that may not match migrated schemas);
@@ -153,7 +161,8 @@ and on every later service observation, the controller holds with
 - the ECS deployment controller;
 - Exec disabled.
 
-A missing value counts as drift. A service is ready only when exactly one healthy running task
+A missing value counts as drift. Reconciling a scale-to-zero update is never
+blocked by drift: it is the safe direction. A service is ready only when exactly one healthy running task
 of that new deployment exists, with exact definition and digests, and that
 observation completes before the service's start deadline. Tasks from an older
 deployment of the same revision never count. Count drift, a failed or superseded

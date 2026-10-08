@@ -493,18 +493,14 @@ class ReleaseController:
         prior = intent.get("prior_deployments", [])
         for attempt in range(IDENTICAL_RETRIES + 1):
             for _ in range(VISIBILITY_POLLS):
-                service = self._describe_services()[key]
-                if desired == 0 and service.get("desiredCount") == 0:
-                    self._observe(key, "scaled_to_zero", resolves="update_service", reconciled=True)
-                    return
-                deployment = self._new_deployment(key, service, prior) if desired == 1 else None
-                if deployment is not None:
-                    self._observe(key, "service_deployed", resolves="update_service",
-                                  deployment_id=deployment, reconciled=True)  # fmt: skip
+                if self._update_observed(key, desired, prior):
                     return
                 self.clock.sleep(self.poll)
             if self.clock.now() >= _time(intent["deadline_at"]) or attempt == IDENTICAL_RETRIES:
                 raise _Hold("service_update_unconfirmed")
+            # Decide the identical resend on a fresh observation, not one a poll old.
+            if self._update_observed(key, desired, prior):
+                return
             self._intent(
                 "update_service",
                 key,
@@ -518,6 +514,29 @@ class ReleaseController:
                 self.ecs.update_service(request)
             except AmbiguousResponse:
                 continue
+
+    def _update_observed(self, key: str, desired: int, prior: list[str]) -> bool:
+        """One observation of a pending service update; True once it is recorded.
+
+        A forward deployment is never recognized or resent while ECS reports
+        Terraform-owned settings other than the approved ones: the hold comes
+        before any further forward action, whether or not the lost request was
+        applied. Scaling to zero is the safe direction and drift never blocks it.
+        """
+        service = self._describe_services()[key]
+        if desired == 0:
+            if service.get("desiredCount") != 0:
+                return False
+            self._observe(key, "scaled_to_zero", resolves="update_service", reconciled=True)
+            return True
+        if service_settings_drift(service):
+            raise _Hold("service_settings_drift")
+        deployment = self._new_deployment(key, service, prior)
+        if deployment is None:
+            return False
+        self._observe(key, "service_deployed", resolves="update_service",
+                      deployment_id=deployment, reconciled=True)  # fmt: skip
+        return True
 
     # Quiesce -------------------------------------------------------------------
 
@@ -848,14 +867,19 @@ class ReleaseController:
                        self._window_deadline())  # fmt: skip
         intent = self._intent("update_service", key, request, desired_count=1,
                               prior_deployments=prior, deadline_at=_iso(deadline))  # fmt: skip
+        service: dict[str, Any] = {}
         try:
             response = self.ecs.update_service(request)
-            deployment = self._new_deployment(key, response.get("service") or {}, prior)
+            service = response.get("service") or {}
+            deployment = self._new_deployment(key, service, prior)
         except AmbiguousResponse:
             deployment = None
         if deployment is None:
             self._reconcile_update(intent)
             return str(self._deployment_id(key))
+        # Applied, but never recognized while the response reports drifted settings.
+        if service_settings_drift(service):
+            raise _Hold("service_settings_drift")
         self._observe(key, "service_deployed", resolves="update_service", deployment_id=deployment)
         return deployment
 

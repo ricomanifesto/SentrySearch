@@ -42,9 +42,12 @@ never starts a service, resumes traffic or reverts a controller release.
 Deployment settings and Exec have exactly one writer, Terraform. The controller's
 deploy request carries only cluster, service, task definition, desired count and
 a forced new deployment. It never sends `deploymentConfiguration` or
-`enableExecuteCommand`, so it cannot reset omitted percentages. Before each
-deploy and on every later service observation, it holds with
-`service_settings_drift` unless ECS reports this root's values:
+`enableExecuteCommand`, so it cannot reset omitted percentages. It holds with
+`service_settings_drift` before any forward action unless ECS reports this
+root's values. It checks before each deploy, on the deploy response, while
+reconciling a lost deploy (including just before an identical resend), and on
+every later service observation. Scale-to-zero reconciliation is never blocked.
+The values are:
 - minimum 0% and maximum 100%;
 - circuit breaker on, rollback off;
 - no alarm rollback;

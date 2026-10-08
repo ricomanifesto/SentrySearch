@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
@@ -772,6 +773,167 @@ def test_setting_drift_while_observing_a_started_service_holds():
     setattr(r.ecs, "update_service", update)
     outcome = r.controller().run()
     assert_held(r, outcome, "service_settings_drift", "services_started")
+
+
+# Deployment-setting drift during update reconciliation ---------------------
+
+DRIFT_VARIANTS = [
+    _drift(("deploymentConfiguration", "deploymentCircuitBreaker"), {"enable": True, "rollback": True}),
+    _drift(("deploymentConfiguration", "deploymentCircuitBreaker"), {"enable": False, "rollback": False}),
+    _drift(("deploymentConfiguration", "minimumHealthyPercent"), 100),
+    _drift(("deploymentConfiguration", "maximumPercent"), 200),
+    _drift(("deploymentConfiguration", "alarms"), {"alarmNames": ["a"], "enable": True, "rollback": True}),
+    _drift(("deploymentConfiguration", "strategy"), "BLUE_GREEN"),
+    _drift(("deploymentController",), {"type": "CODE_DEPLOY"}),
+    _drift(("enableExecuteCommand",), True),
+]  # fmt: skip
+DRIFT_IDS = ["rollback", "breaker-off", "minimum", "maximum", "alarm-rollback", "blue-green",
+             "controller", "exec-on"]  # fmt: skip
+
+
+class Interrupted:
+    """Wrap the runtime's first forward UpdateService: drift its settings, then lose it.
+
+    ``applied`` decides whether ECS applied the request before the response was
+    lost (ambiguity) or the controller process died (crash).
+    """
+
+    def __init__(self, r: Rig, *, interruption: str, applied: bool, change=None) -> None:
+        self.r, self.interruption, self.applied, self.change = r, interruption, applied, change
+        self.arn = r.document["environment"]["services"]["runtime"]
+        self.service = r.ecs.services[self.arn]
+        self.original = r.ecs.update_service
+        self.forward: list[dict] = []
+        setattr(r.ecs, "update_service", self)
+
+    def __call__(self, request: dict) -> dict:
+        if request["service"] != self.arn or request["desiredCount"] != 1:
+            return self.original(request)
+        self.forward.append(copy.deepcopy(request))
+        if len(self.forward) > 1:
+            return self.original(request)
+        response = self.original(request) if self.applied else None
+        if self.change is not None:
+            self.change(self.service.settings)
+        if self.interruption == "crash":
+            raise SimulatedCrash("controller lost after the forward intent")
+        raise AmbiguousResponse("forward UpdateService response lost")
+
+    def run(self, r: Rig):
+        if self.interruption == "crash":
+            with pytest.raises(SimulatedCrash):
+                r.controller().run()
+            return r.recover().run()
+        return r.controller().run()
+
+
+def assert_never_deployed_under_drift(r: Rig, outcome, wrapper: Interrupted, sends: int) -> None:
+    assert_held(r, outcome, "service_settings_drift", "grants_verified")
+    assert len(wrapper.forward) == sends, "no forward resend once drift is observed"
+    assert not r.events("observation", subject="runtime", result="service_deployed")
+    assert outcome.rollback is not None
+    assert "set_started_services_desired_zero" in outcome.rollback["actions"]
+
+
+@pytest.mark.parametrize("interruption", ["ambiguous", "crash"])
+@pytest.mark.parametrize("change", DRIFT_VARIANTS, ids=DRIFT_IDS)
+def test_forward_reconciliation_holds_on_drift_before_any_resend(interruption, change):
+    r = rig()
+    wrapper = Interrupted(r, interruption=interruption, applied=False, change=change)
+    outcome = wrapper.run(r)
+    assert_never_deployed_under_drift(r, outcome, wrapper, sends=1)
+    assert wrapper.service.desired == 0, "the lost request was never applied or resent"
+
+
+@pytest.mark.parametrize("interruption", ["ambiguous", "crash"])
+@pytest.mark.parametrize(
+    "change", DRIFT_VARIANTS[:1] + DRIFT_VARIANTS[-1:], ids=["rollback", "exec-on"]
+)
+def test_an_applied_deploy_observed_with_drift_is_never_recognized(interruption, change):
+    # The lost request did reach ECS: its deployment is visible, but so is drift.
+    r = rig()
+    wrapper = Interrupted(r, interruption=interruption, applied=True, change=change)
+    outcome = wrapper.run(r)
+    assert_never_deployed_under_drift(r, outcome, wrapper, sends=1)
+
+
+def test_a_deploy_response_showing_drift_is_never_recognized():
+    r = rig()
+    runtime_arn = r.document["environment"]["services"]["runtime"]
+    runtime = r.ecs.services[runtime_arn]
+    original = r.ecs.update_service
+
+    def drift_then_apply(request: dict) -> dict:
+        if request["service"] == runtime_arn and request["desiredCount"] == 1:
+            runtime.settings["deploymentConfiguration"]["deploymentCircuitBreaker"][
+                "rollback"
+            ] = True
+        return original(request)
+
+    setattr(r.ecs, "update_service", drift_then_apply)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "service_settings_drift", "grants_verified")
+    assert not r.events("observation", subject="runtime", result="service_deployed")
+    assert len([c for c in r.calls("update_service") if c["service"] == runtime_arn]) == 1
+
+
+def test_drift_during_the_last_visibility_poll_blocks_the_resend():
+    # The resend is decided on a fresh observation, not one a poll interval old.
+    r = rig()
+    wrapper = Interrupted(r, interruption="ambiguous", applied=False)
+    sleeps: list[float] = []
+    original_sleep = r.clock.sleep
+
+    def sleep(seconds: float) -> None:
+        if wrapper.forward:
+            sleeps.append(seconds)
+            if len(sleeps) == 3:  # the last visibility poll before a resend
+                wrapper.service.settings["enableExecuteCommand"] = True
+        original_sleep(seconds)
+
+    setattr(r.clock, "sleep", sleep)
+    outcome = r.controller().run()
+    assert_never_deployed_under_drift(r, outcome, wrapper, sends=1)
+
+
+@pytest.mark.parametrize("interruption", ["ambiguous", "crash"])
+def test_forward_reconciliation_without_drift_resends_the_identical_request_and_deadline(
+    interruption,
+):
+    r = rig()
+    wrapper = Interrupted(r, interruption=interruption, applied=False)
+    outcome = wrapper.run(r)
+    assert outcome.state == "held_paused", outcome
+    assert len(wrapper.forward) == 2 and wrapper.forward[0] == wrapper.forward[1]
+    first, retry = r.events("intent", action="update_service", subject="runtime")
+    assert retry["request_sha256"] == first["request_sha256"]
+    assert retry["deadline_at"] == first["deadline_at"]
+    assert retry["retry_of"] == first["sequence"]
+
+
+def test_scale_to_zero_reconciliation_is_not_blocked_by_drift():
+    # Scaling a writer to zero is the safe direction: drift never blocks quiescing.
+    r = rig(rollback="compatible_release", running_prior=True)
+    runtime_arn = r.document["environment"]["services"]["runtime"]
+    runtime = r.ecs.services[runtime_arn]
+    runtime.settings["deploymentConfiguration"]["deploymentCircuitBreaker"]["rollback"] = True
+    original = r.ecs.update_service
+    lost: list[dict] = []
+
+    def lose_first_scale_down(request: dict) -> dict:
+        if request["service"] == runtime_arn and request["desiredCount"] == 0 and not lost:
+            lost.append(request)
+            raise AmbiguousResponse("scale-to-zero response lost before it was applied")
+        return original(request)
+
+    setattr(r.ecs, "update_service", lose_first_scale_down)
+    outcome = r.controller().run()
+    assert r.events("observation", subject="runtime", result="scaled_to_zero")[0]["reconciled"]
+    assert runtime.desired == 0
+    # The forward deploy of that service is what holds, before it is sent.
+    assert_held(r, outcome, "service_settings_drift", "grants_verified")
+    assert not [c for c in r.calls("update_service")
+                if c["service"] == runtime_arn and c["desiredCount"] == 1]  # fmt: skip
 
 
 @pytest.mark.parametrize(

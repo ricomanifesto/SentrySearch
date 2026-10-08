@@ -59,8 +59,10 @@ chains to provider or log content.
 
   Overrides, placement, capacity providers, groups and volume configuration are
   refused before anything is sent. `UpdateService` accepts only scale-to-zero, or
-  a single-task forced deploy of a named revision. Deployment settings, Exec and
-  networking belong to Terraform (see the [ownership
+  a single-task forced deploy of a named revision. The controller, not the
+  adapter, verifies the reported settings before any forward deploy, reconciliation
+  or resend. Deployment settings, Exec and networking belong to Terraform (see the
+  [ownership
   contract](../deploy/aws-staging/README.md)).
 - **Enumeration.** Listings follow `nextToken` to the end. Any of the following
   raises `AmbiguousResponse`; an incomplete listing is never returned as a short
