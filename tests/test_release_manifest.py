@@ -745,6 +745,19 @@ def test_a_rollback_run_never_migrates_grants_or_bootstraps(phase):
          "rollback_images_not_prior"),
         (lambda d: d["purpose"]["actual_schemas"].update(runtime="goose:1,2"),
          "rollback_schema_incompatible"),
+        # The failed revisions: each service's own family, never the prior revision.
+        (lambda d: d["purpose"]["failed_services"].update(
+            api=d["purpose"]["failed_services"]["worker"]),
+         "rollback_failed_service_invalid"),
+        (lambda d: d["purpose"]["failed_services"].update(
+            runtime=d["services"]["runtime"]["task_definition"]),
+         "rollback_failed_service_invalid"),
+        (lambda d: d["purpose"]["failed_services"].update(
+            worker=d["purpose"]["failed_services"]["worker"].replace(ACCOUNT, "444455556666")),
+         "resource_scope_mismatch"),
+        (lambda d: d["purpose"]["failed_services"].update(
+            api=d["purpose"]["failed_services"]["api"].rsplit(":", 1)[0]),
+         "mutable_reference"),
     ],
 )  # fmt: skip
 def test_a_rollback_run_restores_exactly_the_retained_compatible_pair(change, code):

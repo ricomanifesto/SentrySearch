@@ -3474,7 +3474,9 @@ def test_a_crash_around_the_sweep_stop_still_stops_the_failed_task_on_resume(mon
 
 
 @pytest.mark.parametrize("limit", ["approval", "window"])
-def test_a_handoff_reaching_its_authorization_limit_at_the_intent_write_moves_no_lock(limit):
+def test_a_handoff_reaching_its_authorization_limit_at_the_intent_write_moves_no_lock(
+    monkeypatch, limit
+):
     if limit == "approval":
         r = rollback_rig(not_after=iso(START + timedelta(minutes=10)))
         boundary = START + timedelta(minutes=10)
@@ -3501,7 +3503,7 @@ def test_a_handoff_reaching_its_authorization_limit_at_the_intent_write_moves_no
             r.clock.moment = target
         return result
 
-    r.store.replace = slow_intent  # type: ignore[method-assign]
+    monkeypatch.setattr(r.store, "replace", slow_intent)
     outcome = rollback_controller(r, handoff(r)).run()
     assert outcome.state == "hold"
     assert outcome.reason in {"approval_expired", "release_window_exceeded"}

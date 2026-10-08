@@ -771,8 +771,8 @@ def _check_rollback_run(manifest: Manifest, purpose: RollbackRun) -> None:
         where = f"purpose.failed_services.{name}"
         _scoped(failed, prefix + "task-definition/", r"[A-Za-z0-9_-]{1,255}:[1-9][0-9]{0,8}", where)
         # The failed revision of the same service: its family, another revision.
-        family = getattr(rollback.services, name).task_definition.rsplit(":", 1)[0]
-        if failed.rsplit(":", 1)[0] != family:
+        prior = getattr(rollback.services, name).task_definition
+        if failed.rsplit(":", 1)[0] != prior.rsplit(":", 1)[0] or failed == prior:
             raise ReleaseRejected("rollback_failed_service_invalid", where)
     for name in ("runtime", "search"):
         current, prior = getattr(manifest.images, name), getattr(rollback.images, name)

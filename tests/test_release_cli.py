@@ -992,6 +992,15 @@ def test_recover_continues_a_rollback_lost_before_its_handoff(tmp_path, monkeypa
     ]
     [moved] = [e for e in events if e.get("result") == "lock_handed_off"]
     assert moved["from_release_id"] == FAILED_RELEASE_ID
+    # Each fence names its own session: the recovery the lost rollback session,
+    # the handoff the failed release's.
+    [recovered] = [e for e in events if e.get("action") == "recovered"]
+    assert recovered["fence_evidence_sha256"] == sha("prior operator process confirmed terminated")
+    intents = [e for e in events if e.get("action") == "lock_handoff"]
+    assert {e["fence_evidence_sha256"] for e in intents} == {
+        sha("failed operator process confirmed terminated")
+    }
+    assert intents[-1]["authorized_by"] == "fixture-release-owner"
     assert lock_key() not in r.store.objects
 
 
