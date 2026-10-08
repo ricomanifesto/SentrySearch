@@ -747,11 +747,15 @@ def _bytes(data: bytes) -> io.BytesIO:
 
 def aws_rig(
     *,
+    checks: str = "all",
     rollback: str = "empty_hold",
     running_prior: bool = False,
     window_seconds: int | None = None,
     **approval,
 ) -> tuple[Rig, FakeAws]:
+    # "worker" predates the Runtime and API observers. Every manifest now carries
+    # the worker gate and both observers, so both values run all three checks.
+    assert checks in {"worker", "all"}, checks
     document = manifest_document(rollback=rollback)
     if window_seconds is not None:
         document["window"]["total_seconds"] = window_seconds
