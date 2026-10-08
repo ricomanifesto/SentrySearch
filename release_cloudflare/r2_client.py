@@ -85,8 +85,12 @@ def validate_client(client: Any, target: R2Target, *, ca_bundle: str | None = No
     # client's ignore_configured_endpoint_urls setting is not readable back.
     if meta.endpoint_url != endpoint_for(target):
         raise R2ClientRejected("endpoint")
+    # botocore disables certificate checking for any falsy verify, so an empty
+    # bundle name is refused rather than treated as a bundle.
+    if ca_bundle is not None and (not isinstance(ca_bundle, str) or not ca_bundle):
+        raise R2ClientRejected("tls_verification")
     expected_verify: bool | str = ca_bundle if ca_bundle is not None else True
-    if verify is False or verify != expected_verify:
+    if not verify or verify != expected_verify:
         raise R2ClientRejected("tls_verification")
     # Includes proxies taken from HTTP(S)_PROXY when the client did not set none.
     if proxies != {}:

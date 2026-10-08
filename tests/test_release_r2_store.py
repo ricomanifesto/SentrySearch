@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from typing import Any
 
 import pytest
 
@@ -277,6 +278,12 @@ def test_client_contract_is_validated_before_any_request(monkeypatch):
         R2ObjectStore(make_client(backend, verify=os.devnull), CONTROL)
     with pytest.raises(R2ClientRejected):
         R2ObjectStore(make_client(backend), CONTROL, ca_bundle=os.devnull)
+    # A falsy bundle would disable certificate checking in botocore.
+    falsy_bundles: tuple[Any, ...] = ("", 0)
+    for falsy in falsy_bundles:
+        with pytest.raises(R2ClientRejected) as error:
+            R2ObjectStore(make_client(backend, verify=falsy), CONTROL, ca_bundle=falsy)
+        assert error.value.reason == "tls_verification"
     monkeypatch.setenv("AWS_CA_BUNDLE", os.devnull)
     with pytest.raises(R2ClientRejected) as error:
         R2ObjectStore(make_client(backend, verify=None), CONTROL)

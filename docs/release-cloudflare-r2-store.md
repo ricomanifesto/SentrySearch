@@ -90,8 +90,9 @@ rejects an injected botocore client unless it:
   from ambient configuration such as `AWS_ENDPOINT_URL_S3`;
 - verifies TLS with the default trust store, or with exactly the CA bundle the
   caller names (so a bundle substituted through `AWS_CA_BUNDLE` or
-  `REQUESTS_CA_BUNDLE` is rejected), and uses no proxy, which also rejects
-  proxies picked up from `HTTP(S)_PROXY`;
+  `REQUESTS_CA_BUNDLE` is rejected; an empty bundle name is refused because
+  botocore treats any falsy `verify` as no verification), and uses no proxy,
+  which also rejects proxies picked up from `HTTP(S)_PROXY`;
 - uses `request_checksum_calculation` and `response_checksum_validation` of
   `when_required`, so no `aws-chunked` body or checksum trailer is sent (R2's
   `PutObject` compatibility does not list them);
