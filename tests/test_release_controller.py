@@ -12,15 +12,19 @@ import pytest
 
 from release.controller import (
     VISIBILITY_POLLS,
+    FailedReleaseHandoff,
     RecoveryAuthorization,
     ReleaseController,
     ReleaseHalted,
 )
 from release.manifest import canonical_sha256, load_approval, load_manifest
 from release.ports import AmbiguousResponse, ClockUntrusted
+from release.journal import Journal, journal_key
 from tests.release_fakes import (
+    FAILED_RELEASE_ID,
     OPERATOR_ROLE,
     PRIOR_RELEASE_ID,
+    ROLLBACK_RELEASE_ID,
     START,
     FakeClock,
     FakeEcs,
@@ -1424,8 +1428,11 @@ def test_an_observer_still_running_at_its_deadline_is_stopped_then_holds():
     assert intent["deadline_at"] <= iso(r.clock.now())
 
 
+ADDRESS = {"name": "privateIPv4Address", "value": "10.0.0.7"}
+INTERFACE = {"name": "networkInterfaceId", "value": "eni-0123456789abcdef0"}
+SUBNET = {"name": "subnetId", "value": "subnet-0a1b2c3d4e5f60718"}
 ENI = {"type": "ElasticNetworkInterface", "status": "ATTACHED",
-       "details": [{"name": "privateIPv4Address", "value": "10.0.0.7"}]}  # fmt: skip
+       "details": [SUBNET, INTERFACE, ADDRESS]}  # fmt: skip
 
 
 @pytest.mark.parametrize(
@@ -1436,8 +1443,13 @@ ENI = {"type": "ElasticNetworkInterface", "status": "ATTACHED",
         [{**ENI, "status": "DELETED"}],
         [{**ENI, "details": []}],
         [{**ENI, "details": ENI["details"] * 2}],
-        [{**ENI, "details": [{"name": "privateIPv4Address", "value": "10.0.0"}]}],
-        [{**ENI, "details": [{"name": "privateIPv4Address", "value": "runtime.internal"}]}],
+        [{**ENI, "details": [SUBNET, INTERFACE, {**ADDRESS, "value": "10.0.0"}]}],
+        [{**ENI, "details": [SUBNET, INTERFACE, {**ADDRESS, "value": "runtime.internal"}]}],
+        # The complete attachment: an interface id and an approved subnet too.
+        [{**ENI, "details": [SUBNET, ADDRESS]}],
+        [{**ENI, "details": [INTERFACE, ADDRESS]}],
+        [{**ENI, "details": [{**SUBNET, "value": "subnet-0ffffffffffffffff"}, INTERFACE, ADDRESS]}],
+        [{**ENI, "details": [SUBNET, {**INTERFACE, "value": "interface"}, ADDRESS]}],
     ],
 )
 def test_a_recorded_service_without_one_known_address_holds_before_its_observer(attachments):
@@ -2714,22 +2726,303 @@ def test_a_forward_upgrade_with_a_compatible_fallback_still_migrates_under_schem
     assert launched_job_ids(r)[:2] == ["runtime-migrate", "product-migrate"]
 
 
-@pytest.mark.parametrize("entry", ["run", "recover", "abort"])
-def test_rollback_execution_is_refused_before_anything_is_written(entry):
+# Rollback runs ----------------------------------------------------------------------
+
+ROLLBACK_SEQUENCE = [
+    "prepared", "locked", "quiesced", "reconciled", "proven", "services_started",
+    "operational_verified", "held_paused",
+]  # fmt: skip
+FAILED_SESSION = "session-failed"
+ROLLBACK_JOURNAL = journal_key(ROLLBACK_RELEASE_ID)
+
+
+def failed_release(r: Rig, *, lock: bool = True, finished: bool = False,
+                   tokens: tuple[str, ...] = (), environment: str = "staging") -> None:  # fmt: skip
+    """The failed forward release's own journal (and lock) in the same environment."""
+    journal = Journal(r.store, journal_key(FAILED_RELEASE_ID))
+    stamp = iso(START - timedelta(minutes=20))
+    journal.create(
+        {"schema_version": 1, "release_id": FAILED_RELEASE_ID, "environment": environment,
+         "manifest_sha256": sha("failed manifest"), "session_id": FAILED_SESSION},
+        {"at": stamp, "kind": "transition", "to": "prepared"},
+    )  # fmt: skip
+    for token in tokens:
+        journal.append({"at": stamp, "kind": "intent", "action": "run_task",
+                        "subject": "runtime-migrate", "request_sha256": sha(token),
+                        "token": token})  # fmt: skip
+    if finished:
+        journal.append({"at": stamp, "kind": "transition", "to": "held_paused"})
+        journal.append({"at": stamp, "kind": "observation", "subject": "environment",
+                        "result": "lock_released", "resolves": "release_lock"})  # fmt: skip
+    else:
+        journal.append({"at": stamp, "kind": "transition", "to": "hold", "reason": "job_failed"})
+    if lock:
+        r.store.create(LOCK, encode({"release_id": FAILED_RELEASE_ID, "session_id": FAILED_SESSION,
+                                     "manifest_sha256": sha("failed manifest")}))  # fmt: skip
+
+
+def rollback_rig(**changes) -> Rig:
     document = rollback_run_document()
-    r = document_rig(document, running_prior=True)
-    controller = r.controller()
-    with pytest.raises(ReleaseHalted) as error:
-        if entry == "run":
-            controller.run()
-        elif entry == "abort":
-            controller.abort()
-        else:
-            controller.recover(
-                RecoveryAuthorization("session-x", '"etag-1"', sha("fence"), "fixture-operator")
-            )
-    assert error.value.code == "rollback_execution_unavailable"
-    assert r.store.objects == {} and r.ecs.mutations == []
+    document["purpose"]["failed_release_id"] = FAILED_RELEASE_ID
+    return document_rig(document, running_prior=True, release_id=ROLLBACK_RELEASE_ID, **changes)
+
+
+def handoff(r: Rig, **changes) -> FailedReleaseHandoff:
+    values = {"failed_session_id": FAILED_SESSION, "lock_etag": r.lock_etag(),
+              "fence_evidence_sha256": sha("failed session fenced"),
+              "authorized_by": "fixture-operator", **changes}  # fmt: skip
+    return FailedReleaseHandoff(**values)
+
+
+def rollback_controller(r: Rig, grant: FailedReleaseHandoff | None,
+                        session: str = "session-b") -> ReleaseController:  # fmt: skip
+    return ReleaseController(
+        load_manifest(encode(r.document)), load_approval(r.approval_raw), store=r.store,
+        ecs=r.ecs, evidence=r.evidence, logs=r.logs, clock=r.clock, tokens=r.tokens,
+        session_id=session, handoff=grant,
+    )  # fmt: skip
+
+
+def rollback_events(r: Rig, kind: str, **match) -> list[dict]:
+    events = json.loads(r.store.objects[ROLLBACK_JOURNAL][0])["events"]
+    return [e for e in events if e["kind"] == kind and all(e.get(k) == v for k, v in match.items())]
+
+
+def test_a_rollback_restores_the_prior_pair_and_finishes_held_paused():
+    r = rollback_rig()
+    failed_release(r)
+    before = r.store.objects[journal_key(FAILED_RELEASE_ID)]
+    outcome = rollback_controller(r, handoff(r)).run()
+    assert outcome.state == "held_paused", outcome
+    assert [e["to"] for e in rollback_events(r, "transition")] == ROLLBACK_SEQUENCE
+    # Never a migration, grant or bootstrap: the stated schemas are reconciled and proven.
+    assert launched_job_ids(r) == [
+        "runtime-reconcile", "product-reconcile", "runtime-proof", "product-proof",
+        "runtime-observe", "api-observe",
+    ]  # fmt: skip
+    deploys = [c for c in r.calls("update_service") if c.get("taskDefinition")]
+    prior = r.document["rollback"]["services"]
+    assert [c["taskDefinition"] for c in deploys] == [
+        prior[name]["task_definition"] for name in ("runtime", "api", "worker")
+    ]
+    [moved] = rollback_events(r, "observation", result="lock_handed_off")
+    assert moved["from_release_id"] == FAILED_RELEASE_ID
+    [intent] = rollback_events(r, "intent", action="lock_handoff")
+    assert intent["from_session_id"] == FAILED_SESSION and intent["lock_etag"]
+    assert intent["fence_evidence_sha256"] == sha("failed session fenced")
+    [reconciled] = rollback_events(r, "observation", result="failed_release_reconciled")
+    assert reconciled["failed_journal_sha256"] == canonical_sha256(json.loads(before[0]))
+    # Every receipt named the retained prior release whose revisions ran.
+    for event in rollback_events(r, "observation", result="job_succeeded"):
+        task = r.ecs.tasks[event["task_arn"]]
+        receipt = r.evidence.job_receipt(PRIOR_RELEASE_ID, event["subject"], task.arn)
+        assert receipt is not None and receipt["release_id"] == PRIOR_RELEASE_ID
+        assert task.tags["sentry:release-id"] == ROLLBACK_RELEASE_ID
+    assert {c["log_stream"].split("/")[1] for c in r.logs.calls} == {PRIOR_RELEASE_ID}
+    assert LOCK not in r.store.objects
+    assert r.store.objects[journal_key(FAILED_RELEASE_ID)] == before
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        None,
+        {"failed_session_id": "session-other"},
+        {"lock_etag": '"stale"'},
+        {"fence_evidence_sha256": "not-a-hash"},
+        {"authorized_by": " "},
+    ],
+)
+def test_the_failed_lock_moves_only_under_an_exact_fenced_handoff(changes):
+    r = rollback_rig()
+    failed_release(r)
+    lock = r.store.objects[LOCK]
+    grant = None if changes is None else handoff(r, **changes)
+    outcome = rollback_controller(r, grant).run()
+    assert outcome.state == "hold" and outcome.reason == "handoff_refused", outcome
+    assert r.store.objects[LOCK] == lock and r.ecs.mutations == []
+
+
+def test_a_lock_held_by_another_release_is_never_taken():
+    r = rollback_rig()
+    failed_release(r, lock=False)
+    r.store.create(LOCK, encode({"release_id": PRIOR_RELEASE_ID, "session_id": "session-z"}))
+    lock = r.store.objects[LOCK]
+    outcome = rollback_controller(r, handoff(r, failed_session_id=FAILED_SESSION)).run()
+    assert (outcome.state, outcome.reason) == ("hold", "environment_locked")
+    assert r.store.objects[LOCK] == lock and r.ecs.mutations == []
+
+
+@pytest.mark.parametrize("case", ["missing", "other-environment"])
+def test_an_unknown_failed_release_holds_before_anything_moves(case):
+    r = rollback_rig()
+    if case == "other-environment":
+        failed_release(r, environment="production")
+    else:
+        r.store.create(
+            LOCK, encode({"release_id": FAILED_RELEASE_ID, "session_id": FAILED_SESSION})
+        )
+    outcome = rollback_controller(r, handoff(r)).run()
+    assert (outcome.state, outcome.reason) == ("hold", "failed_release_unknown")
+    assert json.loads(r.store.objects[LOCK][0])["release_id"] == FAILED_RELEASE_ID
+    assert r.ecs.mutations == []
+
+
+def test_a_missing_lock_is_acceptable_only_after_the_failed_release_finished():
+    r = rollback_rig()
+    failed_release(r, lock=False)
+    outcome = rollback_controller(r, None).run()
+    assert (outcome.state, outcome.reason) == ("hold", "failed_release_lock_missing")
+    assert LOCK not in r.store.objects and r.ecs.mutations == []
+    r = rollback_rig()
+    failed_release(r, lock=False, finished=True)
+    outcome = rollback_controller(r, None).run()
+    assert outcome.state == "held_paused", outcome
+    assert not rollback_events(r, "intent", action="lock_handoff")
+
+
+def test_a_lock_moved_by_someone_else_first_is_a_conflict(monkeypatch):
+    r = rollback_rig()
+    failed_release(r)
+    grant = handoff(r)
+    original = r.store.replace
+
+    def raced(key, body, *, if_match):
+        if key == LOCK:
+            original(LOCK, encode({"release_id": PRIOR_RELEASE_ID, "session_id": "racer"}),
+                     if_match=if_match)  # fmt: skip
+        return original(key, body, if_match=if_match)
+
+    monkeypatch.setattr(r.store, "replace", raced)
+    outcome = rollback_controller(r, grant).run()
+    assert (outcome.state, outcome.reason) == ("hold", "handoff_conflict")
+    assert json.loads(r.store.objects[LOCK][0])["session_id"] == "racer"
+    assert rollback_events(r, "observation", result="handoff_conflict")
+    assert r.ecs.mutations == []
+
+
+@pytest.mark.parametrize("when", ["before", "after"])
+def test_a_crash_during_the_handoff_resumes_from_the_lock_it_finds(monkeypatch, when):
+    r = rollback_rig()
+    failed_release(r)
+    grant = handoff(r)
+    original = r.store.replace
+
+    def crash(key, body, *, if_match):
+        if key == LOCK:
+            if when == "after":
+                original(key, body, if_match=if_match)
+            raise SimulatedCrash("lock handoff")
+        return original(key, body, if_match=if_match)
+
+    monkeypatch.setattr(r.store, "replace", crash)
+    with pytest.raises(SimulatedCrash):
+        rollback_controller(r, grant).run()
+    monkeypatch.setattr(r.store, "replace", original)
+    outcome = rollback_controller(r, grant).run()
+    if when == "after":
+        assert outcome.state == "held_paused", outcome
+        [moved] = rollback_events(r, "observation", result="lock_handed_off")
+        assert moved["reconciled"] is True
+    else:
+        # The replace never landed: the failed lock was exactly as authorized, so the
+        # same conditional handoff is sent again and the rollback proceeds.
+        assert outcome.state == "held_paused", outcome
+        results = [e["result"] for e in rollback_events(r, "observation", subject="environment")]
+        assert results.index("handoff_not_applied") < results.index("lock_handed_off")
+        assert len(rollback_events(r, "intent", action="lock_handoff")) == 2
+
+
+def test_every_failed_launch_token_is_swept_before_anything_else():
+    r = rollback_rig()
+    tokens = ("t" * 20 + "running01", "t" * 20 + "stopped02", "t" * 20 + "absent003")
+    failed_release(r, tokens=tokens)
+    running = r.ecs._task("arn:failed-migrate:3", tokens[0], "family:failed", [("migration", "x")],
+                          plan=JobPlan(seconds=10_000),
+                          tags={"sentry:job-id": "runtime-migrate"})  # fmt: skip
+    done = r.ecs._task("arn:failed-migrate:3", tokens[1], "family:failed", [("migration", "x")],
+                       plan=JobPlan(seconds=1), tags={"sentry:job-id": "runtime-migrate"})  # fmt: skip
+    r.clock.advance(seconds=5)
+    outcome = rollback_controller(r, handoff(r)).run()
+    assert outcome.state == "held_paused", outcome
+    stops = r.calls("stop_task")
+    assert [call["task"] for call in stops][:1] == [running.arn] and done.arn not in {
+        call["task"] for call in stops
+    }
+    [swept] = rollback_events(r, "observation", result="failed_launches_swept")
+    assert (swept["tokens"], swept["stopped"]) == (3, 1)
+    [confirmed] = rollback_events(r, "observation", subject=f"failed:{tokens[0]}",
+                                  result="stop_confirmed")  # fmt: skip
+    assert confirmed["sql_outcome"] == "unknown"
+    # The sweep, under the moved lock, precedes every forward action.
+    kinds = [(e["kind"], e.get("action") or e.get("result") or e.get("to"))
+             for e in json.loads(r.store.objects[ROLLBACK_JOURNAL][0])["events"]]  # fmt: skip
+    assert kinds.index(("observation", "failed_launches_swept")) < kinds.index(
+        ("transition", "locked")
+    )
+
+
+def test_a_failed_task_that_cannot_be_described_or_stopped_holds(monkeypatch):
+    token = "u" * 20 + "running01"
+    r = rollback_rig()
+    failed_release(r, tokens=(token,))
+    task = r.ecs._task("arn:failed-migrate:3", token, "family:failed", [("migration", "x")],
+                       plan=JobPlan(seconds=10_000), tags={"sentry:job-id": "runtime-migrate"})  # fmt: skip
+    original = r.ecs._describe
+
+    def never_stops(item):
+        described = original(item)
+        if item.arn == task.arn:
+            described = {**described, "lastStatus": "RUNNING"}
+        return described
+
+    monkeypatch.setattr(r.ecs, "_describe", never_stops)
+    outcome = rollback_controller(r, handoff(r)).run()
+    assert (outcome.state, outcome.reason) == ("hold", "failed_release_unreconciled")
+    assert rollback_events(r, "observation", result="stop_unconfirmed")
+    assert not [c for c in r.calls("update_service")] and not r.calls("run_task")
+
+
+@pytest.mark.parametrize(
+    "change, reason",
+    [
+        # A schema other than the stated one is unknown state: nothing starts.
+        ({"result": {"database": "runtime_db", "principal": "runtime_owner", "schema": "goose:1",
+                     "release_sessions": "0", "owner_sessions": "0"}}, "job_receipt_mismatch"),
+        # A remaining session of the failed release or owner holds too.
+        ({"result": {"database": "runtime_db", "principal": "runtime_owner", "schema": None,
+                     "release_sessions": "0", "owner_sessions": "1"}}, "job_receipt_mismatch"),
+        # Receipts name the prior release whose revisions run, never the rollback run.
+        ({"release_id": ROLLBACK_RELEASE_ID}, "job_receipt_mismatch"),
+    ],
+)  # fmt: skip
+def test_unknown_or_unproven_schema_state_holds_before_any_service_starts(change, reason):
+    r = rollback_rig()
+    failed_release(r)
+    if change.get("result", {}).get("schema", "") is None:
+        change["result"]["schema"] = r.document["purpose"]["actual_schemas"]["runtime"]
+    r.evidence.job_changes["runtime-reconcile"] = change
+    outcome = rollback_controller(r, handoff(r)).run()
+    assert (outcome.state, outcome.reason) == ("hold", reason), outcome
+    assert not [c for c in r.calls("update_service") if c.get("taskDefinition")]
+    assert outcome.rollback is not None and outcome.rollback["kind"] == "rollback_hold"
+    assert outcome.rollback["automatic"] is False
+
+
+def test_a_rollback_run_may_be_aborted_and_recovered_like_any_release():
+    r = rollback_rig()
+    failed_release(r)
+    r.ecs.crash[("run_task", "after")] = 1
+    with pytest.raises(SimulatedCrash):
+        rollback_controller(r, handoff(r)).run()
+    controller = rollback_controller(r, None, session="session-c")
+    controller.recover(
+        RecoveryAuthorization("session-b", r.lock_etag(), sha("rollback session fenced"),
+                              "fixture-operator")  # fmt: skip
+    )
+    outcome = controller.abort()
+    assert (outcome.state, outcome.reason) == ("hold", "operator_abort")
+    assert json.loads(r.store.objects[LOCK][0])["session_id"] == "session-c"
 
 
 class FailingClock:
@@ -2948,3 +3241,59 @@ def test_a_takeover_is_journaled_at_the_time_read_before_the_lock_moved():
     assert "clock_untrusted" not in recovered
     assert json.loads(r.store.objects[LOCK][0])["session_id"] == "session-b"
     assert r.journal()["session_id"] == "session-b"
+
+
+def test_a_lost_handoff_response_is_settled_from_the_lock_it_left(monkeypatch):
+    r = rollback_rig()
+    failed_release(r)
+    grant = handoff(r)
+    original = r.store.replace
+    applied: list[bool] = []
+
+    def lost(key, body, *, if_match):
+        if key == LOCK and not applied:
+            applied.append(True)
+            raise AmbiguousResponse("connection reset before the replace was sent")
+        return original(key, body, if_match=if_match)
+
+    monkeypatch.setattr(r.store, "replace", lost)
+    outcome = rollback_controller(r, grant).run()
+    # Unapplied: the failed lock is untouched and the run holds rather than resend now.
+    assert (outcome.state, outcome.reason) == ("hold", "handoff_unconfirmed")
+    assert json.loads(r.store.objects[LOCK][0])["session_id"] == FAILED_SESSION
+    assert r.ecs.mutations == []
+
+
+def test_a_failed_lock_under_another_session_than_its_journal_is_never_taken():
+    """The lock and the failed journal must name the same session: otherwise unreconciled."""
+    r = rollback_rig()
+    failed_release(r, lock=False)
+    r.store.create(LOCK, encode({"release_id": FAILED_RELEASE_ID, "session_id": "session-other"}))
+    lock = r.store.objects[LOCK]
+    outcome = rollback_controller(r, handoff(r)).run()
+    assert (outcome.state, outcome.reason) == ("hold", "environment_locked")
+    assert r.store.objects[LOCK] == lock and r.ecs.mutations == []
+
+
+@pytest.mark.parametrize("case", ["invisible", "other-token"])
+def test_a_listed_failed_task_that_is_not_exactly_its_token_holds(monkeypatch, case):
+    token = "v" * 20 + "running01"
+    r = rollback_rig()
+    failed_release(r, tokens=(token,))
+    task = r.ecs._task("arn:failed-migrate:3", token, "family:failed", [("migration", "x")],
+                       plan=JobPlan(seconds=10_000), tags={"sentry:job-id": "runtime-migrate"})  # fmt: skip
+    original = r.ecs.describe_tasks
+
+    def describe(cluster, arns):
+        described = original(cluster, arns)
+        if task.arn in arns:
+            if case == "invisible":
+                return {"tasks": [t for t in described["tasks"] if t["taskArn"] != task.arn]}
+            return {"tasks": [{**t, "startedBy": "someone-else"} if t["taskArn"] == task.arn else t
+                              for t in described["tasks"]]}  # fmt: skip
+        return described
+
+    monkeypatch.setattr(r.ecs, "describe_tasks", describe)
+    outcome = rollback_controller(r, handoff(r)).run()
+    assert (outcome.state, outcome.reason) == ("hold", "failed_release_unreconciled")
+    assert not r.calls("stop_task") and not r.calls("run_task")

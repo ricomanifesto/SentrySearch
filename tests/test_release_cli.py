@@ -54,12 +54,16 @@ from tests.release_fakes import (
     SimulatedCrash,
     Trace,
     OPERATOR_ROLE,
+    FAILED_RELEASE_ID,
+    ROLLBACK_RELEASE_ID,
     approval_document,
     encode,
     forward_document,
     manifest_document,
+    rollback_run_document,
     sha,
 )
+from release.journal import Journal, journal_key
 
 ENVIRONMENT = (
     "sentry-staging"  # the roots' name_prefix: control bucket sentry-staging-<acct>-control
@@ -873,3 +877,78 @@ def test_the_session_lifetime_is_rechecked_against_the_referenced_clock(tmp_path
     r.sts_delay = 1.0
     code, report = r.main(*r.args("run"))
     assert_refused_before_release(r, code, report, "session_expires_too_soon")
+
+
+# rollback run ------------------------------------------------------------------------
+
+
+def rollback_cli_rig(tmp_path: Path) -> CliRig:
+    """A rollback of the retained prior pair after a failed release that still holds the lock."""
+    document = rollback_run_document()
+    document["environment"]["name"] = ENVIRONMENT
+    document["purpose"]["failed_release_id"] = FAILED_RELEASE_ID
+    r = cli_rig(tmp_path, document=document, release_id=ROLLBACK_RELEASE_ID)
+    journal = Journal(r.store, journal_key(FAILED_RELEASE_ID))
+    journal.create(
+        {"schema_version": 1, "release_id": FAILED_RELEASE_ID, "environment": ENVIRONMENT,
+         "manifest_sha256": sha("failed manifest"), "session_id": "cli-session-failed"},
+        {"at": "2026-10-07T11:40:00Z", "kind": "transition", "to": "prepared"},
+    )  # fmt: skip
+    journal.append({"at": "2026-10-07T11:41:00Z", "kind": "transition", "to": "hold"})
+    r.store.create(lock_key(), encode({"release_id": FAILED_RELEASE_ID,
+                                       "session_id": "cli-session-failed"}))  # fmt: skip
+    return r
+
+
+def handoff_args(r: CliRig, **changes: str) -> list[str]:
+    values = {
+        "--failed-session": "cli-session-failed",
+        "--failed-lock-etag": r.store.objects[lock_key()][1],
+        "--fence-evidence-sha256": sha("failed operator process confirmed terminated"),
+        "--authorized-by": "fixture-release-owner",
+        **changes,
+    }
+    return [item for key, value in values.items() if value is not None for item in (key, value)]
+
+
+def test_a_rollback_run_takes_the_failed_lock_under_its_handoff_and_restores_the_prior_pair(
+    tmp_path,
+):
+    r = rollback_cli_rig(tmp_path)
+    code, report = r.main(*r.args("run"), *handoff_args(r))
+    assert code == cli.EXIT_OK, report
+    assert report["state"] == "held_paused"
+    events = json.loads(r.store.objects[journal_key(ROLLBACK_RELEASE_ID)][0])["events"]
+    assert any(e.get("result") == "lock_handed_off" for e in events)
+    assert lock_key() not in r.store.objects
+    launched = [t.tags.get("sentry:job-id") for t in r.ecs.tasks.values() if t.tags]
+    assert not any(job and job.endswith(("-migrate", "-grant", "-bootstrap")) for job in launched)
+
+
+def test_a_rollback_without_its_handoff_holds_with_the_failed_lock_untouched(tmp_path):
+    r = rollback_cli_rig(tmp_path)
+    lock = r.store.objects[lock_key()]
+    code, report = r.main(*r.args("run"))
+    assert code == cli.EXIT_HELD, report
+    assert report["reason"] == "handoff_refused"
+    assert r.store.objects[lock_key()] == lock
+    assert not [call for call in r.calls() if call[0] == "ecs" and call[1] in {
+        "RunTask", "UpdateService", "StopTask"}]  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "rollback, changes, error",
+    [
+        (True, {"--authorized-by": None}, "handoff_incomplete"),
+        (True, {"--failed-lock-etag": None}, "handoff_incomplete"),
+        (False, {}, "handoff_not_applicable"),
+    ],
+)
+def test_handoff_arguments_are_all_or_none_and_rollback_only(tmp_path, rollback, changes, error):
+    r = rollback_cli_rig(tmp_path) if rollback else cli_rig(tmp_path)
+    if not rollback:
+        r.store.create(lock_key(), encode({"release_id": FAILED_RELEASE_ID, "session_id": "x"}))
+    code, report = r.main(*r.args("run"), *handoff_args(r, **changes))
+    assert code == cli.EXIT_REFUSED, report
+    assert report["error"] == error
+    assert r.built == [] and r.aws.bridge.calls == []

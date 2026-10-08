@@ -127,8 +127,9 @@ ambiguous.
   - observers: log group `/<prefix>/observe`, stream
     `<check-id>/observer/<task-id>`.
 
-  A request for another release, an unknown job or check (the worker gate has no
-  observer) or a malformed task id is refused before any read.
+  A request naming any release other than the manifest's evidence release (the
+  retained prior release for a rollback run), an unknown job or check (the
+  worker gate has no observer) or a malformed task id is refused before any read.
 - **Reading.** It reads from the head to the stream end within the manifest's
   fixed window, bounded to 20 pages and 256 KiB. Overflow is ambiguous.
 - **Parsing.** It parses with `release_tools.receipt.parse_receipt` for the

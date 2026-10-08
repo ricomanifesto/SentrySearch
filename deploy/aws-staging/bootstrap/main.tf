@@ -113,7 +113,8 @@ resource "aws_s3_bucket_policy" "control" {
 }
 
 # Unattached customer-managed policies. Operator, launcher and trust choices
-# remain separate approvals; this root creates no IAM principal.
+# remain separate approvals; this root creates no IAM principal unless the
+# optional operator role (operator.tf) is configured.
 resource "aws_iam_policy" "state_access" {
   for_each    = local.state_access_policies
   name        = "${var.name_prefix}-state-${each.key}"

@@ -51,9 +51,21 @@ Schema 2 manifests state `purpose.kind` explicitly; schema 1 manifests are
 forward runs. A forward run may bootstrap both databases first (only with an
 `empty_hold` fallback). A forward upgrade whose fallback is `compatible_release`
 still migrates: the fallback names what to restore after a failure, not what to
-run. A `rollback` purpose is validated (prior pair only, both actual schemas
-compatible, reconcile and proof jobs only) but the controller refuses to execute
-it (`rollback_execution_unavailable`) until rollback execution is wired.
+run. A `rollback` purpose (prior pair only, both actual schemas compatible,
+reconcile and proof jobs only) runs as described in
+[rollback runs](release-controller.md#rollback-runs). When the failed release
+still holds the environment lock, `run` takes it only with all four handoff
+values:
+
+```
+python -m release_cli run --manifest … --approval … --credentials … \
+  --failed-session <failed journal session> --failed-lock-etag <exact lock ETag> \
+  --fence-evidence-sha256 <sha256 of the fencing record> --authorized-by <name>
+```
+
+Without them the run holds with `handoff_refused` and changes nothing. Partial
+values are refused (`handoff_incomplete`), and handoff values for a forward
+manifest are refused (`handoff_not_applicable`), both before any client exists.
 
 ## Credentials
 

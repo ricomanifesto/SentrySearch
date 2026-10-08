@@ -48,7 +48,14 @@ operator grant provenance, and invalid release refs/log groups. Release-tools
 tests cover opt-in, the six job contracts, fixed deadline/digest/identity values,
 per-job execution roles and receipt streams, and rejection of tags, foreign
 images, non-UTC, impossible or far-future deadlines, out-of-range budgets, unpinned digests,
-a Runtime grant digest differing from its pin and aliased proof bundles. Retention tests
+a Runtime grant digest differing from its pin and aliased proof bundles. Observer
+tests cover opt-in, the two task contracts, the Runtime observer's minimal
+authority, the release-job mode of migrations and rejection of service, proof or
+moving bundles, a namespace other than the Runtime SAN, out-of-range budgets and a
+shared log group. Bootstrap tests cover opt-in, the two job contracts, separate
+launch scope and authority, and rejection of shared or reused administrator
+secrets and credentials, an administrator that is the owner, moving versions and
+an unpinned SQL digest. Retention tests
 cover unchanged unscoped role names, release-scoped roles, stable families,
 retained revisions and content-bound policy names. They do not execute IAM policy
 evaluation, fetch real secrets, run Fargate or verify network reachability.
@@ -205,8 +212,17 @@ There is no arbitrary command, plaintext DB credential or extra environment inpu
 
 | Definition | Immutable image input / command | CA initializer / process UID |
 | --- | --- | --- |
-| `runtime-release` | `images.runtime` / `/app/migrate` | `runtime-release` / 65532 |
-| `product-release` | `images.search` / `python -m dev.migrate_storage` | `search-release` / 10001 |
+| `runtime-release` | `images.runtime` / `/app/migrate` (`-release-job` with `release_tools`) | `runtime-release` / 65532 |
+| `product-release` | `images.search` / `python -m dev.migrate_storage` (`--release-job` with `release_tools`) | `search-release` / 10001 |
+
+With `release_tools` set, each migration runs its guarded release-job mode: the
+revision also fixes `RELEASE_ID`, `RELEASE_JOB_ID` (`<database>-migrate`),
+`RELEASE_NOT_AFTER`, `RELEASE_JOB_BUDGET_SECONDS` and the expected database and
+owner login, and the job writes one `sentry.release-migration.v1` receipt
+([storage release](../../docs/storage-release.md#guarded-release-job), Runtime
+`docs/runtime-operations.md`). The Runtime owner's `DATABASE_URL` must then carry
+`sslmode=verify-full&sslrootcert=/run/material/postgres-ca.pem`. Without
+`release_tools` the commands are unchanged and no receipt is written.
 
 Both use the pinned Search image for init, 0.25 vCPU / 512 MiB as an unmeasured
 initial allocation, and a single task-local CA volume. Both roots are read-only;
@@ -266,9 +282,50 @@ their `proof_bundle`. Each job has its own execution role (`<db>-grant`,
 repositories, write its own log streams and read its one bundle version. The task
 role is the release's CA-only task role. `receipt_log_streams` lists each job's
 app-container stream pattern for the launcher's receipt reads, and
-`release_tools_bindings` gives the manifest's grant and proof expectations. The
-bootstrap job is not wired: it needs the administrator secret and a separately
-approved administrator path.
+`release_tools_bindings` gives the manifest's migration, grant and proof
+expectations.
+
+## Optional Runtime and API observers
+
+`observers` (default `null`; requires `release_tools`) adds `runtime-observe` and
+`api-observe`, the [operational observers](../../docs/release-tools.md#operational-observers)
+the controller launches after the services start. Inputs: the private DNS
+`namespace` (whose `runtime.<namespace>` must equal `runtime_server_name`), a
+`budget_seconds` of 60–3600, the Runtime observer's own `runtime_bundle` (Runtime
+CA and probe token at an exact version, distinct from every service, owner, proof
+and material bundle) and a pre-existing `log_group` of its own.
+
+- The Runtime observer has a root init (`runtime-observer` profile, its bundle
+  only) and the release-tools `observe-runtime` container as 65532 with the
+  material read-only. Its task role reads only its bundle version.
+- The API observer is one `observe-api` container with no material, volume,
+  secret or task role.
+- Each revision fixes the release, check id, deadline, budget, the target's private
+  name and fixed port (8443 / 8001), and logs under stream prefix `<check id>` in
+  the observers' group. Execution roles pull only the images each runs and write
+  only their own streams.
+
+`observer_receipt_streams` lists the observer-container stream patterns for the
+attended launcher's observe policy; `observer_bindings` gives the manifest's
+check ids, targets, hosts and ports. The manifest's check ids must be these keys.
+
+## Optional bootstrap jobs
+
+`bootstrap` (default `null`; requires `release_tools`) adds `runtime-bootstrap`
+and `product-bootstrap` for a fresh instance pair. Per database it takes the
+instance's private endpoint, the administrator login, the RDS-managed
+administrator secret and a credentials bundle holding `RELEASE_OWNER_PASSWORD`
+and `RELEASE_SERVICE_PASSWORD`, all at exact versions and distinct from every
+other bundle, plus the bootstrap SQL digest.
+
+The job runs the release-tools `bootstrap` command after the same CA-only init,
+connects to `postgres` as the administrator (`username` and `password` from the
+managed secret) and creates exactly the release's database, owner and service
+login. Each job has its own task role (CA only) and execution role (pull, its own
+stream, its administrator secret and credentials). `launch_scopes.bootstrap`
+keeps these revisions and roles out of the database-job scope: only the separate
+`release-launcher-bootstrap` policy in the releases root can launch them, and
+nothing attaches it in this run.
 
 ### Runtime grants: pinned source
 

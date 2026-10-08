@@ -214,11 +214,15 @@ class Container(Strict):
 
 class TaskSpec(Strict):
     task_definition: str
-    task_role: str
+    # Null only for the API observer, which needs no AWS authority at all.
+    task_role: str | None = None
     execution_role: str
-    secrets: tuple[SecretVersion, ...] = Field(min_length=1, max_length=8)
+    # Only the API observer may have no material and a single container; every
+    # other task needs its init, an application container and pinned secrets
+    # (_check_task).
+    secrets: tuple[SecretVersion, ...] = Field(max_length=8)
     security_groups: tuple[SecurityGroup, ...] = Field(min_length=1, max_length=5)
-    containers: tuple[Container, ...] = Field(min_length=2, max_length=4)
+    containers: tuple[Container, ...] = Field(min_length=1, max_length=4)
 
 
 class Services(Strict):
@@ -362,6 +366,19 @@ class Manifest(Strict):
     def execution(self) -> str:
         """``forward`` or ``rollback``, from the explicit purpose only."""
         return "forward" if self.purpose is None else self.purpose.kind
+
+    @property
+    def evidence_release_id(self) -> str:
+        """The release every receipt names: this one, or for a rollback the prior one.
+
+        A rollback runs the retained prior release's own revisions (services,
+        reconcile, proof and observer tasks), and each revision fixes its
+        release's id in its receipts and worker stream. The run's own id still
+        names its journal, lock, approval and launch tags.
+        """
+        if self.execution == "rollback" and isinstance(self.rollback, CompatibleRelease):
+            return self.rollback.release_id
+        return self.release_id
 
 
 class Approval(Strict):
@@ -523,7 +540,14 @@ def _scoped(value: str, prefix: str, structure: str, detail: str) -> None:
         raise ReleaseRejected("mutable_reference", detail)
 
 
-def _check_task(spec: TaskSpec, prefixes: dict[str, str], detail: str) -> None:
+def _check_task(
+    spec: TaskSpec, prefixes: dict[str, str], detail: str, *, standalone: bool = False
+) -> None:
+    """Scope a task to the environment; every task but a standalone one has an init.
+
+    A standalone task (the API observer) is one container with no task role and
+    no secret: nothing to initialize and no AWS authority.
+    """
     _scoped(
         spec.task_definition,
         prefixes["ecs"] + "task-definition/",
@@ -531,12 +555,19 @@ def _check_task(spec: TaskSpec, prefixes: dict[str, str], detail: str) -> None:
         detail + ".task_definition",
     )
     for field in ("task_role", "execution_role"):
-        _scoped(getattr(spec, field), prefixes["iam"], r"[A-Za-z0-9+=,.@_/-]{1,512}", detail)
+        role = getattr(spec, field)
+        if role is not None:
+            _scoped(role, prefixes["iam"], r"[A-Za-z0-9+=,.@_/-]{1,512}", detail)
     for item in spec.secrets:
         _scoped(item.arn, prefixes["secret"], r"[A-Za-z0-9/_+=.@-]+-[A-Za-z0-9]{6}", detail)
     names = [container.name for container in spec.containers]
-    if len(set(names)) != len(names) or "init" not in names:
+    if len(set(names)) != len(names):
         raise ReleaseRejected("invalid_field", detail + ".containers")
+    if standalone:
+        if len(names) != 1 or spec.secrets or spec.task_role is not None:
+            raise ReleaseRejected("invalid_field", detail)
+    elif "init" not in names or len(names) < 2 or not spec.secrets or spec.task_role is None:
+        raise ReleaseRejected("invalid_field", detail)
 
 
 def _check_scope(manifest: Manifest) -> None:
@@ -572,7 +603,8 @@ def _check_scope(manifest: Manifest) -> None:
         _check_task(job.task, prefixes, f"jobs.{job.id}.task")
     for check in manifest.operational_checks:
         if isinstance(check, ObserverCheck):
-            _check_task(check.task, prefixes, f"operational_checks.{check.id}.task")
+            _check_task(check.task, prefixes, f"operational_checks.{check.id}.task",
+                        standalone=check.target == "api")  # fmt: skip
     rollback = manifest.rollback
     if isinstance(rollback, CompatibleRelease):
         for name in ("runtime", "search"):
@@ -744,7 +776,8 @@ def _check_operational(manifest: Manifest) -> None:
     namespaces = set()
     for check in observers:
         where = f"operational_checks.{check.id}"
-        # The task definition fixes RELEASE_CHECK_ID; the receipt echoes it.
+        # The task definition fixes RELEASE_CHECK_ID and the stream prefix; the
+        # receipt echoes it.
         if check.id != f"{check.target}-observe":
             raise ReleaseRejected("observer_id_invalid", where)
         prefix, _, namespace = check.host.partition(".")
@@ -754,7 +787,12 @@ def _check_operational(manifest: Manifest) -> None:
         if check.port != OBSERVER_PORTS[check.target]:
             raise ReleaseRejected("observer_target_invalid", f"{where}.port")
         containers = {item.name: item.image for item in check.task.containers}
-        if containers != {"init": "search", OBSERVER_CONTAINER: "release_tools"}:
+        # Only the Runtime observer has material: its init writes the private CA
+        # and probe token. The API observer is its one container.
+        expected = {OBSERVER_CONTAINER: "release_tools"}
+        if check.target == "runtime":
+            expected = {"init": "search", **expected}
+        if containers != expected:
             raise ReleaseRejected("observer_task_invalid", f"{where}.task.containers")
     if len(namespaces) != 1:
         raise ReleaseRejected("observer_target_invalid", "operational_checks")

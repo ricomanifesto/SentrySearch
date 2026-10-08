@@ -52,12 +52,14 @@ Required content:
 - operational checks: `worker-readiness` (schema `sentry.worker-readiness.v1`,
   proven from the worker's own receipts) and exactly one observer each for the
   Runtime and the API (schema `sentry.operational.v1`), with check ids
-  `runtime-observe` and `api-observe` (fixed by their task definitions). An observer is its own
-  release-tools task (`init` from the Search image, `observer` from the
-  release-tools image) whose material is shared with no service, job or other
-  observer, on the service's private name `<target>.<namespace>` (one namespace
-  for both) and fixed port (Runtime 8443, API 8001), with its own deadline
-  (60 s to one hour) and stop grace. Check ids never repeat a job id;
+  `runtime-observe` and `api-observe` (the ids their task definitions fix). The
+  Runtime observer is its own release-tools task (`init` from the Search image,
+  `observer` from the release-tools image) whose material is shared with no
+  service, job or other observer; the API observer is a single `observer`
+  container with no secret and no task role. Each targets the service's private
+  name `<target>.<namespace>` (one namespace for both) and fixed port (Runtime
+  8443, API 8001), with its own deadline (60 s to one hour) and stop grace.
+  Check ids never repeat a job id;
 - a tagged rollback plan: `empty_hold` for a first
   release, or `compatible_release` with the prior release ID, images, task
   definitions, trust hash, compatible schemas and snapshot ARNs. This is the
@@ -83,9 +85,7 @@ Schema 2 purposes:
   prior one; both actual schemas are stated and compatible with the prior pair;
   reconcile jobs (owner credentials, never a service bundle) must observe exactly
   those schemas with `release_sessions` and `owner_sessions` of `0`, and proofs
-  the same schemas. The controller does **not** execute rollback runs yet: `run`,
-  `recover` and `abort` halt with `rollback_execution_unavailable` before writing
-  anything.
+  the same schemas. See [Rollback runs](#rollback-runs).
 
 Every ARN, role, secret, repository and snapshot must belong to the manifest's
 account and region. Floating references fail: image tags, unrevisioned task
@@ -260,9 +260,10 @@ launches like a job (journaled intent, send authorization, exact definition,
 token, no overrides, Exec disabled) against the services as recorded; the worker
 gate (below) follows:
 
-- Before the launch the recorded service task must report exactly one attached
-  ENI with one private IPv4 address; otherwise `service_network_identity_unknown`
-  holds and no observer is launched.
+- Before the launch the recorded service task must report exactly one complete
+  attached ENI: one interface id, one subnet among the manifest's subnets and one
+  private IPv4 address. Anything less is `service_network_identity_unknown`; the
+  run holds and no observer is launched.
 - The observer task must stop with the platform evidence a job needs (exact
   definition, token, containers and digests, every exit code 0); a failed or
   unfinished observer holds with the job codes (`job_container_failed`,
@@ -371,6 +372,59 @@ with poisoned AWS variables and all socket connections denied, and checks that n
 AWS SDK or HTTP client module is imported. The fakes do not model IAM, networking,
 scheduling or real log ingestion.
 
+## Rollback runs
+
+A `rollback` purpose restores the retained prior pair after a failed release. It
+is its own manifest and approval with its own release ID; it is never automatic.
+
+- **Evidence identity.** The run executes the prior release's own revisions
+  (services, reconcile, proof and observer tasks), and each revision fixes its
+  release's ID. Every receipt and the worker readiness stream therefore name the
+  prior release (`Manifest.evidence_release_id`); a receipt naming the rollback
+  run itself is a mismatch. The run's own ID names its journal, lock, approval
+  and launch tags.
+- **Failed-release handoff.** The run first reads the failed release's journal,
+  which must name that release and this environment, otherwise
+  `failed_release_unknown`.
+  - If the failed release still holds the lock, it moves only by a conditional
+    replace of the exact ETag. That needs a handoff naming the failed journal's
+    session, that ETag, fence evidence that the old operator session was stopped,
+    and who decided; anything less is `handoff_refused` and nothing is written.
+  - The handoff is journaled as an intent before the replace. A lock moved by
+    someone else first is `handoff_conflict`.
+  - After a crash the run settles the intent from the lock it finds:
+    - its own lock: `lock_handed_off`, reconciled;
+    - the failed lock untouched at the authorized ETag: `handoff_not_applied`,
+      after which the same conditional handoff is sent again;
+    - anything else: `handoff_conflict`.
+
+    A lost response within the same step holds with `handoff_unconfirmed` unless
+    the lock is already the run's.
+  - A lock held by any other release is `environment_locked`. A missing lock is
+    accepted only when the failed journal recorded its own lock release;
+    otherwise `failed_release_lock_missing`.
+- **Sweep.** Under the moved lock, before anything else, every launch token the
+  failed release journaled is listed; any task still running under it gets a
+  journaled safety stop and bounded confirmation (`sql_outcome: unknown`). A
+  listed task that cannot be described or confirmed stopped holds with
+  `failed_release_unreconciled`. The run records the failed journal's hash.
+- **Sequence.** `prepared → locked → quiesced → reconciled → proven →
+  services_started → operational_verified → held_paused`: quiesce writers;
+  reconcile jobs must report exactly the stated schemas with no release or owner
+  session left; proof jobs prove the same schemas; the prior pair starts in order;
+  both observers and the worker gate run as in a forward release; the lock is
+  released at `held_paused`. A migration, grant or bootstrap is never launched.
+- **Holds.** A held rollback plans `rollback_hold`: services to zero if started,
+  evidence retained, operator review before any retry. Nothing is retried
+  automatically. `abort` and `recover` work as for any release.
+
+**Terraform scope.** The attended launcher may launch only the current
+release's revisions, so the operator re-plans the releases root with the prior
+release as `current` before a rollback run. That release's job revisions keep
+the deadline fixed when it was first planned: a rollback after it expires holds
+at its first job, and needs a new release key planned from the prior pair's
+images, a separate approval.
+
 ## Not implemented
 
 - Any run against AWS. The [operator CLI](release-cli.md), its isolated clients,
@@ -382,12 +436,12 @@ scheduling or real log ingestion.
   observers. The producers exist in source (the Runtime `migrate -release-job`,
   the Search `dev/migrate_storage.py --release-job` and
   [`release_tools observe-runtime`/`observe-api`](release-tools.md#operational-observers))
-  and are tested natively; their task definitions, the observe log group and the
-  launcher policy for them are not wired.
-- The bootstrap job's task definition and administrator path (its manifest
-  phase and controller ordering exist; the grant, proof and reconciliation jobs
-  are [implemented](release-tools.md) and mock-wired).
-- Rollback execution (the `rollback` purpose is validated, never run) and teardown.
+  and are tested natively; their task definitions, log group and launcher
+  policies are mock-tested Terraform.
+- The live bootstrap administrator path: its task definitions and separate
+  launcher exist in mocked Terraform, never attached.
+- Teardown, which is a documented operator procedure, not code; a rollback run
+  against a real retained pair.
 
 These remain separate implementation and approval gates. See
 [`deploy/aws-platform-fit`](../deploy/aws-platform-fit/README.md) for the owner
@@ -412,10 +466,11 @@ boundary. The attended whole-release read is the selected design. It covers no
 other release, no unmasking and no sharing outside the attended session.
 Attaching the policies remains a separate approval. Each worker revision fixes
 its release's `SENTRYSEARCH_RELEASE_ID`, its `worker/<release-id>` stream prefix
-and non-blocking logging. The roots do not yet define the observer task
-definitions, the `/<prefix>/observe` log group or launch and read permissions for
-them, and the deployed images predate the migration release jobs, so a release
-against these roots would hold.
+and non-blocking logging. The roots now define the observer task definitions,
+the `/<prefix>/observe` log group and an `-observe` launcher policy for the
+current release's observers only, and the migrations' release-job mode; until
+images carrying those producers are built, a release against these roots would
+hold.
 The manifest's environment name must equal the roots' `name_prefix` so the lock
 key matches the release-evidence policy. These roots are not applied, and mocked
 plans do not prove IAM behavior.

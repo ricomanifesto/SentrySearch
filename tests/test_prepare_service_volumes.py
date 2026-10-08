@@ -99,6 +99,31 @@ def test_release_profiles_reject_scratch_before_writes(tmp_path, materials, prof
     assert list(destination.iterdir()) == list(scratch_root.iterdir()) == []
 
 
+def test_runtime_observer_profile_writes_only_its_ca_and_token(tmp_path, materials, monkeypatch):
+    destination = tmp_path / "material"
+    destination.mkdir()
+    ownership = []
+    monkeypatch.setattr(os, "fchown", lambda fd, user, group: ownership.append((user, group)))
+    payload = {key: materials[key] for key in ("runtime-ca.pem", "probe-token")}
+    bootstrap.prepare("runtime-observer", json.dumps(payload), destination)
+    assert sorted(path.name for path in destination.iterdir()) == ["probe-token", "runtime-ca.pem"]
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o400 for path in destination.iterdir())
+    assert ownership == [(65532, 65532)] * 3
+
+
+@pytest.mark.parametrize("extra", ["postgres-ca.pem", "server-key.pem", "server-cert.pem"])
+def test_runtime_observer_profile_rejects_any_other_material(tmp_path, materials, extra):
+    destination = tmp_path / "material"
+    destination.mkdir()
+    payload = {key: materials[key] for key in ("runtime-ca.pem", "probe-token", extra)}
+    with pytest.raises(ValueError):
+        bootstrap.prepare("runtime-observer", json.dumps(payload), destination)
+    with pytest.raises(ValueError):
+        bootstrap.prepare("runtime-observer", json.dumps({"runtime-ca.pem": materials["runtime-ca.pem"]}),
+                          destination)  # fmt: skip
+    assert list(destination.iterdir()) == []
+
+
 @pytest.mark.parametrize(
     "mutation", ["missing", "extra", "bad-ca", "bad-token", "oversize", "duplicate"]
 )

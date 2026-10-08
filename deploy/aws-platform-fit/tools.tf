@@ -230,6 +230,12 @@ output "release_tools_bindings" {
     budget_seconds = local.tools.budget_seconds
     tools_sha256   = local.tools.tools_sha256
     receipt_schema = "sentry.release-tools.job.v1"
+    # Migrations run in their release-job mode and report the migrated schema
+    # (set in the manifest from the reviewed revision) in their own envelope.
+    migration_receipt_schema = "sentry.release-migration.v1"
+    migration_expectations = { for name in ["runtime", "product"] : "${name}-migrate" => {
+      database = local.tools[name].database, principal = local.tools[name].owner
+    } }
     expectations = { for key, job in local.tools_jobs : key => merge(
       { database = local.tools[job.database].database, principal = local.tools_principal[key] },
       job.kind == "grant" ? { service_role = local.tools[job.database].service, sql_digest = local.tools.sql_sha256[job.sql] } : {},

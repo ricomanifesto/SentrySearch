@@ -50,19 +50,31 @@ variable "release_jobs" {
 }
 
 locals {
+  # With release-tools inputs, each migration runs in its guarded release-job
+  # mode (deadline, task identity, verified bounded session, one
+  # sentry.release-migration.v1 receipt). The release, deadline, budget and
+  # expected identity are fixed in the revision like every other release job.
+  migration_release_job = { for name in ["runtime", "product"] : name => var.release_tools == null ? {} : {
+    RELEASE_ID                 = var.release_tools.release_id
+    RELEASE_JOB_ID             = "${name}-migrate"
+    RELEASE_NOT_AFTER          = var.release_tools.not_after
+    RELEASE_JOB_BUDGET_SECONDS = tostring(var.release_tools.budget_seconds)
+    RELEASE_EXPECT_DATABASE    = var.release_tools[name].database
+    RELEASE_EXPECT_PRINCIPAL   = var.release_tools[name].owner
+  } }
   release_roles = var.release_jobs == null ? {} : {
     runtime = {
       uid         = "65532:65532", profile = "runtime-release", image = var.images.runtime
-      command     = ["/app/migrate"], secret_keys = ["DATABASE_URL"]
-      environment = { SENTRYRUNTIME_MIGRATIONS_DIRECTORY = "/app/db/migrations" }
+      command     = concat(["/app/migrate"], var.release_tools == null ? [] : ["-release-job"]), secret_keys = ["DATABASE_URL"]
+      environment = merge({ SENTRYRUNTIME_MIGRATIONS_DIRECTORY = "/app/db/migrations" }, local.migration_release_job.runtime)
     }
     product = {
       uid     = "10001:10001", profile = "search-release", image = var.images.search
-      command = ["python", "-m", "dev.migrate_storage"], secret_keys = local.db_secret_keys
-      environment = {
+      command = concat(["python", "-m", "dev.migrate_storage"], var.release_tools == null ? [] : ["--release-job"]), secret_keys = local.db_secret_keys
+      environment = merge({
         ENVIRONMENT = "staging", DB_SSLMODE = "verify-full", DB_SSLROOTCERT = "/run/material/postgres-ca.pem"
         DB_DEBUG    = "false", PYTHON_DOTENV_DISABLED = "1"
-      }
+      }, local.migration_release_job.product)
     }
   }
   release_log_configuration = { for name in keys(local.release_roles) : name => {

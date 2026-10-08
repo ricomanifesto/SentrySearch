@@ -76,6 +76,26 @@ variable "releases" {
       runtime = object({ database = string, owner = string, service = string, proof_bundle = object({ arn = string, version_id = string }) })
       product = object({ database = string, owner = string, service = string, proof_bundle = object({ arn = string, version_id = string }) })
     })
+    # Runtime and API observer tasks; the namespace and log group come from
+    # this environment. The Runtime observer's bundle is its own.
+    observers = optional(object({
+      budget_seconds = number
+      runtime_bundle = object({ arn = string, version_id = string })
+    }))
+    # First deployment only: each instance's RDS-managed administrator secret and
+    # the owner and service passwords bootstrap sets. Launched only through the
+    # separate, unattached bootstrap launcher.
+    bootstrap = optional(object({
+      sql_sha256 = string
+      runtime = object({
+        host         = string, administrator = string
+        admin_secret = object({ arn = string, version_id = string }), credentials = object({ arn = string, version_id = string })
+      })
+      product = object({
+        host         = string, administrator = string
+        admin_secret = object({ arn = string, version_id = string }), credentials = object({ arn = string, version_id = string })
+      })
+    }))
   }))
   validation {
     condition = (length(var.releases) >= 1 && length(var.releases) <= 2 &&
@@ -100,7 +120,9 @@ variable "releases" {
       values(release.environment_bundles), values(release.material_bundles),
       [release.release_jobs.runtime.environment_bundle, release.release_jobs.runtime.material_bundle,
         release.release_jobs.product.environment_bundle, release.release_jobs.product.material_bundle,
-      release.release_tools.runtime.proof_bundle, release.release_tools.product.proof_bundle]) :
+      release.release_tools.runtime.proof_bundle, release.release_tools.product.proof_bundle],
+      release.observers == null ? [] : [release.observers.runtime_bundle],
+      release.bootstrap == null ? [] : [release.bootstrap.runtime.credentials, release.bootstrap.product.credentials]) :
       can(regex("^arn:aws:secretsmanager:${var.region}:${var.account_id}:secret:${var.name_prefix}/[A-Za-z0-9/_+=.@-]+-[A-Za-z0-9]{6}$", bundle.arn)) &&
       can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", bundle.version_id))
     ]]))
@@ -111,9 +133,11 @@ variable "releases" {
       values(release.environment_bundles), values(release.material_bundles),
       [release.release_jobs.runtime.environment_bundle, release.release_jobs.runtime.material_bundle,
         release.release_jobs.product.environment_bundle, release.release_jobs.product.material_bundle,
-      release.release_tools.runtime.proof_bundle, release.release_tools.product.proof_bundle]) : bundle.arn
-    ])) == 12])
-    error_message = "Within a release, all twelve service, material, owner and proof bundle ARNs must be distinct."
+      release.release_tools.runtime.proof_bundle, release.release_tools.product.proof_bundle],
+      release.observers == null ? [] : [release.observers.runtime_bundle],
+      release.bootstrap == null ? [] : [release.bootstrap.runtime.credentials, release.bootstrap.product.credentials]) : bundle.arn
+    ])) == 12 + (release.observers == null ? 0 : 1) + (release.bootstrap == null ? 0 : 2)])
+    error_message = "Within a release, every service, material, owner, proof, observer and bootstrap credential bundle ARN must be distinct."
   }
   validation {
     # A secret may hold several releases' versions, but always for the same
@@ -125,6 +149,8 @@ variable "releases" {
         [for name in ["runtime", "product"] : { arn = release.release_jobs[name].environment_bundle.arn, purpose = "owner-environment/${name}" }],
         [for name in ["runtime", "product"] : { arn = release.release_jobs[name].material_bundle.arn, purpose = "owner-material/${name}" }],
         [for name in ["runtime", "product"] : { arn = release.release_tools[name].proof_bundle.arn, purpose = "proof-environment/${name}" }],
+        release.observers == null ? [] : [{ arn = release.observers.runtime_bundle.arn, purpose = "observer-material/runtime" }],
+        release.bootstrap == null ? [] : [for name in ["runtime", "product"] : { arn = release.bootstrap[name].credentials.arn, purpose = "bootstrap-credentials/${name}" }],
       )]) : pair.arn => pair.purpose...
     } : length(distinct(purposes)) == 1])
     error_message = "A secret ARN must keep the same task and purpose in every retained release."
@@ -135,5 +161,32 @@ variable "releases" {
       can(regex("^[0-9a-f]{64}$", release.release_jobs.runtime_grants.sql_sha256))
     ])
     error_message = "Pin each release's Runtime grant source to a full commit and the SHA-256 of db/roles/service.sql."
+  }
+  validation {
+    # Bootstrap creates the databases and logins from nothing: only a first
+    # deployment (one current release, an empty-hold fallback) may carry it.
+    condition = alltrue([for release in values(var.releases) :
+      release.bootstrap == null || (release.slot == "current" && length(var.releases) == 1)
+    ])
+    error_message = "Bootstrap is for a first deployment only: one current release and no rollback release."
+  }
+  validation {
+    condition = alltrue([for release in values(var.releases) : release.bootstrap == null ? true : alltrue([for name in ["runtime", "product"] :
+      can(regex("^arn:aws:secretsmanager:${var.region}:${var.account_id}:secret:rds!db-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[A-Za-z0-9]{6}$", release.bootstrap[name].admin_secret.arn))
+    ])])
+    error_message = "Each bootstrap administrator secret is that instance's RDS-managed secret in this account and region."
+  }
+}
+
+variable "observer_security_group_ids" {
+  type        = object({ runtime = string, api = string })
+  default     = null
+  description = "The foundation's runtime_transport_proof and api_proof groups: the observer tasks' RunTask security groups, which the manifest names."
+  validation {
+    condition = var.observer_security_group_ids == null ? true : (
+      var.observer_security_group_ids.runtime != var.observer_security_group_ids.api &&
+      alltrue([for group in values(var.observer_security_group_ids) : can(regex("^sg-[0-9a-f]{8,17}$", group))])
+    )
+    error_message = "Use the foundation's two distinct observer security group IDs."
   }
 }

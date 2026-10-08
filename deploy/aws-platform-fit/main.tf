@@ -279,7 +279,35 @@ output "iam_role_names" {
     { for name, role in aws_iam_role.release_task : "${name}-release-task" => role.name },
     { for name, role in aws_iam_role.release_execution : "${name}-release-execution" => role.name },
     { for key, role in aws_iam_role.tools_execution : "${local.tools_jobs[key].database}-${local.tools_jobs[key].role}-execution" => role.name },
+    { for role in aws_iam_role.observer_task : "runtime-observe-task" => role.name },
+    { for key, role in aws_iam_role.observer_execution : "${key}-execution" => role.name },
+    { for key, role in aws_iam_role.bootstrap_task : "${key}-task" => role.name },
+    { for key, role in aws_iam_role.bootstrap_execution : "${key}-execution" => role.name },
   )
+}
+
+output "launch_scopes" {
+  description = "Which revisions and roles each launcher policy covers: database jobs, observers and the separately launched bootstrap jobs."
+  value = {
+    jobs = {
+      task_definitions = merge(
+        { for name, task in aws_ecs_task_definition.release : "${name}-release" => task.arn },
+        { for key, task in aws_ecs_task_definition.tools : key => task.arn },
+      )
+      roles = concat(
+        [for role in aws_iam_role.release_task : role.name], [for role in aws_iam_role.release_execution : role.name],
+        [for role in aws_iam_role.tools_execution : role.name],
+      )
+    }
+    observers = {
+      task_definitions = { for key, task in aws_ecs_task_definition.observer : key => task.arn }
+      roles            = concat([for role in aws_iam_role.observer_task : role.name], [for role in aws_iam_role.observer_execution : role.name])
+    }
+    bootstrap = {
+      task_definitions = { for key, task in aws_ecs_task_definition.bootstrap : key => task.arn }
+      roles            = concat([for role in aws_iam_role.bootstrap_task : role.name], [for role in aws_iam_role.bootstrap_execution : role.name])
+    }
+  }
 }
 
 output "task_definition_arns" {
@@ -288,5 +316,7 @@ output "task_definition_arns" {
     { for name, task in aws_ecs_task_definition.service : name => task.arn },
     { for name, task in aws_ecs_task_definition.release : "${name}-release" => task.arn },
     { for key, task in aws_ecs_task_definition.tools : key => task.arn },
+    { for key, task in aws_ecs_task_definition.observer : key => task.arn },
+    { for key, task in aws_ecs_task_definition.bootstrap : key => task.arn },
   )
 }

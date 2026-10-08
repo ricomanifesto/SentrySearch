@@ -20,7 +20,16 @@ STAGING = DEPLOY / "aws-staging"
 ROOTS = ("bootstrap", "foundation", "releases", "services")
 REMOTE_ROOTS = ("foundation", "releases", "services")
 TASK_MODULE = DEPLOY / "aws-platform-fit"
-REVIEWED_DEFAULTS = {"rds_ca_identifier", "log_retention_days", "report_retention_days"}
+REVIEWED_DEFAULTS = {
+    "rds_ca_identifier",
+    "log_retention_days",
+    "report_retention_days",
+    # Optional inputs that render nothing until approved: alert recipient and
+    # budget, observer network groups and the attended operator's trust.
+    "notifications",
+    "observer_security_group_ids",
+    "operator_trust",
+}
 # Resource types (regular expressions) with no place in the private staging roots.
 FORBIDDEN_RESOURCES = (
     r"aws_internet_gateway\w*",
@@ -186,12 +195,24 @@ def test_state_and_data_resources_prevent_destroy(root, header):
     [
         f'resource "{kind}" "{name}"'
         for kind in ("aws_iam_role", "aws_iam_role_policy")
-        for name in ("task", "execution", "release_task", "release_execution", "tools_execution")
+        for name in (
+            "task",
+            "execution",
+            "release_task",
+            "release_execution",
+            "tools_execution",
+            "observer_task",
+            "observer_execution",
+            "bootstrap_task",
+            "bootstrap_execution",
+        )
     ]
     + [
         'resource "aws_ecs_task_definition" "service"',
         'resource "aws_ecs_task_definition" "release"',
         'resource "aws_ecs_task_definition" "tools"',
+        'resource "aws_ecs_task_definition" "observer"',
+        'resource "aws_ecs_task_definition" "bootstrap"',
     ],
 )
 def test_retained_release_identities_and_revisions_cannot_be_replaced(header):
@@ -286,10 +307,12 @@ LAUNCHER_ACTIONS = {
 }
 
 
-# Job receipts are read from the observed task's own log stream. Runtime and API
-# operational receipts still await their own observers; worker readiness is read
-# through LogPort from the worker app container's stream.
-EVIDENCE_ACTIONS = {"job_receipt": ("logs:GetLogEvents",), "operational_receipt": ()}
+# Job and observer receipts are read from the observed task's own log stream;
+# worker readiness is read through LogPort from the worker app container's stream.
+EVIDENCE_ACTIONS = {
+    "job_receipt": ("logs:GetLogEvents",),
+    "operational_receipt": ("logs:GetLogEvents",),
+}
 LOG_ACTIONS = {"get_log_events": ("logs:GetLogEvents",)}
 
 
@@ -365,6 +388,26 @@ def test_job_receipts_are_read_from_the_streams_terraform_configures():
         "runtime-proof": ("/sentry-staging/runtime-release", "runtime-proof/proof/" + "b" * 32),
         "product-proof": ("/sentry-staging/product-release", "product-proof/proof/" + "b" * 32),
     }
+    # Bootstrap jobs log as <database>-bootstrap from their "bootstrap" container.
+    from tests.release_fakes import forward_document
+
+    first = load_manifest(encode(forward_document())).manifest
+    assert {
+        job.id: job_stream("sentry-staging", job, task)
+        for job in first.jobs
+        if job.phase == "bootstrap"
+    } == {
+        "runtime-bootstrap": (
+            "/sentry-staging/runtime-release",
+            "runtime-bootstrap/bootstrap/" + "b" * 32,
+        ),
+        "product-bootstrap": (
+            "/sentry-staging/product-release",
+            "product-bootstrap/bootstrap/" + "b" * 32,
+        ),
+    }
+    assert 'name                   = "bootstrap"' in task_module
+    assert 'log-stream:${key}/bootstrap/*"' in task_module
 
 
 def between(text: str, start: str, end: str) -> str:
@@ -407,3 +450,33 @@ def test_readiness_observer_reads_the_worker_stream_terraform_configures():
     assert release_id_from_environment({"SENTRYSEARCH_RELEASE_ID": uuid}) == uuid
     assert 'worker_log_options = { mode = "non-blocking", max-buffer-size = "4m" }' in task_module
     assert "release_id          = each.value.release_id" in releases
+
+
+def test_observer_receipts_are_read_from_the_stream_terraform_configures():
+    """Each observer's check id is its Terraform key, stream prefix and RELEASE_CHECK_ID."""
+    from release.manifest import ObserverCheck, load_manifest
+    from release_aws.evidence import observer_stream
+    from tests.release_fakes import encode, manifest_document
+
+    observe = (TASK_MODULE / "observe.tf").read_text()
+    releases = configuration(STAGING / "releases")
+    assert 'runtime-observe = { target = "runtime", port = 8443, command = "observe-runtime" }' in (
+        observe
+    )
+    assert 'api-observe     = { target = "api", port = 8001, command = "observe-api" }' in observe
+    assert "awslogs-stream-prefix = key" in observe
+    assert "RELEASE_CHECK_ID             = key" in observe
+    assert 'log-stream:${key}/observer/*"' in observe
+    assert 'name                   = "observer"' in observe
+    assert 'log_group      = module.names.log_groups["observe"]' in releases
+    manifest = load_manifest(encode(manifest_document())).manifest
+    task = "arn:aws:ecs:us-east-1:111122223333:task/c/" + "c" * 32
+    streams = {
+        check.id: observer_stream("sentry-staging", check, task)
+        for check in manifest.operational_checks
+        if isinstance(check, ObserverCheck)
+    }
+    assert streams == {
+        "runtime-observe": ("/sentry-staging/observe", "runtime-observe/observer/" + "c" * 32),
+        "api-observe": ("/sentry-staging/observe", "api-observe/observer/" + "c" * 32),
+    }

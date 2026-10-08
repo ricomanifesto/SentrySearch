@@ -30,6 +30,13 @@ module "release" {
     runtime_grants = each.value.release_jobs.runtime_grants
   }
   release_tools = merge(each.value.release_tools, { release_id = each.value.release_id })
+  observers = each.value.observers == null ? null : {
+    namespace      = var.private_dns_namespace
+    budget_seconds = each.value.observers.budget_seconds
+    runtime_bundle = each.value.observers.runtime_bundle
+    log_group      = module.names.log_groups["observe"]
+  }
+  bootstrap = each.value.bootstrap
 }
 
 locals {
@@ -47,10 +54,12 @@ locals {
   # retained release's own revision.
   services      = ["runtime", "api", "worker"]
   service_kinds = flatten([for name in local.services : ["${name}-task", "${name}-execution"]])
-  current_jobs  = sort([for name, arn in local.current.task_definition_arns : arn if !contains(local.services, name)])
-  current_job_roles = sort([for kind, name in local.current.iam_role_names :
-    "arn:aws:iam::${var.account_id}:role/${name}" if !contains(local.service_kinds, kind)
-  ])
+  role_arn      = "arn:aws:iam::${var.account_id}:role"
+  # Database jobs, observers and bootstrap jobs each launch under their own scope.
+  current_jobs           = sort(values(local.current.launch_scopes.jobs.task_definitions))
+  current_job_roles      = sort([for name in local.current.launch_scopes.jobs.roles : "${local.role_arn}/${name}"])
+  current_observers      = sort(values(local.current.launch_scopes.observers.task_definitions))
+  current_observer_roles = sort([for name in local.current.launch_scopes.observers.roles : "${local.role_arn}/${name}"])
   service_roles = sort(flatten([for release in module.release : [for kind, name in release.iam_role_names :
     "arn:aws:iam::${var.account_id}:role/${name}" if contains(local.service_kinds, kind)
   ]]))
@@ -114,13 +123,46 @@ locals {
       ]
     }
   }
+  # The current release's Runtime and API observers: launch, pass their own
+  # roles and read only their observer-container receipt streams. Launch tags
+  # and stops come from the jobs policy (observers carry the job tag).
+  observer_launcher_policy = length(local.current_observers) == 0 ? {} : {
+    observe = {
+      Version = "2012-10-17"
+      Statement = [
+        { Sid = "RunCurrentReleaseObservers", Effect = "Allow", Action = ["ecs:RunTask"], Resource = local.current_observers, Condition = local.in_cluster },
+        { Sid = "PassCurrentObserverRoles", Effect = "Allow", Action = ["iam:PassRole"], Resource = local.current_observer_roles, Condition = local.pass_to_ecs },
+        { Sid = "ReadCurrentObserverReceipts", Effect = "Allow", Action = ["logs:GetLogEvents"], Resource = sort(values(local.current.observer_receipt_streams)) },
+        { Sid = "DenyExecuteCommandOnObservers", Effect = "Deny", Action = ["ecs:RunTask"], Resource = ["*"], Condition = local.exec_enabled },
+      ]
+    }
+  }
+  attended_launcher_policies = merge(local.release_launcher_policies, local.observer_launcher_policy)
+  # Bootstrap is a separate administrator path: its launcher is never part of
+  # the attended set and nothing in this run attaches it.
+  bootstrap_launcher_policy = length(local.current.launch_scopes.bootstrap.task_definitions) == 0 ? null : {
+    Version = "2012-10-17"
+    Statement = [
+      { Sid = "RunFirstDeploymentBootstrap", Effect = "Allow", Action = ["ecs:RunTask"], Resource = sort(values(local.current.launch_scopes.bootstrap.task_definitions)), Condition = local.in_cluster },
+      { Sid = "PassBootstrapRoles", Effect = "Allow", Action = ["iam:PassRole"], Resource = sort([for name in local.current.launch_scopes.bootstrap.roles : "${local.role_arn}/${name}"]), Condition = local.pass_to_ecs },
+      { Sid = "ReadBootstrapReceipts", Effect = "Allow", Action = ["logs:GetLogEvents"], Resource = sort(values(local.current.bootstrap_receipt_streams)) },
+      { Sid = "DenyExecuteCommandOnBootstrap", Effect = "Deny", Action = ["ecs:RunTask"], Resource = ["*"], Condition = local.exec_enabled },
+    ]
+  }
 }
 
 # Unattached: attaching them to a short-lived operator session is a separate
-# trust/operator approval. Attach all four together.
+# trust/operator approval. Attach the attended set together.
 resource "aws_iam_policy" "release_launcher" {
-  for_each    = local.release_launcher_policies
+  for_each    = local.attended_launcher_policies
   name        = "${var.name_prefix}-release-launcher-${each.key}"
   description = "Attended release launcher (${each.key}) for retained ${var.name_prefix} releases."
   policy      = jsonencode(each.value)
+}
+
+resource "aws_iam_policy" "release_launcher_bootstrap" {
+  count       = local.bootstrap_launcher_policy == null ? 0 : 1
+  name        = "${var.name_prefix}-release-launcher-bootstrap"
+  description = "First-deployment bootstrap launcher for ${var.name_prefix}; separate from the attended set and unattached."
+  policy      = jsonencode(local.bootstrap_launcher_policy)
 }

@@ -7,6 +7,8 @@ ambiguous is reported as waiting or as a bounded failure code, never success.
 
 from __future__ import annotations
 
+import re
+
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -28,6 +30,9 @@ class State(StrEnum):
     QUIESCED = "quiesced"
     MIGRATED = "migrated"
     GRANTS_VERIFIED = "grants_verified"
+    # Rollback runs only: the stated schemas reconciled, then proven.
+    RECONCILED = "reconciled"
+    PROVEN = "proven"
     SERVICES_STARTED = "services_started"
     OPERATIONAL_VERIFIED = "operational_verified"
     HELD_PAUSED = "held_paused"
@@ -40,6 +45,19 @@ FORWARD_STATES = (
     State.QUIESCED,
     State.MIGRATED,
     State.GRANTS_VERIFIED,
+    State.SERVICES_STARTED,
+    State.OPERATIONAL_VERIFIED,
+    State.HELD_PAUSED,
+)
+# A rollback restores the retained prior pair: it reconciles and proves the
+# stated schemas instead of migrating and granting, then starts and verifies
+# the services exactly as a forward run does.
+ROLLBACK_STATES = (
+    State.PREPARED,
+    State.LOCKED,
+    State.QUIESCED,
+    State.RECONCILED,
+    State.PROVEN,
     State.SERVICES_STARTED,
     State.OPERATIONAL_VERIFIED,
     State.HELD_PAUSED,
@@ -58,14 +76,18 @@ SERVICE_DEPLOYMENT_SETTINGS = {
 }
 
 
-def check_transition(current: State, target: State) -> None:
-    """Advance one proven step, or hold from any non-terminal state."""
+def check_transition(
+    current: State, target: State, sequence: tuple[State, ...] = FORWARD_STATES
+) -> None:
+    """Advance one proven step of this run's sequence, or hold from any non-terminal state."""
     if current in TERMINAL_STATES:
         raise ReleaseRejected("illegal_transition", f"{current}->{target}")
     if target == State.HOLD:
         return
-    position = FORWARD_STATES.index(current)
-    if FORWARD_STATES[position + 1 : position + 2] != (target,):
+    if current not in sequence:
+        raise ReleaseRejected("illegal_transition", f"{current}->{target}")
+    position = sequence.index(current)
+    if sequence[position + 1 : position + 2] != (target,):
         raise ReleaseRejected("illegal_transition", f"{current}->{target}")
 
 
@@ -229,8 +251,15 @@ def evaluate_observation(
     return None
 
 
-def task_network_address(task: Mapping[str, Any] | None) -> str | None:
-    """The task's one attached ENI private IPv4 address, or None if not exactly one."""
+def task_network_address(
+    task: Mapping[str, Any] | None, subnets: tuple[str, ...] | list[str]
+) -> str | None:
+    """The private IPv4 address of the task's one complete ENI, or None.
+
+    The attachment must be the task's only ENI, attached, with exactly one
+    interface id, one subnet among the release's approved subnets and one
+    private IPv4 address. Anything less is not a known network identity.
+    """
     if task is None:
         return None
     attachments = [
@@ -240,12 +269,22 @@ def task_network_address(task: Mapping[str, Any] | None) -> str | None:
     ]
     if len(attachments) != 1 or attachments[0].get("status") != "ATTACHED":
         return None
-    addresses = [
-        detail.get("value")
-        for detail in attachments[0].get("details") or []
-        if isinstance(detail, Mapping) and detail.get("name") == "privateIPv4Address"
-    ]
-    if len(addresses) != 1 or not isinstance(addresses[0], str):
+    details: dict[str, list[Any]] = {}
+    for detail in attachments[0].get("details") or []:
+        if isinstance(detail, Mapping):
+            details.setdefault(str(detail.get("name")), []).append(detail.get("value"))
+    interface = details.get("networkInterfaceId", [])
+    subnet = details.get("subnetId", [])
+    addresses = details.get("privateIPv4Address", [])
+    if (
+        len(interface) != 1
+        or not isinstance(interface[0], str)
+        or not re.fullmatch(r"eni-[0-9a-f]{8,17}", interface[0])
+        or len(subnet) != 1
+        or subnet[0] not in subnets
+        or len(addresses) != 1
+        or not isinstance(addresses[0], str)
+    ):
         return None
     parts = addresses[0].split(".")
     if len(parts) != 4 or not all(part.isdigit() and 0 <= int(part) <= 255 for part in parts):
@@ -353,6 +392,22 @@ def plan_rollback(
     manifest: Manifest, outcomes: Mapping[str, str], *, services_touched: bool
 ) -> dict[str, Any]:
     """Describe the manual recovery path for a hold. Nothing here is executed."""
+    if manifest.execution == "rollback":
+        # A held rollback ran no migration: the schemas are the stated ones,
+        # unless a reconcile job saw otherwise. Nothing is retried automatically.
+        return {
+            "kind": "rollback_hold",
+            "automatic": False,
+            "actions": [
+                (
+                    "set_started_services_desired_zero"
+                    if services_touched
+                    else "keep_services_desired_zero"
+                ),
+                "retain_resources_and_evidence",
+                "review_rollback_hold_before_any_retry",
+            ],
+        }
     schemas = migration_schemas(manifest, outcomes)
     rollback = manifest.rollback
     if not isinstance(rollback, CompatibleRelease):

@@ -115,14 +115,26 @@ OBSERVER_NAMESPACE = "sentry-staging.internal"
 
 
 def observer_check(check_id: str, target: str) -> dict:
-    """An observer task on the target's private name and port (release-tools image)."""
+    """An observer task on the target's private name and port (release-tools image).
+
+    Only the Runtime observer has an init and material; the API observer is one
+    container with no secret and no task role.
+    """
+    task = task_spec(check_id, "release_tools", app="observer")
+    if target == "api":
+        task = {
+            **task,
+            "secrets": [],
+            "containers": [{"name": "observer", "image": "release_tools"}],
+        }
+        del task["task_role"]
     return {
         "id": check_id,
         "receipt_schema": "sentry.operational.v1",
         "target": target,
         "host": f"{target}.{OBSERVER_NAMESPACE}",
         "port": 8443 if target == "runtime" else 8001,
-        "task": task_spec(check_id, "release_tools", app="observer"),
+        "task": task,
         "deadline_seconds": 300,
         "stop_grace_seconds": 30,
     }
@@ -302,6 +314,14 @@ def rollback_run_document() -> dict:
                     "schema": schemas["product"]}),
     ]  # fmt: skip
     return document
+
+
+def evidence_release_id(document: dict) -> str:
+    """The release whose revisions run: a rollback runs the retained prior release's."""
+    purpose = document.get("purpose") or {}
+    if purpose.get("kind") == "rollback":
+        return document["rollback"]["release_id"]
+    return document["release_id"]
 
 
 def encode(document: dict) -> bytes:
@@ -813,6 +833,10 @@ class FakeEvidence:
 
     def __init__(self, ecs: FakeEcs, document: dict) -> None:
         self.ecs = ecs
+        # Tasks this run launched carry its tag; their revisions fix the release
+        # whose receipts they write (the prior one for a rollback).
+        self.run_id = document["release_id"]
+        self.evidence_id = evidence_release_id(document)
         self.jobs = {item["id"]: item for item in document["jobs"]}
         self.checks = {item["id"]: item for item in document["operational_checks"]}
         self.service_arns = document["environment"]["services"]
@@ -836,7 +860,7 @@ class FakeEvidence:
         item = self.jobs[job_id]
         receipt = {
             "schema": item["receipt_schema"],
-            "release_id": task.tags.get("sentry:release-id"),
+            "release_id": self._release_of(task),
             "job_id": task.tags.get("sentry:job-id"),
             "task_arn": task_arn,
             "status": "succeeded",
@@ -844,6 +868,10 @@ class FakeEvidence:
         }
         receipt.update(self.job_changes.get(job_id, {}))
         return receipt
+
+    def _release_of(self, task) -> str | None:
+        tag = task.tags.get("sentry:release-id")
+        return self.evidence_id if tag == self.run_id else tag
 
     def service_peer(self, target: str) -> str | None:
         """The address a fresh DNS lookup would return: the service's running task."""
@@ -872,7 +900,7 @@ class FakeEvidence:
         }  # fmt: skip
         receipt = {
             "schema": check["receipt_schema"],
-            "release_id": task.tags.get("sentry:release-id"),
+            "release_id": self._release_of(task),
             "check_id": task.tags.get("sentry:job-id"),
             "task_arn": task_arn,
             "status": "passed",
@@ -899,7 +927,8 @@ class FakeLogs:
 
     def __init__(self, ecs: FakeEcs, document: dict) -> None:
         self.ecs = ecs
-        self.release_id = document["release_id"]
+        # The worker revision fixes its release's id (the prior one for a rollback).
+        self.release_id = evidence_release_id(document)
         self.group = f"/{document['environment']['name']}/worker"
         self.delay = 1.0
         self.page_size = 100

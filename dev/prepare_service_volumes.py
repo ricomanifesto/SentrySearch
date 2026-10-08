@@ -27,6 +27,9 @@ PROFILES = {
     "search": (10001, {"runtime-ca.pem", "postgres-ca.pem"}),
     "runtime-release": (65532, {"postgres-ca.pem"}),
     "search-release": (10001, {"postgres-ca.pem"}),
+    # The Runtime observer (release-tools user): the private CA it trusts and the
+    # probe token, from its own bundle; no key, certificate or database CA.
+    "runtime-observer": (65532, {"runtime-ca.pem", "probe-token"}),
 }
 
 

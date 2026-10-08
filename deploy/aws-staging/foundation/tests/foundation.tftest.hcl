@@ -222,7 +222,7 @@ run "endpoints_cover_bootstrap_services_in_both_task_azs" {
       ]) &&
       output.endpoint_policies.logs.Statement == [{
         Sid       = "EnvironmentLogStreams", Effect = "Allow", Principal = "*", Action = ["logs:CreateLogStream", "logs:PutLogEvents"]
-        Resource  = [for name in ["api", "product-release", "runtime", "runtime-release", "worker"] : "arn:aws:logs:us-east-1:111122223333:log-group:/sentry-staging/${name}:log-stream:*"]
+        Resource  = [for name in ["api", "observe", "product-release", "runtime", "runtime-release", "worker"] : "arn:aws:logs:us-east-1:111122223333:log-group:/sentry-staging/${name}:log-stream:*"]
         Condition = { StringEquals = { "aws:PrincipalAccount" = "111122223333" } }
     }])
     error_message = "Interface endpoint policies admit only same-account callers for this environment's repositories, secret prefix and log groups."
@@ -365,10 +365,11 @@ run "registries_logs_cluster_and_private_dns" {
     condition = ({ for name, group in aws_cloudwatch_log_group.this : name => group.name } == {
       runtime         = "/sentry-staging/runtime", api = "/sentry-staging/api", worker = "/sentry-staging/worker"
       runtime-release = "/sentry-staging/runtime-release", product-release = "/sentry-staging/product-release"
+      observe         = "/sentry-staging/observe"
       } && alltrue([for group in aws_cloudwatch_log_group.this :
         group.retention_in_days == 14 && group.skip_destroy && group.deletion_protection_enabled && group.kms_key_id == null && group.log_group_class == "STANDARD"
     ]))
-    error_message = "Every service and release-job log group is pre-created with bounded retention and destroy protection."
+    error_message = "Every service, release-job and observer log group is pre-created with bounded retention and destroy protection."
   }
   assert {
     condition = (aws_ecs_cluster.this.name == "sentry-staging" &&
@@ -442,4 +443,73 @@ run "reject_non_staging_prefix" {
   command = plan
   variables { name_prefix = "sentry-prod" }
   expect_failures = [var.name_prefix]
+}
+
+run "alarms_exist_only_for_published_metrics_and_notify_nobody_without_a_recipient" {
+  command = plan
+  assert {
+    condition = (length(aws_sns_topic.alerts) == 0 && length(aws_sns_topic_subscription.alerts) == 0 &&
+      length(aws_budgets_budget.monthly) == 0 &&
+      toset(keys(aws_cloudwatch_metric_alarm.this)) == toset(["runtime-missing", "api-missing", "worker-missing", "runtime-db-storage", "product-db-storage"]) &&
+      alltrue([for alarm in aws_cloudwatch_metric_alarm.this :
+        !alarm.actions_enabled && length(alarm.alarm_actions) == 0 && length(alarm.ok_actions) == 0 &&
+        alarm.treat_missing_data == "breaching"
+    ]))
+    error_message = "Without a recipient nothing is delivered or budgeted; every rendered alarm has a real producer and treats silence as a breach."
+  }
+  assert {
+    condition = (aws_cloudwatch_metric_alarm.this["worker-missing"].namespace == "AWS/ECS" &&
+      aws_cloudwatch_metric_alarm.this["worker-missing"].metric_name == "CPUUtilization" &&
+      aws_cloudwatch_metric_alarm.this["worker-missing"].statistic == "SampleCount" &&
+      aws_cloudwatch_metric_alarm.this["worker-missing"].dimensions == tomap({ ClusterName = "sentry-staging", ServiceName = "sentry-staging-worker" }) &&
+      aws_cloudwatch_metric_alarm.this["worker-missing"].comparison_operator == "LessThanThreshold" &&
+      aws_cloudwatch_metric_alarm.this["worker-missing"].threshold == 1 &&
+      aws_cloudwatch_metric_alarm.this["runtime-db-storage"].namespace == "AWS/RDS" &&
+      aws_cloudwatch_metric_alarm.this["runtime-db-storage"].metric_name == "FreeStorageSpace" &&
+      aws_cloudwatch_metric_alarm.this["runtime-db-storage"].dimensions == tomap({ DBInstanceIdentifier = "sentry-staging-runtime-db" }) &&
+    aws_cloudwatch_metric_alarm.this["runtime-db-storage"].threshold == aws_db_instance.this["runtime"].allocated_storage * 1073741824 / 10)
+    error_message = "Missing-service alarms read ECS service metrics; storage alarms read RDS free storage against 10% of the allocation."
+  }
+  assert {
+    condition = (toset([for name, alert in output.alerts : name if !alert.wired]) == toset([
+      "worker-unready", "backlog-age", "lease-exhaustion", "retry-exhaustion", "phase-deadlines", "certificate-expiry", "backup"
+      ]) && alltrue([for name, alert in output.alerts : alert.wired ? (alert.producer != null && alert.missing_data == "breaching") : (
+        alert.producer == null && length(alert.reason) > 0 && !contains(keys(aws_cloudwatch_metric_alarm.this), name)
+    )]))
+    error_message = "Every named alert is either a wired alarm with a producer or explicitly unwired with a reason, never an alarm without a producer."
+  }
+}
+
+run "an_approved_recipient_receives_alarms_and_the_budget" {
+  command = plan
+  variables {
+    notifications = { email = "operator@example.test", monthly_budget_usd = 200 }
+  }
+  assert {
+    condition = (length(aws_sns_topic.alerts) == 1 && aws_sns_topic.alerts[0].name == "sentry-staging-alerts" &&
+      aws_sns_topic.alerts[0].kms_master_key_id == "alias/aws/sns" &&
+      aws_sns_topic_subscription.alerts[0].protocol == "email" && aws_sns_topic_subscription.alerts[0].endpoint == "operator@example.test" &&
+      alltrue([for alarm in aws_cloudwatch_metric_alarm.this : alarm.actions_enabled && length(alarm.alarm_actions) == 1 && length(alarm.ok_actions) == 1]) &&
+      aws_budgets_budget.monthly[0].limit_amount == "200" && aws_budgets_budget.monthly[0].time_unit == "MONTHLY" &&
+      one(aws_budgets_budget.monthly[0].cost_filter).values == tolist(["user:Environment$sentry-staging"]) &&
+      toset([for notice in aws_budgets_budget.monthly[0].notification : notice.notification_type]) == toset(["ACTUAL", "FORECASTED"]) &&
+    alltrue([for notice in aws_budgets_budget.monthly[0].notification : notice.subscriber_email_addresses == toset(["operator@example.test"]) && notice.threshold == 100]))
+    error_message = "An approved recipient gets every wired alarm and the monthly actual and forecast review notices."
+  }
+}
+
+run "reject_a_subscription_without_a_recipient" {
+  command = plan
+  variables {
+    notifications = { email = "", monthly_budget_usd = 200 }
+  }
+  expect_failures = [var.notifications]
+}
+
+run "reject_a_budget_without_a_threshold" {
+  command = plan
+  variables {
+    notifications = { email = "operator@example.test", monthly_budget_usd = 0 }
+  }
+  expect_failures = [var.notifications]
 }

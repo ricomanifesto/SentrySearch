@@ -11,9 +11,9 @@ an account-specific plan, a reachability proof or deployment approval.
 
 | Directory | State | Owns |
 | --- | --- | --- |
-| `bootstrap/` | Local and encrypted on the bootstrap operator's machine until a reviewed migration to `state/bootstrap.tfstate` | Private versioned control bucket (`state/`, `releases/`, `locks/`); unattached per-root state policies and the release-evidence policy |
-| `foundation/` | `state/foundation.tfstate` | Two-AZ private VPC, routes, endpoints, security groups, both PostgreSQL 16 instances, report bucket, three ECR repositories, log groups, ECS cluster, private DNS |
-| `releases/` | `state/releases.tfstate` | The current release and at most one compatible rollback, each a keyed instance of [`../aws-platform-fit`](../aws-platform-fit/README.md) with its guarded release-tools jobs; four unattached release-launcher policies |
+| `bootstrap/` | Local and encrypted on the bootstrap operator's machine until a reviewed migration to `state/bootstrap.tfstate` | Private versioned control bucket (`state/`, `releases/`, `locks/`); unattached per-root state policies and the release-evidence policy; an optional attended operator role (none by default) |
+| `foundation/` | `state/foundation.tfstate` | Two-AZ private VPC, routes, endpoints, security groups, both PostgreSQL 16 instances, report bucket, three ECR repositories, log groups (including the observers'), ECS cluster, private DNS; alarms for published metrics and, with an approved recipient, notifications and a monthly budget |
+| `releases/` | `state/releases.tfstate` | The current release and at most one compatible rollback, each a keyed instance of [`../aws-platform-fit`](../aws-platform-fit/README.md) with its guarded release-tools jobs, optional observers and (first deployment only) bootstrap jobs; the unattached attended release-launcher set and a separate bootstrap launcher |
 | `services/` | `state/services.tfstate` | The three ECS services, created at desired count zero |
 | `modules/naming/` | none | Shared names derived from account, region and prefix |
 
@@ -82,9 +82,10 @@ then deletes its roles and deregisters its revisions as a separate, approved ste
 
 ### Release launcher
 
-Four unattached policies, `release-launcher-jobs`, `-services`, `-tasks` and
-`-receipts`, are attached together to the attended launcher session; that trust
-choice is a separate approval. They allow:
+The attended set is four unattached policies, `release-launcher-jobs`,
+`-services`, `-tasks` and `-receipts`, plus `-observe` when the current release
+has observers. They are attached together to the attended launcher session; that
+trust choice is a separate approval. They allow:
 
 - `RunTask` on the **current** release's job revisions (migrations, grants,
   proofs and reconciliation) in this cluster, with `TagResource` only during
@@ -99,6 +100,12 @@ choice is a separate approval. They allow:
   listable resource);
 - `iam:PassRole` for exactly the current release's job roles and both retained
   releases' service roles, with `iam:PassedToService = ecs-tasks.amazonaws.com`;
+- `RunTask` on the **current** release's two observer revisions only (never a
+  retained release's), `iam:PassRole` for exactly their roles and
+  `logs:GetLogEvents` only on their observer-container streams
+  (`/<name_prefix>/observe`, `<check>/observer/*`), in the `-observe` policy.
+  Observer tasks carry the job tag, so the jobs policy's tagging and stops cover
+  them;
 - `logs:GetLogEvents` only on the current jobs' app-container streams
   (`<job>/<container>/*`) in the two release log groups, to read receipts. The log
   groups are shared by releases, so the controller reads the exact stream of the
@@ -127,11 +134,44 @@ character limit at the longest allowed names. RunTask overrides cannot be fully
 constrained by IAM: this is a trusted launcher whose controller rejects overrides,
 not a command sandbox.
 
-**A release cannot complete yet.** The grant, proof and reconciliation jobs, the
-worker readiness gate, their roles, receipt reads and the stub-tested
-[AWS adapters](../../docs/release-aws-adapters.md) now exist. However, the
-migration images emit no receipts, and the Runtime and API operational observers
-do not exist. Missing, stale or ambiguous receipts hold the release.
+Bootstrap jobs (a first deployment only: one current release and no rollback)
+launch through `release-launcher-bootstrap`, a separate unattached policy outside
+the attended set: `RunTask` on the two bootstrap revisions, `PassRole` for their
+roles and `GetLogEvents` on their receipt streams. Nothing in this run attaches
+it; the live administrator path is a separate approval.
+
+Every evidence producer now has a definition: migrations in their release-job
+mode, grants, proofs, reconciliation, observers and the worker gate. Their images
+are not yet rebuilt and scanned with these producers, so a release against these
+roots would still hold. Missing, stale or ambiguous receipts hold the release.
+
+A rollback run (docs/release-controller.md) restores the retained prior pair.
+The attended scope stays the **current** release's: the operator re-plans
+`releases/` with the prior release as `current` before the run. Its reconcile,
+proof and observer revisions keep the deadline fixed when it was first planned,
+so a rollback after that deadline holds at its first job and needs a new release
+key planned from the prior pair's images, a separate approval.
+
+### Monitoring
+
+`foundation/` renders an alarm only where AWS itself publishes the metric: one
+per service when no task reports ECS service CPU (silence breaches), and one per
+database when free storage drops below 10% of the allocation (missing data
+breaches). The `alerts` output lists those with their producer and missing-data
+behaviour, and every other named alert (worker readiness, backlog age, lease and
+retry exhaustion, phase deadlines, certificate expiry, backup) as unwired with the
+reason: nothing publishes a metric for them yet. Without the optional
+`notifications` input (an approved recipient and a monthly review threshold, not
+a cap) there is no SNS topic, subscription or budget, and alarms have no actions.
+
+### Operator role
+
+`bootstrap/` can create the attended operator role (`operator_trust`, default
+`null`). Its trust names exactly one IAM user or role, requires the external id,
+bounds the session to 1–12 hours and requires the role session name and the
+source identity to equal the manifest's operator, so the session the release CLI
+matches proves who assumed it. Wildcards and account-root principals are
+rejected. No policy is attached by Terraform.
 
 The release journal and environment lock use the separate `release-evidence`
 policy from `bootstrap/`, which requires the manifest's environment name to equal
@@ -220,7 +260,13 @@ and their size, and paused services. They reject public or unaligned CIDRs, a si
 PostgreSQL majors, unbounded log retention, foreign or wildcard secrets, moving
 secret labels, shared or role-swapped bundles, foreign or tag-pinned images,
 unbound release keys, missing or extra current/rollback releases, unpinned task
-definitions and grant sources, and shared security groups.
+definitions and grant sources, and shared security groups. They also cover the
+observe policy (current revisions only), the separate bootstrap launcher,
+bootstrap only on a first deployment with RDS-managed administrator secrets,
+observer bundle aliasing and purpose changes, the wired and unwired alerts,
+recipient-gated notifications and budget, and the operator trust policy
+(rejecting wildcard or account-root principals, short external ids and unbounded
+sessions).
 
 ## Not proven or not built
 
@@ -234,10 +280,11 @@ approved read-only account inspection, an exact reviewed plan and, separately,
 an approved apply.
 
 Not implemented here: secret containers (created by the credential owner),
-alarms, SNS, budgets and VPC flow logs (recipient, cost and retention approvals),
-DNS Firewall, the bootstrap job definition and its administrator path, a
-published and scanned release-tools image, measured log buffers for Runtime and
-API (the worker's is [set](../../docs/runtime-consistency.md#readiness-receipts)),
-and any operator trust policy or role. Release journals, lockfile versions and the proposed 90-day
+VPC flow logs (retention approval), producers for the unwired alerts, DNS
+Firewall, the live bootstrap administrator path, published and scanned images
+carrying the observers and migration release jobs, measured log buffers for
+Runtime and API (the worker's is [set](../../docs/runtime-consistency.md#readiness-receipts)),
+and any attachment of launcher policies. Notification delivery and budget
+enforcement are not proven by mocks. Release journals, lockfile versions and the proposed 90-day
 evidence retention have no lifecycle rule: evidence is kept until a reviewed
 retention decision.

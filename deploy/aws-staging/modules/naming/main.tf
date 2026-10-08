@@ -75,7 +75,8 @@ output "service_arns" {
 }
 
 output "log_groups" {
-  value = { for name in keys(local.task_families) : name => "/${local.prefix}/${name}" }
+  # Every family's group, plus one shared group for the Runtime and API observers.
+  value = merge({ for name in keys(local.task_families) : name => "/${local.prefix}/${name}" }, { observe = "/${local.prefix}/observe" })
 }
 
 output "ecr_repositories" {

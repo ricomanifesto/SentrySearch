@@ -121,3 +121,77 @@ run "reject_invalid_region" {
   variables { region = "global" }
   expect_failures = [var.region]
 }
+
+run "no_operator_role_by_default" {
+  command = plan
+  assert {
+    condition     = length(aws_iam_role.operator) == 0 && output.operator_role_arn == null && output.operator_trust_policy == null
+    error_message = "Without an approved operator trust input this root creates no IAM principal."
+  }
+}
+
+run "operator_trust_names_one_principal_and_pins_the_session" {
+  command = plan
+  variables {
+    operator_trust = {
+      principal_arn   = "arn:aws:iam::444455556666:role/custodian-issuer", external_id = "fixture-external-id-0123456789"
+      session_seconds = 14400, operator = "michael"
+    }
+  }
+  assert {
+    condition = (aws_iam_role.operator[0].name == "sentry-staging-operator" &&
+      aws_iam_role.operator[0].max_session_duration == 14400 &&
+      output.operator_role_arn == "arn:aws:iam::111122223333:role/sentry-staging-operator" &&
+      jsondecode(aws_iam_role.operator[0].assume_role_policy) == {
+        Version = "2012-10-17"
+        Statement = [{
+          Sid    = "AttendedOperator", Effect = "Allow", Principal = { AWS = "arn:aws:iam::444455556666:role/custodian-issuer" }
+          Action = ["sts:AssumeRole", "sts:SetSourceIdentity"]
+          Condition = { StringEquals = {
+            "sts:ExternalId" = "fixture-external-id-0123456789", "sts:RoleSessionName" = "michael", "sts:SourceIdentity" = "michael"
+          } }
+        }]
+    })
+    error_message = "The operator role trusts one principal with its external id, and the session name and source identity must be the approved operator."
+  }
+}
+
+run "reject_a_trust_policy_with_a_wildcard_principal" {
+  command = plan
+  variables {
+    operator_trust = { principal_arn = "*", external_id = "fixture-external-id-0123456789", session_seconds = 3600, operator = "michael" }
+  }
+  expect_failures = [var.operator_trust]
+}
+
+run "reject_an_account_root_principal" {
+  command = plan
+  variables {
+    operator_trust = { principal_arn = "arn:aws:iam::444455556666:root", external_id = "fixture-external-id-0123456789", session_seconds = 3600, operator = "michael" }
+  }
+  expect_failures = [var.operator_trust]
+}
+
+run "reject_a_wildcard_role_path" {
+  command = plan
+  variables {
+    operator_trust = { principal_arn = "arn:aws:iam::444455556666:role/*", external_id = "fixture-external-id-0123456789", session_seconds = 3600, operator = "michael" }
+  }
+  expect_failures = [var.operator_trust]
+}
+
+run "reject_a_short_external_id" {
+  command = plan
+  variables {
+    operator_trust = { principal_arn = "arn:aws:iam::444455556666:role/custodian-issuer", external_id = "short", session_seconds = 3600, operator = "michael" }
+  }
+  expect_failures = [var.operator_trust]
+}
+
+run "reject_an_unbounded_session" {
+  command = plan
+  variables {
+    operator_trust = { principal_arn = "arn:aws:iam::444455556666:role/custodian-issuer", external_id = "fixture-external-id-0123456789", session_seconds = 86400, operator = "michael" }
+  }
+  expect_failures = [var.operator_trust]
+}

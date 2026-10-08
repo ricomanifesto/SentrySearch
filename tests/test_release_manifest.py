@@ -275,14 +275,27 @@ def _observers(document: dict) -> dict[str, dict]:
         (lambda d: _observers(d)["api"].update(host="API.sentry-staging.internal"),
          "invalid_field"),
         (lambda d: _observers(d)["api"].update(target="worker"), "invalid_field"),
-        # Its own release-tools task: an init container and the observer container.
-        (lambda d: _observers(d)["api"]["task"]["containers"][1].update(image="search"),
+        # Two checks can never share an id.
+        (lambda d: _observers(d)["api"].update(id="runtime-observe"), "invalid_field"),
+        # The Runtime observer: an init and the observer container of the tools image.
+        (lambda d: _observers(d)["runtime"]["task"]["containers"][1].update(image="search"),
          "observer_task_invalid"),
-        (lambda d: _observers(d)["api"]["task"]["containers"][1].update(name="app"),
+        (lambda d: _observers(d)["runtime"]["task"]["containers"][1].update(name="app"),
          "observer_task_invalid"),
-        (lambda d: _observers(d)["api"]["task"]["containers"].append(
+        (lambda d: _observers(d)["runtime"]["task"]["containers"].append(
             {"name": "sidecar", "image": "release_tools"}), "observer_task_invalid"),
         (lambda d: _observers(d)["runtime"]["task"]["containers"].pop(0), "invalid_field"),
+        (lambda d: _observers(d)["runtime"]["task"].update(secrets=[]), "invalid_field"),
+        (lambda d: _observers(d)["runtime"]["task"].pop("task_role"), "invalid_field"),
+        # The API observer: one container, no secret, no AWS authority.
+        (lambda d: _observers(d)["api"]["task"]["containers"][0].update(image="search"),
+         "observer_task_invalid"),
+        (lambda d: _observers(d)["api"]["task"]["containers"].insert(
+            0, {"name": "init", "image": "search"}), "invalid_field"),
+        (lambda d: _observers(d)["api"]["task"].update(
+            task_role=_observers(d)["runtime"]["task"]["task_role"]), "invalid_field"),
+        (lambda d: _observers(d)["api"]["task"].update(
+            secrets=copy.deepcopy(_observers(d)["runtime"]["task"]["secrets"][:1])), "invalid_field"),
         # Bounded, and never sharing an identifier with a job.
         (lambda d: _observers(d)["api"].update(deadline_seconds=59), "invalid_field"),
         (lambda d: _observers(d)["api"].update(deadline_seconds=3601), "invalid_field"),
@@ -308,7 +321,7 @@ def test_runtime_and_api_are_each_proven_by_one_scoped_observer_task(change, cod
     [
         lambda d: d["jobs"][0]["task"]["secrets"][1],
         lambda d: d["services"]["runtime"]["secrets"][1],
-        lambda d: _observers(d)["api"]["task"]["secrets"][1],
+        lambda d: d["jobs"][4]["task"]["secrets"][0],
     ],
 )
 def test_an_observers_material_is_its_own(share):

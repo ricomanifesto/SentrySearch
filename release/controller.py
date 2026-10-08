@@ -17,6 +17,8 @@ from typing import Any
 
 from release.journal import Journal, ObjectStore, PreconditionFailed, encode, journal_key, lock_key
 from release.machine import (
+    FORWARD_STATES,
+    ROLLBACK_STATES,
     TERMINAL_STATES,
     State,
     check_transition,
@@ -37,6 +39,7 @@ from release.manifest import (
     LoadedManifest,
     ObserverCheck,
     ReleaseRejected,
+    RollbackRun,
     canonical_sha256,
     verify_approval,
 )
@@ -55,6 +58,8 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 IDENTICAL_RETRIES = 3
 VISIBILITY_POLLS = 3
 STOP_CONFIRMATION_MARGIN = timedelta(seconds=30)
+# A failed release's leftover task gets its job's longest stop grace (120 s).
+FAILED_TASK_STOP_GRACE = timedelta(seconds=120)
 # Observations that resolve a launch intent without a usable task.
 REFUSED_LAUNCHES = ("launch_failed", "launched_multiple", "launched_unexpected")
 READINESS_POLICY = GatePolicy()
@@ -100,6 +105,21 @@ class RecoveryAuthorization:
 
 
 @dataclass(frozen=True)
+class FailedReleaseHandoff:
+    """Recorded decision that the failed release's session is fenced and cannot resume.
+
+    A rollback takes the environment lock from the failed release only with this:
+    the failed session named in its journal, the lock's exact ETag, evidence that
+    the old operator session was fenced, and who decided it.
+    """
+
+    failed_session_id: str
+    lock_etag: str
+    fence_evidence_sha256: str
+    authorized_by: str
+
+
+@dataclass(frozen=True)
 class Outcome:
     state: str
     reason: str | None
@@ -121,6 +141,7 @@ class ReleaseController:
         clock: Clock,
         tokens: Callable[[], str],
         session_id: str,
+        handoff: FailedReleaseHandoff | None = None,
     ) -> None:
         self.loaded = loaded
         self.manifest = loaded.manifest
@@ -132,7 +153,13 @@ class ReleaseController:
         self.clock = clock
         self.tokens = tokens
         self.session_id = session_id
+        self.handoff = handoff
         self.release_id = self.manifest.release_id
+        # Every receipt names the release whose revisions run: for a rollback, the
+        # retained prior release. Journal, lock, approval and launch tags use ours.
+        self.evidence_id = self.manifest.evidence_release_id
+        self.rollback_run = self.manifest.execution == "rollback"
+        self.sequence = ROLLBACK_STATES if self.rollback_run else FORWARD_STATES
         self.cluster = self.manifest.environment.cluster_arn
         self.poll = self.manifest.window.poll_seconds
         self.journal = Journal(store, journal_key(self.release_id))
@@ -157,14 +184,7 @@ class ReleaseController:
 
     # Entry points ----------------------------------------------------------
 
-    def _require_forward_execution(self) -> None:
-        # Rollback execution (reconcile/proof over the retained prior pair, with
-        # failed-release handoff) is not wired yet: nothing runs for it.
-        if self.manifest.execution != "forward":
-            raise ReleaseHalted("rollback_execution_unavailable")
-
     def run(self) -> Outcome:
-        self._require_forward_execution()
         try:
             approval_error = self._approval_error()
             if approval_error not in (None, "approval_expired"):
@@ -184,6 +204,18 @@ class ReleaseController:
             State.SERVICES_STARTED: self._verify_operational,
             State.OPERATIONAL_VERIFIED: self._finish,
         }
+        if self.rollback_run:
+            # The retained prior pair over the stated schemas: reconcile, prove,
+            # then start and verify; never a migration, grant or bootstrap.
+            steps = {
+                State.PREPARED: self._lock_environment,
+                State.LOCKED: self._quiesce,
+                State.QUIESCED: lambda: self._run_jobs({"reconcile"}, State.RECONCILED),
+                State.RECONCILED: lambda: self._run_jobs({"proof"}, State.PROVEN),
+                State.PROVEN: self._start_services,
+                State.SERVICES_STARTED: self._verify_operational,
+                State.OPERATIONAL_VERIFIED: self._finish,
+            }
         code: str | None = None
         try:
             self._require_clock_after_journal()
@@ -224,7 +256,6 @@ class ReleaseController:
         cleanup, so it needs no current approval, only this session's exact lock
         (``recover`` first after a lost session). A finished release is unchanged.
         """
-        self._require_forward_execution()
         if not self._load():
             raise ReleaseHalted("journal_missing")
         if self.journal.document.get("session_id") != self.session_id:
@@ -242,7 +273,6 @@ class ReleaseController:
         Nothing is executed here. The next ``run`` reconciles outstanding intents
         against real observations before taking any new action.
         """
-        self._require_forward_execution()
         auth = authorization
         refused = ReleaseHalted("recovery_refused")
         if (
@@ -424,7 +454,7 @@ class ReleaseController:
         return [e["to"] for e in self._transitions() if e["to"] != State.HOLD.value][-1]
 
     def _transition(self, target: State, **data: Any) -> None:
-        check_transition(self.state, target)
+        check_transition(self.state, target, self.sequence)
         if target != State.HOLD:
             self._guard()
         self._append({"kind": "transition", "to": target.value, **data},
@@ -546,20 +576,189 @@ class ReleaseController:
             record[0].get("session_id"),
         ) == (self.release_id, self.session_id)
 
-    def _lock_environment(self) -> None:
-        body = {
+    def _lock_body(self, **extra: Any) -> dict[str, Any]:
+        return {
             "release_id": self.release_id,
             "session_id": self.session_id,
             "manifest_sha256": self.loaded.sha256,
             "acquired_at": _iso(self._now()),
+            **extra,
         }
+
+    def _acquire_free_lock(self) -> None:
         try:
-            self.store.create(self.lock, encode(body))
+            self.store.create(self.lock, encode(self._lock_body()))
         except PreconditionFailed:
             # No TTL or age-based stealing: only this exact session may continue.
             if not self._lock_is_ours():
                 raise _Hold("environment_locked") from None
+
+    def _lock_environment(self) -> None:
+        if self.rollback_run:
+            self._take_over_from_failed_release()
+        else:
+            self._acquire_free_lock()
         self._transition(State.LOCKED)
+
+    # Rollback: failed-release handoff ---------------------------------------------
+
+    def _failed_journal(self) -> Journal:
+        """The failed release's own journal, which must name it and this environment."""
+        purpose = self.manifest.purpose
+        assert isinstance(purpose, RollbackRun)
+        failed = Journal(self.store, journal_key(purpose.failed_release_id))
+        if not failed.load():
+            raise _Hold("failed_release_unknown")
+        document = failed.document
+        if (
+            document.get("release_id") != purpose.failed_release_id
+            or document.get("environment") != self.manifest.environment.name
+            or not isinstance(document.get("session_id"), str)
+        ):
+            raise _Hold("failed_release_unknown")
+        return failed
+
+    def _take_over_from_failed_release(self) -> None:
+        """Take the environment from the failed release, never by stealing its lock.
+
+        The failed release's journal is read first. If its lock is still held, it
+        moves only by an exact conditional replace of the ETag the operator saw,
+        under a handoff that names the failed journal's session and the evidence
+        that it was fenced. A lock held by anyone else, or a missing lock while
+        the failed release had not finished, holds. Every launch token the failed
+        release journaled is then listed and any task still running is stopped
+        before anything else happens.
+        """
+        failed = self._failed_journal()
+        failed_id = failed.document["release_id"]
+        failed_session = failed.document["session_id"]
+        record = self._lock_record()
+        if record is None:
+            # Only a release that finished and released its lock leaves none behind.
+            finished = [e for e in failed.events if e["kind"] == "observation"
+                        and e["subject"] == "environment" and e["result"] == "lock_released"]  # fmt: skip
+            if not finished:
+                raise _Hold("failed_release_lock_missing")
+            self._acquire_free_lock()
+        else:
+            body, etag = record
+            owner = (body.get("release_id"), body.get("session_id"))
+            if owner == (self.release_id, self.session_id):
+                pass  # Already handed off to this session (a resumed run).
+            elif owner == (failed_id, failed_session):
+                self._hand_off_lock(failed_id, failed_session, etag)
+            else:
+                raise _Hold("environment_locked")
+        self._sweep_failed_launches(failed)
+        self._observe("environment", "failed_release_reconciled", failed_release_id=failed_id,
+                      failed_session_id=failed_session,
+                      failed_journal_sha256=canonical_sha256(failed.document))  # fmt: skip
+
+    def _hand_off_lock(self, failed_id: str, failed_session: str, etag: str) -> None:
+        handoff = self.handoff
+        if (
+            handoff is None
+            or handoff.failed_session_id != failed_session
+            or handoff.lock_etag != etag
+            or not SHA256.fullmatch(handoff.fence_evidence_sha256)
+            or not handoff.authorized_by.strip()
+        ):
+            raise _Hold("handoff_refused")
+        request = {"key": self.lock, "if_match": etag, "from_release_id": failed_id,
+                   "from_session_id": failed_session}  # fmt: skip
+        self._intent("lock_handoff", "environment", request, lock_etag=etag,
+                     from_release_id=failed_id, from_session_id=failed_session,
+                     fence_evidence_sha256=handoff.fence_evidence_sha256,
+                     authorized_by=handoff.authorized_by)  # fmt: skip
+        moved = self._lock_body(
+            transferred_from={"release_id": failed_id, "session_id": failed_session}
+        )
+        try:
+            self.store.replace(self.lock, encode(moved), if_match=etag)
+        except PreconditionFailed:
+            # Someone else moved it first: nothing of ours was written.
+            self._observe("environment", "handoff_conflict", resolves="lock_handoff")
+            raise _Hold("handoff_conflict") from None
+        except AmbiguousResponse:
+            self._confirm_handoff(failed_id, failed_session, etag)
+            if not self._lock_is_ours():
+                # A lost response for a replace that never landed: hold rather
+                # than resend within this step.
+                raise _Hold("handoff_unconfirmed") from None
+            return
+        self._observe("environment", "lock_handed_off", resolves="lock_handoff",
+                      from_release_id=failed_id)  # fmt: skip
+
+    def _confirm_handoff(self, failed_id: str, failed_session: str, etag: str) -> None:
+        """After a crash or lost response: the lock is ours, untouched, or held."""
+        record = self._lock_record()
+        if record is not None and (record[0].get("release_id"), record[0].get("session_id")) == (
+            self.release_id,
+            self.session_id,
+        ):
+            self._observe("environment", "lock_handed_off", resolves="lock_handoff",
+                          from_release_id=failed_id, reconciled=True)  # fmt: skip
+            return
+        if (
+            record is not None
+            and record[1] == etag
+            and (
+                record[0].get("release_id"),
+                record[0].get("session_id"),
+            )
+            == (failed_id, failed_session)
+        ):
+            # The replace never landed: the failed lock is exactly as authorized,
+            # so the same conditional handoff may be sent again.
+            self._observe("environment", "handoff_not_applied", resolves="lock_handoff")
+            return
+        self._observe("environment", "handoff_conflict", resolves="lock_handoff")
+        raise _Hold("handoff_conflict")
+
+    def _sweep_failed_launches(self, failed: Journal) -> None:
+        """Stop whatever still runs under any launch token the failed release journaled.
+
+        A launch whose outcome was never learned may still be running; an empty
+        listing is not proof of absence, so a token is only cleared when ECS lists
+        no running task for it, and any listed task is described and stopped.
+        """
+        tokens = sorted({e["token"] for e in failed.events
+                         if e["kind"] == "intent" and e["action"] == "run_task"})  # fmt: skip
+        stopped = 0
+        for token in tokens:
+            for arn in self.ecs.list_tasks(self.cluster, started_by=token):
+                task = self._describe_task(arn)
+                if task is None or task.get("startedBy") != token:
+                    raise _Hold("failed_release_unreconciled")
+                if task.get("lastStatus") != "STOPPED":
+                    self._stop_failed_task(arn, token)
+                    stopped += 1
+        self._observe("environment", "failed_launches_swept", tokens=len(tokens), stopped=stopped)
+
+    def _stop_failed_task(self, arn: str, token: str) -> None:
+        """A journaled safety stop of the failed release's own task, then confirmation."""
+        subject = f"failed:{token}"
+        request = {"cluster": self.cluster, "task": arn, "reason": "rollback of failed release"}
+        self._intent("stop_task", subject, request, guard=False, task_arn=arn)
+        try:
+            self.ecs.stop_task(self.cluster, arn, request["reason"])
+        except AmbiguousResponse:
+            pass
+        self._confirm_failed_stop(subject, arn)
+
+    def _confirm_failed_stop(self, subject: str, arn: str) -> None:
+        give_up = self._now() + FAILED_TASK_STOP_GRACE + STOP_CONFIRMATION_MARGIN
+        while True:
+            task = self._describe_task(arn)
+            if task is not None and task.get("lastStatus") == "STOPPED":
+                self._observe(subject, "stop_confirmed", resolves="stop_task", task_arn=arn,
+                              sql_outcome="unknown")  # fmt: skip
+                return
+            if self._now() >= give_up:
+                self._observe(subject, "stop_unconfirmed", resolves="stop_task", task_arn=arn,
+                              sql_outcome="unknown")  # fmt: skip
+                raise _Hold("failed_release_unreconciled")
+            self._sleep(self.poll)
 
     # Reconciliation ------------------------------------------------------------
 
@@ -569,6 +768,11 @@ class ReleaseController:
                 self._reconcile_launch(self.launchables[intent["subject"]], intent)
             elif intent["action"] == "update_service":
                 self._reconcile_update(intent)
+            elif intent["action"] == "lock_handoff":
+                self._confirm_handoff(intent["from_release_id"], intent["from_session_id"],
+                                      intent["lock_etag"])  # fmt: skip
+            elif intent["subject"].startswith("failed:"):
+                self._confirm_failed_stop(intent["subject"], intent["task_arn"])
             else:
                 item = self.launchables[intent["subject"]]
                 self._stop_after_deadline(item, intent["task_arn"], self._deadline_code(item))
@@ -917,7 +1121,7 @@ class ReleaseController:
     def _await_job(self, job: Job) -> None:
         def settle(task: dict[str, Any], arn: str, token: str,
                    deadline: datetime) -> tuple[str | None, dict[str, Any]]:  # fmt: skip
-            receipt = self.evidence.job_receipt(self.release_id, job.id, arn)
+            receipt = self.evidence.job_receipt(self.evidence_id, job.id, arn)
             # There is no trusted completion timestamp in this port contract.
             # Even a timely task needs its complete receipt before the deadline.
             if self._now() >= deadline:
@@ -926,7 +1130,7 @@ class ReleaseController:
                 raise _Hold("job_deadline_exceeded")
             self._guard()
             failure = evaluate_job(
-                job, self.digests, release_id=self.release_id, token=token, task=task,
+                job, self.digests, release_id=self.evidence_id, token=token, task=task,
                 receipt=receipt,
             )  # fmt: skip
             if failure is not None:
@@ -1131,7 +1335,7 @@ class ReleaseController:
 
     def _service_address(self, task_arn: str) -> str:
         """The recorded service task's one ENI address; anything else is not known."""
-        address = task_network_address(self._describe_task(task_arn))
+        address = task_network_address(self._describe_task(task_arn), self.manifest.network.subnets)
         if address is None:
             raise _Hold("service_network_identity_unknown")
         return address
@@ -1161,7 +1365,7 @@ class ReleaseController:
             issue = evaluate_task(check.task, self.digests, token=token, task=task)
             if issue is not None:
                 return issue, {}
-            receipt = self.evidence.operational_receipt(self.release_id, check.id, arn)
+            receipt = self.evidence.operational_receipt(self.evidence_id, check.id, arn)
             self._require_recorded_tasks(recorded)
             if self._service_address(target) != peer:
                 raise _Hold("task_replaced")
@@ -1170,7 +1374,7 @@ class ReleaseController:
                               reason="operational_deadline_exceeded")  # fmt: skip
                 raise _Hold("operational_deadline_exceeded")
             self._guard()
-            failure = evaluate_observation(check, release_id=self.release_id, task_arn=arn,
+            failure = evaluate_observation(check, release_id=self.evidence_id, task_arn=arn,
                                            peer=peer, receipt=receipt)  # fmt: skip
             if failure is not None:
                 return failure, {}
@@ -1195,7 +1399,7 @@ class ReleaseController:
         task_arn = recorded["worker"]
         deployment = self._deployment_id("worker")
         assert deployment is not None
-        group, stream = worker_stream(self.manifest.environment.name, self.release_id, task_arn)
+        group, stream = worker_stream(self.manifest.environment.name, self.evidence_id, task_arn)
         epoch = self._now()
         # Journal times are controller time, rounded down: an epoch before any of
         # them means the clock moved backwards at some earlier step.
@@ -1214,7 +1418,7 @@ class ReleaseController:
         deadline = _time(_iso(limit))
         self._observe(check_id, "readiness_observing", task_arn=task_arn,
                       epoch_at=_iso(epoch), deadline_at=_iso(deadline))  # fmt: skip
-        gate = ReadinessGate(policy, release_id=self.release_id, epoch_start=epoch,
+        gate = ReadinessGate(policy, release_id=self.evidence_id, epoch_start=epoch,
                              task_arn=task_arn)  # fmt: skip
         start = epoch - timedelta(seconds=policy.max_future_skew_seconds)
         token: str | None = None

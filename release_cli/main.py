@@ -32,7 +32,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol, TextIO
 
-from release.controller import Outcome, RecoveryAuthorization, ReleaseController, ReleaseHalted
+from release.controller import (
+    FailedReleaseHandoff,
+    Outcome,
+    RecoveryAuthorization,
+    ReleaseController,
+    ReleaseHalted,
+)
 from release.journal import Journal, ObjectStore, journal_key, lock_key
 from release.manifest import (
     LoadedApproval,
@@ -203,6 +209,7 @@ def _controller(
     *,
     tokens: Callable[[], str],
     session_id: str,
+    handoff: FailedReleaseHandoff | None = None,
 ) -> ReleaseController:
     manifest = loaded.manifest
     region = manifest.environment.region
@@ -219,7 +226,21 @@ def _controller(
         clock=clock,
         tokens=tokens,
         session_id=session_id,
+        handoff=handoff,
     )
+
+
+def _handoff(args: argparse.Namespace, manifest: Any) -> FailedReleaseHandoff | None:
+    """A rollback's failed-release handoff: all four values or none, rollback only."""
+    values = [args.failed_session, args.failed_lock_etag, args.fence_evidence_sha256,
+              args.authorized_by]  # fmt: skip
+    if all(value is None for value in values):
+        return None
+    if manifest.execution != "rollback":
+        raise Refused("handoff_not_applicable")
+    if any(value is None for value in values):
+        raise Refused("handoff_incomplete")
+    return FailedReleaseHandoff(*values)
 
 
 def _outcome(command: str, session_id: str, outcome: Outcome) -> tuple[int, dict[str, Any]]:
@@ -299,6 +320,12 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--lock-etag", required=True)
             command.add_argument("--fence-evidence-sha256", required=True)
             command.add_argument("--authorized-by", required=True)
+        if name == "run":
+            # A rollback takes the failed release's lock only under this handoff.
+            command.add_argument("--failed-session")
+            command.add_argument("--failed-lock-etag")
+            command.add_argument("--fence-evidence-sha256")
+            command.add_argument("--authorized-by")
     return parser
 
 
@@ -331,6 +358,7 @@ def _dispatch(
             "jobs": [job.id for job in manifest.jobs],
         }
     approval = None if args.command == "status" else _approval(args.approval, loaded)
+    handoff = _handoff(args, loaded.manifest) if args.command == "run" else None
     clock = clock_factory()
     source = _operator_clients(args, loaded.manifest, clock, clients, environ)
     if not clock.reference_bound:
@@ -338,7 +366,8 @@ def _dispatch(
     if args.command == "status":
         return EXIT_OK, _status(loaded, source)
     assert approval is not None
-    controller = _controller(loaded, approval, source, clock, tokens=tokens, session_id=session_id)
+    controller = _controller(loaded, approval, source, clock, tokens=tokens, session_id=session_id,
+                             handoff=handoff)  # fmt: skip
     if args.command == "run":
         return _outcome("run", session_id, controller.run())
     controller.recover(

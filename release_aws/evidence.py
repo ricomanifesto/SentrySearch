@@ -64,7 +64,11 @@ def _millis(moment: datetime) -> int:
 
 
 class LogEvidence:
-    """Receipts for one approved manifest, read within its fixed release window."""
+    """Receipts for one approved manifest, read within its fixed release window.
+
+    Receipts name the release whose revisions ran: this one, or for a rollback
+    the retained prior release (``Manifest.evidence_release_id``).
+    """
 
     def __init__(self, logs: LogPort, manifest: Manifest) -> None:
         self.logs = logs
@@ -121,7 +125,7 @@ class LogEvidence:
         raise AmbiguousResponse("receipt stream is ambiguous")
 
     def job_receipt(self, release_id: str, job_id: str, task_arn: str) -> dict[str, Any] | None:
-        if release_id != self.manifest.release_id or job_id not in self.jobs:
+        if release_id != self.manifest.evidence_release_id or job_id not in self.jobs:
             raise ValueError("receipt requested outside the approved manifest")
         group, stream = job_stream(self.manifest.environment.name, self.jobs[job_id], task_arn)
         kind = "migration" if self.jobs[job_id].phase == "migrate" else "tools"
@@ -130,7 +134,7 @@ class LogEvidence:
     def operational_receipt(
         self, release_id: str, check_id: str, task_arn: str
     ) -> dict[str, Any] | None:
-        if release_id != self.manifest.release_id or check_id not in self.observers:
+        if release_id != self.manifest.evidence_release_id or check_id not in self.observers:
             raise ValueError("receipt requested outside the approved manifest")
         group, stream = observer_stream(
             self.manifest.environment.name, self.observers[check_id], task_arn
