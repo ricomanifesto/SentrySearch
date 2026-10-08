@@ -305,3 +305,35 @@ def test_terminal_journal_survives_an_unconditional_overwrite_of_the_head(outcom
         assert last["kind"] == "observation" and last["result"] == "lock_released"
     else:
         assert last["kind"] == "transition" and last["to"] == "hold" and "rollback" in last
+
+
+class LockedCopies(R2Backend):
+    """R2 with a bucket lock on copies, answering writes to existing ones with 403."""
+
+    def _put(self, bucket, key, headers, body, url):
+        if key.startswith("journal-versions/") and (bucket, key) in self.objects:
+            from tests.r2_fakes import _error
+
+            return _error("AccessDenied", 403, url)
+        return super()._put(bucket, key, headers, body, url)
+
+
+def test_resume_and_recovery_work_when_locked_copies_refuse_writes():
+    r = r2_rig()
+    r.backend = LockedCopies(trace=r.trace)
+    r.ecs.crash[("run_task", "after")] = 1
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    with pytest.raises(ReleaseHalted) as error:
+        r.controller("session-b").run()
+    assert error.value.code == "session_conflict"
+    r.controller("session-b").recover(
+        RecoveryAuthorization(
+            prior_session_id="session-a",
+            lock_etag=r.backend.etag(LOCK),
+            fence_evidence_sha256=sha("session-a terminated"),
+            authorized_by="fixture-operator",
+        )
+    )
+    assert r.controller("session-b").run().state == "held_paused"
+    assert_versions_reproduce_journal(r)

@@ -59,8 +59,13 @@ def _timeout(value: Any, limit: float) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value <= limit
 
 
-def validate_client(client: Any, target: R2Target) -> None:
-    """Raise ``R2ClientRejected`` unless ``client`` meets the adapter contract."""
+def validate_client(client: Any, target: R2Target, *, ca_bundle: str | None = None) -> None:
+    """Raise ``R2ClientRejected`` unless ``client`` meets the adapter contract.
+
+    ``ca_bundle`` names the trust bundle the caller configured; without it the
+    client must use the default trust store, so a bundle substituted through
+    ``AWS_CA_BUNDLE`` or ``REQUESTS_CA_BUNDLE`` is rejected.
+    """
     try:
         meta = client.meta
         config = meta.config
@@ -80,8 +85,8 @@ def validate_client(client: Any, target: R2Target) -> None:
     # client's ignore_configured_endpoint_urls setting is not readable back.
     if meta.endpoint_url != endpoint_for(target):
         raise R2ClientRejected("endpoint")
-    # True uses the default trust store; a string is an explicit CA bundle.
-    if verify is not True and not (isinstance(verify, str) and verify):
+    expected_verify: bool | str = ca_bundle if ca_bundle is not None else True
+    if verify is False or verify != expected_verify:
         raise R2ClientRejected("tls_verification")
     # Includes proxies taken from HTTP(S)_PROXY when the client did not set none.
     if proxies != {}:

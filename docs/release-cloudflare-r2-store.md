@@ -51,9 +51,15 @@ owner.
 `journal-versions/<id>/<sha256>.json`:
 
 - after each write of the journal that R2 confirms with 200;
-- whenever the journal head is read, which fills the gap left by a process that
-  stopped between a confirmed write and its copy (an identical existing copy
-  counts as present).
+- when a read of the journal head finds that version's copy missing, which
+  fills the gap left by a process that stopped between a confirmed write and
+  its copy. A read that finds the copy present (and byte-identical) writes
+  nothing, so resuming or recovering a release needs no write access to locked
+  copies, and a reader with read-only access can read the journal.
+
+Until that next read, a version committed by a process that stopped before its
+copy exists only in the head; an outside overwrite of the head inside that
+window would lose that one version.
 
 A write that is refused or whose outcome is unknown is never copied, so the
 copies are exactly the committed history, including the newest and terminal
@@ -82,8 +88,10 @@ rejects an injected botocore client unless it:
   `https://<account>.r2.cloudflarestorage.com` (or the `eu`, `fedramp` or `us`
   jurisdictional endpoint) for the target, which also rejects an endpoint taken
   from ambient configuration such as `AWS_ENDPOINT_URL_S3`;
-- verifies TLS (the default trust store or an explicit CA bundle) and uses no
-  proxy, which also rejects proxies picked up from `HTTP(S)_PROXY`;
+- verifies TLS with the default trust store, or with exactly the CA bundle the
+  caller names (so a bundle substituted through `AWS_CA_BUNDLE` or
+  `REQUESTS_CA_BUNDLE` is rejected), and uses no proxy, which also rejects
+  proxies picked up from `HTTP(S)_PROXY`;
 - uses `request_checksum_calculation` and `response_checksum_validation` of
   `when_required`, so no `aws-chunked` body or checksum trailer is sent (R2's
   `PutObject` compatibility does not list them);
@@ -148,7 +156,11 @@ The offline model cannot establish:
    store treats 404 on a write as unavailable.
 10. Whether R2 ever answers a conditional write with 409.
 11. That `If-None-Match: *` on an existing, bucket-locked copy returns 412
-    rather than 403 or 409.
+    rather than 403 or 409. This matters only when two writers race to create
+    the same copy; reads check for an existing copy before writing.
+12. That `GetObject` for a missing object returns 404 with the error code
+    `NoSuchKey`. Any other answer is treated as unavailable, so no journal could
+    be created.
 
-Each of items 8 to 11 fails closed if R2 differs, but could stall a release
+Each of items 8 to 12 fails closed if R2 differs, but could stall a release
 until the store is adjusted.

@@ -17,8 +17,11 @@ therefore never deletes:
   released key by conditionally replacing that marker.
 * Every committed release-journal version is retained as a create-only copy at
   ``journal-versions/<release>/<sha256>.json``: after a confirmed write of
-  ``releases/<release>/journal.json``, and whenever the head is read (which
-  fills the gap if a process stopped between its write and the copy). Copies
+  ``releases/<release>/journal.json``, and when a read of the head finds its
+  copy missing (which fills the gap if a process stopped between its write and
+  the copy; until then an outside overwrite of the head would lose that one
+  version). A read that finds the copy present writes nothing, so resuming or
+  recovering a release needs no write permission on locked copies. Copies
   therefore hold exactly the committed versions, including the newest, the
   role S3 object versioning plays; R2 does not implement versioning. A write
   whose outcome is unknown or refused is never copied. The dedicated top-level
@@ -124,8 +127,8 @@ def parse_envelope(raw: bytes) -> tuple[str, bytes]:
 class R2ObjectStore:
     """``release.journal.ObjectStore`` over an injected, validated R2 client."""
 
-    def __init__(self, client: Any, target: R2Target) -> None:
-        validate_client(client, target)
+    def __init__(self, client: Any, target: R2Target, *, ca_bundle: str | None = None) -> None:
+        validate_client(client, target, ca_bundle=ca_bundle)
         self._client = client
         self._bucket = target.bucket
 
@@ -155,7 +158,7 @@ class R2ObjectStore:
         state, body = parse_envelope(raw)
         if state == RELEASED:
             return None
-        self._retain(key, raw)
+        self._retain_if_missing(key, raw)
         return body, etag
 
     def replace(self, key: str, body: bytes, *, if_match: str) -> str:
@@ -187,6 +190,17 @@ class R2ObjectStore:
             # Never commit an object that every later read must refuse.
             raise ControlStoreIntegrity("envelope exceeds the size bound")
         return envelope
+
+    def _retain_if_missing(self, key: str, envelope: bytes) -> None:
+        """On read: verify the head's copy, writing it only if it is absent."""
+        copy_key = version_key(key, envelope)
+        if copy_key is None:
+            return
+        existing = self._get(copy_key)
+        if existing is None:
+            self._retain(key, envelope)
+        elif existing[0] != envelope:
+            raise ControlStoreIntegrity("journal version copy differs")
 
     def _retain(self, key: str, envelope: bytes) -> None:
         """Keep a create-only copy of a committed journal version, or stop."""

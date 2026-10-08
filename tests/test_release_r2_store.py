@@ -271,7 +271,16 @@ def test_client_contract_is_validated_before_any_request(monkeypatch):
         R2ObjectStore(make_client(backend, proxies=None), CONTROL)
     assert error.value.reason == "proxies", "an ambient proxy is caught"
     R2ObjectStore(make_client(backend), CONTROL)  # explicit no-proxy wins over the ambient one
-    R2ObjectStore(make_client(backend, verify=os.devnull), CONTROL)  # an explicit CA bundle
+    # A CA bundle is accepted only when the caller names exactly that bundle.
+    R2ObjectStore(make_client(backend, verify=os.devnull), CONTROL, ca_bundle=os.devnull)
+    with pytest.raises(R2ClientRejected):
+        R2ObjectStore(make_client(backend, verify=os.devnull), CONTROL)
+    with pytest.raises(R2ClientRejected):
+        R2ObjectStore(make_client(backend), CONTROL, ca_bundle=os.devnull)
+    monkeypatch.setenv("AWS_CA_BUNDLE", os.devnull)
+    with pytest.raises(R2ClientRejected) as error:
+        R2ObjectStore(make_client(backend, verify=None), CONTROL)
+    assert error.value.reason == "tls_verification", "an ambient CA bundle is caught"
     assert backend.log == []
     for bad in (
         {"account_id": "UPPERCASE0123456789abcdef0123456"},
@@ -462,3 +471,47 @@ def test_writes_beyond_the_read_bound_are_refused_before_any_request():
     with pytest.raises(ControlStoreIntegrity):
         store.create(JOURNAL, b'"' * (MAX_OBJECT_BYTES // 2))
     assert backend.log == []
+
+
+class LockedCopies(R2Backend):
+    """R2 with a bucket lock on copies, answering writes to existing ones with 403."""
+
+    def _put(self, bucket, key, headers, body, url):
+        if key.startswith(VERSIONS_PREFIX) and (bucket, key) in self.objects:
+            from tests.r2_fakes import _error
+
+            return _error("AccessDenied", 403, url)
+        return super()._put(bucket, key, headers, body, url)
+
+
+def test_reading_a_journal_whose_copy_exists_sends_no_write():
+    backend = R2Backend()
+    store = store_for(backend)
+    store.create(JOURNAL, b'{"events":[1]}')
+    backend.log.clear()
+    assert held(store, JOURNAL)[0] == b'{"events":[1]}'
+    assert backend.requests("PUT") == []
+
+
+def test_reads_tolerate_locked_copies_and_read_only_access():
+    backend = LockedCopies()
+    store = store_for(backend)
+    store.create(JOURNAL, b'{"events":[1]}')
+    assert held(store, JOURNAL)[0] == b'{"events":[1]}'
+    backend.faults.append(
+        Fault("PUT", ".*", "http_status", status=403, code="AccessDenied", count=99)
+    )
+    assert held(store_for(backend), JOURNAL)[0] == b'{"events":[1]}', "a read-only reader reads"
+
+
+def test_a_missing_copy_that_cannot_be_written_still_fails_closed():
+    backend = R2Backend()
+    store = store_for(backend)
+    store.create(JOURNAL, b'{"events":[1]}')
+    for key in backend.keys(VERSIONS):
+        backend.objects.pop((CONTROL.bucket, key))
+    backend.faults.append(
+        Fault("PUT", VERSIONS + ".*", "http_status", status=403, code="AccessDenied")
+    )
+    with pytest.raises(ControlStoreUnavailable):
+        store.read(JOURNAL)
