@@ -3,16 +3,20 @@
 `release/` models an attended staging release as a strict manifest, a pure state
 machine and a journaled controller behind narrow ports. It contains no SDK,
 credential or network code. `release_aws/` adapts those ports to injected AWS SDK
-clients ([adapters](release-aws-adapters.md)), tested only against stubs. There
-is no CLI entry point or credential handling, and nothing here has launched a
-task, changed a service or read real logs. None of this is evidence that any
+clients ([adapters](release-aws-adapters.md)), tested only against stubs. The
+[operator CLI](release-cli.md) is the only composition root: it reads the
+custodian's session file, builds isolated clients, proves the operator identity
+and Clock reference, then runs the controller. Nothing here has launched a task,
+changed a service or read real logs. None of this is evidence that any
 environment exists or that a release has run.
 
 ## Inputs
 
-**Manifest (schema v1).** One immutable candidate, identified by the SHA-256 of
-its canonical JSON (sorted keys, compact separators). Parsing rejects duplicate
+**Manifest (schema 1 or 2).** One immutable candidate, identified by the SHA-256
+of its canonical JSON (sorted keys, compact separators). Parsing rejects duplicate
 keys, non-integer numbers, unknown fields and any key containing `override`.
+Schema 2 adds a required, explicit execution `purpose`; schema 1 has none and is
+always a forward run, so no approved schema-1 manifest or journal changes meaning.
 Required content:
 
 - release UUID, environment name, 12-digit account, region, cluster and the three
@@ -40,7 +44,32 @@ Required content:
   equals the migrated schema;
 - operational checks and a tagged rollback plan: `empty_hold` for a first
   release, or `compatible_release` with the prior release ID, images, task
-  definitions, trust hash, compatible schemas and snapshot ARNs.
+  definitions, trust hash, compatible schemas and snapshot ARNs. This is the
+  fallback after a failure, never the run's direction: a forward upgrade with a
+  `compatible_release` fallback still migrates.
+
+Schema 2 purposes:
+
+- `{"kind": "forward"}`: the job plan above, optionally preceded by one
+  `bootstrap` job per database (Runtime, then product) **only** when the
+  fallback is `empty_hold`. A bootstrap job runs the release-tools image with
+  id `<database>-bootstrap`, the tools receipt schema and exactly the keys
+  `database`, `principal` (the instance administrator), `owner_role` and
+  `service_role`. It creates exactly the migration owner and the grant's service
+  login on the migrated database, and the administrator is neither of them. Its
+  administrator bundle is exclusive: no service and no other job may name any of
+  its secrets. Bootstrap jobs run first, inside the `migrated` step.
+- `{"kind": "rollback", "failed_release_id", "actual_schemas"}`: restore the
+  retained prior pair after a failed release. Jobs are exactly `reconcile` then
+  `proof` for each database (no migrate, grant or bootstrap). The fallback must be
+  `compatible_release`; the manifest's services and Runtime/Search images must
+  be that prior release's; the failed release is neither this release nor the
+  prior one; both actual schemas are stated and compatible with the prior pair;
+  reconcile jobs (owner credentials, never a service bundle) must observe exactly
+  those schemas with `release_sessions` and `owner_sessions` of `0`, and proofs
+  the same schemas. The controller does **not** execute rollback runs yet: `run`,
+  `recover` and `abort` halt with `rollback_execution_unavailable` before writing
+  anything.
 
 Every ARN, role, secret, repository and snapshot must belong to the manifest's
 account and region. Floating references fail: image tags, unrevisioned task
@@ -105,6 +134,20 @@ even after approval expiry. A different session still needs explicit recovery;
 a changed or foreign lock is never deleted. The controller returns successful
 `held_paused` only after confirming lock release. A persisted terminal transition
 without that observation is incomplete finalization, not an operator success receipt.
+
+**Operator abort.** `abort` (the CLI's `cleanup`) stops only this release's own
+unfinished job tasks, exactly as expiry cleanup does, then holds with
+`operator_abort`. It needs this session's lock (after `recover` for a lost
+session) but no current approval, and never launches, deploys or scales. A
+finished `held_paused` release is left unchanged.
+
+**Clock trust.** If the Clock raises `ClockUntrusted` before a journal exists,
+the run halts (`controller_clock_untrusted`) without writing. Afterwards the
+controller holds with that reason; the hold and any safety observation are
+journaled at the latest time already recorded and marked `clock_untrusted`.
+Forward intents always need the Clock for their guard, so none is written then.
+A restarted or recovered controller whose Clock reads earlier than the latest
+journal event holds with `controller_clock_rollback` before reconciling.
 
 ## Launch and job completion
 
@@ -258,7 +301,8 @@ automatically. For `empty_hold` the plan keeps or returns services to zero and
 preserves resources and evidence. Migration outcomes are classified per database:
 a successful job proves its schema, an unlaunched job leaves it unchanged, and
 any job that ran or may have run without success is `unknown`, because a failed
-exit does not prove the SQL rolled back. `compatible_release` plans start the
+exit does not prove the SQL rolled back. A bootstrap job that may have run adds
+`reconcile_bootstrap_before_rerun`. `compatible_release` plans start the
 prior pair only when every actual schema is known and compatible; unknown state
 requires reconciliation and incompatible state requires repair forward or
 restore into isolated copies.
@@ -283,17 +327,17 @@ scheduling or real log ingestion.
 
 ## Not implemented
 
-- An operator CLI that builds isolated SDK clients for an approved operator
-  session, and a Clock adapter that enforces non-regression and a bounded UTC
-  offset. The [adapters](release-aws-adapters.md) exist but have run only against
-  stubs. Their AWS behavior (IAM, `GetLogEvents` tokens as `endTime` advances,
-  stopped-task listing, reported overrides, S3 conditional deletes) is
-  unverified.
+- Any run against AWS. The [operator CLI](release-cli.md), its isolated clients,
+  preflight and Clock, and the [adapters](release-aws-adapters.md) have run only
+  against in-process fakes. Their AWS behavior (IAM, `GetLogEvents` tokens as
+  `endTime` advances, stopped-task listing, reported overrides, S3 conditional
+  deletes, the STS `Date` header) is unverified.
 - In-image deadline guards and receipt producers for the two migration images,
-  and wiring of the bootstrap job (the grant, proof and reconciliation jobs are
-  [implemented](release-tools.md) and mock-wired).
+  and the bootstrap job's task definition and administrator path (its manifest
+  phase and controller ordering exist; the grant, proof and reconciliation jobs
+  are [implemented](release-tools.md) and mock-wired).
 - Observers for the Runtime and API operational checks.
-- Rollback execution and teardown.
+- Rollback execution (the `rollback` purpose is validated, never run) and teardown.
 
 These remain separate implementation and approval gates. See
 [`deploy/aws-platform-fit`](../deploy/aws-platform-fit/README.md) for the owner

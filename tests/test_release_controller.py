@@ -16,7 +16,7 @@ from release.controller import (
     ReleaseHalted,
 )
 from release.manifest import canonical_sha256, load_approval, load_manifest
-from release.ports import AmbiguousResponse
+from release.ports import AmbiguousResponse, ClockUntrusted
 from tests.release_fakes import (
     PRIOR_RELEASE_ID,
     START,
@@ -32,8 +32,10 @@ from tests.release_fakes import (
     approval_document,
     digest,
     encode,
+    forward_document,
     iso,
     manifest_document,
+    rollback_run_document,
     sha,
 )
 
@@ -2417,3 +2419,190 @@ def test_expiry_cleanup_after_a_withheld_launch_stops_only_matching_tasks():
     assert_held(r, outcome, "approval_expired", "quiesced")
     assert not r.calls("stop_task")
     assert r.ecs._status(foreign[0]) == "RUNNING"
+
+
+# Schema 2 purpose, bootstrap, clock trust and operator abort ---------------------
+
+
+def document_rig(document: dict, *, running_prior: bool = False, **approval) -> Rig:
+    r = rig(rollback=document["rollback"]["kind"], running_prior=running_prior, **approval)
+    r.document = document
+    r.ecs.configure(document, running_prior=running_prior)
+    r.evidence = FakeEvidence(r.ecs, document)
+    r.logs = FakeLogs(r.ecs, document)
+    loaded = load_manifest(encode(document))
+    r.approval_raw = encode({**approval_document(loaded.sha256), **approval})
+    return r
+
+
+def launched_job_ids(r: Rig) -> list[str]:
+    return [call["tags"][1]["value"] for call in r.calls("run_task")]
+
+
+def test_a_first_deployment_bootstraps_both_databases_before_any_migration():
+    r = document_rig(forward_document())
+    outcome = r.controller().run()
+    assert outcome.state == "held_paused", outcome
+    assert launched_job_ids(r) == [
+        "runtime-bootstrap", "product-bootstrap", "runtime-migrate", "product-migrate",
+        "runtime-grant", "product-grant", "runtime-proof", "product-proof",
+    ]  # fmt: skip
+    assert r.transitions() == FORWARD
+    assert_intent_precedes_every_mutation(r)
+
+
+def test_a_failed_bootstrap_holds_before_migrations_and_plans_its_reconciliation():
+    document = forward_document()
+    r = document_rig(document)
+    r.ecs.plans[document["jobs"][1]["task"]["task_definition"]] = JobPlan(exits={"bootstrap": 3})
+    outcome = r.controller().run()
+    assert_held(r, outcome, "job_container_failed", "quiesced")
+    assert launched_job_ids(r) == ["runtime-bootstrap", "product-bootstrap"]
+    assert outcome.rollback is not None
+    assert "reconcile_bootstrap_before_rerun" in outcome.rollback["actions"]
+
+
+def test_a_forward_upgrade_with_a_compatible_fallback_still_migrates_under_schema_two():
+    document = manifest_document(rollback="compatible_release")
+    document["schema_version"], document["purpose"] = 2, {"kind": "forward"}
+    r = document_rig(document, running_prior=True)
+    outcome = r.controller().run()
+    assert outcome.state == "held_paused", outcome
+    assert launched_job_ids(r)[:2] == ["runtime-migrate", "product-migrate"]
+
+
+@pytest.mark.parametrize("entry", ["run", "recover", "abort"])
+def test_rollback_execution_is_refused_before_anything_is_written(entry):
+    document = rollback_run_document()
+    r = document_rig(document, running_prior=True)
+    controller = r.controller()
+    with pytest.raises(ReleaseHalted) as error:
+        if entry == "run":
+            controller.run()
+        elif entry == "abort":
+            controller.abort()
+        else:
+            controller.recover(
+                RecoveryAuthorization("session-x", '"etag-1"', sha("fence"), "fixture-operator")
+            )
+    assert error.value.code == "rollback_execution_unavailable"
+    assert r.store.objects == {} and r.ecs.mutations == []
+
+
+class FailingClock:
+    """Delegates to a fake clock until ``fail`` is set, then cannot vouch for time."""
+
+    def __init__(self, base: FakeClock) -> None:
+        self.base = base
+        self.fail = False
+
+    def now(self) -> datetime:
+        if self.fail:
+            raise ClockUntrusted("fixture divergence")
+        return self.base.now()
+
+    def sleep(self, seconds: float) -> None:
+        if self.fail:
+            raise ClockUntrusted("fixture divergence")
+        self.base.sleep(seconds)
+
+
+def controller_with_clock(r: Rig, clock, session: str = "session-a") -> ReleaseController:
+    return ReleaseController(
+        load_manifest(encode(r.document)),
+        load_approval(r.approval_raw),
+        store=r.store,
+        ecs=r.ecs,
+        evidence=r.evidence,
+        logs=r.logs,
+        clock=clock,
+        tokens=r.tokens,
+        session_id=session,
+    )
+
+
+def test_an_untrusted_clock_before_journaling_halts_without_writing():
+    r = rig()
+    clock = FailingClock(r.clock)
+    clock.fail = True
+    with pytest.raises(ReleaseHalted) as error:
+        controller_with_clock(r, clock).run()
+    assert error.value.code == "controller_clock_untrusted"
+    assert r.store.objects == {} and r.ecs.mutations == []
+
+
+def test_a_clock_losing_trust_mid_release_holds_and_journals_without_new_sends():
+    r = rig()
+    clock = FailingClock(r.clock)
+    original = r.ecs.run_task
+
+    def fail_after_first_launch(request: dict) -> dict:
+        response = original(request)
+        clock.fail = True
+        return response
+
+    setattr(r.ecs, "run_task", fail_after_first_launch)
+    outcome = controller_with_clock(r, clock).run()
+    assert_held(r, outcome, "controller_clock_untrusted", "quiesced")
+    assert len(r.calls("run_task")) == 1 and not r.calls("update_service")
+    hold = r.events("transition", to="hold")[-1]
+    assert hold["clock_untrusted"] is True
+    latest_trusted = max(e["at"] for e in r.journal()["events"] if "clock_untrusted" not in e)
+    assert hold["at"] == latest_trusted
+
+
+def test_a_restarted_controller_whose_clock_is_behind_its_journal_holds():
+    r = rig()
+    r.ecs.crash[("run_task", "after")] = 1
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    sends = len(r.ecs.mutations)
+    controller = r.recover()
+    r.clock.moment -= timedelta(seconds=30)
+    outcome = controller.run()
+    assert_held(r, outcome, "controller_clock_rollback", "quiesced")
+    assert len(r.ecs.mutations) == sends
+
+
+def test_operator_abort_stops_only_the_releases_own_running_job_then_holds():
+    r = rig()
+    migrate = r.document["jobs"][0]["task"]["task_definition"]
+    r.ecs.plans[migrate] = JobPlan(hang=True)
+    original = r.ecs.describe_tasks
+    calls = []
+
+    def crash_while_waiting(cluster, arns):
+        calls.append(arns)
+        if len(calls) == 3:
+            raise SimulatedCrash("operator machine lost while the job runs")
+        return original(cluster, arns)
+
+    setattr(r.ecs, "describe_tasks", crash_while_waiting)
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    setattr(r.ecs, "describe_tasks", original)
+    foreign = r.ecs.standalone(migrate)
+    launches = len(r.calls("run_task"))
+    outcome = r.recover().abort()
+    assert_held(r, outcome, "operator_abort", "quiesced")
+    assert len(r.calls("run_task")) == launches and not r.calls("update_service")
+    assert [c["task"] for c in r.calls("stop_task")] == [r.job_tasks("runtime-migrate")[0].arn]
+    assert r.ecs._status(foreign) == "RUNNING"
+    assert r.events("observation", result="stop_confirmed")[-1]["sql_outcome"] == "unknown"
+
+
+def test_operator_abort_needs_this_sessions_journal_and_leaves_a_finished_release():
+    r = rig()
+    assert r.controller().run().state == "held_paused"
+    assert r.controller().abort().state == "held_paused"
+    with pytest.raises(ReleaseHalted) as error:
+        rig().controller().abort()
+    assert error.value.code == "journal_missing"
+    other = rig()
+    other.ecs.crash[("run_task", "after")] = 1
+    with pytest.raises(SimulatedCrash):
+        other.controller().run()
+    with pytest.raises(ReleaseHalted) as error:
+        other.controller("session-b").abort()
+    assert error.value.code == "session_conflict"
+    assert not other.calls("stop_task")

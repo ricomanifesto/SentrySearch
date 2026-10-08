@@ -268,6 +268,12 @@ def plan_rollback(
         values = set(schemas.values())
         if "unknown" in values or ("unchanged" in values and len(values) > 1):
             actions.append("reconcile_partial_migration_before_rerun")
+        if any(
+            job.phase == "bootstrap" and outcomes.get(job.id, "not_started") == "unknown"
+            for job in manifest.jobs
+        ):
+            # A bootstrap that may have run created or changed logins and databases.
+            actions.append("reconcile_bootstrap_before_rerun")
         return {"kind": "empty_hold", "automatic": False, "actions": actions}
     compatible = {
         "runtime": rollback.compatible_schemas.runtime,

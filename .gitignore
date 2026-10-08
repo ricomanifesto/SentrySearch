@@ -71,6 +71,7 @@ Thumbs.db
 !/docs/release-controller.md
 !/docs/release-tools.md
 !/docs/release-aws-adapters.md
+!/docs/release-cli.md
 backup_*/
 # Legacy main files (keep API files)
 /main.py

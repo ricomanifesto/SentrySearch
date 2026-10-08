@@ -15,6 +15,15 @@ class AmbiguousResponse(Exception):
     """The request may or may not have been applied; reconcile before retrying."""
 
 
+class ClockUntrusted(Exception):
+    """The Clock can no longer vouch for UTC time; nothing may be timed by it.
+
+    Raised by ``now`` and ``sleep`` once an adapter detects regression, drift
+    or an unverified offset. The controller holds without further forward
+    action and journals that hold at the latest time it already recorded.
+    """
+
+
 class Clock(Protocol):
     """UTC wall time that never moves backwards within a controller session.
 
@@ -23,7 +32,8 @@ class Clock(Protocol):
     a small bounded offset of true UTC. An adapter must enforce both (anchoring to
     a monotonic clock alone would keep any initial offset). The readiness gate
     holds if it observes controller time moving backwards, including against any
-    time already in the journal.
+    time already in the journal. A clock that loses its own trust raises
+    ``ClockUntrusted`` rather than return a time it cannot vouch for.
     """
 
     def now(self) -> datetime: ...

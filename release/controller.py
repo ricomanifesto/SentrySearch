@@ -36,7 +36,7 @@ from release.manifest import (
     canonical_sha256,
     verify_approval,
 )
-from release.ports import AmbiguousResponse, Clock, EcsPort, EvidencePort, LogPort
+from release.ports import AmbiguousResponse, Clock, ClockUntrusted, EcsPort, EvidencePort, LogPort
 from release.readiness import (
     WORKER_READINESS_CHECK,
     GatePolicy,
@@ -143,16 +143,28 @@ class ReleaseController:
 
     # Entry points ----------------------------------------------------------
 
+    def _require_forward_execution(self) -> None:
+        # Rollback execution (reconcile/proof over the retained prior pair, with
+        # failed-release handoff) is not wired yet: nothing runs for it.
+        if self.manifest.execution != "forward":
+            raise ReleaseHalted("rollback_execution_unavailable")
+
     def run(self) -> Outcome:
-        approval_error = self._approval_error()
-        if approval_error not in (None, "approval_expired"):
-            raise ReleaseHalted(str(approval_error))
-        if not self._open(may_create=approval_error is None):
-            return self._outcome()
+        self._require_forward_execution()
+        try:
+            approval_error = self._approval_error()
+            if approval_error not in (None, "approval_expired"):
+                raise ReleaseHalted(str(approval_error))
+            if not self._open(may_create=approval_error is None):
+                return self._outcome()
+        except ClockUntrusted:
+            # Nothing recorded yet can anchor a hold; nothing was sent.
+            raise ReleaseHalted("controller_clock_untrusted") from None
         steps = {
             State.PREPARED: self._lock_environment,
             State.LOCKED: self._quiesce,
-            State.QUIESCED: lambda: self._run_jobs({"migrate"}, State.MIGRATED),
+            # Bootstrap jobs, when present, come first in the manifest's job order.
+            State.QUIESCED: lambda: self._run_jobs({"bootstrap", "migrate"}, State.MIGRATED),
             State.MIGRATED: lambda: self._run_jobs({"grant", "proof"}, State.GRANTS_VERIFIED),
             State.GRANTS_VERIFIED: self._start_services,
             State.SERVICES_STARTED: self._verify_operational,
@@ -160,6 +172,7 @@ class ReleaseController:
         }
         code: str | None = None
         try:
+            self._require_clock_after_journal()
             if approval_error is not None:
                 raise _Hold(approval_error)
             self._reconcile_outstanding()
@@ -169,6 +182,8 @@ class ReleaseController:
             code = hold.code
         except ReleaseHalted:
             raise
+        except ClockUntrusted:
+            code = "controller_clock_untrusted"
         except AmbiguousResponse:
             # An uncertain read proves nothing either way.
             code = "observation_ambiguous"
@@ -187,12 +202,33 @@ class ReleaseController:
             self._hold(code)
         return self._outcome()
 
+    def abort(self) -> Outcome:
+        """Operator abort: stop this release's own unfinished jobs, then hold.
+
+        Nothing forward runs: no launch, deploy, scale-to-zero or promotion.
+        Stopping the release's own job tasks is the same safety action as expiry
+        cleanup, so it needs no current approval, only this session's exact lock
+        (``recover`` first after a lost session). A finished release is unchanged.
+        """
+        self._require_forward_execution()
+        if not self._load():
+            raise ReleaseHalted("journal_missing")
+        if self.journal.document.get("session_id") != self.session_id:
+            raise ReleaseHalted("session_conflict")
+        if self.state == State.HELD_PAUSED:
+            return self._outcome()
+        self._cleanup_expired_jobs()
+        if self.state != State.HOLD:
+            self._hold("operator_abort")
+        return self._outcome()
+
     def recover(self, authorization: RecoveryAuthorization) -> None:
         """Transfer a lost session's journal and exact lock to this session.
 
         Nothing is executed here. The next ``run`` reconciles outstanding intents
         against real observations before taking any new action.
         """
+        self._require_forward_execution()
         auth = authorization
         refused = ReleaseHalted("recovery_refused")
         if (
@@ -309,8 +345,17 @@ class ReleaseController:
         return True
 
     def _append(self, event: dict[str, Any], **header: Any) -> dict[str, Any]:
+        stamp: dict[str, Any]
         try:
-            return self.journal.append({"at": _iso(self.clock.now()), **event}, **header)
+            stamp = {"at": _iso(self.clock.now())}
+        except ClockUntrusted:
+            # Holds and safety observations are still journaled when the clock
+            # fails. Forward intents never reach here: their guard needs the
+            # clock. The latest recorded time is only a lower bound.
+            latest = max(_time(event["at"]) for event in self.journal.events)
+            stamp = {"at": _iso(latest), "clock_untrusted": True}
+        try:
+            return self.journal.append({**stamp, **event}, **header)
         except PreconditionFailed:
             raise ReleaseHalted("journal_conflict") from None
 
@@ -384,13 +429,27 @@ class ReleaseController:
 
     # Guards and lock ---------------------------------------------------------
 
+    def _require_clock_after_journal(self) -> None:
+        """A restarted or recovered controller's clock is never behind its journal.
+
+        Deadlines are absolute journal times; a clock that reads earlier than an
+        already recorded event would extend them.
+        """
+        latest = max(_time(event["at"]) for event in self.journal.events)
+        if self.clock.now() < latest:
+            raise _Hold("controller_clock_rollback")
+
     def _window_deadline(self) -> datetime:
         started = _time(self._transitions()[0]["at"])
         window = self.manifest.window
         return min(started + timedelta(seconds=window.total_seconds), window.expires_at)
 
     def _guard(self, now: datetime | None = None) -> None:
-        """Before each mutation intent or promotion: a current approval inside the window."""
+        """Before each forward mutation intent or promotion: approval inside the window.
+
+        Safety intents (stopping the release's own job, releasing the lock) are
+        journaled with ``guard=False`` and never come here.
+        """
         now = self.clock.now() if now is None else now
         if now >= self.approval.approval.not_after:
             raise _Hold("approval_expired")

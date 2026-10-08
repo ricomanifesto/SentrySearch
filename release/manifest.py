@@ -1,8 +1,14 @@
-"""Strict release manifest and external approval receipt, schema version 1.
+"""Strict release manifest and external approval receipt, schema versions 1 and 2.
 
 Pure parsing and validation: no clock, file system, SDK or network access. One
 manifest is one immutable candidate identified by the SHA-256 of its canonical
 JSON. Approval is a separate receipt bound to that hash, never a manifest field.
+
+Schema 2 states its execution purpose explicitly: ``forward`` (migrate, grant
+and prove, optionally after a first-deployment bootstrap) or ``rollback``
+(restore the retained prior pair after a failed release; reconcile and prove
+only). Direction is never inferred from the fallback ``rollback`` plan. Schema 1
+manifests keep their meaning: a forward run without bootstrap.
 """
 
 from __future__ import annotations
@@ -28,7 +34,7 @@ from pydantic import (
 
 from release.readiness import WORKER_CONTAINER, WORKER_READINESS_CHECK, WORKER_RECEIPT_KIND
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSIONS = (1, 2)
 MILESTONE = "operational-paused"
 # The reviewed Runtime service-grant script. Change only after reviewing new source.
 RUNTIME_GRANT_PIN = {
@@ -42,10 +48,15 @@ RUNTIME_GRANT_PIN = {
 RELEASE_TOOLS_RECEIPT_SCHEMA = "sentry.release-tools.job.v1"
 PRODUCT_GRANT_PATH = "release_tools/sql/product/grants.sql"
 RELEASE_TOOLS_RESULT_KEYS = {
+    "bootstrap": frozenset({"database", "principal", "owner_role", "service_role"}),
     "grant": frozenset({"database", "principal", "service_role", "sql_digest"}),
     "proof": frozenset({"database", "principal", "schema"}),
+    "reconcile": frozenset(
+        {"database", "principal", "schema", "release_sessions", "owner_sessions"}
+    ),
 }
 MAX_VALIDITY = timedelta(days=7)
+DATABASES = ("runtime", "product")
 JOB_ORDER = (
     ("migrate", "runtime"),
     ("migrate", "product"),
@@ -54,7 +65,18 @@ JOB_ORDER = (
     ("proof", "runtime"),
     ("proof", "product"),
 )
+# A first deployment (rollback ``empty_hold``) may bootstrap both databases first.
+BOOTSTRAP_ORDER = (("bootstrap", "runtime"), ("bootstrap", "product"), *JOB_ORDER)
+# A rollback run never migrates, grants or bootstraps.
+ROLLBACK_ORDER = (
+    ("reconcile", "runtime"),
+    ("reconcile", "product"),
+    ("proof", "runtime"),
+    ("proof", "product"),
+)
 PHASES = ("migrate", "grant", "proof")
+# Owner jobs hold database-owner (or administrator) credentials.
+OWNER_PHASES = frozenset({"bootstrap", "migrate", "grant", "reconcile"})
 RECEIPT_CONTROL_FIELDS = frozenset(
     {"release_id", "job_id", "task_arn", "status", "result", "receipt_schema", "schema_version"}
 )
@@ -205,7 +227,7 @@ class SqlPin(Strict):
 
 class Job(Strict):
     id: Name
-    phase: Literal["migrate", "grant", "proof"]
+    phase: Literal["bootstrap", "migrate", "grant", "proof", "reconcile"]
     database: Literal["runtime", "product"]
     task: TaskSpec
     deadline_seconds: int = Field(ge=60, le=3600)
@@ -258,8 +280,31 @@ class CompatibleRelease(Strict):
     backups: Backups
 
 
+class ForwardRun(Strict):
+    """Migrate, grant and prove a new candidate (bootstrap first on a fresh environment)."""
+
+    kind: Literal["forward"]
+
+
+class ActualSchemas(Strict):
+    runtime: ExpectValue
+    product: ExpectValue
+
+
+class RollbackRun(Strict):
+    """Restore the retained prior pair after a failed release. Never migrates.
+
+    The failed release is named explicitly, and both databases' actual schemas
+    are stated; reconcile jobs must observe exactly them before anything starts.
+    """
+
+    kind: Literal["rollback"]
+    failed_release_id: Uuid
+    actual_schemas: ActualSchemas
+
+
 class Manifest(Strict):
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     release_id: Uuid
     milestone: Literal["operational-paused"]
     environment: Environment
@@ -274,6 +319,13 @@ class Manifest(Strict):
     jobs: tuple[Job, ...] = Field(min_length=1, max_length=12)
     operational_checks: tuple[OperationalCheck, ...] = Field(min_length=1, max_length=16)
     rollback: Annotated[EmptyHold | CompatibleRelease, Field(discriminator="kind")]
+    # Required from schema 2, absent in schema 1 (which always means forward).
+    purpose: Annotated[ForwardRun | RollbackRun, Field(discriminator="kind")] | None = None
+
+    @property
+    def execution(self) -> str:
+        """``forward`` or ``rollback``, from the explicit purpose only."""
+        return "forward" if self.purpose is None else self.purpose.kind
 
 
 class Approval(Strict):
@@ -372,8 +424,8 @@ def load_approval(raw: bytes) -> LoadedApproval:
     return LoadedApproval(_validated(Approval, document), canonical_sha256(document))
 
 
-def verify_approval(loaded: LoadedManifest, receipt: LoadedApproval, now: datetime) -> None:
-    """Raise unless this receipt authorizes exactly this manifest at ``now``."""
+def verify_approval_binding(loaded: LoadedManifest, receipt: LoadedApproval) -> None:
+    """Raise unless this receipt names exactly this manifest; time is not checked."""
     manifest, approval = loaded.manifest, receipt.approval
     if approval.manifest_sha256 != loaded.sha256:
         raise ReleaseRejected("approval_manifest_mismatch")
@@ -389,6 +441,12 @@ def verify_approval(loaded: LoadedManifest, receipt: LoadedApproval, now: dateti
         raise ReleaseRejected("approval_interval_invalid")
     if approval.not_after > manifest.window.expires_at:
         raise ReleaseRejected("approval_outlives_manifest")
+
+
+def verify_approval(loaded: LoadedManifest, receipt: LoadedApproval, now: datetime) -> None:
+    """Raise unless this receipt authorizes exactly this manifest at ``now``."""
+    verify_approval_binding(loaded, receipt)
+    manifest, approval = loaded.manifest, receipt.approval
     if now < approval.not_before or now < manifest.window.not_before:
         raise ReleaseRejected("approval_not_yet_valid")
     if now >= approval.not_after:
@@ -396,6 +454,10 @@ def verify_approval(loaded: LoadedManifest, receipt: LoadedApproval, now: dateti
 
 
 def _check_manifest(manifest: Manifest) -> None:
+    if manifest.schema_version == 1 and manifest.purpose is not None:
+        raise ReleaseRejected("unknown_field", "purpose")
+    if manifest.schema_version == 2 and manifest.purpose is None:
+        raise ReleaseRejected("missing_field", "purpose")
     window = manifest.window
     if not window.not_before < window.expires_at <= window.not_before + MAX_VALIDITY:
         raise ReleaseRejected("window_invalid", "window")
@@ -411,6 +473,8 @@ def _check_manifest(manifest: Manifest) -> None:
     rollback = manifest.rollback
     if isinstance(rollback, CompatibleRelease) and rollback.release_id == manifest.release_id:
         raise ReleaseRejected("rollback_not_prior_release", "rollback.release_id")
+    if isinstance(manifest.purpose, RollbackRun):
+        _check_rollback_run(manifest, manifest.purpose)
 
 
 def _scoped(value: str, prefix: str, structure: str, detail: str) -> None:
@@ -480,14 +544,28 @@ def _check_scope(manifest: Manifest) -> None:
 
 def _check_jobs(manifest: Manifest) -> None:
     jobs = manifest.jobs
-    if tuple((job.phase, job.database) for job in jobs) != JOB_ORDER:
+    plan = tuple((job.phase, job.database) for job in jobs)
+    if manifest.execution == "rollback":
+        allowed = {ROLLBACK_ORDER}
+    elif manifest.schema_version == 2:
+        allowed = {JOB_ORDER, BOOTSTRAP_ORDER}
+    else:
+        allowed = {JOB_ORDER}
+    if any(phase == "bootstrap" for phase, _ in plan) and not isinstance(
+        manifest.rollback, EmptyHold
+    ):
+        # Bootstrap creates the owner database and logins: first deployment only.
+        raise ReleaseRejected("bootstrap_requires_empty_hold", "jobs")
+    if plan not in allowed:
         raise ReleaseRejected("job_plan_invalid", "jobs")
     if len({job.id for job in jobs}) != len(jobs):
         raise ReleaseRejected("job_plan_invalid", "jobs")
     for job in jobs:
         if RECEIPT_CONTROL_FIELDS & job.expect.keys():
             raise ReleaseRejected("job_expectation_reserved", f"jobs.{job.id}.expect")
-        required = {"database", "principal"} | ({"schema"} if job.phase == "migrate" else set())
+        required = {"database", "principal"} | (
+            {"schema"} if job.phase in {"migrate", "reconcile"} else set()
+        )
         if not required <= job.expect.keys():
             raise ReleaseRejected("job_expectation_incomplete", f"jobs.{job.id}.expect")
         if job.phase != "grant":
@@ -503,7 +581,7 @@ def _check_jobs(manifest: Manifest) -> None:
 
 
 def _check_release_tools_jobs(manifest: Manifest) -> None:
-    """Grant/proof jobs run the tools image and agree with the migrated identity.
+    """Bootstrap/grant/proof/reconcile jobs run the tools image and agree on identity.
 
     A grant receipt echoes the SQL digest the image verified before connecting, so
     the expectation binds the executed script to the reviewed pin.
@@ -531,7 +609,9 @@ def _check_release_tools_jobs(manifest: Manifest) -> None:
             or job.sql.source_commit != manifest.sources.release_tools
         ):
             raise ReleaseRejected("grant_pin_mismatch", f"{where}.sql")
-    for database in ("runtime", "product"):
+    if manifest.execution == "rollback":
+        return  # _check_rollback_run binds reconcile and proof identities.
+    for database in DATABASES:
         migrate, grant, proof = (jobs[(phase, database)].expect for phase in PHASES)
         if (
             grant["database"] != migrate["database"]
@@ -540,6 +620,52 @@ def _check_release_tools_jobs(manifest: Manifest) -> None:
             or grant["service_role"] != proof["principal"]
             or proof["principal"] == migrate["principal"]
             or proof["schema"] != migrate["schema"]
+        ):
+            raise ReleaseRejected("job_expectation_inconsistent", f"jobs.{database}")
+        bootstrap = jobs.get(("bootstrap", database))
+        if bootstrap is not None and (
+            bootstrap.expect["database"] != migrate["database"]
+            or bootstrap.expect["owner_role"] != migrate["principal"]
+            or bootstrap.expect["service_role"] != grant["service_role"]
+            or bootstrap.expect["principal"] in {migrate["principal"], grant["service_role"]}
+        ):
+            # The administrator creates exactly the owner and service logins the
+            # later jobs use, and is neither of them.
+            raise ReleaseRejected("job_expectation_inconsistent", f"jobs.{database}")
+
+
+def _check_rollback_run(manifest: Manifest, purpose: RollbackRun) -> None:
+    """A rollback restores exactly the retained prior pair over known schemas.
+
+    Its services and images are the prior release's, its failed release is
+    neither itself nor the prior one, both actual schemas are stated and
+    compatible with the prior pair, and its reconcile jobs must observe those
+    schemas with no remaining release or other owner session.
+    """
+    rollback = manifest.rollback
+    if not isinstance(rollback, CompatibleRelease):
+        raise ReleaseRejected("rollback_run_requires_prior_release", "rollback")
+    if purpose.failed_release_id in {manifest.release_id, rollback.release_id}:
+        raise ReleaseRejected("rollback_failed_release_invalid", "purpose.failed_release_id")
+    if manifest.services != rollback.services:
+        raise ReleaseRejected("rollback_services_not_prior", "services")
+    for name in ("runtime", "search"):
+        current, prior = getattr(manifest.images, name), getattr(rollback.images, name)
+        if (current.repository, current.arm64_digest) != (prior.repository, prior.arm64_digest):
+            raise ReleaseRejected("rollback_images_not_prior", f"images.{name}")
+    jobs = {(job.phase, job.database): job.expect for job in manifest.jobs}
+    for database in DATABASES:
+        actual = getattr(purpose.actual_schemas, database)
+        if actual not in getattr(rollback.compatible_schemas, database):
+            raise ReleaseRejected("rollback_schema_incompatible", f"purpose.{database}")
+        reconcile, proof = jobs[("reconcile", database)], jobs[("proof", database)]
+        if (
+            reconcile["database"] != proof["database"]
+            or reconcile["schema"] != actual
+            or proof["schema"] != actual
+            or reconcile["principal"] == proof["principal"]
+            or reconcile["release_sessions"] != "0"
+            or reconcile["owner_sessions"] != "0"
         ):
             raise ReleaseRejected("job_expectation_inconsistent", f"jobs.{database}")
 
@@ -564,7 +690,11 @@ def _check_operational(manifest: Manifest) -> None:
 
 
 def _check_secret_separation(manifest: Manifest) -> None:
-    """Service bundles are pairwise disjoint; owner jobs never reuse a service bundle."""
+    """Service bundles are pairwise disjoint; owner jobs never reuse a service bundle.
+
+    A bootstrap job's administrator bundle is exclusive: no service and no other
+    job may name any of its secrets.
+    """
     seen: set[str] = set()
     for name in ("runtime", "api", "worker"):
         arns = {item.arn for item in getattr(manifest.services, name).secrets}
@@ -572,5 +702,13 @@ def _check_secret_separation(manifest: Manifest) -> None:
             raise ReleaseRejected("shared_secret_bundle", f"services.{name}")
         seen |= arns
     for job in manifest.jobs:
-        if job.phase in {"migrate", "grant"} and {item.arn for item in job.task.secrets} & seen:
+        if job.phase in OWNER_PHASES and {item.arn for item in job.task.secrets} & seen:
+            raise ReleaseRejected("shared_secret_bundle", f"jobs.{job.id}")
+    for job in manifest.jobs:
+        if job.phase != "bootstrap":
+            continue
+        others = seen | {
+            item.arn for other in manifest.jobs if other is not job for item in other.task.secrets
+        }
+        if {item.arn for item in job.task.secrets} & others:
             raise ReleaseRejected("shared_secret_bundle", f"jobs.{job.id}")

@@ -118,10 +118,14 @@ class SdkBridge:
                 "ResponseMetadata": {"HTTPStatusCode": error.status},
             }
             return AWSResponse("https://fixture.invalid", error.status, {}, None), parsed
+        # A handler may add response metadata (for example an HTTP Date header);
+        # it is not part of the modelled output shape.
+        metadata = dict(parsed.pop("ResponseMetadata", {}))
         if model.output_shape is not None:
             validate_parameters(parsed, model.output_shape)
-        parsed = {**parsed, "ResponseMetadata": {"HTTPStatusCode": 200}}
-        return AWSResponse("https://fixture.invalid", 200, {}, None), parsed
+        parsed = {**parsed, "ResponseMetadata": {**metadata, "HTTPStatusCode": 200}}
+        headers = metadata.get("HTTPHeaders", {})
+        return AWSResponse("https://fixture.invalid", 200, headers, None), parsed
 
 
 def _paged(items: list[Any], params: dict[str, Any], key: str, page: int) -> dict[str, Any]:

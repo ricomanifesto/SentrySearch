@@ -229,6 +229,63 @@ def manifest_document(*, rollback: str = "empty_hold") -> dict:
     return document
 
 
+FAILED_RELEASE_ID = "7c8d9e0f-2a3b-4c5d-8e6f-1a2b3c4d5e6f"
+ROLLBACK_RELEASE_ID = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
+
+
+def bootstrap_job(database: str) -> dict:
+    """First-deployment bootstrap: the RDS-like administrator creates owner and service."""
+    short = "runtime" if database == "runtime" else "product"
+    return job(
+        f"{database}-bootstrap", "bootstrap", database, image="release_tools",
+        expect={"database": f"{short}_db", "principal": f"{short}_admin",
+                "owner_role": f"{short}_owner", "service_role": f"{short}_service"},
+    )  # fmt: skip
+
+
+def forward_document(*, bootstrap: bool = True) -> dict:
+    """Schema 2 forward run; with bootstrap, both databases are bootstrapped first."""
+    document = manifest_document()
+    document["schema_version"] = 2
+    document["purpose"] = {"kind": "forward"}
+    if bootstrap:
+        document["jobs"] = [bootstrap_job("runtime"), bootstrap_job("product"), *document["jobs"]]
+    return document
+
+
+def rollback_run_document() -> dict:
+    """Schema 2 rollback run restoring the retained prior pair after a failed release."""
+    document = manifest_document(rollback="compatible_release")
+    document["schema_version"] = 2
+    document["release_id"] = ROLLBACK_RELEASE_ID
+    prior = document["rollback"]
+    schemas = {name: values[0] for name, values in prior["compatible_schemas"].items()}
+    document["purpose"] = {
+        "kind": "rollback",
+        "failed_release_id": FAILED_RELEASE_ID,
+        "actual_schemas": schemas,
+    }
+    document["services"] = copy.deepcopy(prior["services"])
+    for name in ("runtime", "search"):
+        document["images"][name] = image(name, "prior")
+    reconcile = {"release_sessions": "0", "owner_sessions": "0"}
+    document["jobs"] = [
+        job("runtime-reconcile", "reconcile", "runtime", image="release_tools",
+            expect={"database": "runtime_db", "principal": "runtime_owner",
+                    "schema": schemas["runtime"], **reconcile}),
+        job("product-reconcile", "reconcile", "product", image="release_tools",
+            expect={"database": "product_db", "principal": "product_owner",
+                    "schema": schemas["product"], **reconcile}),
+        job("runtime-proof", "proof", "runtime", image="release_tools",
+            expect={"database": "runtime_db", "principal": "runtime_service",
+                    "schema": schemas["runtime"]}),
+        job("product-proof", "proof", "product", image="release_tools",
+            expect={"database": "product_db", "principal": "product_service",
+                    "schema": schemas["product"]}),
+    ]  # fmt: skip
+    return document
+
+
 def encode(document: dict) -> bytes:
     return json.dumps(document, indent=2).encode()
 

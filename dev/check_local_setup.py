@@ -17,6 +17,7 @@ PYTHON_VALIDATION_PATHS = [
     "dev",
     "release",
     "release_aws",
+    "release_cli",
     "release_tools",
     "tests",
 ]

@@ -7,8 +7,9 @@ poisoned-environment process test enforce that.
 
 **Evidence level.** The adapters have been exercised only against stubbed SDK
 responses and in-process fakes, with the network denied. Nothing has called AWS,
-launched a task, changed a service, read a real log or written to S3. No CLI
-builds these clients yet, and no IAM policy is attached.
+launched a task, changed a service, read a real log or written to S3. The
+operator CLI builds these clients but has run only against fakes, and no IAM
+policy is attached.
 
 ## Injected clients
 
@@ -29,8 +30,9 @@ calls, so a stalled call can delay noticing one.
 
 The tests build clients from a botocore session that ignores every AWS
 environment variable and configuration file, including profiles, endpoint URLs,
-retry mode, FIPS and the CA bundle. They use explicit fixture credentials. A
-future operator CLI needs the same isolation.
+retry mode, FIPS and the CA bundle. They use explicit fixture credentials. The
+[operator CLI](release-cli.md) builds its clients the same way and is the only
+release code that creates a session or client.
 
 ## Outcomes and errors
 
@@ -187,9 +189,9 @@ ambiguous.
 - S3 conditional delete and `409` behavior on the versioned control bucket.
 - Partial `deploymentConfiguration` semantics. They no longer matter, because
   the controller never sends one.
-- A Clock adapter that enforces non-regression and a bounded UTC offset is not
-  implemented. The readiness gate detects regression it observes; other steps
-  read the clock unchecked.
+- The [CLI Clock](release-cli.md#preflight-and-clock) enforces non-regression and
+  a bounded offset against the preflight's `Date` header; that header has not been
+  observed from AWS.
 
 **Known liveness costs, all fail-closed:**
 - An ambiguous lock create holds even if the lock landed, which then needs a

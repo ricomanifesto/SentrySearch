@@ -10,6 +10,7 @@ import pytest
 
 from release.manifest import (
     RELEASE_TOOLS_RECEIPT_SCHEMA,
+    CompatibleRelease,
     ReleaseRejected,
     canonical_sha256,
     load_approval,
@@ -19,12 +20,16 @@ from release.manifest import (
 from release.readiness import WORKER_READINESS_CHECK, WORKER_RECEIPT_KIND
 from tests.release_fakes import (
     ACCOUNT,
+    FAILED_RELEASE_ID,
+    PRIOR_RELEASE_ID,
     REGION,
     START,
     approval_document,
     encode,
+    forward_document,
     iso,
     manifest_document,
+    rollback_run_document,
 )
 
 
@@ -126,7 +131,10 @@ def test_ambiguous_json_is_rejected_before_hashing(raw, code):
         ("rollback", _DELETE, "missing_field", "rollback"),
         ("risk.decided_by", _DELETE, "missing_field", "risk.decided_by"),
         ("milestone", "synthetic-admission", "invalid_field", "milestone"),
-        ("schema_version", 2, "invalid_field", "schema_version"),
+        ("schema_version", 3, "invalid_field", "schema_version"),
+        # Schema 2 states its purpose; schema 1 cannot.
+        ("schema_version", 2, "missing_field", "purpose"),
+        ("purpose", {"kind": "forward"}, "unknown_field", "purpose"),
         ("network.assign_public_ip", "ENABLED", "invalid_field", "network.assign_public_ip"),
         ("rollback", {"kind": "previous"}, "invalid_field", "rollback"),
         ("rollback", {"kind": "empty_hold", "release_id": "x"}, "unknown_field", "rollback"),
@@ -404,3 +412,211 @@ def test_approval_is_a_strict_external_document():
     assert rejected(encode(document), loader=load_approval).code == "unknown_field"
     document = approval_document(loaded.sha256, milestone="production")
     assert rejected(encode(document), loader=load_approval).code == "invalid_field"
+
+
+# Schema 2: explicit execution purpose, bootstrap and rollback runs ---------------
+
+
+def edited(document: dict, change) -> bytes:
+    document = copy.deepcopy(document)
+    change(document)
+    return encode(document)
+
+
+def job_named(document: dict, job_id: str) -> dict:
+    return next(job for job in document["jobs"] if job["id"] == job_id)
+
+
+def test_schema_one_keeps_its_meaning_a_forward_run_even_with_a_compatible_fallback():
+    for rollback in ("empty_hold", "compatible_release"):
+        manifest = load_manifest(encode(manifest_document(rollback=rollback))).manifest
+        assert manifest.execution == "forward"
+        # The fallback plan never suppresses the candidate's migrations.
+        assert [job.phase for job in manifest.jobs][:2] == ["migrate", "migrate"]
+
+
+def test_schema_two_states_forward_purpose_and_may_bootstrap_first():
+    manifest = load_manifest(encode(forward_document())).manifest
+    assert manifest.execution == "forward"
+    assert [(job.phase, job.database) for job in manifest.jobs[:3]] == [
+        ("bootstrap", "runtime"), ("bootstrap", "product"), ("migrate", "runtime")
+    ]  # fmt: skip
+    assert load_manifest(encode(forward_document(bootstrap=False))).manifest.execution == "forward"
+
+
+def test_a_forward_upgrade_with_a_compatible_fallback_still_migrates():
+    document = manifest_document(rollback="compatible_release")
+    document["schema_version"], document["purpose"] = 2, {"kind": "forward"}
+    manifest = load_manifest(encode(document)).manifest
+    assert manifest.execution == "forward"
+    assert {job.phase for job in manifest.jobs} == {"migrate", "grant", "proof"}
+
+
+@pytest.mark.parametrize(
+    "purpose, code",
+    [
+        ({"kind": "rollback_maybe"}, "invalid_field"),
+        ({"kind": "forward", "failed_release_id": FAILED_RELEASE_ID}, "unknown_field"),
+        ({"kind": "rollback", "failed_release_id": FAILED_RELEASE_ID}, "missing_field"),
+    ],
+)
+def test_purpose_is_a_strict_discriminated_union(purpose, code):
+    assert rejected(edited(forward_document(), lambda d: d.update(purpose=purpose))).code == code
+
+
+def test_bootstrap_is_only_for_a_first_deployment():
+    def compatible(document: dict) -> None:
+        document["rollback"] = manifest_document(rollback="compatible_release")["rollback"]
+
+    assert rejected(edited(forward_document(), compatible)).code == "bootstrap_requires_empty_hold"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda d: d["jobs"].pop(0),  # one database only
+        lambda d: d["jobs"].insert(3, d["jobs"].pop(0)),  # after a migration
+        lambda d: (d.update(schema_version=1), d.pop("purpose")),  # schema 1
+    ],
+    ids=["one-database", "out-of-order", "schema-one"],
+)
+def test_bootstrap_runs_first_for_both_databases_and_only_in_schema_two(change):
+    assert rejected(edited(forward_document(), change)).code == "job_plan_invalid"
+
+
+@pytest.mark.parametrize(
+    "key, value",
+    [
+        ("owner_role", "product_owner"),  # not the runtime migration owner
+        ("service_role", "runtime_owner"),  # not the grant's service role
+        ("principal", "runtime_owner"),  # the administrator is not the owner
+        ("principal", "runtime_service"),  # nor the service login
+        ("database", "product_db"),
+    ],
+)
+def test_bootstrap_creates_exactly_the_logins_later_jobs_use(key, value):
+    error = rejected(
+        edited(forward_document(), lambda d: d["jobs"][0]["expect"].update({key: value}))
+    )
+    assert error.code == "job_expectation_inconsistent"
+
+
+@pytest.mark.parametrize(
+    "change, code",
+    [
+        (lambda d: d["jobs"][0]["expect"].pop("owner_role"), "job_expectation_invalid"),
+        (lambda d: d["jobs"][0]["expect"].update(schema="x"), "job_expectation_invalid"),
+        (lambda d: d["jobs"][0].update(id="runtime-admin"), "job_id_invalid"),
+        (lambda d: d["jobs"][0].update(receipt_schema="sentry.other.v1"),
+         "job_receipt_schema_invalid"),
+        (lambda d: d["jobs"][0]["task"]["containers"][1].update(image="runtime"),
+         "job_image_invalid"),
+    ],
+)  # fmt: skip
+def test_bootstrap_is_a_release_tools_job_with_its_exact_receipt(change, code):
+    assert rejected(edited(forward_document(), change)).code == code
+
+
+@pytest.mark.parametrize(
+    "share",
+    [
+        lambda d: d["jobs"][0]["task"]["secrets"].append(d["services"]["runtime"]["secrets"][0]),
+        lambda d: d["jobs"][0]["task"]["secrets"].append(d["jobs"][4]["task"]["secrets"][0]),
+        lambda d: d["jobs"][6]["task"]["secrets"].append(d["jobs"][0]["task"]["secrets"][0]),
+        lambda d: d["jobs"][1]["task"]["secrets"].append(d["jobs"][0]["task"]["secrets"][0]),
+    ],
+    ids=["service", "grant-job", "proof-job", "other-bootstrap"],
+)
+def test_the_administrator_bundle_is_exclusive_to_its_bootstrap_job(share):
+    assert rejected(edited(forward_document(), share)).code == "shared_secret_bundle"
+
+
+def test_owner_jobs_including_reconcile_never_reuse_a_service_bundle():
+    def share(document: dict) -> None:
+        job_named(document, "runtime-reconcile")["task"]["secrets"].append(
+            document["services"]["runtime"]["secrets"][0]
+        )
+
+    assert rejected(edited(rollback_run_document(), share)).code == "shared_secret_bundle"
+
+
+def test_a_rollback_run_reconciles_and_proves_only_over_the_prior_pair():
+    manifest = load_manifest(encode(rollback_run_document())).manifest
+    assert manifest.execution == "rollback"
+    assert [job.phase for job in manifest.jobs] == ["reconcile", "reconcile", "proof", "proof"]
+    assert isinstance(manifest.rollback, CompatibleRelease)
+    assert manifest.services == manifest.rollback.services
+
+
+@pytest.mark.parametrize("phase", ["migrate", "grant", "bootstrap"])
+def test_a_rollback_run_never_migrates_grants_or_bootstraps(phase):
+    def add(document: dict) -> None:
+        forward = forward_document()
+        donor = next(job for job in forward["jobs"] if job["phase"] == phase)
+        document["jobs"].insert(0, donor)
+
+    assert rejected(edited(rollback_run_document(), add)).code in {
+        "job_plan_invalid", "bootstrap_requires_empty_hold"
+    }  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "change, code",
+    [
+        (lambda d: d.update(rollback={"kind": "empty_hold"}),
+         "rollback_run_requires_prior_release"),
+        (lambda d: d["purpose"].update(failed_release_id=d["release_id"]),
+         "rollback_failed_release_invalid"),
+        (lambda d: d["purpose"].update(failed_release_id=PRIOR_RELEASE_ID),
+         "rollback_failed_release_invalid"),
+        (lambda d: d["services"]["api"].update(
+            task_definition=d["services"]["api"]["task_definition"].replace(":6", ":7")),
+         "rollback_services_not_prior"),
+        (lambda d: d["images"]["search"].update(
+            arm64_digest=manifest_document()["images"]["search"]["arm64_digest"]),
+         "rollback_images_not_prior"),
+        (lambda d: d["purpose"]["actual_schemas"].update(runtime="goose:1,2"),
+         "rollback_schema_incompatible"),
+    ],
+)  # fmt: skip
+def test_a_rollback_run_restores_exactly_the_retained_compatible_pair(change, code):
+    assert rejected(edited(rollback_run_document(), change)).code == code
+
+
+@pytest.mark.parametrize(
+    "job_id, key, value",
+    [
+        ("runtime-reconcile", "schema", "goose:1,2"),
+        ("runtime-proof", "schema", "goose:1,2"),
+        ("product-reconcile", "release_sessions", "1"),
+        ("product-reconcile", "owner_sessions", "2"),
+        ("runtime-reconcile", "principal", "runtime_service"),
+        ("runtime-reconcile", "database", "product_db"),
+    ],
+)
+def test_rollback_reconciliation_must_observe_the_stated_schemas_and_no_sessions(
+    job_id, key, value
+):
+    error = rejected(
+        edited(
+            rollback_run_document(), lambda d: job_named(d, job_id)["expect"].update({key: value})
+        )
+    )
+    assert error.code == "job_expectation_inconsistent"
+
+
+def test_schema_two_hash_and_approval_binding_cover_the_purpose():
+    forward = load_manifest(encode(forward_document()))
+    rollback = load_manifest(encode(rollback_run_document()))
+    approval = load_approval(encode(approval_document(forward.sha256)))
+    verify_approval(forward, approval, START)
+    with pytest.raises(ReleaseRejected) as error:
+        verify_approval(rollback, approval, START)
+    assert error.value.code == "approval_manifest_mismatch"
+
+
+def test_a_rollback_run_cannot_carry_the_forward_job_plan():
+    def forward_jobs(document: dict) -> None:
+        document["jobs"] = manifest_document(rollback="compatible_release")["jobs"]
+
+    assert rejected(edited(rollback_run_document(), forward_jobs)).code == "job_plan_invalid"
