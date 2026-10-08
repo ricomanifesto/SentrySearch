@@ -84,13 +84,15 @@ def validate_client(
         meta = client.meta
         config = meta.config
         service = meta.service_model.service_name
+        service_id = str(meta.service_model.service_id)
         credentials = client._get_credentials()
         http_session = client._endpoint.http_session
         verify = http_session._verify
         proxies = http_session._proxy_config._proxies
     except AttributeError:
         raise R2ClientRejected("client") from None
-    if service != "s3":
+    # The service id names botocore's events; a replaced model could rename it.
+    if service != "s3" or service_id != "S3":
         raise R2ClientRejected("service")
     if meta.region_name != "auto":
         raise R2ClientRejected("region")
@@ -149,8 +151,10 @@ def pin_requests(client: Any, target: R2Target) -> None:
 
     ``validate_client`` checks the endpoint the client was given, but botocore
     resolves each request URL through its endpoint rules, which a data file
-    (``AWS_DATA_PATH`` or ``~/.aws/models``) can replace. This guard runs first
-    on every send and compares the final URL with the exact endpoint and bucket.
+    (``AWS_DATA_PATH`` or ``~/.aws/models``) can replace. This guard runs on
+    every send, whatever the service id in the event name, and compares the
+    final URL with the exact endpoint and bucket. Dot segments, which a server
+    could resolve out of the bucket, are refused.
     """
     base = f"{endpoint_for(target)}/{target.bucket}"
 
@@ -158,7 +162,14 @@ def pin_requests(client: Any, target: R2Target) -> None:
         url = getattr(request, "url", None)
         if not isinstance(url, str) or not url.startswith(base):
             raise R2ClientRejected("request_endpoint")
-        if url != base and url[len(base)] not in "/?":
+        rest = url[len(base) :]
+        if rest and rest[0] not in "/?":
             raise R2ClientRejected("request_endpoint")
+        path = rest.split("?", 1)[0]
+        for segment in path.split("/")[1:]:
+            if segment.lower().replace("%2e", ".") in (".", ".."):
+                raise R2ClientRejected("request_endpoint")
 
-    client.meta.events.register_first("before-send.s3", guard, unique_id="r2-request-pin")
+    # First among S3 send handlers, and on the bare event for any other id.
+    client.meta.events.register_first("before-send.s3", guard, unique_id="r2-request-pin-s3")
+    client.meta.events.register_first("before-send", guard, unique_id="r2-request-pin")

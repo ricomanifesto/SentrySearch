@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import os
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
+import botocore.session
 import pytest
 
 from release.journal import PreconditionFailed
-from release_cloudflare.r2_client import R2ClientRejected, R2Target, endpoint_for, validate_client
+from release_cloudflare.r2_client import (
+    R2ClientRejected,
+    R2Target,
+    endpoint_for,
+    pin_requests,
+    validate_client,
+)
 from release_cloudflare.r2_store import (
     MAX_OBJECT_BYTES,
     VERSIONS_PREFIX,
@@ -569,3 +579,55 @@ def test_requests_resolved_off_the_endpoint_are_refused_before_sending(tmp_path,
     with pytest.raises(ControlStoreUnavailable, match="refused before sending"):
         store.read("releases/r1/journal.json")
     assert backend.log == []
+
+
+def test_a_renamed_service_model_cannot_route_around_the_pin(tmp_path, monkeypatch):
+    # botocore names its events after the model's service id, which a data
+    # directory can rename; validation refuses such a client, and the pin also
+    # fires on the bare send event.
+    from botocore.loaders import Loader
+
+    rules = tmp_path / "s3" / "2006-03-01"
+    rules.mkdir(parents=True)
+    model = json.loads(
+        gzip.decompress(
+            (
+                Path(Loader.BUILTIN_DATA_PATH) / "s3" / "2006-03-01" / "service-2.json.gz"
+            ).read_bytes()
+        )
+    )
+    model["metadata"]["serviceId"] = "Renamed"
+    (rules / "service-2.json").write_text(json.dumps(model))
+    monkeypatch.setenv("AWS_DATA_PATH", str(tmp_path))
+    backend = R2Backend()
+    client = make_client(backend)
+    assert str(client.meta.service_model.service_id) == "Renamed"
+    with pytest.raises(R2ClientRejected) as error:
+        R2ObjectStore(client, CONTROL)
+    assert error.value.reason == "service"
+    pin_requests(client, CONTROL)
+    client.meta.events.register_first("before-send.renamed", backend.handle)
+    with pytest.raises(R2ClientRejected):
+        client.put_object(Bucket="other-bucket", Key="k", Body=b"x")
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    ["/../other-bucket/k", "/./k", "/..", "/%2E%2E/other-bucket/k", "/a/../../b", "x/k", ":443/k"],
+)
+def test_the_request_pin_refuses_dot_segments_and_other_buckets(suffix):
+    client = botocore.session.Session().create_client(
+        "s3",
+        region_name="auto",
+        endpoint_url=endpoint_for(CONTROL),
+        aws_access_key_id="fixture",
+        aws_secret_access_key="fixture",
+    )
+    pin_requests(client, CONTROL)
+    base = f"{endpoint_for(CONTROL)}/{CONTROL.bucket}"
+    with pytest.raises(R2ClientRejected):
+        client.meta.events.emit(
+            "before-send.s3.PutObject", request=SimpleNamespace(url=base + suffix)
+        )
+    for allowed in (base, base + "/releases/r1/journal.json", base + "?list-type=2"):
+        client.meta.events.emit("before-send.s3.PutObject", request=SimpleNamespace(url=allowed))

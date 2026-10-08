@@ -6,12 +6,14 @@ import importlib
 import json
 import os
 from pathlib import Path
+import socket
 from typing import Any, cast
 from urllib.parse import parse_qs, urlsplit
 
 import botocore.session
 from botocore.exceptions import ClientError
 from botocore.loaders import Loader
+from botocore.response import StreamingBody
 import pytest
 
 from release_cloudflare.r2_client import R2ClientRejected, R2Target, endpoint_for
@@ -382,3 +384,46 @@ def test_downloads_are_checked_against_their_content_address():
     legacy = "reports/report-1/report.md"
     backend.put_raw(legacy, b"legacy body", '"2"')
     assert store.download_content(legacy) == "legacy body"
+
+
+def test_client_side_monitoring_is_not_an_egress_channel(monkeypatch):
+    sent: list[str] = []
+
+    def record(self, *args, **kwargs):
+        sent.append("sendto")
+        return 0
+
+    monkeypatch.setattr(socket.socket, "sendto", record)
+    monkeypatch.setenv("AWS_CSM_ENABLED", "true")
+    monkeypatch.setenv("AWS_CSM_HOST", "127.0.0.1")
+    monkeypatch.setenv("AWS_CSM_PORT", "31000")
+    backend = artifacts_backend()
+    # An ordinary session reports each call over UDP, access key id included.
+    ordinary = botocore.session.Session().create_client(
+        "s3",
+        region_name="auto",
+        endpoint_url=endpoint_for(ARTIFACTS),
+        aws_access_key_id="fixture",
+        aws_secret_access_key="fixture",
+        config=client_config(),
+    )
+    ordinary.meta.events.register("before-send.s3", backend.handle)
+    ordinary.put_object(Bucket=ARTIFACTS.bucket, Key="reports/r/a.md", Body=b"x")
+    assert sent
+    sent.clear()
+    store_for(backend).upload_markdown_report("report-1", "private body")
+    assert sent == []
+
+
+def test_short_reads_do_not_truncate_a_download(monkeypatch):
+    backend = artifacts_backend()
+    store = store_for(backend)
+    legacy = "reports/report-1/report.md"
+    backend.put_raw(legacy, b"0123456789", '"1"')
+    original = StreamingBody.read
+
+    def short_read(self, amt=None):
+        return original(self, 4 if amt is None or amt > 4 else amt)
+
+    monkeypatch.setattr(StreamingBody, "read", short_read)
+    assert store.download_content(legacy) == "0123456789"

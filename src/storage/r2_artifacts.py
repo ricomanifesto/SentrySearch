@@ -110,6 +110,8 @@ def build_client(target: R2Target, credentials: R2Credentials, *, ca_bundle: str
             "config_file": (None, None, os.devnull, None),
             "credentials_file": (None, None, os.devnull, None),
             "data_path": (None, None, None, None),
+            # Client-side monitoring would send each call's access key id over UDP.
+            "csm_enabled": (None, None, False, None),
         }
     )
     # Only botocore's bundled models: a model or endpoint ruleset under
@@ -208,10 +210,17 @@ class R2ArtifactStore:
         try:
             response = client.get_object(Bucket=self.target.bucket, Key=key)
             body = response["Body"]
-            content = body.read(MAX_DOWNLOAD_BYTES + 1)
-            if len(content) <= MAX_DOWNLOAD_BYTES:
-                # Reading past the end makes botocore check Content-Length.
-                body.read(1)
+            chunks: list[bytes] = []
+            size = 0
+            # Read to the end (botocore then checks Content-Length) or one byte
+            # past the bound; a single read may return fewer bytes than asked.
+            while size <= MAX_DOWNLOAD_BYTES:
+                chunk = body.read(MAX_DOWNLOAD_BYTES + 1 - size)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+            content = b"".join(chunks)
         except (ClientError, BotoCoreError):
             logger.error("Error downloading artifact content")
             raise

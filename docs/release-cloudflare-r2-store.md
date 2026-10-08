@@ -106,12 +106,17 @@ rejects an injected botocore client unless it:
   addressing and SigV4;
 - holds explicit static credentials rather than the SDK credential chain.
 
-The store then registers a guard that runs first before every send and refuses
-any request whose URL is not the target's endpoint and bucket. botocore
-resolves request URLs through endpoint rules that a data directory
-(`AWS_DATA_PATH`, `~/.aws/models`) can replace, which the client's own endpoint
-setting does not reveal. A refused request raises `ControlStoreUnavailable`
-and nothing is sent.
+Validation also requires the model's service id to be `S3`, because botocore
+names its events after it. The store then registers a guard on every send
+(first among S3 send handlers, and on the bare send event whatever the service
+id) that refuses any request whose URL is not the target's endpoint and bucket,
+or that contains `.` or `..` path segments. botocore resolves request URLs
+through endpoint rules that a data directory (`AWS_DATA_PATH`,
+`~/.aws/models`) can replace, which the client's own endpoint setting does not
+reveal. A refused request raises `ControlStoreUnavailable` and nothing is sent.
+The store does not build its client, so the caller that does must also ignore
+botocore data directories, plugins and client-side monitoring, as the artifact
+client does.
 
 ## Validation
 

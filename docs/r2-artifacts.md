@@ -44,8 +44,9 @@ the same key, and different bytes never overwrite a published key.
 The R2 client is built only from those settings. AWS profiles, shared config
 and credential files, `AWS_ENDPOINT_URL*`, `HTTP(S)_PROXY`, `AWS_CA_BUNDLE`,
 `REQUESTS_CA_BUNDLE`, extra botocore data directories (`AWS_DATA_PATH` and
-`~/.aws/models`, which could replace the S3 endpoint rules) and
-`BOTOCORE_EXPERIMENTAL__PLUGINS` are ignored. It then passes the same
+`~/.aws/models`, which could replace the S3 endpoint rules or model),
+`BOTOCORE_EXPERIMENTAL__PLUGINS` and client-side monitoring (`AWS_CSM_*`,
+which would report each call's access key id over UDP) are ignored. It then passes the same
 validation as the release-control client:
 
 - region `auto`;
@@ -57,7 +58,8 @@ validation as the release-control client:
 - explicit credentials.
 
 Every request is also checked just before it is sent: its URL must be the
-target's endpoint and bucket, or it is refused. Idempotent calls may be
+target's endpoint and bucket, without `.` or `..` path segments, or it is
+refused. Idempotent calls may be
 attempted up to three times.
 
 Differences from the S3 backend:
@@ -72,8 +74,11 @@ Differences from the S3 backend:
   objects are listed completely. A page that does not state whether it is
   truncated, or a key that is outside the report's prefix or not a valid key,
   is an error, so nothing is deleted from an incomplete or suspect listing.
-- **Downloads** of content-addressed keys are checked against the SHA-256 in
-  the key, and the body length against `Content-Length`.
+- **Downloads** read to the end of the body, so the length is checked against
+  `Content-Length`, and content-addressed keys are checked against the SHA-256
+  in the key. A folder marker or any other key under a report's prefix that is
+  not a valid artifact key makes listing and deletion fail; nothing is deleted
+  and the objects remain.
 - **Deletion** lists the report's prefix and calls `DeleteObject` once per key.
   It does not use `DeleteObjects`, because that operation requires a request
   checksum that R2's documentation does not list. Every key is attempted, and a
@@ -93,8 +98,9 @@ All tests are offline and use `tests/r2_fakes.py`, which answers botocore's
   without checksum trailers; refused keys and report ids; presign host and
   limits; paginated deletion that leaves a neighboring report alone; per-key
   failure reporting; bounded retries; isolation from ambient AWS, proxy and CA
-  settings, botocore data directories and plugins; requests refused when they
-  resolve off the target; suspect listings; content-address checks.
+  settings, botocore data directories, plugins and client-side monitoring;
+  requests refused when they resolve off the target; suspect listings;
+  content-address checks; short reads.
 - `tests/test_artifact_backend_selection.py`: the selection table above and
   the report service's use of the selected store.
 - `tests/test_artifact_r2_offline.py`: an import guard on the new modules, and
