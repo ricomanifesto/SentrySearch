@@ -152,7 +152,8 @@ one being deployed:
 - after a lost or crashed deploy, on every observation while the update is
   reconciled and again just before any identical resend, whether or not the
   lost request was applied;
-- on every later service observation.
+- on every later observation of a started service (that service only; drift elsewhere
+  holds at the next forward action or recorded-task check).
 
 The values are:
 - minimum healthy 0% and maximum 100% (no overlap);

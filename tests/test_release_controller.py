@@ -919,7 +919,7 @@ def test_drift_on_another_service_holds_before_the_next_forward_deploy():
     assert forward_sends(r) == ["runtime", "api"]
 
 
-def test_drift_on_another_service_holds_a_reconciled_resend():
+def test_drift_on_another_service_holds_api_reconciliation_before_any_resend():
     r = rig()
     services = r.document["environment"]["services"]
     original = r.ecs.update_service

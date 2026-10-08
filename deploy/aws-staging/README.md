@@ -46,7 +46,8 @@ a forced new deployment. It never sends `deploymentConfiguration` or
 `service_settings_drift` before any forward action unless ECS reports this root's
 values for every described service. It checks before each deploy, on the deploy
 response, while reconciling a lost deploy (including just before an identical
-resend), and on every later service observation. Scale-to-zero reconciliation is
+resend), and on every later observation of a started service (that service only).
+Scale-to-zero reconciliation is
 never blocked.
 The values are:
 - minimum 0% and maximum 100%;
