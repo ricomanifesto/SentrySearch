@@ -789,7 +789,11 @@ class ReleaseController:
                                       intent["lock_etag"])  # fmt: skip
             elif intent["subject"].startswith("failed:"):
                 # The stop may never have been sent: journal and send it again,
-                # identically, then confirm. Stopping is never refused.
+                # identically, then confirm. Like every safety stop it needs this
+                # run's own lock, under which the sweep ran; without it nothing is
+                # sent and the intent stays outstanding.
+                if not self._lock_is_ours():
+                    raise _Hold("lock_not_held")
                 self._stop_failed_task(intent["task_arn"], intent["subject"].split(":", 1)[1])
             else:
                 item = self.launchables[intent["subject"]]

@@ -415,7 +415,9 @@ is its own manifest and approval with its own release ID; it is never automatic.
   journaled safety stop and bounded confirmation (`sql_outcome: unknown`). A
   listed task that cannot be described or confirmed stopped holds with
   `failed_release_unreconciled`. A stop left outstanding by a crash is sent
-  again, identically, and confirmed before anything else. The run records the
+  again, identically, and confirmed before anything else, but only while the run
+  still holds its own lock; otherwise it holds with `lock_not_held` and sends
+  nothing. The run records the
   failed journal's hash.
 - **Sequence.** `prepared → locked → quiesced → reconciled → proven →
   services_started → operational_verified → held_paused`: quiesce writers,

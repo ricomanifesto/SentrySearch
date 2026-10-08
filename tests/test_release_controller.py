@@ -3497,6 +3497,39 @@ def test_a_crash_around_the_sweep_stop_still_stops_the_failed_task_on_resume(mon
     assert [c["task"] for c in r.calls("stop_task")].count(task.arn) >= 1
 
 
+@pytest.mark.parametrize("lock", ["deleted", "another_release"])
+def test_a_resumed_sweep_stop_needs_the_runs_own_lock(monkeypatch, lock):
+    token = "w" * 20 + "running01"
+    r = rollback_rig()
+    failed_release(r, tokens=(token,))
+    task = r.ecs._task("arn:failed-migrate:3", token, "family:failed", [("migration", "x")],
+                       plan=JobPlan(seconds=10_000), tags={"sentry:job-id": "runtime-migrate"})  # fmt: skip
+    original = r.ecs.stop_task
+
+    def crash(cluster, arn, reason):
+        raise SimulatedCrash("sweep stop")
+
+    monkeypatch.setattr(r.ecs, "stop_task", crash)
+    with pytest.raises(SimulatedCrash):
+        rollback_controller(r, handoff(r)).run()
+    monkeypatch.setattr(r.ecs, "stop_task", original)
+    body, etag = r.store.objects[LOCK]
+    assert json.loads(body)["release_id"] == ROLLBACK_RELEASE_ID
+    if lock == "deleted":
+        r.store.delete(LOCK, if_match=etag)
+    else:
+        r.store.replace(LOCK, encode({"release_id": PRIOR_RELEASE_ID, "session_id": "other"}),
+                        if_match=etag)  # fmt: skip
+    outcome = rollback_controller(r, None).run()
+    # No ownership proof, no stop authority: nothing is sent and the intent stays
+    # outstanding, possibly sent, for the operator's review.
+    assert (outcome.state, outcome.reason) == ("hold", "lock_not_held")
+    assert r.calls("stop_task") == []
+    assert r.ecs._status(task) != "STOPPED"
+    assert len(rollback_events(r, "intent", action="stop_task", subject=f"failed:{token}")) == 1
+    assert not rollback_events(r, "observation", subject=f"failed:{token}")
+
+
 @pytest.mark.parametrize("limit", ["approval", "window"])
 def test_a_handoff_reaching_its_authorization_limit_at_the_intent_write_moves_no_lock(
     monkeypatch, limit
