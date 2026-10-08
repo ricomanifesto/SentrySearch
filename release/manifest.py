@@ -328,15 +328,25 @@ class ActualSchemas(Strict):
     product: ExpectValue
 
 
+class FailedServices(Strict):
+    """The failed release's exact service revisions, which a rollback may find running."""
+
+    runtime: str
+    api: str
+    worker: str
+
+
 class RollbackRun(Strict):
     """Restore the retained prior pair after a failed release. Never migrates.
 
-    The failed release is named explicitly, and both databases' actual schemas
-    are stated; reconcile jobs must observe exactly them before anything starts.
+    The failed release is named explicitly with the service revisions it may have
+    deployed, and both databases' actual schemas are stated; reconcile jobs must
+    observe exactly them before anything starts.
     """
 
     kind: Literal["rollback"]
     failed_release_id: Uuid
+    failed_services: FailedServices
     actual_schemas: ActualSchemas
 
 
@@ -540,13 +550,27 @@ def _scoped(value: str, prefix: str, structure: str, detail: str) -> None:
         raise ReleaseRejected("mutable_reference", detail)
 
 
+# Secret names this environment creates, and the RDS-managed administrator
+# secret (``rds!db-<uuid>``) that only a bootstrap job may name, exactly once.
+SECRET_NAME = r"[A-Za-z0-9/_+=.@-]+-[A-Za-z0-9]{6}"
+RDS_ADMIN_SECRET = (
+    r"rds!db-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[A-Za-z0-9]{6}"
+)
+
+
 def _check_task(
-    spec: TaskSpec, prefixes: dict[str, str], detail: str, *, standalone: bool = False
+    spec: TaskSpec,
+    prefixes: dict[str, str],
+    detail: str,
+    *,
+    standalone: bool = False,
+    administrator: bool = False,
 ) -> None:
     """Scope a task to the environment; every task but a standalone one has an init.
 
     A standalone task (the API observer) is one container with no task role and
-    no secret: nothing to initialize and no AWS authority.
+    no secret: nothing to initialize and no AWS authority. An administrator task
+    (bootstrap) names exactly one RDS-managed administrator secret.
     """
     _scoped(
         spec.task_definition,
@@ -558,8 +582,17 @@ def _check_task(
         role = getattr(spec, field)
         if role is not None:
             _scoped(role, prefixes["iam"], r"[A-Za-z0-9+=,.@_/-]{1,512}", detail)
+    managed = [
+        item.arn
+        for item in spec.secrets
+        if administrator
+        and re.fullmatch(re.escape(prefixes["secret"]) + RDS_ADMIN_SECRET, item.arn)
+    ]
     for item in spec.secrets:
-        _scoped(item.arn, prefixes["secret"], r"[A-Za-z0-9/_+=.@-]+-[A-Za-z0-9]{6}", detail)
+        if item.arn not in managed:
+            _scoped(item.arn, prefixes["secret"], SECRET_NAME, detail)
+    if administrator and len(managed) != 1:
+        raise ReleaseRejected("invalid_field", detail)
     names = [container.name for container in spec.containers]
     if len(set(names)) != len(names):
         raise ReleaseRejected("invalid_field", detail + ".containers")
@@ -600,7 +633,9 @@ def _check_scope(manifest: Manifest) -> None:
     for name in ("runtime", "api", "worker"):
         _check_task(getattr(manifest.services, name), prefixes, f"services.{name}")
     for job in manifest.jobs:
-        _check_task(job.task, prefixes, f"jobs.{job.id}.task")
+        _check_task(
+            job.task, prefixes, f"jobs.{job.id}.task", administrator=job.phase == "bootstrap"
+        )
     for check in manifest.operational_checks:
         if isinstance(check, ObserverCheck):
             _check_task(check.task, prefixes, f"operational_checks.{check.id}.task",
@@ -730,6 +765,15 @@ def _check_rollback_run(manifest: Manifest, purpose: RollbackRun) -> None:
         raise ReleaseRejected("rollback_failed_release_invalid", "purpose.failed_release_id")
     if manifest.services != rollback.services:
         raise ReleaseRejected("rollback_services_not_prior", "services")
+    prefix = f"arn:aws:ecs:{manifest.environment.region}:{manifest.environment.account_id}:"
+    for name in ("runtime", "api", "worker"):
+        failed = getattr(purpose.failed_services, name)
+        where = f"purpose.failed_services.{name}"
+        _scoped(failed, prefix + "task-definition/", r"[A-Za-z0-9_-]{1,255}:[1-9][0-9]{0,8}", where)
+        # The failed revision of the same service: its family, another revision.
+        family = getattr(rollback.services, name).task_definition.rsplit(":", 1)[0]
+        if failed.rsplit(":", 1)[0] != family:
+            raise ReleaseRejected("rollback_failed_service_invalid", where)
     for name in ("runtime", "search"):
         current, prior = getattr(manifest.images, name), getattr(rollback.images, name)
         if (current.repository, current.arm64_digest) != (prior.repository, prior.arm64_digest):

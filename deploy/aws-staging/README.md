@@ -163,6 +163,9 @@ retry exhaustion, phase deadlines, certificate expiry, backup) as unwired with t
 reason: nothing publishes a metric for them yet. Without the optional
 `notifications` input (an approved recipient and a monthly review threshold, not
 a cap) there is no SNS topic, subscription or budget, and alarms have no actions.
+The topic has no server-side encryption: CloudWatch cannot publish to a topic
+under the AWS-managed SNS key, and a customer-managed key needs its own policy
+review. It carries alarm state only.
 
 ### Operator role
 

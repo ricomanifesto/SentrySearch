@@ -261,14 +261,31 @@ OPERATOR_ROLE = f"arn:aws:iam::{ACCOUNT}:role/sentry-staging/sentry-staging-oper
 ROLLBACK_RELEASE_ID = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
 
 
+# RDS-managed administrator secrets (``rds!db-<instance uuid>``), as Terraform pins.
+RDS_ADMIN_SECRETS = {
+    "runtime": f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:rds!db-0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d-NnNnNn",
+    "product": f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:rds!db-1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e-PpPpPp",
+}
+
+
 def bootstrap_job(database: str) -> dict:
-    """First-deployment bootstrap: the RDS-like administrator creates owner and service."""
+    """First-deployment bootstrap: the RDS-like administrator creates owner and service.
+
+    Like the Terraform task, it reads three bundles no other task names: the
+    RDS-managed administrator secret, the bootstrap credentials and its own CA.
+    """
     short = "runtime" if database == "runtime" else "product"
-    return job(
+    document = job(
         f"{database}-bootstrap", "bootstrap", database, image="release_tools",
         expect={"database": f"{short}_db", "principal": f"{short}_admin",
                 "owner_role": f"{short}_owner", "service_role": f"{short}_service"},
     )  # fmt: skip
+    document["task"]["secrets"] = [
+        {**secret(f"{database}-admin"), "arn": RDS_ADMIN_SECRETS[database]},
+        secret(f"{database}-bootstrap-credentials"),
+        secret(f"{database}-bootstrap-ca"),
+    ]
+    return document
 
 
 def forward_document(*, bootstrap: bool = True) -> dict:
@@ -293,6 +310,10 @@ def rollback_run_document() -> dict:
     document["purpose"] = {
         "kind": "rollback",
         "failed_release_id": FAILED_RELEASE_ID,
+        # The failed upgrade's revisions are the candidate's (revision 7).
+        "failed_services": {
+            name: spec["task_definition"] for name, spec in manifest_document()["services"].items()
+        },
         "actual_schemas": schemas,
     }
     document["services"] = copy.deepcopy(prior["services"])
@@ -515,6 +536,28 @@ class FakeEcs:
                 *(c["task"] for c in observers),
             ]
         }
+
+    def learn(self, document: dict) -> None:
+        """Add another document's revisions and images without resetting any service.
+
+        Models one environment across two releases: a failed forward release, then
+        a rollback run that deploys the retained prior pair.
+        """
+        images = document["images"]
+        self.digests.update({name: images[name]["arm64_digest"] for name in images})
+        observers = [check for check in document["operational_checks"] if "task" in check]
+        for item in document["jobs"]:
+            self.plans.setdefault(item["task"]["task_definition"], JobPlan())
+        for item in observers:
+            self.plans.setdefault(item["task"]["task_definition"], JobPlan(seconds=10))
+        self.containers.update({
+            spec["task_definition"]: [(c["name"], c["image"]) for c in spec["containers"]]
+            for spec in [
+                *document["services"].values(),
+                *(j["task"] for j in document["jobs"]),
+                *(c["task"] for c in observers),
+            ]
+        })  # fmt: skip
 
     def _maybe_crash(self, method: str, when: str) -> None:
         remaining = self.crash.get((method, when), 0)

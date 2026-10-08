@@ -82,18 +82,20 @@ variable "releases" {
       budget_seconds = number
       runtime_bundle = object({ arn = string, version_id = string })
     }))
-    # First deployment only: each instance's RDS-managed administrator secret and
-    # the owner and service passwords bootstrap sets. Launched only through the
-    # separate, unattached bootstrap launcher.
+    # First deployment only: each instance's RDS-managed administrator secret,
+    # the owner and service passwords bootstrap sets, and the bootstrap job's own
+    # CA bundle. Launched only through the separate, unattached bootstrap launcher.
     bootstrap = optional(object({
       sql_sha256 = string
       runtime = object({
         host         = string, administrator = string
         admin_secret = object({ arn = string, version_id = string }), credentials = object({ arn = string, version_id = string })
+        ca_bundle    = object({ arn = string, version_id = string })
       })
       product = object({
         host         = string, administrator = string
         admin_secret = object({ arn = string, version_id = string }), credentials = object({ arn = string, version_id = string })
+        ca_bundle    = object({ arn = string, version_id = string })
       })
     }))
   }))
@@ -122,7 +124,7 @@ variable "releases" {
         release.release_jobs.product.environment_bundle, release.release_jobs.product.material_bundle,
       release.release_tools.runtime.proof_bundle, release.release_tools.product.proof_bundle],
       release.observers == null ? [] : [release.observers.runtime_bundle],
-      release.bootstrap == null ? [] : [release.bootstrap.runtime.credentials, release.bootstrap.product.credentials]) :
+      release.bootstrap == null ? [] : flatten([for name in ["runtime", "product"] : [release.bootstrap[name].credentials, release.bootstrap[name].ca_bundle]])) :
       can(regex("^arn:aws:secretsmanager:${var.region}:${var.account_id}:secret:${var.name_prefix}/[A-Za-z0-9/_+=.@-]+-[A-Za-z0-9]{6}$", bundle.arn)) &&
       can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", bundle.version_id))
     ]]))
@@ -135,9 +137,9 @@ variable "releases" {
         release.release_jobs.product.environment_bundle, release.release_jobs.product.material_bundle,
       release.release_tools.runtime.proof_bundle, release.release_tools.product.proof_bundle],
       release.observers == null ? [] : [release.observers.runtime_bundle],
-      release.bootstrap == null ? [] : [release.bootstrap.runtime.credentials, release.bootstrap.product.credentials]) : bundle.arn
-    ])) == 12 + (release.observers == null ? 0 : 1) + (release.bootstrap == null ? 0 : 2)])
-    error_message = "Within a release, every service, material, owner, proof, observer and bootstrap credential bundle ARN must be distinct."
+      release.bootstrap == null ? [] : flatten([for name in ["runtime", "product"] : [release.bootstrap[name].credentials, release.bootstrap[name].ca_bundle]])) : bundle.arn
+    ])) == 12 + (release.observers == null ? 0 : 1) + (release.bootstrap == null ? 0 : 4)])
+    error_message = "Within a release, every service, material, owner, proof, observer, bootstrap credential and bootstrap CA bundle ARN must be distinct."
   }
   validation {
     # A secret may hold several releases' versions, but always for the same
@@ -151,6 +153,7 @@ variable "releases" {
         [for name in ["runtime", "product"] : { arn = release.release_tools[name].proof_bundle.arn, purpose = "proof-environment/${name}" }],
         release.observers == null ? [] : [{ arn = release.observers.runtime_bundle.arn, purpose = "observer-material/runtime" }],
         release.bootstrap == null ? [] : [for name in ["runtime", "product"] : { arn = release.bootstrap[name].credentials.arn, purpose = "bootstrap-credentials/${name}" }],
+        release.bootstrap == null ? [] : [for name in ["runtime", "product"] : { arn = release.bootstrap[name].ca_bundle.arn, purpose = "bootstrap-ca/${name}" }],
       )]) : pair.arn => pair.purpose...
     } : length(distinct(purposes)) == 1])
     error_message = "A secret ARN must keep the same task and purpose in every retained release."

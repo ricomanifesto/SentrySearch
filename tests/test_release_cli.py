@@ -952,3 +952,81 @@ def test_handoff_arguments_are_all_or_none_and_rollback_only(tmp_path, rollback,
     assert code == cli.EXIT_REFUSED, report
     assert report["error"] == error
     assert r.built == [] and r.aws.bridge.calls == []
+
+
+def lose_rollback_before_handoff(r: CliRig, monkeypatch) -> None:
+    original = r.store.replace
+
+    def crash(key, body, *, if_match):
+        if key == lock_key():
+            raise SimulatedCrash("lock handoff")
+        return original(key, body, if_match=if_match)
+
+    monkeypatch.setattr(r.store, "replace", crash)
+    with pytest.raises(SimulatedCrash):
+        r.main(*r.args("run"), *handoff_args(r))
+    monkeypatch.setattr(r.store, "replace", original)
+
+
+def recover_handoff_args(r: CliRig, **changes: str | None) -> list[str]:
+    values = {
+        "--failed-session": "cli-session-failed",
+        "--failed-lock-etag": r.store.objects[lock_key()][1],
+        "--failed-fence-evidence-sha256": sha("failed operator process confirmed terminated"),
+        **changes,
+    }
+    return [item for key, value in values.items() if value is not None for item in (key, value)]
+
+
+def test_recover_continues_a_rollback_lost_before_its_handoff(tmp_path, monkeypatch):
+    r = rollback_cli_rig(tmp_path)
+    lose_rollback_before_handoff(r, monkeypatch)
+    assert json.loads(r.store.objects[lock_key()][0])["release_id"] == FAILED_RELEASE_ID
+    code, report = r.main(*recovery_args(r, "recover"), *recover_handoff_args(r),
+                          session="cli-session-b")  # fmt: skip
+    assert code == cli.EXIT_OK, report
+    assert report["state"] == "held_paused" and report["session_id"] == "cli-session-b"
+    events = json.loads(r.store.objects[journal_key(ROLLBACK_RELEASE_ID)][0])["events"]
+    assert [e["prior_session_id"] for e in events if e.get("action") == "recovered"] == [
+        "cli-session-a"
+    ]
+    [moved] = [e for e in events if e.get("result") == "lock_handed_off"]
+    assert moved["from_release_id"] == FAILED_RELEASE_ID
+    assert lock_key() not in r.store.objects
+
+
+def test_recover_without_the_handoff_holds_with_the_failed_lock_untouched(tmp_path, monkeypatch):
+    r = rollback_cli_rig(tmp_path)
+    lose_rollback_before_handoff(r, monkeypatch)
+    lock = r.store.objects[lock_key()]
+    code, report = r.main(*recovery_args(r, "recover"), session="cli-session-b")
+    assert code == cli.EXIT_HELD, report
+    assert report["reason"] == "handoff_refused"
+    assert r.store.objects[lock_key()] == lock
+
+
+@pytest.mark.parametrize(
+    "rollback, changes, error",
+    [
+        (True, {"--failed-fence-evidence-sha256": None}, "handoff_incomplete"),
+        (True, {"--failed-session": None}, "handoff_incomplete"),
+        (False, {}, "handoff_not_applicable"),
+    ],
+)
+def test_recover_handoff_arguments_are_all_or_none_and_rollback_only(
+    tmp_path, monkeypatch, rollback, changes, error
+):
+    if rollback:
+        r = rollback_cli_rig(tmp_path)
+        lose_rollback_before_handoff(r, monkeypatch)
+    else:
+        r = cli_rig(tmp_path)
+        r.ecs.crash[("run_task", "after")] = 1
+        with pytest.raises(SimulatedCrash):
+            r.main(*r.args("run"))
+    before = dict(r.store.objects)
+    code, report = r.main(*recovery_args(r, "recover"), *recover_handoff_args(r, **changes),
+                          session="cli-session-b")  # fmt: skip
+    assert code == cli.EXIT_REFUSED, report
+    assert report["error"] == error
+    assert r.store.objects == before

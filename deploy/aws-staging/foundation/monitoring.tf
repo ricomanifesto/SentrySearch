@@ -53,10 +53,13 @@ locals {
   }
 }
 
+# No server-side encryption: CloudWatch cannot publish alarm notifications to a
+# topic under the AWS-managed SNS key, whose policy cannot grant it, and a
+# customer-managed key would need its own policy review. The topic carries only
+# alarm state (names, metrics, thresholds), never secrets or report content.
 resource "aws_sns_topic" "alerts" {
-  count             = local.notify ? 1 : 0
-  name              = "${var.name_prefix}-alerts"
-  kms_master_key_id = "alias/aws/sns"
+  count = local.notify ? 1 : 0
+  name  = "${var.name_prefix}-alerts"
 }
 
 resource "aws_sns_topic_subscription" "alerts" {

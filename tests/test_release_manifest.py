@@ -646,18 +646,57 @@ def test_bootstrap_is_a_release_tools_job_with_its_exact_receipt(change, code):
     assert rejected(edited(forward_document(), change)).code == code
 
 
+@pytest.mark.parametrize("bundle", [1, 2], ids=["credentials", "ca"])
 @pytest.mark.parametrize(
     "share",
     [
-        lambda d: d["jobs"][0]["task"]["secrets"].append(d["services"]["runtime"]["secrets"][0]),
-        lambda d: d["jobs"][0]["task"]["secrets"].append(d["jobs"][4]["task"]["secrets"][0]),
-        lambda d: d["jobs"][6]["task"]["secrets"].append(d["jobs"][0]["task"]["secrets"][0]),
-        lambda d: d["jobs"][1]["task"]["secrets"].append(d["jobs"][0]["task"]["secrets"][0]),
+        lambda d, i: d["jobs"][0]["task"]["secrets"].append(d["services"]["runtime"]["secrets"][0]),
+        lambda d, i: d["jobs"][0]["task"]["secrets"].append(d["jobs"][4]["task"]["secrets"][0]),
+        lambda d, i: d["jobs"][6]["task"]["secrets"].append(d["jobs"][0]["task"]["secrets"][i]),
+        lambda d, i: d["jobs"][1]["task"]["secrets"].append(d["jobs"][0]["task"]["secrets"][i]),
     ],
     ids=["service", "grant-job", "proof-job", "other-bootstrap"],
 )
-def test_the_administrator_bundle_is_exclusive_to_its_bootstrap_job(share):
-    assert rejected(edited(forward_document(), share)).code == "shared_secret_bundle"
+def test_the_bootstrap_bundles_are_exclusive_to_their_job(share, bundle):
+    document = edited(forward_document(), lambda d: share(d, bundle))
+    assert rejected(document).code == "shared_secret_bundle"
+
+
+def test_a_bootstrap_job_names_its_three_terraform_bundles():
+    # The administrator secret, the credentials and the job's own CA bundle,
+    # exactly as deploy/aws-platform-fit/bootstrap.tf wires the task.
+    document = forward_document()
+    for job in document["jobs"][:2]:
+        arns = [item["arn"] for item in job["task"]["secrets"]]
+        assert ":secret:rds!db-" in arns[0]
+        assert arns[1].endswith("-bootstrap-credentials-AbC123")
+        assert arns[2].endswith("-bootstrap-ca-AbC123")
+    load_manifest(encode(document))
+
+
+@pytest.mark.parametrize(
+    ("change", "code"),
+    [
+        # Only a bootstrap job may name an RDS-managed administrator secret.
+        (lambda d: d["jobs"][6]["task"]["secrets"].append(d["jobs"][0]["task"]["secrets"][0]),
+         "mutable_reference"),
+        (lambda d: d["services"]["api"]["secrets"].append(d["jobs"][0]["task"]["secrets"][0]),
+         "mutable_reference"),
+        # A bootstrap job names exactly one, in this account and region.
+        (lambda d: d["jobs"][1]["task"]["secrets"].append(d["jobs"][0]["task"]["secrets"][0]),
+         "invalid_field"),
+        (lambda d: d["jobs"][0]["task"]["secrets"].pop(0), "invalid_field"),
+        (lambda d: d["jobs"][0]["task"]["secrets"][0].update(
+            arn=d["jobs"][0]["task"]["secrets"][0]["arn"].replace("rds!db-0a1b", "rds!db-0A1B")),
+         "mutable_reference"),
+        (lambda d: d["jobs"][0]["task"]["secrets"][0].update(
+            arn=d["jobs"][0]["task"]["secrets"][0]["arn"].replace(ACCOUNT, "444455556666")),
+         "resource_scope_mismatch"),
+    ],
+    ids=["proof-job", "service", "second-in-bootstrap", "missing", "uppercase", "other-account"],
+)  # fmt: skip
+def test_the_rds_administrator_secret_is_bootstrap_only(change, code):
+    assert rejected(edited(forward_document(), change)).code == code
 
 
 def test_owner_jobs_including_reconcile_never_reuse_a_service_bundle():

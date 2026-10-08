@@ -231,14 +231,24 @@ def _controller(
 
 
 def _handoff(args: argparse.Namespace, manifest: Any) -> FailedReleaseHandoff | None:
-    """A rollback's failed-release handoff: all four values or none, rollback only."""
-    values = [args.failed_session, args.failed_lock_etag, args.fence_evidence_sha256,
-              args.authorized_by]  # fmt: skip
-    if all(value is None for value in values):
+    """A rollback's failed-release handoff: all its values or none, rollback only.
+
+    ``recover`` continues a rollback session lost before its handoff, so it may
+    carry the handoff too. Its own fence evidence is the lost rollback session's;
+    the failed release's is a separate value, and who decided is shared.
+    """
+    if args.command == "run":
+        given = [args.failed_session, args.failed_lock_etag, args.fence_evidence_sha256,
+                 args.authorized_by]  # fmt: skip
+        values = given
+    else:
+        given = [args.failed_session, args.failed_lock_etag, args.failed_fence_evidence_sha256]
+        values = [*given, args.authorized_by]
+    if all(value is None for value in given):
         return None
     if manifest.execution != "rollback":
         raise Refused("handoff_not_applicable")
-    if any(value is None for value in values):
+    if any(value is None for value in given):
         raise Refused("handoff_incomplete")
     return FailedReleaseHandoff(*values)
 
@@ -326,6 +336,11 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--failed-lock-etag")
             command.add_argument("--fence-evidence-sha256")
             command.add_argument("--authorized-by")
+        if name == "recover":
+            # The same handoff, for a rollback session lost before it was sent.
+            command.add_argument("--failed-session")
+            command.add_argument("--failed-lock-etag")
+            command.add_argument("--failed-fence-evidence-sha256")
     return parser
 
 
@@ -358,7 +373,7 @@ def _dispatch(
             "jobs": [job.id for job in manifest.jobs],
         }
     approval = None if args.command == "status" else _approval(args.approval, loaded)
-    handoff = _handoff(args, loaded.manifest) if args.command == "run" else None
+    handoff = _handoff(args, loaded.manifest) if args.command in ("run", "recover") else None
     clock = clock_factory()
     source = _operator_clients(args, loaded.manifest, clock, clients, environ)
     if not clock.reference_bound:

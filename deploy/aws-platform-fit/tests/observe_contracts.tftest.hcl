@@ -73,12 +73,14 @@ variables {
       administrator = "runtime_admin"
       admin_secret  = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:rds!db-0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d-NNNNNN", version_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" }
       credentials   = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:staging/runtime-bootstrap-OOOOOO", version_id = "ffffffff-ffff-4fff-8fff-ffffffffffff" }
+      ca_bundle     = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:staging/runtime-bootstrap-ca-SSSSSS", version_id = "56565656-5656-4565-8565-565656565656" }
     }
     product = {
       host          = "product-db.abcdefghijkl.us-east-1.rds.amazonaws.com"
       administrator = "product_admin"
       admin_secret  = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:rds!db-1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e-PPPPPP", version_id = "12121212-1212-4121-8121-121212121212" }
       credentials   = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:staging/product-bootstrap-QQQQQQ", version_id = "34343434-3434-4343-8343-343434343434" }
+      ca_bundle     = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:staging/product-bootstrap-ca-TTTTTT", version_id = "78787878-7878-4787-8787-787878787878" }
     }
   }
 }

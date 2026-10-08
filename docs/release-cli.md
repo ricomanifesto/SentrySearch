@@ -67,6 +67,24 @@ Without them the run holds with `handoff_refused` and changes nothing. Partial
 values are refused (`handoff_incomplete`), and handoff values for a forward
 manifest are refused (`handoff_not_applicable`), both before any client exists.
 
+A rollback session lost before its handoff never held a lock. `recover` names
+the lost session and the failed release's lock at its exact ETag, leaves that
+lock in place, and continues the run with the same handoff. The failed
+release's fence evidence is its own value, separate from the lost rollback
+session's:
+
+```
+python -m release_cli recover --manifest … --approval … --credentials … \
+  --prior-session <lost rollback session> --lock-etag <the failed lock's ETag> \
+  --fence-evidence-sha256 <sha256 of the rollback session's fencing record> \
+  --authorized-by <name> --failed-session <failed journal session> \
+  --failed-lock-etag <the failed lock's ETag> \
+  --failed-fence-evidence-sha256 <sha256 of the failed session's fencing record>
+```
+
+The same all-or-none and rollback-only rules apply to the three `--failed-*`
+values.
+
 ## Credentials
 
 The credential custodian writes one JSON file for the operator:

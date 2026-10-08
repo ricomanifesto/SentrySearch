@@ -357,11 +357,13 @@ run "first_deployment_bootstrap_has_its_own_unattached_launcher" {
         host         = "sentry-staging-runtime-db.abcdefghijkl.us-east-1.rds.amazonaws.com", administrator = "runtime_admin"
         admin_secret = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:rds!db-11111111-aaaa-4aaa-8aaa-111111111111-AbCdEf", version_id = "b2000000-0000-4000-8000-000000000002" }
         credentials  = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:sentry-staging/runtime-bootstrap-NNNNNN", version_id = "c2000000-0000-4000-8000-000000000002" }
+        ca_bundle    = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:sentry-staging/runtime-bootstrap-ca-SSSSSS", version_id = "f2000000-0000-4000-8000-000000000002" }
       }
       product = {
         host         = "sentry-staging-product-db.abcdefghijkl.us-east-1.rds.amazonaws.com", administrator = "product_admin"
         admin_secret = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:rds!db-22222222-bbbb-4bbb-8bbb-222222222222-GhIjKl", version_id = "d2000000-0000-4000-8000-000000000002" }
         credentials  = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:sentry-staging/product-bootstrap-OOOOOO", version_id = "e2000000-0000-4000-8000-000000000002" }
+        ca_bundle    = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:sentry-staging/product-bootstrap-ca-TTTTTT", version_id = "f3000000-0000-4000-8000-000000000002" }
       }
     } }) }
   }
@@ -392,6 +394,28 @@ run "first_deployment_bootstrap_has_its_own_unattached_launcher" {
   }
 }
 
+run "reject_bootstrap_ca_reusing_the_owner_material" {
+  command = plan
+  variables {
+    releases = { r22222222 = merge(var.releases.r22222222, { bootstrap = {
+      sql_sha256 = "5555555555555555555555555555555555555555555555555555555555555555"
+      runtime = {
+        host         = "sentry-staging-runtime-db.abcdefghijkl.us-east-1.rds.amazonaws.com", administrator = "runtime_admin"
+        admin_secret = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:rds!db-11111111-aaaa-4aaa-8aaa-111111111111-AbCdEf", version_id = "b2000000-0000-4000-8000-000000000002" }
+        credentials  = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:sentry-staging/runtime-bootstrap-NNNNNN", version_id = "c2000000-0000-4000-8000-000000000002" }
+        ca_bundle    = var.releases.r22222222.release_jobs.runtime.material_bundle
+      }
+      product = {
+        host         = "sentry-staging-product-db.abcdefghijkl.us-east-1.rds.amazonaws.com", administrator = "product_admin"
+        admin_secret = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:rds!db-22222222-bbbb-4bbb-8bbb-222222222222-GhIjKl", version_id = "d2000000-0000-4000-8000-000000000002" }
+        credentials  = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:sentry-staging/product-bootstrap-OOOOOO", version_id = "e2000000-0000-4000-8000-000000000002" }
+        ca_bundle    = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:sentry-staging/product-bootstrap-ca-TTTTTT", version_id = "f3000000-0000-4000-8000-000000000002" }
+      }
+    } }) }
+  }
+  expect_failures = [var.releases]
+}
+
 run "reject_bootstrap_with_a_rollback_release" {
   command = plan
   variables {
@@ -402,11 +426,13 @@ run "reject_bootstrap_with_a_rollback_release" {
           host         = "sentry-staging-runtime-db.abcdefghijkl.us-east-1.rds.amazonaws.com", administrator = "runtime_admin"
           admin_secret = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:rds!db-11111111-aaaa-4aaa-8aaa-111111111111-AbCdEf", version_id = "b2000000-0000-4000-8000-000000000002" }
           credentials  = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:sentry-staging/runtime-bootstrap-NNNNNN", version_id = "c2000000-0000-4000-8000-000000000002" }
+          ca_bundle    = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:sentry-staging/runtime-bootstrap-ca-SSSSSS", version_id = "f2000000-0000-4000-8000-000000000002" }
         }
         product = {
           host         = "sentry-staging-product-db.abcdefghijkl.us-east-1.rds.amazonaws.com", administrator = "product_admin"
           admin_secret = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:rds!db-22222222-bbbb-4bbb-8bbb-222222222222-GhIjKl", version_id = "d2000000-0000-4000-8000-000000000002" }
           credentials  = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:sentry-staging/product-bootstrap-OOOOOO", version_id = "e2000000-0000-4000-8000-000000000002" }
+          ca_bundle    = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:sentry-staging/product-bootstrap-ca-TTTTTT", version_id = "f3000000-0000-4000-8000-000000000002" }
         }
       } })
       r11111111 = var.releases.r11111111
@@ -424,16 +450,19 @@ run "reject_bootstrap_with_a_non_rds_administrator_secret" {
         host         = "sentry-staging-runtime-db.abcdefghijkl.us-east-1.rds.amazonaws.com", administrator = "runtime_admin"
         admin_secret = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:rds!db-11111111-aaaa-4aaa-8aaa-111111111111-AbCdEf", version_id = "b2000000-0000-4000-8000-000000000002" }
         credentials  = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:sentry-staging/runtime-bootstrap-NNNNNN", version_id = "c2000000-0000-4000-8000-000000000002" }
+        ca_bundle    = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:sentry-staging/runtime-bootstrap-ca-SSSSSS", version_id = "f2000000-0000-4000-8000-000000000002" }
       }
       product = {
         host         = "sentry-staging-product-db.abcdefghijkl.us-east-1.rds.amazonaws.com", administrator = "product_admin"
         admin_secret = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:rds!db-22222222-bbbb-4bbb-8bbb-222222222222-GhIjKl", version_id = "d2000000-0000-4000-8000-000000000002" }
         credentials  = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:sentry-staging/product-bootstrap-OOOOOO", version_id = "e2000000-0000-4000-8000-000000000002" }
+        ca_bundle    = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:sentry-staging/product-bootstrap-ca-TTTTTT", version_id = "f3000000-0000-4000-8000-000000000002" }
       }
       }, { runtime = {
         host         = "sentry-staging-runtime-db.abcdefghijkl.us-east-1.rds.amazonaws.com", administrator = "runtime_admin"
         admin_secret = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:sentry-staging/runtime-admin-ZZZZZZ", version_id = "b2000000-0000-4000-8000-000000000002" }
         credentials  = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:sentry-staging/runtime-bootstrap-NNNNNN", version_id = "c2000000-0000-4000-8000-000000000002" }
+        ca_bundle    = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:sentry-staging/runtime-bootstrap-ca-SSSSSS", version_id = "f2000000-0000-4000-8000-000000000002" }
     } }) }) }
   }
   expect_failures = [var.releases]

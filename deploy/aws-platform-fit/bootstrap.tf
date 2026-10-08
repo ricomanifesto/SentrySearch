@@ -15,12 +15,14 @@ variable "bootstrap" {
       administrator = string
       admin_secret  = object({ arn = string, version_id = string })
       credentials   = object({ arn = string, version_id = string })
+      ca_bundle     = object({ arn = string, version_id = string })
     })
     product = object({
       host          = string
       administrator = string
       admin_secret  = object({ arn = string, version_id = string })
       credentials   = object({ arn = string, version_id = string })
+      ca_bundle     = object({ arn = string, version_id = string })
     })
   })
   default = null
@@ -42,12 +44,12 @@ variable "bootstrap" {
   }
   validation {
     condition = var.bootstrap == null ? true : try(
-      alltrue([for bundle in flatten([for name in ["runtime", "product"] : [var.bootstrap[name].admin_secret, var.bootstrap[name].credentials]]) :
+      alltrue([for bundle in flatten([for name in ["runtime", "product"] : [var.bootstrap[name].admin_secret, var.bootstrap[name].credentials, var.bootstrap[name].ca_bundle]]) :
         can(regex("^arn:aws:secretsmanager:${var.region}:${var.account_id}:secret:[A-Za-z0-9/_+=.@!-]+-[A-Za-z0-9]{6}$", bundle.arn)) &&
         can(regex("^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$", bundle.version_id))
       ]) &&
-      length(toset(flatten([for name in ["runtime", "product"] : [var.bootstrap[name].admin_secret.arn, var.bootstrap[name].credentials.arn]]))) == 4 &&
-      alltrue([for arn in flatten([for name in ["runtime", "product"] : [var.bootstrap[name].admin_secret.arn, var.bootstrap[name].credentials.arn]]) :
+      length(toset(flatten([for name in ["runtime", "product"] : [var.bootstrap[name].admin_secret.arn, var.bootstrap[name].credentials.arn, var.bootstrap[name].ca_bundle.arn]]))) == 6 &&
+      alltrue([for arn in flatten([for name in ["runtime", "product"] : [var.bootstrap[name].admin_secret.arn, var.bootstrap[name].credentials.arn, var.bootstrap[name].ca_bundle.arn]]) :
         !contains(concat(
           [for bundle in values(var.environment_bundles) : bundle.arn], [for bundle in values(var.material_bundles) : bundle.arn],
           flatten([for job in ["runtime", "product"] : [var.release_jobs[job].environment_bundle.arn, var.release_jobs[job].material_bundle.arn]]),
@@ -55,7 +57,7 @@ variable "bootstrap" {
           var.observers == null ? [] : [var.observers.runtime_bundle.arn],
       ), arn)]), false
     )
-    error_message = "Each instance's administrator secret and bootstrap credentials are four distinct bundles at exact UUID versions, shared with no service, owner, proof or observer bundle."
+    error_message = "Each instance's administrator secret, bootstrap credentials and CA bundle are six distinct bundles at exact UUID versions, shared with no service, owner, proof or observer bundle."
   }
 }
 
@@ -102,8 +104,16 @@ locals {
     }
   } }
   bootstrap_task_contracts = { for key, job in local.bootstrap_jobs : key => [
-    # The same fail-closed CA-only init as the owner migration job.
-    merge(local.release_task_contracts[job.database][0], { logConfiguration = local.bootstrap_log_configuration[key] }),
+    # The owner migration job's fail-closed CA-only init, reading the bootstrap
+    # job's own CA bundle so no other task's secret is named.
+    merge(local.release_task_contracts[job.database][0], {
+      command = [
+        "python", "-m", "dev.prepare_service_volumes", "--profile", local.release_roles[job.database].profile,
+        "--material-dir", "/run/material", "--secret-id", var.bootstrap[job.database].ca_bundle.arn,
+        "--version-id", var.bootstrap[job.database].ca_bundle.version_id, "--region", var.region
+      ]
+      logConfiguration = local.bootstrap_log_configuration[key]
+    }),
     {
       name                   = "bootstrap"
       image                  = local.tools.image
@@ -126,9 +136,9 @@ locals {
   bootstrap_task_policies = { for key, job in local.bootstrap_jobs : key => {
     Version = "2012-10-17"
     Statement = [{
-      Sid       = "PinnedDatabaseCA", Effect = "Allow", Action = ["secretsmanager:GetSecretValue"]
-      Resource  = [var.release_jobs[job.database].material_bundle.arn]
-      Condition = { StringEquals = { "secretsmanager:VersionId" = var.release_jobs[job.database].material_bundle.version_id } }
+      Sid       = "PinnedBootstrapCA", Effect = "Allow", Action = ["secretsmanager:GetSecretValue"]
+      Resource  = [var.bootstrap[job.database].ca_bundle.arn]
+      Condition = { StringEquals = { "secretsmanager:VersionId" = var.bootstrap[job.database].ca_bundle.version_id } }
     }]
   } }
   bootstrap_execution_policies = { for key, job in local.bootstrap_jobs : key => {

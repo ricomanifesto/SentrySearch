@@ -314,15 +314,17 @@ check ids, targets, hosts and ports. The manifest's check ids must be these keys
 `bootstrap` (default `null`; requires `release_tools`) adds `runtime-bootstrap`
 and `product-bootstrap` for a fresh instance pair. Per database it takes the
 instance's private endpoint, the administrator login, the RDS-managed
-administrator secret and a credentials bundle holding `RELEASE_OWNER_PASSWORD`
-and `RELEASE_SERVICE_PASSWORD`, all at exact versions and distinct from every
-other bundle, plus the bootstrap SQL digest.
+administrator secret, a credentials bundle holding `RELEASE_OWNER_PASSWORD`
+and `RELEASE_SERVICE_PASSWORD`, and the job's own CA bundle (`ca_bundle`), all
+at exact versions and distinct from every other bundle, plus the bootstrap SQL
+digest. These are exactly the secrets a release manifest names for the job.
 
-The job runs the release-tools `bootstrap` command after the same CA-only init,
+The job runs the release-tools `bootstrap` command after a CA-only init like the
+owner migration's, reading its own CA bundle,
 connects to `postgres` as the administrator (`username` and `password` from the
 managed secret) and creates exactly the release's database, owner and service
-login. Each job has its own task role (CA only) and execution role (pull, its own
-stream, its administrator secret and credentials). `launch_scopes.bootstrap`
+login. Each job has its own task role (its CA bundle only) and execution role
+(pull, its own stream, its administrator secret and credentials). `launch_scopes.bootstrap`
 keeps these revisions and roles out of the database-job scope: only the separate
 `release-launcher-bootstrap` policy in the releases root can launch them, and
 nothing attaches it in this run.

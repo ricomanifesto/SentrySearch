@@ -271,7 +271,10 @@ class ReleaseController:
         """Transfer a lost session's journal and exact lock to this session.
 
         Nothing is executed here. The next ``run`` reconciles outstanding intents
-        against real observations before taking any new action.
+        against real observations before taking any new action. A rollback session
+        lost before its handoff never held a lock: the failed release's lock, at
+        the exact ETag the operator saw, stays where it is, and the next ``run``
+        hands it off under its own fenced handoff.
         """
         auth = authorization
         refused = ReleaseHalted("recovery_refused")
@@ -293,8 +296,9 @@ class ReleaseController:
         if record is not None:
             body, etag = record
             if body.get("release_id") != self.release_id:
-                raise refused
-            if body.get("session_id") == auth.prior_session_id:
+                if not self._failed_lock_untouched(body, etag, auth.lock_etag):
+                    raise refused
+            elif body.get("session_id") == auth.prior_session_id:
                 if etag != auth.lock_etag:
                     raise refused
                 moved = {
@@ -322,6 +326,15 @@ class ReleaseController:
                 at=taken_at,
                 session_id=self.session_id,
             )
+
+    def _failed_lock_untouched(self, body: dict[str, Any], etag: str, seen: str) -> bool:
+        purpose = self.manifest.purpose
+        return (
+            isinstance(purpose, RollbackRun)
+            and self.state == State.PREPARED
+            and body.get("release_id") == purpose.failed_release_id
+            and etag == seen
+        )
 
     # Clock -----------------------------------------------------------------
 
@@ -673,6 +686,9 @@ class ReleaseController:
         moved = self._lock_body(
             transferred_from={"release_id": failed_id, "session_id": failed_session}
         )
+        # Approval and the window again after the intent write, as for every
+        # forward send: a lapse leaves the intent outstanding and the lock unmoved.
+        self._guard()
         try:
             self.store.replace(self.lock, encode(moved), if_match=etag)
         except PreconditionFailed:
@@ -772,7 +788,9 @@ class ReleaseController:
                 self._confirm_handoff(intent["from_release_id"], intent["from_session_id"],
                                       intent["lock_etag"])  # fmt: skip
             elif intent["subject"].startswith("failed:"):
-                self._confirm_failed_stop(intent["subject"], intent["task_arn"])
+                # The stop may never have been sent: journal and send it again,
+                # identically, then confirm. Stopping is never refused.
+                self._stop_failed_task(intent["task_arn"], intent["subject"].split(":", 1)[1])
             else:
                 item = self.launchables[intent["subject"]]
                 self._stop_after_deadline(item, intent["task_arn"], self._deadline_code(item))
@@ -919,7 +937,19 @@ class ReleaseController:
     def _quiesce(self) -> None:
         services = self._describe_services()
         rollback = self.manifest.rollback
-        if isinstance(rollback, CompatibleRelease):
+        purpose = self.manifest.purpose
+        if isinstance(purpose, RollbackRun) and isinstance(rollback, CompatibleRelease):
+            # A rollback finds each service on the prior revision or on the failed
+            # release's own, as the approved manifest names it; anything else is
+            # not this environment's known state.
+            for key, service in services.items():
+                known = {
+                    getattr(rollback.services, key).task_definition,
+                    getattr(purpose.failed_services, key),
+                }
+                if service.get("taskDefinition") not in known:
+                    raise _Hold("rollback_service_revision_unknown")
+        elif isinstance(rollback, CompatibleRelease):
             for key, service in services.items():
                 if service.get("taskDefinition") != getattr(rollback.services, key).task_definition:
                     raise _Hold("prior_release_mismatch")

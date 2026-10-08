@@ -74,11 +74,16 @@ Schema 2 purposes:
   id `<database>-bootstrap`, the tools receipt schema and exactly the keys
   `database`, `principal` (the instance administrator), `owner_role` and
   `service_role`. It creates exactly the migration owner and the grant's service
-  login on the migrated database, and the administrator is neither of them. Its
-  administrator bundle is exclusive: no service and no other job may name any of
-  its secrets. Bootstrap jobs run first, inside the `migrated` step.
-- `{"kind": "rollback", "failed_release_id", "actual_schemas"}`: restore the
-  retained prior pair after a failed release. Jobs are exactly `reconcile` then
+  login on the migrated database, and the administrator is neither of them. It
+  names the bundles its Terraform task reads: exactly one RDS-managed
+  administrator secret (`rds!db-<instance uuid>`, a name only a bootstrap job
+  may use), its bootstrap credentials and its own CA bundle. No service and no
+  other job may name any of them. Bootstrap jobs run first, inside the
+  `migrated` step.
+- `{"kind": "rollback", "failed_release_id", "failed_services", "actual_schemas"}`:
+  restore the retained prior pair after a failed release. `failed_services`
+  names the Runtime, API and worker task definitions the failed release may have
+  deployed, each in the prior service's family. Jobs are exactly `reconcile` then
   `proof` for each database (no migrate, grant or bootstrap). The fallback must be
   `compatible_release`; the manifest's services and Runtime/Search images must
   be that prior release's; the failed release is neither this release nor the
@@ -390,8 +395,10 @@ is its own manifest and approval with its own release ID; it is never automatic.
     replace of the exact ETag. That needs a handoff naming the failed journal's
     session, that ETag, fence evidence that the old operator session was stopped,
     and who decided; anything less is `handoff_refused` and nothing is written.
-  - The handoff is journaled as an intent before the replace. A lock moved by
-    someone else first is `handoff_conflict`.
+  - The handoff is journaled as an intent before the replace. Approval and the
+    release window are checked again after that write: a lapse holds with the
+    intent outstanding and the lock unmoved. A lock moved by someone else first
+    is `handoff_conflict`.
   - After a crash the run settles the intent from the lock it finds:
     - its own lock: `lock_handed_off`, reconciled;
     - the failed lock untouched at the authorized ETag: `handoff_not_applied`,
@@ -407,16 +414,23 @@ is its own manifest and approval with its own release ID; it is never automatic.
   failed release journaled is listed; any task still running under it gets a
   journaled safety stop and bounded confirmation (`sql_outcome: unknown`). A
   listed task that cannot be described or confirmed stopped holds with
-  `failed_release_unreconciled`. The run records the failed journal's hash.
+  `failed_release_unreconciled`. A stop left outstanding by a crash is sent
+  again, identically, and confirmed before anything else. The run records the
+  failed journal's hash.
 - **Sequence.** `prepared → locked → quiesced → reconciled → proven →
-  services_started → operational_verified → held_paused`: quiesce writers;
+  services_started → operational_verified → held_paused`: quiesce writers,
+  where each service may run the prior revision or its stated failed revision
+  (any other is `rollback_service_revision_unknown`);
   reconcile jobs must report exactly the stated schemas with no release or owner
   session left; proof jobs prove the same schemas; the prior pair starts in order;
   both observers and the worker gate run as in a forward release; the lock is
   released at `held_paused`. A migration, grant or bootstrap is never launched.
 - **Holds.** A held rollback plans `rollback_hold`: services to zero if started,
   evidence retained, operator review before any retry. Nothing is retried
-  automatically. `abort` and `recover` work as for any release.
+  automatically. `abort` and `recover` work as for any release. A rollback
+  session lost before its handoff never held a lock: `recover` names the failed
+  release's lock at its exact ETag and, while the run is still `prepared`,
+  leaves it in place; the next `run` hands it off under its own fenced handoff.
 
 **Terraform scope.** The attended launcher may launch only the current
 release's revisions, so the operator re-plans the releases root with the prior

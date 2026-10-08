@@ -487,14 +487,14 @@ run "an_approved_recipient_receives_alarms_and_the_budget" {
   }
   assert {
     condition = (length(aws_sns_topic.alerts) == 1 && aws_sns_topic.alerts[0].name == "sentry-staging-alerts" &&
-      aws_sns_topic.alerts[0].kms_master_key_id == "alias/aws/sns" &&
+      aws_sns_topic.alerts[0].kms_master_key_id == null &&
       aws_sns_topic_subscription.alerts[0].protocol == "email" && aws_sns_topic_subscription.alerts[0].endpoint == "operator@example.test" &&
       alltrue([for alarm in aws_cloudwatch_metric_alarm.this : alarm.actions_enabled && length(alarm.alarm_actions) == 1 && length(alarm.ok_actions) == 1]) &&
       aws_budgets_budget.monthly[0].limit_amount == "200" && aws_budgets_budget.monthly[0].time_unit == "MONTHLY" &&
       one(aws_budgets_budget.monthly[0].cost_filter).values == tolist(["user:Environment$sentry-staging"]) &&
       toset([for notice in aws_budgets_budget.monthly[0].notification : notice.notification_type]) == toset(["ACTUAL", "FORECASTED"]) &&
     alltrue([for notice in aws_budgets_budget.monthly[0].notification : notice.subscriber_email_addresses == toset(["operator@example.test"]) && notice.threshold == 100]))
-    error_message = "An approved recipient gets every wired alarm and the monthly actual and forecast review notices."
+    error_message = "An approved recipient gets every wired alarm (on a topic CloudWatch can publish to: no AWS-managed key) and the monthly actual and forecast review notices."
   }
 }
 
