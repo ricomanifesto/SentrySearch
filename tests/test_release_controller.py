@@ -363,6 +363,30 @@ def test_new_session_cannot_resume_or_take_the_lock_without_recovery():
     assert json.loads(r.store.objects[LOCK][0])["session_id"] == "session-a"
 
 
+def test_a_forward_recovery_never_accepts_another_releases_lock(monkeypatch):
+    # Only a rollback leaves a foreign lock in place, and only its failed release's.
+    r = rig()
+    original = r.store.create
+
+    def crash(key, body):
+        if key == LOCK:
+            raise SimulatedCrash("lock create")
+        return original(key, body)
+
+    monkeypatch.setattr(r.store, "create", crash)
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    monkeypatch.setattr(r.store, "create", original)
+    r.store.create(LOCK, encode({"release_id": FAILED_RELEASE_ID, "session_id": "other"}))
+    before = dict(r.store.objects)
+    values = {"prior_session_id": "session-a", "lock_etag": r.lock_etag(),
+              "fence_evidence_sha256": sha("fenced"), "authorized_by": "fixture-operator"}  # fmt: skip
+    with pytest.raises(ReleaseHalted) as error:
+        r.controller("session-b").recover(RecoveryAuthorization(**values))
+    assert error.value.code == "recovery_refused"
+    assert r.store.objects == before
+
+
 @pytest.mark.parametrize("when", ["before", "after"])
 def test_launch_crash_reconciles_to_exactly_one_task(when):
     r = rig()
