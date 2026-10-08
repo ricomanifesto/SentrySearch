@@ -580,7 +580,7 @@ def test_an_unbounded_or_oversized_stream_is_incomplete_evidence():
 OBSERVED = {
     "schema": "sentry.operational.v1",
     "release_id": RELEASE_ID,
-    "check_id": "api-operational",
+    "check_id": "api-observe",
     "task_arn": TASK,
     "status": "passed",
     "result": {"target": "api", "host": "api.sentry-staging.internal", "peer": "10.0.0.7",
@@ -592,26 +592,25 @@ OBSERVED = {
 def test_observer_receipts_come_only_from_the_observer_tasks_own_stream():
     logs = PagedLogs([*SENSITIVE_LINES, receipt_line(OBSERVED)])
     assert (
-        LogEvidence(logs, MANIFEST).operational_receipt(RELEASE_ID, "api-operational", TASK)
-        == OBSERVED
+        LogEvidence(logs, MANIFEST).operational_receipt(RELEASE_ID, "api-observe", TASK) == OBSERVED
     )
     task_id = TASK.rsplit("/", 1)[1]
     assert {(c["group"], c["stream"]) for c in logs.calls} == {
-        ("/staging/observe", f"api-operational/observer/{task_id}")
+        ("/staging/observe", f"api-observe/observer/{task_id}")
     }
     # The worker gate has no observer; other releases and unknown checks are refused.
     evidence = LogEvidence(PagedLogs([]), MANIFEST)
     for release_id, check_id in (
         (RELEASE_ID, "worker-readiness"),
         (RELEASE_ID, "api-ready"),
-        ("5e6f7a8b-1c2d-4e3f-8a9b-0c1d2e3f4a5b", "api-operational"),
+        ("5e6f7a8b-1c2d-4e3f-8a9b-0c1d2e3f4a5b", "api-observe"),
     ):
         with pytest.raises(ValueError):
             evidence.operational_receipt(release_id, check_id, TASK)
     with pytest.raises(ValueError):
         evidence.job_receipt("5e6f7a8b-1c2d-4e3f-8a9b-0c1d2e3f4a5b", "runtime-grant", TASK)
     with pytest.raises(ValueError):
-        evidence.operational_receipt(RELEASE_ID, "api-operational", TASK.rsplit("/", 1)[0] + "/x")
+        evidence.operational_receipt(RELEASE_ID, "api-observe", TASK.rsplit("/", 1)[0] + "/x")
 
 
 @pytest.mark.parametrize(
@@ -620,15 +619,13 @@ def test_observer_receipts_come_only_from_the_observer_tasks_own_stream():
         # A job's envelope, a duplicate, or a line that is not exactly the envelope.
         [receipt_line(RECEIPT)],
         [receipt_line(OBSERVED), receipt_line(OBSERVED)],
-        [receipt_line({**OBSERVED, "job_id": "api-operational"})],
+        [receipt_line({**OBSERVED, "job_id": "api-observe"})],
         [RECEIPT_MARKER + json.dumps(OBSERVED)],
     ],
 )
 def test_an_observer_stream_with_anything_but_one_operational_envelope_is_ambiguous(lines):
     with pytest.raises(AmbiguousResponse) as error:
-        LogEvidence(PagedLogs(lines), MANIFEST).operational_receipt(
-            RELEASE_ID, "api-operational", TASK
-        )
+        LogEvidence(PagedLogs(lines), MANIFEST).operational_receipt(RELEASE_ID, "api-observe", TASK)
     assert "10.0.0.7" not in carried_text(error.value)
 
 
@@ -823,11 +820,11 @@ def test_observer_receipts_through_the_sdk_bind_the_recorded_service_tasks():
     outcome = adapted(r, aws).run()
     assert outcome.state == "held_paused", outcome
     passes = [e["subject"] for e in r.events("observation", result="operational_passed")]
-    assert passes == ["runtime-protected-readiness", "api-operational", "worker-readiness"]
+    assert passes == ["runtime-observe", "api-observe", "worker-readiness"]
     streams = {(c[2]["logGroupName"], c[2]["logStreamName"].split("/")[0])
                for c in aws.bridge.calls if c[1] == "GetLogEvents"}  # fmt: skip
-    assert {("/staging/observe", "runtime-protected-readiness"),
-            ("/staging/observe", "api-operational")} <= streams  # fmt: skip
+    assert {("/staging/observe", "runtime-observe"),
+            ("/staging/observe", "api-observe")} <= streams  # fmt: skip
     assert_no_application_output(r)
 
 
@@ -847,17 +844,17 @@ def test_an_observer_stream_without_its_one_passing_receipt_holds_through_the_sd
 
         def edited(group, name):
             lines = original(group, name)
-            if not name.startswith("api-operational/"):
+            if not name.startswith("api-observe/"):
                 return lines
             [receipt] = [line for line in lines if line.startswith(RECEIPT_MARKER)]
             return [line for line in lines if line != receipt] + stream(receipt)
 
         setattr(aws, "_job_lines", edited)
     else:
-        aws.job_streams["api-operational"] = stream
+        aws.job_streams["api-observe"] = stream
     outcome = adapted(r, aws).run()
     assert_held(r, outcome, reason, "services_started")
-    assert not r.events("observation", subject="api-operational", result="operational_passed")
+    assert not r.events("observation", subject="api-observe", result="operational_passed")
     assert_no_application_output(r)
 
 

@@ -271,7 +271,13 @@ class ReleaseJob:
 
         from src.storage import schema
 
-        engine = self.engine_factory(self._connect_args())
+        try:
+            connect_args = self._connect_args()
+        except JobFailed:
+            # Reading the task identity and material used up the preflight's
+            # margin: refuse before connecting, as the preflight would have.
+            return self.fail(JobFailed("deadline_expired", "none", EXIT_DEADLINE_EXPIRED))
+        engine = self.engine_factory(connect_args)
         connected = False
         try:
             with engine.connect() as connection:

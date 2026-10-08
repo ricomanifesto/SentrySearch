@@ -35,7 +35,9 @@ dotenv file. Before any connection it requires the release contract
 `DB_SSLMODE=verify-full` with `DB_SSLROOTCERT=/run/material/postgres-ca.pem`
 (owner-only), a deployed `ENVIRONMENT`, `DB_DEBUG=false`, enough time before
 the deadline and the ECS task identity. Failures there exit 2–6 with
-`sql_outcome: none`.
+`sql_outcome: none`; if reading the task identity and material leaves too little
+time for one bounded statement, the job still refuses before connecting
+(`deadline_expired`, exit 4, with a receipt).
 
 It then opens one verified-TLS session tagged `release:<release>:<job>` with
 server-side `statement_timeout` (at most 60 s and the remaining time less a 5 s

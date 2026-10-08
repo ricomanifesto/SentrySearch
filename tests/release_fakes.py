@@ -213,8 +213,8 @@ def manifest_document(*, rollback: str = "empty_hold") -> dict:
         ],  # fmt: skip
         "operational_checks": [
             {"id": "worker-readiness", "receipt_schema": "sentry.worker-readiness.v1"},
-            observer_check("runtime-protected-readiness", "runtime"),
-            observer_check("api-operational", "api"),
+            observer_check("runtime-observe", "runtime"),
+            observer_check("api-observe", "api"),
         ],
         "rollback": {"kind": "empty_hold"},
     }

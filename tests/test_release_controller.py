@@ -172,8 +172,8 @@ def test_first_release_journals_every_step_and_finishes_held_paused():
         "sentry-staging-runtime-proof:7",
         "sentry-staging-product-proof:7",
         # After the services start: one observer task for each of the Runtime and API.
-        "sentry-staging-runtime-protected-readiness:7",
-        "sentry-staging-api-operational:7",
+        "sentry-staging-runtime-observe:7",
+        "sentry-staging-api-observe:7",
     ]
     assert [c["service"].rsplit("/", 1)[1] for c in r.calls("update_service")] == [
         "runtime",
@@ -1289,7 +1289,7 @@ def test_a_scale_to_zero_resend_keeps_the_release_window_guard():
 
 # Runtime and API observers -------------------------------------------------------
 
-RUNTIME_CHECK, API_CHECK = "runtime-protected-readiness", "api-operational"
+RUNTIME_CHECK, API_CHECK = "runtime-observe", "api-observe"
 OTHER_TASK = "arn:aws:ecs:us-east-1:111122223333:task/sentry-staging/" + "d" * 32
 MISMATCH = "operational_receipt_mismatch"
 
@@ -2687,7 +2687,7 @@ def test_a_first_deployment_bootstraps_both_databases_before_any_migration():
     assert launched_job_ids(r) == [
         "runtime-bootstrap", "product-bootstrap", "runtime-migrate", "product-migrate",
         "runtime-grant", "product-grant", "runtime-proof", "product-proof",
-        "runtime-protected-readiness", "api-operational",
+        "runtime-observe", "api-observe",
     ]  # fmt: skip
     assert r.transitions() == FORWARD
     assert_intent_precedes_every_mutation(r)

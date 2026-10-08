@@ -125,8 +125,9 @@ Runtime and Search migration release jobs) and `operational`
 (`sentry.operational.v1`, the observers, with `check_id` instead of `job_id`).
 `parse_receipt(lines, kind)` is the parser `release_aws.evidence` uses on the
 exact stream of the observed task. No marker is a missing receipt. Two markers, a
-malformed line, another kind's schema or subject field, extra or missing
-envelope fields, a non-string result value or one outside the allowlist are
+malformed line, a repeated JSON key, another kind's schema or subject field,
+extra or missing envelope fields, a non-string result value or one outside the
+allowlist are
 `ReceiptAmbiguous`, which the adapter reports as an ambiguous observation.
 Missing, stale (another task or release), ambiguous or failed receipts all hold.
 Golden lines in `tests/fixtures/release_receipts/` pin the migration envelope
@@ -142,7 +143,8 @@ classes); it carries none of this image's programs or SQL.
 
 `observe-runtime` and `observe-api` each run as one release task (`init` from the
 Search image, `observer` from this image) after the services start. Settings come
-from the task definition: `RELEASE_ID`, `RELEASE_CHECK_ID`, `RELEASE_NOT_AFTER`,
+from the task definition: `RELEASE_ID`, `RELEASE_CHECK_ID` (`runtime-observe` or
+`api-observe`, which the manifest pins), `RELEASE_NOT_AFTER`,
 `RELEASE_CHECK_BUDGET_SECONDS`, `RELEASE_TARGET_HOST` (a DNS name, never an
 address) and `RELEASE_TARGET_PORT`; the task identity comes from the metadata
 endpoint as for jobs. The check ends 5 seconds before its deadline and each
@@ -160,8 +162,10 @@ does not retry. Response bodies, the token and certificates are never printed.
 Material must be owner-only regular files of the observer's user, read without
 following links. The receipt (`operational` kind) names the target, host, the
 connected peer, port, TLS mode, checks and denials; a failure receipt carries
-only `reason` and the task exits non-zero (5 material, 12 observation, 2
-configuration, 4 deadline, 6 task identity). The observer cannot know which task
+only `reason` and the task exits non-zero (5 material, including a CA that does
+not parse; 12 observation, including an answer that does not parse or any
+unexpected error; 2 configuration; 4 deadline; 6 task identity). It never ends
+with a traceback instead of a receipt once its task identity is known. The observer cannot know which task
 answered: the controller compares the peer with the recorded service task's
 network interface and holds on any difference. Tests:
 `tests/test_release_observe.py` runs both observers against local TLS and HTTP

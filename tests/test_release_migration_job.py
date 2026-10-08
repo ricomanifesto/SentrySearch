@@ -256,3 +256,57 @@ def test_the_search_image_carries_exactly_the_shared_release_modules():
     allowed = {line for line in ignore if line.startswith("!release_tools")}
     assert allowed == {f"!release_tools/{name}" for name in SHARED}
     assert contract.STOP_GRACE_SECONDS == 5.0
+
+
+def test_time_spent_after_the_preflight_still_refuses_before_connecting(
+    metadata, ca, monkeypatch, capsys
+):
+    """The task identity read can use up the preflight's margin: no connection, a receipt."""
+    env = environment(metadata, ca)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    moment = [START]
+    original = contract.task_identity
+
+    def slow_identity(environ):
+        arn = original(environ)
+        # 7.5 s before the deadline (the 900 s budget ends first): the 5 s grace
+        # and 2 s reserve leave 0.5 s, less than one bounded statement.
+        moment[0] = START + timedelta(seconds=900) - timedelta(seconds=7.5)
+        return arn
+
+    monkeypatch.setattr(contract, "task_identity", slow_identity)
+    engines = Engines()
+    code = release_job.main(env, now=lambda: moment[0], engine_factory=engines,
+                            exit=lambda c: None, install_signals=False)  # fmt: skip
+    captured = capsys.readouterr()
+    assert code == release_job.EXIT_DEADLINE_EXPIRED and engines.requests == []
+    (line,) = captured.out.splitlines()
+    assert json.loads(line.split(" ", 1)[1])["result"] == {
+        "reason": "deadline_expired",
+        "sql_outcome": "none",
+    }
+    assert "Traceback" not in captured.err
+    assert all(json.loads(event)["event"] for event in captured.err.splitlines())
+
+
+def test_every_job_id_a_manifest_accepts_fits_the_producers_session_name():
+    """Manifest ids and the migrators' application_name cap must agree (both twins: 63)."""
+    from release.manifest import ObserverCheck, load_manifest
+    from tests.release_fakes import encode, forward_document, manifest_document
+
+    for document in (manifest_document(), forward_document()):
+        manifest = load_manifest(encode(document)).manifest
+        subjects = [job.id for job in manifest.jobs] + [
+            check.id for check in manifest.operational_checks if isinstance(check, ObserverCheck)
+        ]
+        for subject in subjects:
+            identity = contract.load_identity(
+                {
+                    "RELEASE_ID": manifest.release_id,
+                    "RELEASE_JOB_ID": subject,
+                    "RELEASE_NOT_AFTER": "2026-10-07T12:30:00Z",
+                    "RELEASE_JOB_BUDGET_SECONDS": "900",
+                }
+            )
+            assert len(identity.application_name) <= contract.MAX_APPLICATION_NAME

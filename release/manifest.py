@@ -633,15 +633,16 @@ def _check_release_tools_jobs(manifest: Manifest) -> None:
     jobs = {(job.phase, job.database): job for job in manifest.jobs}
     for job in manifest.jobs:
         where = f"jobs.{job.id}"
+        # The task definition fixes RELEASE_JOB_ID (<database>-<phase>, migrations
+        # included); the receipt echoes it.
+        if job.id != f"{job.database}-{job.phase}":
+            raise ReleaseRejected("job_id_invalid", where)
         if job.phase == "migrate":
             if job.receipt_schema != MIGRATION_RECEIPT_SCHEMA:
                 raise ReleaseRejected("job_receipt_schema_invalid", where)
             if set(job.expect) != MIGRATION_RESULT_KEYS:
                 raise ReleaseRejected("job_expectation_invalid", f"{where}.expect")
             continue
-        # The task definition fixes RELEASE_JOB_ID; the receipt echoes it.
-        if job.id != f"{job.database}-{job.phase}":
-            raise ReleaseRejected("job_id_invalid", where)
         if job.receipt_schema != RELEASE_TOOLS_RECEIPT_SCHEMA:
             raise ReleaseRejected("job_receipt_schema_invalid", where)
         if any(c.image != "release_tools" for c in job.task.containers if c.name != "init"):
@@ -743,6 +744,9 @@ def _check_operational(manifest: Manifest) -> None:
     namespaces = set()
     for check in observers:
         where = f"operational_checks.{check.id}"
+        # The task definition fixes RELEASE_CHECK_ID; the receipt echoes it.
+        if check.id != f"{check.target}-observe":
+            raise ReleaseRejected("observer_id_invalid", where)
         prefix, _, namespace = check.host.partition(".")
         if prefix != check.target or namespace.rsplit(".", 1)[-1].isdigit():
             raise ReleaseRejected("observer_target_invalid", f"{where}.host")

@@ -134,6 +134,13 @@ def log(event: str, **fields: object) -> None:
     sys.stderr.flush()
 
 
+def _unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    document = dict(pairs)
+    if len(document) != len(pairs):
+        raise ValueError("duplicate receipt key")
+    return document
+
+
 def _marked(lines: Iterable[str]) -> str | None:
     found = [line for line in lines if line.startswith(RECEIPT_MARKER)]
     if not found:
@@ -155,9 +162,9 @@ def parse_receipt(lines: Iterable[str], kind: str) -> dict[str, Any] | None:
     if text is None:
         return None
     try:
-        document = json.loads(text)
-    except ValueError as error:
-        raise ReceiptAmbiguous("receipt is not JSON") from error
+        document = json.loads(text, object_pairs_hook=_unique_keys)
+    except (ValueError, RecursionError) as error:
+        raise ReceiptAmbiguous("receipt is not JSON or repeats a key") from error
     fields = {"schema", "release_id", subject_field, "task_arn", "status", "result"}
     if not isinstance(document, dict) or set(document) != fields:
         raise ReceiptAmbiguous("receipt envelope")

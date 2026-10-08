@@ -259,6 +259,10 @@ def _observers(document: dict) -> dict[str, dict]:
         (lambda d: d["operational_checks"].pop(1), "observer_checks_invalid"),
         (lambda d: d["operational_checks"].append(observer_check("api-again", "api")),
          "observer_checks_invalid"),
+        # The check id is the one its task definition fixes (and fits the session name).
+        (lambda d: _observers(d)["runtime"].update(id="runtime-protected-readiness"),
+         "observer_id_invalid"),
+        (lambda d: _observers(d)["api"].update(id="api-operational"), "observer_id_invalid"),
         # The service's own private name and port, in one shared namespace.
         (lambda d: _observers(d)["runtime"].update(host="api.sentry-staging.internal"),
          "observer_target_invalid"),
@@ -319,7 +323,7 @@ def test_an_observers_material_is_its_own(share):
         ("task_definition", "arn:aws:ecs:us-east-1:444455556666:task-definition/x:1",
          "resource_scope_mismatch"),
         ("task_definition", "arn:aws:ecs:us-east-1:" + ACCOUNT
-         + ":task-definition/sentry-staging-api-operational", "mutable_reference"),
+         + ":task-definition/sentry-staging-api-observe", "mutable_reference"),
         ("task_role", "arn:aws:iam::444455556666:role/observer", "resource_scope_mismatch"),
     ],
 )  # fmt: skip
@@ -746,3 +750,11 @@ def test_schema_two_names_the_approved_operator_role_in_its_own_account():
                 "arn:aws:iam::111122223333:role/a b"):  # fmt: skip
         error = rejected(edited(forward_document(), lambda d, bad=bad: d.update(operator_role=bad)))
         assert error.code in {"resource_scope_mismatch", "mutable_reference"}
+
+
+@pytest.mark.parametrize("index, job_id", [(0, "runtime-migration"), (1, "product-migrate-v2")])
+def test_migration_job_ids_are_the_ones_their_task_definitions_fix(index, job_id):
+    document = manifest_document()
+    assert document["jobs"][index]["phase"] == "migrate"
+    document["jobs"][index]["id"] = job_id
+    assert rejected(encode(document)).code == "job_id_invalid"

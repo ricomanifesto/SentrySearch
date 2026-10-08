@@ -158,12 +158,11 @@ class Observer:
     def _status(body: bytes) -> object:
         try:
             document = json.loads(body)
-        except ValueError:
+        except (ValueError, RecursionError):
             return None
         return document.get("status") if isinstance(document, dict) else None
 
-    def runtime(self, ca: bytes, token: str) -> dict[str, str]:
-        trusted = ssl.create_default_context(cadata=ca.decode("ascii"))
+    def runtime(self, trusted: ssl.SSLContext, token: str) -> dict[str, str]:
         trusted.minimum_version = ssl.TLSVersion.TLSv1_2
         auth = {"Authorization": f"Bearer {token}"}
         for path, wanted in (("/healthz", "alive"), ("/readyz", "ready")):
@@ -257,15 +256,21 @@ def main(argv: list[str], environ: dict[str, str], *,
     try:
         if target == "runtime":
             ca = _material(RUNTIME_CA, MAX_MATERIAL_BYTES)
+            try:
+                trusted = ssl.create_default_context(cadata=ca.decode("ascii"))
+            except (ssl.SSLError, ValueError):
+                raise CheckFailed("material_invalid", EXIT_MATERIAL) from None
             token = _material(PROBE_TOKEN, MAX_TOKEN_BYTES).decode("ascii", "replace").strip()
             if not token or any(not "!" <= char <= "~" for char in token):
                 raise CheckFailed("material_invalid", EXIT_MATERIAL)
             observer.resolve_once()
-            outcome = observer.runtime(ca, token)
+            outcome = observer.runtime(trusted, token)
         else:
             observer.resolve_once()
             outcome = observer.api()
-    except CheckFailed as failure:
+    except Exception as error:
+        # Anything else that went wrong is a failed observation, never a traceback.
+        failure = error if isinstance(error, CheckFailed) else CheckFailed("observation_error")
         receipt.emit("operational", release_id=identity.release_id, subject=identity.subject,
                      task_arn=task_arn, status="failed", result={"reason": failure.reason})  # fmt: skip
         receipt.log("job_failed", reason=failure.reason, exit_code=failure.code, **common)

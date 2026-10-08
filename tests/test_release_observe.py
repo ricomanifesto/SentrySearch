@@ -322,3 +322,76 @@ def test_without_a_task_identity_nothing_is_requested(metadata, capsys):
     env["ECS_CONTAINER_METADATA_URI_V4"] = "http://192.0.2.1/v4/x"
     code, receipt = observed(capsys, "observe-api", env, answers("127.0.0.1"))
     assert (code, receipt, behaviour.requests) == (observe.EXIT_TASK_IDENTITY, None, [])
+
+
+def test_the_manifests_own_check_ids_run_in_the_real_observers(material, metadata, capsys):
+    """Each observer check id the manifest approves is one the observer accepts and echoes."""
+    from release.manifest import ObserverCheck, load_manifest
+    from release.machine import evaluate_observation
+    from tests.release_fakes import encode, manifest_document
+
+    manifest = load_manifest(encode(manifest_document())).manifest
+    checks = {c.target: c for c in manifest.operational_checks if isinstance(c, ObserverCheck)}
+    runtime = checks["runtime"]
+    port = serve(Behaviour(), cert=material)
+    env = environment(metadata, port, check=runtime.id, RELEASE_ID=manifest.release_id)
+    code, observed = observed_receipt(capsys, "observe-runtime", env)
+    assert code == 0 and observed is not None and observed["check_id"] == runtime.id
+    api = checks["api"]
+    port = serve(Behaviour())
+    env = environment(metadata, port, check=api.id, host="api.staging.internal",
+                      RELEASE_ID=manifest.release_id)  # fmt: skip
+    code, observed = observed_receipt(capsys, "observe-api", env)
+    assert code == 0 and observed is not None and observed["check_id"] == api.id
+    # The controller's own evaluation accepts the envelope apart from the target it names.
+    assert evaluate_observation(api, release_id=manifest.release_id, task_arn=TASK,
+                                peer="127.0.0.1", receipt=observed) == "operational_receipt_mismatch"  # fmt: skip
+
+
+def observed_receipt(capsys, command, env):
+    return observed(capsys, command, env, answers("127.0.0.1"))
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "-----BEGIN CERTIFICATE-----\nbm90IGEgY2VydGlmaWNhdGU=\n-----END CERTIFICATE-----\n".encode(),
+        "café not ascii".encode(),
+    ],
+)
+def test_unusable_ca_material_is_a_material_failure_with_a_receipt(material, metadata, capsys,
+                                                                    content):  # fmt: skip
+    behaviour = Behaviour()
+    port = serve(behaviour, cert=material)
+    observe.RUNTIME_CA.chmod(0o600)
+    observe.RUNTIME_CA.write_bytes(content)
+    observe.RUNTIME_CA.chmod(0o400)
+    code, receipt = observed(capsys, "observe-runtime", environment(metadata, port),
+                             answers("127.0.0.1"))  # fmt: skip
+    assert code == observe.EXIT_MATERIAL and receipt is not None
+    assert receipt["result"] == {"reason": "material_invalid"} and behaviour.requests == []
+
+
+def test_a_deeply_nested_answer_fails_the_check_with_a_receipt(metadata, capsys):
+    behaviour = Behaviour()
+    behaviour.bodies["/"] = b"[" * 2000 + b"]" * 2000
+    port = serve(behaviour)
+    env = environment(metadata, port, check="api-observe", host="api.staging.internal")
+    code, receipt = observed(capsys, "observe-api", env, answers("127.0.0.1"))
+    assert code == observe.EXIT_OBSERVATION and receipt is not None
+    assert receipt["result"] == {"reason": "liveness_failed"}
+
+
+def test_an_unexpected_error_is_a_failed_observation_never_a_traceback(
+    material, metadata, capsys, monkeypatch
+):
+    port = serve(Behaviour(), cert=material)
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(observe.Observer, "runtime", broken)
+    code, receipt = observed(capsys, "observe-runtime", environment(metadata, port),
+                             answers("127.0.0.1"))  # fmt: skip
+    assert code == observe.EXIT_OBSERVATION and receipt is not None
+    assert receipt["result"] == {"reason": "observation_error"}

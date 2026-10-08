@@ -338,8 +338,7 @@ def test_recover_takes_the_exact_lock_then_continues_the_release(tmp_path):
     # Six database jobs and two observers, each launched exactly once.
     launched = [t.tags.get("sentry:job-id") for t in r.ecs.tasks.values()]
     assert sorted(filter(None, launched)) == sorted(
-        [job["id"] for job in r.document["jobs"]]
-        + ["runtime-protected-readiness", "api-operational"]
+        [job["id"] for job in r.document["jobs"]] + ["runtime-observe", "api-observe"]
     )
 
 

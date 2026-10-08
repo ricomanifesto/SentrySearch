@@ -36,8 +36,9 @@ Required content:
   deadline, stop grace, receipt schema and exact expected receipt fields.
   Migrations use the shared migration envelope `sentry.release-migration.v1`
   (written by the Runtime `migrate -release-job` and the Search
-  `dev/migrate_storage.py --release-job`) and expect exactly `database`,
-  `principal` and `schema`; grants pin SQL source and hash. The Runtime grant
+  `dev/migrate_storage.py --release-job`), ids `<database>-migrate` and expect
+  exactly `database`, `principal` and `schema`. Every job id is the one its task
+  definition fixes and fits the producers' `release:<release>:<id>` session name; grants pin SQL source and hash. The Runtime grant
   must match the reviewed `db/roles/service.sql` pin;
 - grant and proof jobs run only the [release-tools](release-tools.md) image
   (besides init), use receipt schema `sentry.release-tools.job.v1` and job ids
@@ -50,7 +51,8 @@ Required content:
   equals the migrated schema;
 - operational checks: `worker-readiness` (schema `sentry.worker-readiness.v1`,
   proven from the worker's own receipts) and exactly one observer each for the
-  Runtime and the API (schema `sentry.operational.v1`). An observer is its own
+  Runtime and the API (schema `sentry.operational.v1`), with check ids
+  `runtime-observe` and `api-observe` (fixed by their task definitions). An observer is its own
   release-tools task (`init` from the Search image, `observer` from the
   release-tools image) whose material is shared with no service, job or other
   observer, on the service's private name `<target>.<namespace>` (one namespace

@@ -144,3 +144,29 @@ def test_producers_refuse_values_outside_the_allowlist_and_wrong_failure_fields(
                         status="passed", result={"target": "api"})  # fmt: skip
     parsed = parse_receipt([line], "operational")
     assert parsed is not None and parsed["check_id"] == "api-observe" and "job_id" not in parsed
+
+
+@pytest.mark.parametrize(
+    "kind, subject_field, status, result",
+    [
+        ("tools", "job_id", "succeeded", '{"database":"product_db","principal":"product_owner"}'),
+        ("migration", "job_id", "succeeded",
+         '{"database":"product_db","principal":"product_owner","schema":"goose:1"}'),
+        ("operational", "check_id", "passed", '{"target":"api"}'),
+    ],
+)  # fmt: skip
+def test_a_repeated_key_is_ambiguous_never_last_wins(kind, subject_field, status, result):
+    schema = receipt.KINDS[kind][0]
+    envelope = (
+        f'{{"release_id":"{RELEASE}","{subject_field}":"x","schema":"{schema}",'
+        f'"status":"failed","status":"{status}","task_arn":"{TASK}","result":{result}}}'
+    )
+    with pytest.raises(ReceiptAmbiguous):
+        parse_receipt([f"{receipt.RECEIPT_MARKER} {envelope}"], kind)
+    nested = (
+        f'{{"release_id":"{RELEASE}","{subject_field}":"x","schema":"{schema}",'
+        f'"status":"{status}","task_arn":"{TASK}",'
+        f'"result":{{"database":"a","database":"b"}}}}'
+    )
+    with pytest.raises(ReceiptAmbiguous):
+        parse_receipt([f"{receipt.RECEIPT_MARKER} {nested}"], kind)
