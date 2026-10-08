@@ -68,12 +68,14 @@ chains to provider or log content.
   contract](../deploy/aws-staging/README.md)).
 - **Send authorization.** The controller's last check is in process, one clock
   reading immediately before it calls the port, after the intent is journaled:
-  approval and the release window for every send; for `RunTask` also the original
-  job deadline and token lifetime; for a forward deploy also the original
-  service-start deadline (scale-to-zero has only approval and the window). The
-  adapter adds no clock or retry of its own, but time spent inside the SDK call
-  (validation, signing, DNS, connect and the request itself) is not bounded by
-  these limits (see [send checks](release-controller.md#journal-lock-and-recovery)).
+  approval and the release window for every `RunTask` and `UpdateService`; for
+  `RunTask` also the original job deadline and token lifetime; for a forward
+  deploy also the original service-start deadline (scale-to-zero has only
+  approval and the window). `StopTask` of the release's own job is a safety
+  action and is not checked, so it still goes out after expiry. The adapter adds
+  no clock or retry of its own, but time spent inside the SDK call (validation,
+  signing, DNS, connect and the request itself) is not bounded by these limits
+  (see [send checks](release-controller.md#journal-lock-and-recovery)).
 - **Enumeration.** Listings follow `nextToken` to the end. Any of the following
   raises `AmbiguousResponse`; an incomplete listing is never returned as a short
   one:
