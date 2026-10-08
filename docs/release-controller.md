@@ -72,10 +72,17 @@ records its sequence and the hash of its predecessor, so a reordered or edited
 journal is rejected. Polling is not journaled; intents, observations and
 transitions are. Before every forward mutation the controller re-checks approval and
 the release window, then appends an intent (request hash, stable token, deadline)
-and only then calls the port. A lost CAS race halts before any mutation. Approval
-is not checked again between that append and the call: an approval that expires
-during a slow journal write does not stop that one request. For a forward service
-deploy the window still binds after the write, through its deadline.
+and only then calls the port. A lost CAS race halts before any mutation. The
+append and any read that decided it take time, so immediately before each send
+(job launch, forward deploy, scale-to-zero, and each identical resend of one) the
+controller checks approval and the window again, and with them a launch's
+original job deadline and token lifetime or a deploy's original service-start
+deadline. Reaching any of these, equality included, holds without sending:
+`approval_expired`, `release_window_exceeded`, `launch_outcome_unknown` or
+`service_update_unconfirmed`. The journaled intent stays outstanding, so the hold
+and its rollback plan count it as possibly sent. Stops of the release's own jobs
+and lock release are safety actions: they stay authorized after expiry and are
+not gated this way.
 
 The environment lock is created with create-if-absent semantics and is never
 stolen by age. A different session cannot continue a journal. Recovery is an
@@ -116,7 +123,8 @@ After a crash or ambiguous response the controller looks for the task by token.
 A task found that way is described and verified like a direct launch. Only
 inside the job's deadline and token lifetime (the shorter of 24 hours or task
 lifetime plus one hour) does it resend the identical request with the same
-token. Otherwise an unseen launch is `launch_outcome_unknown`: an empty,
+token, and only if both still hold after the resend's intent is journaled.
+Otherwise an unseen launch is `launch_outcome_unknown`: an empty,
 eventually consistent listing is not proof that nothing ran.
 
 A job succeeds only when its task is `STOPPED` with
@@ -163,9 +171,11 @@ A lost or crashed deploy is resent only as the identical request, journaled with
 the original deadline and `retry_of`, at most three times per reconciliation;
 each authorized recovery reconciles again within the same original deadline. No
 forward deploy, first or resent, is sent at or after its recorded service-start
-deadline: the deadline is checked after its intent is journaled, and for a
-resend also after the read that decides it. Otherwise the update holds with
-`service_update_unconfirmed`.
+deadline: the deadline is checked after its intent is journaled (with approval
+and the window), and for a resend also after the read that decides it.
+Otherwise the update holds with `service_update_unconfirmed`. Scale-to-zero
+sends, first or resent, keep only the approval and window checks: quiescing
+acquires no service-start deadline or settings check.
 
 The values are:
 - minimum healthy 0% and maximum 100% (no overlap);

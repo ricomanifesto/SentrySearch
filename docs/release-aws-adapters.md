@@ -66,6 +66,11 @@ chains to provider or log content.
   Exec and networking belong to Terraform (see the
   [ownership
   contract](../deploy/aws-staging/README.md)).
+- **Send authorization.** Each `RunTask` and `UpdateService` the adapter receives
+  was rechecked by the controller after its intent was journaled: approval, the
+  release window and the original job, token or service-start deadline. The
+  adapter adds no clock or retry of its own, so nothing reaches the SDK after
+  those limits (see [send checks](release-controller.md#journal-lock-and-recovery)).
 - **Enumeration.** Listings follow `nextToken` to the end. Any of the following
   raises `AmbiguousResponse`; an incomplete listing is never returned as a short
   one:

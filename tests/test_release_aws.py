@@ -28,7 +28,7 @@ from release.controller import (
     ReleaseHalted,
 )
 from release.journal import PreconditionFailed
-from release.manifest import load_approval, load_manifest
+from release.manifest import canonical_sha256, load_approval, load_manifest
 from release.ports import AmbiguousResponse
 from release_aws.ecs import EcsAdapter
 from release_aws.errors import AwsRequestRejected, require_client
@@ -66,7 +66,21 @@ from tests.release_fakes import (
     manifest_document,
     sha,
 )
-from tests.test_release_controller import JOURNAL, LOCK, Rig, assert_held
+from tests.test_release_controller import (
+    APPROVAL_END,
+    DISPATCH_SITES,
+    JOURNAL,
+    LOCK,
+    SHORT_WINDOW_SECONDS,
+    SITE_IDS,
+    DispatchSite,
+    Rig,
+    assert_held,
+    assert_possibly_sent,
+    iso,
+    slow_intent_write,
+    window_end,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 TASK = f"arn:aws:ecs:{REGION}:{ACCOUNT}:task/sentry-staging/" + "a" * 32
@@ -684,16 +698,25 @@ def _bytes(data: bytes) -> io.BytesIO:
 # Whole releases through the adapters ---------------------------------------------------
 
 
-def aws_rig(*, checks: str = "all") -> tuple[Rig, FakeAws]:
-    document = manifest_document()
+def aws_rig(
+    *,
+    checks: str = "all",
+    rollback: str = "empty_hold",
+    running_prior: bool = False,
+    window_seconds: int | None = None,
+    **approval,
+) -> tuple[Rig, FakeAws]:
+    document = manifest_document(rollback=rollback)
     if checks == "worker":
         document["operational_checks"] = [
             check for check in document["operational_checks"] if check["id"] == "worker-readiness"
         ]
+    if window_seconds is not None:
+        document["window"]["total_seconds"] = window_seconds
     loaded = load_manifest(encode(document))
     clock, trace = FakeClock(), Trace()
     store, ecs = FakeStore(trace), FakeEcs(clock, trace)
-    ecs.configure(document)
+    ecs.configure(document, running_prior=running_prior)
     r = Rig(
         document=document,
         clock=clock,
@@ -703,7 +726,7 @@ def aws_rig(*, checks: str = "all") -> tuple[Rig, FakeAws]:
         evidence=FakeEvidence(ecs, document),
         logs=FakeLogs(ecs, document),
         tokens=Tokens(),
-        approval_raw=encode(approval_document(loaded.sha256)),
+        approval_raw=encode({**approval_document(loaded.sha256), **approval}),
     )
     return r, FakeAws(r.ecs, r.logs, r.evidence, r.store, document)
 
@@ -1146,3 +1169,52 @@ def test_no_exception_escaping_a_release_carries_application_output():
     text = carried_text(error.value)
     for fragment in ("fixture-secret", "fixture-key", "report-fixture", "fixture-user"):
         assert fragment not in text
+
+
+# Mutation-send authorization through the SDK --------------------------------
+
+
+def site_rig(site: DispatchSite, limit: str) -> tuple[Rig, FakeAws, datetime, str]:
+    options = {"rollback": "compatible_release", "running_prior": True} if site.upgrade else {}
+    if limit == "approval":
+        r, aws = aws_rig(checks="worker", not_after=iso(APPROVAL_END), **options)
+        return r, aws, APPROVAL_END, "approval_expired"
+    r, aws = aws_rig(checks="worker", window_seconds=SHORT_WINDOW_SECONDS, **options)
+    return r, aws, window_end(r), "release_window_exceeded"
+
+
+def bridge_sends(r: Rig, aws: FakeAws, site: DispatchSite) -> list[dict]:
+    """The site's requests as botocore serialized them, lost ones included."""
+    if site.action == "run_task":
+        return [p for _s, op, p in aws.bridge.calls
+                if op == "RunTask" and p["tags"][1]["value"] == site.subject]  # fmt: skip
+    arn = r.document["environment"]["services"][site.subject]
+    return [p for _s, op, p in aws.bridge.calls if op == "UpdateService"
+            and p["service"] == arn and p["desiredCount"] == site.desired]  # fmt: skip
+
+
+@pytest.mark.parametrize("site", DISPATCH_SITES, ids=SITE_IDS)
+@pytest.mark.parametrize("limit", ["approval", "window"])
+def test_a_slow_intent_write_through_the_sdk_never_sends_after_authorization_ends(site, limit):
+    r, aws, end, reason = site_rig(site, limit)
+    site.prepare(r)
+    slow = slow_intent_write(
+        r, site.matches, lambda _r, _intent: end, sends=lambda rr: bridge_sends(rr, aws, site)
+    )
+    outcome = adapted(r, aws).run()
+    assert slow.intent is not None, "the run must reach the dispatch site under test"
+    assert len(bridge_sends(r, aws, site)) == slow.sends_before, "no SDK request after the limit"
+    assert_held(r, outcome, reason, site.last_proven)
+    assert_possibly_sent(r, site, outcome, slow.intent)
+
+
+@pytest.mark.parametrize("site", DISPATCH_SITES, ids=SITE_IDS)
+def test_a_timely_send_through_the_sdk_is_the_journaled_request(site):
+    r, aws, end, _reason = site_rig(site, "approval")
+    site.prepare(r)
+    slow = slow_intent_write(
+        r, site.matches, lambda _r, _intent: end - timedelta(seconds=1), sends=site.sends
+    )
+    adapted(r, aws).run()
+    assert slow.intent is not None and len(site.sends(r)) >= slow.sends_before + 1
+    assert canonical_sha256(site.sends(r)[slow.sends_before]) == slow.intent["request_sha256"]

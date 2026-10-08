@@ -15,7 +15,7 @@ from release.controller import (
     ReleaseController,
     ReleaseHalted,
 )
-from release.manifest import load_approval, load_manifest
+from release.manifest import canonical_sha256, load_approval, load_manifest
 from release.ports import AmbiguousResponse
 from tests.release_fakes import (
     PRIOR_RELEASE_ID,
@@ -2059,3 +2059,308 @@ def test_expiry_cleanup_records_unknown_when_lock_read_fails(monkeypatch):
     assert_held(r, outcome, "approval_expired", "quiesced")
     assert not r.calls("stop_task")
     assert r.events("observation", result="cleanup_unconfirmed")[-1]["sql_outcome"] == "unknown"
+
+
+# Mutation-send authorization -------------------------------------------------
+#
+# Approval and the release window are checked again after each intent is
+# journaled, immediately before its send; a launch also rechecks its original
+# job deadline and token lifetime there. A journal write slow enough to reach a
+# limit (equality included) sends nothing, and the journaled intent stays
+# outstanding: the hold treats it as possibly sent. Safety stops stay authorized.
+
+# Each limit binds before every other deadline at the site under test: approval
+# ends before any job (900 s) or service-start (600 s) deadline it could reach,
+# and a short window caps those deadlines at its own end.
+APPROVAL_END = START + timedelta(minutes=10)
+SHORT_WINDOW_SECONDS = 600
+
+
+def window_end(r: Rig) -> datetime:
+    return START + timedelta(seconds=r.document["window"]["total_seconds"])
+
+
+def at_time(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+@dataclass
+class SlowWrite:
+    """The first matching intent journaled by a slow write, and sends made before it."""
+
+    intent: dict | None = None
+    sends_before: int = 0
+
+
+def slow_intent_write(r: Rig, matches, returns_at, *, sends=lambda _r: []) -> SlowWrite:
+    """The first matching intent's journal write lands, then returns at ``returns_at``.
+
+    ``returns_at(r, intent)`` gives the moment the write returns. Only the clock
+    moves: the intent is persisted exactly as the controller wrote it.
+    """
+    original = r.store.replace
+    slow = SlowWrite()
+
+    def replace(key: str, body: bytes, *, if_match: str) -> str:
+        etag = original(key, body, if_match=if_match)
+        event = json.loads(body)["events"][-1] if key == JOURNAL else {"kind": None}
+        if event["kind"] == "intent" and slow.intent is None and matches(event):
+            slow.intent, slow.sends_before = event, len(sends(r))
+            r.clock.moment = max(r.clock.moment, returns_at(r, event))
+        return etag
+
+    setattr(r.store, "replace", replace)
+    return slow
+
+
+def job_launches(r: Rig, job_id: str) -> list[dict]:
+    return [c for c in r.calls("run_task") if c["tags"][1]["value"] == job_id]
+
+
+def service_updates(r: Rig, key: str, desired: int) -> list[dict]:
+    arn = r.document["environment"]["services"][key]
+    return [
+        c for c in r.calls("update_service") if c["service"] == arn and c["desiredCount"] == desired
+    ]
+
+
+@dataclass(frozen=True)
+class DispatchSite:
+    """One send the controller makes after journaling its intent."""
+
+    name: str
+    action: str
+    subject: str
+    retry: bool
+    last_proven: str
+    upgrade: bool = False
+    desired: int | None = None
+
+    def matches(self, event: dict) -> bool:
+        return (
+            event["action"] == self.action
+            and event["subject"] == self.subject
+            and ("retry_of" in event) == self.retry
+            and (self.desired is None or event.get("desired_count") == self.desired)
+        )
+
+    def rig(self, *, window_seconds: int | None = None, **approval) -> Rig:
+        if self.upgrade:
+            r = rig(rollback="compatible_release", running_prior=True, **approval)
+        else:
+            r = rig(**approval)
+        if window_seconds is not None:
+            r.document["window"]["total_seconds"] = window_seconds
+            loaded = load_manifest(encode(r.document))
+            r.approval_raw = encode({**approval_document(loaded.sha256), **approval})
+        return r
+
+    def prepare(self, r: Rig) -> None:
+        """Lose the first send, before ECS applies it, so the site under test is a resend.
+
+        Every send at the site is counted, including the lost first one.
+        """
+        if not self.retry:
+            return
+        if self.action == "run_task":
+            r.ecs.ambiguous["run_task_before"] = 1  # recorded by the fake, then lost
+        elif self.desired == 1:
+            setattr(
+                r, "site_sends", Interrupted(r, interruption="ambiguous", applied=False).forward
+            )
+        else:
+            setattr(r, "site_sends", lose_first_scale_down(r, self.subject))
+
+    def sends(self, r: Rig) -> list[dict]:
+        counted = getattr(r, "site_sends", None)
+        if counted is not None:
+            return counted
+        if self.action == "run_task":
+            return job_launches(r, self.subject)
+        return service_updates(r, self.subject, int(self.desired or 0))
+
+
+DISPATCH_SITES = [
+    DispatchSite("first-launch", "run_task", "product-migrate", False, "quiesced"),
+    DispatchSite("launch-resend", "run_task", "runtime-migrate", True, "quiesced"),
+    DispatchSite("first-deploy", "update_service", "runtime", False, "grants_verified", desired=1),
+    DispatchSite("deploy-resend", "update_service", "runtime", True, "grants_verified", desired=1),
+    DispatchSite("scale-to-zero", "update_service", "runtime", False, "locked",
+                 upgrade=True, desired=0),  # fmt: skip
+    DispatchSite("scale-to-zero-resend", "update_service", "runtime", True, "locked",
+                 upgrade=True, desired=0),  # fmt: skip
+]
+SITE_IDS = [site.name for site in DISPATCH_SITES]
+
+
+def limit_rig(site: DispatchSite, limit: str) -> tuple[Rig, datetime, str]:
+    if limit == "approval":
+        return site.rig(not_after=iso(APPROVAL_END)), APPROVAL_END, "approval_expired"
+    r = site.rig(window_seconds=SHORT_WINDOW_SECONDS)
+    return r, window_end(r), "release_window_exceeded"
+
+
+def outstanding_after(r: Rig, intent: dict) -> bool:
+    """True while no later observation resolves the intent's action and subject."""
+    return not [
+        e
+        for e in r.events("observation", subject=intent["subject"])
+        if e.get("resolves") == intent["action"] and e["sequence"] > intent["sequence"]
+    ]
+
+
+def assert_possibly_sent(r: Rig, site: DispatchSite, outcome, intent: dict) -> None:
+    assert outstanding_after(r, intent), "a withheld send is never recorded as resolved"
+    actions = outcome.rollback["actions"]
+    if site.action == "run_task":
+        # The job is classified unknown, not unstarted: its intent may have been sent.
+        assert "reconcile_partial_migration_before_rerun" in actions
+        unconfirmed = r.events("observation", subject=site.subject, result="cleanup_unconfirmed")
+        if outcome.reason in {"approval_expired", "release_window_exceeded"}:
+            # Expiry cleanup searched for it by token: an empty listing proves nothing.
+            assert unconfirmed and unconfirmed[-1]["sql_outcome"] == "unknown"
+    elif site.desired == 1:
+        assert "set_started_services_desired_zero" in actions
+
+
+@pytest.mark.parametrize("site", DISPATCH_SITES, ids=SITE_IDS)
+@pytest.mark.parametrize("limit", ["approval", "window"])
+def test_a_journal_write_reaching_the_authorization_limit_sends_nothing(site, limit):
+    r, end, reason = limit_rig(site, limit)
+    site.prepare(r)
+    slow = slow_intent_write(r, site.matches, lambda _r, _intent: end, sends=site.sends)
+    outcome = r.controller().run()
+    assert slow.intent is not None, "the run must reach the dispatch site under test"
+    assert len(site.sends(r)) == slow.sends_before, "nothing is sent at or after the limit"
+    assert r.clock.now() >= end
+    assert_held(r, outcome, reason, site.last_proven)
+    assert_possibly_sent(r, site, outcome, slow.intent)
+
+
+@pytest.mark.parametrize("site", DISPATCH_SITES, ids=SITE_IDS)
+@pytest.mark.parametrize("limit", ["approval", "window"])
+def test_a_timely_send_after_a_slow_journal_write_is_the_identical_request(site, limit):
+    # One second before the limit the send proceeds with exactly what was journaled.
+    r, end, _reason = limit_rig(site, limit)
+    site.prepare(r)
+    slow = slow_intent_write(
+        r, site.matches, lambda _r, _intent: end - timedelta(seconds=1), sends=site.sends
+    )
+    r.controller().run()
+    intent = slow.intent
+    assert intent is not None
+    sends = site.sends(r)
+    assert len(sends) >= slow.sends_before + 1
+    sent = sends[slow.sends_before]
+    assert canonical_sha256(sent) == intent["request_sha256"]
+    if site.action == "run_task":
+        assert sent["clientToken"] == sent["startedBy"] == intent["token"]
+    if site.retry:
+        first = next(
+            e for e in r.events("intent", action=site.action, subject=site.subject)
+            if e["sequence"] == intent["retry_of"]
+        )  # fmt: skip
+        assert (first["request_sha256"], first["deadline_at"]) == (
+            intent["request_sha256"], intent["deadline_at"]
+        )  # fmt: skip
+        assert sends[0] == sent, "a resend is the identical request"
+        if site.action == "run_task":
+            assert (first["token"], first["token_expires_at"]) == (
+                intent["token"], intent["token_expires_at"]
+            )  # fmt: skip
+
+
+@pytest.mark.parametrize("retry", [False, True], ids=["first-launch", "launch-resend"])
+@pytest.mark.parametrize("offset", [0, -1], ids=["at-deadline", "control"])
+def test_a_launch_is_never_sent_at_or_after_its_original_job_deadline(retry, offset):
+    r = rig()
+    job_id = "runtime-migrate"
+    if retry:
+        r.ecs.ambiguous["run_task_before"] = 1
+    slow = slow_intent_write(
+        r,
+        lambda event: event["action"] == "run_task"
+        and event["subject"] == job_id
+        and ("retry_of" in event) == retry,
+        lambda _r, intent: at_time(intent["deadline_at"]) + timedelta(seconds=offset),
+        sends=lambda rr: job_launches(rr, job_id),
+    )
+    outcome = r.controller().run()
+    assert slow.intent is not None
+    if offset == 0:
+        assert_held(r, outcome, "launch_outcome_unknown", "quiesced")
+        assert len(job_launches(r, job_id)) == slow.sends_before
+        assert outstanding_after(r, slow.intent)
+        assert not r.calls("stop_task")
+    else:
+        # Sent one second before its deadline; the job cannot finish in time.
+        assert len(job_launches(r, job_id)) == slow.sends_before + 1
+        assert_held(r, outcome, "job_deadline_exceeded", "quiesced")
+
+
+def rechained(document: dict) -> dict:
+    prior = document["manifest_sha256"]
+    for event in document["events"]:
+        event["prior_sha256"] = prior
+        prior = canonical_sha256(event)
+    return document
+
+
+@pytest.mark.parametrize("offset", [0, -1], ids=["at-token-expiry", "control"])
+def test_a_launch_resend_is_never_sent_at_or_after_its_recorded_token_lifetime(offset):
+    # The schema keeps every job deadline below its token lifetime, so only a
+    # journal recording a shorter lifetime can reach this check. It still binds.
+    r = rig()
+    r.ecs.crash[("run_task", "before")] = 1
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    document = r.journal()
+    intent = document["events"][-1]
+    assert intent["action"] == "run_task"
+    token_end = START + timedelta(seconds=100)
+    intent["token_expires_at"] = iso(token_end)
+    r.store.objects[JOURNAL] = (encode(rechained(document)), r.store.objects[JOURNAL][1])
+    slow = slow_intent_write(
+        r,
+        lambda event: event["action"] == "run_task" and "retry_of" in event,
+        lambda _r, _intent: token_end + timedelta(seconds=offset),
+    )
+    outcome = r.recover().run()
+    assert slow.intent is not None and slow.intent["token_expires_at"] == iso(token_end)
+    launches = job_launches(r, "runtime-migrate")
+    if offset == 0:
+        assert_held(r, outcome, "launch_outcome_unknown", "quiesced")
+        assert launches == []
+    else:
+        assert len(launches) == 1 and launches[0]["clientToken"] == intent["token"]
+
+
+def test_a_safety_stop_after_approval_expiry_is_still_sent():
+    # Stopping the run's own job is cleanup, not a forward launch: a slow stop
+    # intent that crosses approval expiry still sends StopTask.
+    r = rig(not_after=iso(APPROVAL_END))
+    definition = r.document["jobs"][0]["task"]["task_definition"]
+    r.ecs.plans[definition] = JobPlan(hang=True)
+    slow_intent_write(r, lambda event: event["action"] == "stop_task", lambda _r, _i: APPROVAL_END)
+    outcome = r.controller().run()
+    assert len(r.calls("stop_task")) == 1
+    assert r.ecs._status(r.job_tasks("runtime-migrate")[0]) == "STOPPED"
+    assert outcome.state == "hold"
+    assert r.events("observation", result="stop_confirmed")[-1]["sql_outcome"] == "unknown"
+
+
+def test_expiry_cleanup_after_a_withheld_launch_stops_only_matching_tasks():
+    # The withheld product launch has no task; the earlier job's is already done.
+    r = rig(not_after=iso(APPROVAL_END))
+    foreign = []
+
+    def returns_at(rr: Rig, _intent: dict) -> datetime:
+        # Another writer's task with the same revision appears while the write is slow.
+        foreign.append(rr.ecs.standalone(rr.document["jobs"][1]["task"]["task_definition"]))
+        return APPROVAL_END
+
+    slow_intent_write(r, DISPATCH_SITES[0].matches, returns_at)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "approval_expired", "quiesced")
+    assert not r.calls("stop_task")
+    assert r.ecs._status(foreign[0]) == "RUNNING"

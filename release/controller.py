@@ -389,13 +389,31 @@ class ReleaseController:
         window = self.manifest.window
         return min(started + timedelta(seconds=window.total_seconds), window.expires_at)
 
-    def _guard(self) -> None:
+    def _guard(self, now: datetime | None = None) -> None:
         """Before each mutation intent or promotion: a current approval inside the window."""
-        now = self.clock.now()
+        now = self.clock.now() if now is None else now
         if now >= self.approval.approval.not_after:
             raise _Hold("approval_expired")
         if now >= self._window_deadline():
             raise _Hold("release_window_exceeded")
+
+    def _authorize_send(self, intent: dict[str, Any]) -> None:
+        """Immediately before sending a journaled launch or service update.
+
+        The intent append, and any read that decided it, take time. Approval and
+        the release window are checked again here, then a launch's original job
+        deadline and token lifetime, or a forward deploy's original service-start
+        deadline. Equality holds. A hold here leaves the journaled intent
+        outstanding, so it counts as possibly sent. Scale-to-zero needs only the
+        approval and window; safety stops and lock release never come here.
+        """
+        now = self.clock.now()
+        self._guard(now)
+        if intent["action"] == "run_task":
+            if now >= _time(intent["deadline_at"]) or now >= _time(intent["token_expires_at"]):
+                raise _Hold("launch_outcome_unknown")
+        elif intent["desired_count"] and now >= _time(intent["deadline_at"]):
+            raise _Hold("service_update_unconfirmed")
 
     def _lock_record(self) -> tuple[dict[str, Any], str] | None:
         found = self.store.read(self.lock)
@@ -482,6 +500,7 @@ class ReleaseController:
                 token_expires_at=intent["token_expires_at"],
                 retry_of=intent["sequence"],
             )
+            self._authorize_send(retry)
             try:
                 response = self.ecs.run_task(request)
             except AmbiguousResponse:
@@ -509,10 +528,11 @@ class ReleaseController:
             if self._update_observed(key, desired, prior):
                 return
             # That read and the journal write each take time: a forward resend is
-            # never sent at or after the original service-start deadline. The
-            # limit of identical resends applies per reconciliation.
+            # never sent at or after the original service-start deadline, and no
+            # resend after approval or the window ends. The limit of identical
+            # resends applies per reconciliation.
             self._before_forward_deadline(desired, deadline)
-            self._intent(
+            retry = self._intent(
                 "update_service",
                 key,
                 request,
@@ -521,7 +541,7 @@ class ReleaseController:
                 deadline_at=intent["deadline_at"],
                 retry_of=intent["sequence"],
             )
-            self._before_forward_deadline(desired, deadline)
+            self._authorize_send(retry)
             try:
                 response = self.ecs.update_service(request)
             except AmbiguousResponse:
@@ -599,6 +619,8 @@ class ReleaseController:
                 intent = self._intent(
                     "update_service", key, request, desired_count=0, deadline_at=deadline
                 )
+                # Quiescing is authorized work: only approval and the window bind it.
+                self._authorize_send(intent)
                 try:
                     self.ecs.update_service(request)
                 except AmbiguousResponse:
@@ -676,6 +698,7 @@ class ReleaseController:
             deadline_at=_iso(deadline),
             token_expires_at=_iso(token_expires_at(now, job.deadline_seconds)),
         )
+        self._authorize_send(intent)
         try:
             response = self.ecs.run_task(request)
         except AmbiguousResponse:
@@ -889,8 +912,9 @@ class ReleaseController:
                        self._window_deadline())  # fmt: skip
         intent = self._intent("update_service", key, request, desired_count=1,
                               prior_deployments=prior, deadline_at=_iso(deadline))  # fmt: skip
-        # A slow journal write near a window-bound deadline must not carry the send past it.
-        self._before_forward_deadline(1, _time(intent["deadline_at"]))
+        # A slow journal write must not carry the send past approval, the window
+        # or the deadline it just recorded.
+        self._authorize_send(intent)
         service: dict[str, Any] = {}
         try:
             response = self.ecs.update_service(request)
