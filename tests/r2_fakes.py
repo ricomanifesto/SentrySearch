@@ -12,8 +12,12 @@ modeled pessimistically and is configurable:
 * ``conditional_delete="ignore"`` (default) deletes whatever is present even
   when ``If-Match`` is sent; ``"reject"`` refuses the request. Either way the
   request is logged so tests can prove the store never sends one.
-* Flexible-checksum trailers and ``aws-chunked`` bodies are refused, because
-  R2's PutObject compatibility row does not list them.
+* Streaming checksum trailers (``aws-chunked`` bodies, ``x-amz-trailer``) are
+  refused, because R2's PutObject compatibility row does not list them. Plain
+  checksum headers are accepted and logged so tests can assert their absence.
+* ``DeleteObjects`` (``POST ?delete``), which R2 documents as supported, deletes
+  the listed keys and, like ``DeleteObject``, enforces no condition. Every
+  deleting request is logged whatever its form.
 
 Conditional writes are linearized under one lock. Hooks run outside that lock
 so a test can interleave another client's request at an exact point.
@@ -30,6 +34,8 @@ import threading
 from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlsplit
 import uuid
+from xml.etree import ElementTree
+from xml.sax.saxutils import escape
 
 import botocore.session
 from botocore.awsrequest import AWSResponse, HeadersDict
@@ -50,10 +56,11 @@ SAFE_CONFIG: dict[str, Any] = {
     "read_timeout": 10,
     "s3": {"addressing_style": "path"},
     "signature_version": "s3v4",
+    "proxies": {},
 }
-UNSUPPORTED_HEADERS = ("x-amz-trailer", "x-amz-sdk-checksum-algorithm")
+CHECKSUM_HEADERS = ("x-amz-trailer", "x-amz-sdk-checksum-algorithm")
 AMBIENT = "ambient"
-VERSION_SEGMENT = "/journal-versions/"
+VERSIONS_PREFIX = "journal-versions/"
 
 
 def make_client(
@@ -62,6 +69,7 @@ def make_client(
     *,
     endpoint: str | None = None,
     credentials: dict[str, str] | None = None,
+    verify: Any = True,
     **config: Any,
 ) -> Any:
     """A botocore S3 client for ``target`` wired to ``backend``.
@@ -83,6 +91,7 @@ def make_client(
         "s3",
         region_name="auto",
         config=Config(**settings),
+        verify=verify,
         **explicit,
         **secrets,
     )
@@ -98,13 +107,19 @@ class Logged:
     headers: dict[str, str]
     status: int
     envelope_state: str | None = None
+    query: str = ""
+
+    @property
+    def deleting(self) -> bool:
+        return self.method == "DELETE" or (self.method == "POST" and "delete" in self.query)
 
 
 @dataclass
 class Fault:
     """One injected failure: ``lost_response`` commits then times out,
-    ``timeout_before`` and ``http_500`` never commit, ``crash_after`` commits
-    then loses the controller process. ``skip`` lets that many matches pass."""
+    ``timeout_before`` never commits, ``http_500`` and ``http_status`` answer
+    ``status``/``code`` without committing, ``crash_after`` commits then loses
+    the controller process. ``skip`` lets that many matches pass."""
 
     method: str
     key: str
@@ -112,6 +127,8 @@ class Fault:
     count: int = 1
     match_state: str | None = None
     skip: int = 0
+    status: int = 500
+    code: str = "InternalError"
 
 
 class _Raw(io.BytesIO):
@@ -177,6 +194,9 @@ class R2Backend:
     def requests(self, method: str | None = None) -> list[Logged]:
         return [entry for entry in self.log if method is None or entry.method == method]
 
+    def deleting_requests(self) -> list[Logged]:
+        return [entry for entry in self.log if entry.deleting]
+
     # Wire --------------------------------------------------------------------------
 
     def _etag(self, body: bytes) -> str:
@@ -223,25 +243,25 @@ class R2Backend:
         if self.before is not None:
             self.before(method, key, body)
 
-        unsupported = any(name in headers for name in UNSUPPORTED_HEADERS) or any(
-            name.startswith("x-amz-checksum-") for name in headers
-        )
-        if unsupported or "aws-chunked" in headers.get("content-encoding", ""):
+        trailer = "x-amz-trailer" in headers or "aws-chunked" in headers.get("content-encoding", "")
+        if trailer:
             response = _error("InvalidRequest", 400, url)
-            self._record(method, bucket, key, headers, response)
+            self._record(method, bucket, key, headers, response, query=parts.query)
             return response
         if bucket != self.target.bucket:
             response = _error("NoSuchBucket", 404, url)
-            self._record(method, bucket, key, headers, response)
+            self._record(method, bucket, key, headers, response, query=parts.query)
             return response
 
         fault = self._fault(method, key, state)
         if fault is not None and fault.kind == "timeout_before":
-            self._record(method, bucket, key, headers, None, status=0)
+            self._record(method, bucket, key, headers, None, status=0, query=parts.query)
             raise ConnectTimeoutError(endpoint_url=url)
-        if fault is not None and fault.kind == "http_500":
-            response = _error("InternalError", 500, url)
-            self._record(method, bucket, key, headers, response)
+        if fault is not None and fault.kind in ("http_500", "http_status"):
+            code = "InternalError" if fault.kind == "http_500" else fault.code
+            status = 500 if fault.kind == "http_500" else fault.status
+            response = _error(code, status, url)
+            self._record(method, bucket, key, headers, response, query=parts.query)
             return response
 
         with self._lock:
@@ -251,9 +271,11 @@ class R2Backend:
                 response = self._get(bucket, key, url, head=method == "HEAD")
             elif method == "DELETE" and key and not query:
                 response = self._delete(bucket, key, url)
+            elif method == "POST" and not key and "delete" in query:
+                response = self._delete_objects(bucket, body, url)
             else:
                 response = _error("NotImplemented", 501, url)
-        self._record(method, bucket, key, headers, response, state=state)
+        self._record(method, bucket, key, headers, response, state=state, query=parts.query)
         if fault is not None and fault.kind == "lost_response":
             raise ReadTimeoutError(endpoint_url=url)
         if fault is not None and fault.kind == "crash_after":
@@ -270,16 +292,17 @@ class R2Backend:
         *,
         status: int | None = None,
         state: str | None = None,
+        query: str = "",
     ) -> None:
         code = status if response is None else response.status_code
         kept = {
             name: value
             for name, value in headers.items()
             if name in ("if-match", "if-none-match", "content-encoding", "content-type")
-            or name in UNSUPPORTED_HEADERS
+            or name in CHECKSUM_HEADERS
             or name.startswith("x-amz-checksum-")
         }
-        self.log.append(Logged(method, bucket, key, kept, code or 0, state))
+        self.log.append(Logged(method, bucket, key, kept, code or 0, state, query))
 
     def _put(self, bucket: str, key: str, headers: dict, body: bytes, url: str) -> AWSResponse:
         current = self.objects.get((bucket, key))
@@ -315,8 +338,28 @@ class R2Backend:
             self.trace.append(("store-delete", key, None))
         return AWSResponse(url, 204, HeadersDict({"Content-Length": "0"}), _Raw(b""))
 
+    def _delete_objects(self, bucket: str, body: bytes, url: str) -> AWSResponse:
+        # Pessimistic model: every listed key is deleted unconditionally.
+        root = ElementTree.fromstring(body)
+        deleted = []
+        for element in root.iter():
+            if element.tag.rsplit("}", 1)[-1] == "Key" and element.text:
+                self.objects.pop((bucket, element.text), None)
+                if self.trace is not None:
+                    self.trace.append(("store-delete", element.text, None))
+                deleted.append(f"<Deleted><Key>{escape(element.text)}</Key></Deleted>")
+        result = (
+            '<?xml version="1.0" encoding="UTF-8"?><DeleteResult>'
+            + "".join(deleted)
+            + "</DeleteResult>"
+        ).encode()
+        headers = HeadersDict(
+            {"Content-Type": "application/xml", "Content-Length": str(len(result))}
+        )
+        return AWSResponse(url, 200, headers, _Raw(result))
+
     def _trace(self, key: str, body: bytes) -> None:
-        if self.trace is None or VERSION_SEGMENT in key:
+        if self.trace is None or key.startswith(VERSIONS_PREFIX):
             return
         try:
             envelope = json.loads(body)

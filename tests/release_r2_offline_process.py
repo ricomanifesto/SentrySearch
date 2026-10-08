@@ -82,7 +82,7 @@ def release(fail_job: int | None) -> dict:
         "reason": outcome.reason,
         "lock_state": lock_state,
         "requests": len(backend.log),
-        "delete_requests": len(backend.requests("DELETE")),
+        "deleting_requests": len(backend.deleting_requests()),
         "endpoint": client.meta.endpoint_url,
         "credential_method": client._get_credentials().method,
     }

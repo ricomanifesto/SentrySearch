@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 
 import pytest
 
 from release.journal import PreconditionFailed
 from release_cloudflare.r2_client import R2ClientRejected, R2Target, endpoint_for, validate_client
 from release_cloudflare.r2_store import (
+    MAX_OBJECT_BYTES,
+    VERSIONS_PREFIX,
     ControlStoreIntegrity,
     ControlStoreUnavailable,
     R2ObjectStore,
@@ -19,8 +22,9 @@ from release_cloudflare.r2_store import (
 from tests.r2_fakes import CONTROL, Fault, R2Backend, make_client
 
 LOCK = "locks/staging.json"
-JOURNAL = "releases/0b9f7c1e-4d2a-4f6b-9a3e-2c1d0e9f8a7b/journal.json"
-VERSIONS = "releases/0b9f7c1e-4d2a-4f6b-9a3e-2c1d0e9f8a7b/journal-versions/"
+RELEASE = "0b9f7c1e-4d2a-4f6b-9a3e-2c1d0e9f8a7b"
+JOURNAL = f"releases/{RELEASE}/journal.json"
+VERSIONS = f"{VERSIONS_PREFIX}{RELEASE}/"
 
 
 def held(store: R2ObjectStore, key: str) -> tuple[bytes, str]:
@@ -35,13 +39,17 @@ def copy_key(raw: bytes) -> str:
     return key
 
 
-def store_for(backend: R2Backend, **kwargs) -> R2ObjectStore:
-    return R2ObjectStore(make_client(backend), CONTROL, **kwargs)
+def store_for(backend: R2Backend) -> R2ObjectStore:
+    return R2ObjectStore(make_client(backend), CONTROL)
 
 
-def raw_envelope(**changes) -> bytes:
+def canonical(**changes) -> bytes:
     document = {"body": "{}", "cf_r2_store": 1, "nonce": "0" * 32, "state": "held", **changes}
-    return json.dumps(document).encode()
+    return json.dumps(document, sort_keys=True, separators=(",", ":")).encode("ascii")
+
+
+def copies(backend: R2Backend) -> set[bytes]:
+    return {backend.raw(key) for key in backend.keys(VERSIONS)}
 
 
 # 1. create when absent ----------------------------------------------------------
@@ -57,6 +65,21 @@ def test_create_is_conditional_on_absence():
     assert store.read(LOCK) == (b'{"session_id":"a"}', etag)
     first = backend.requests("PUT")[0]
     assert first.headers["if-none-match"] == "*" and "if-match" not in first.headers
+
+
+def test_two_stores_racing_to_create_an_absent_key_produce_one_owner():
+    backend = R2Backend()
+    a, b = store_for(backend), store_for(backend)
+    won: dict[str, str] = {}
+
+    def interleave(method, key, body):
+        if method == "PUT" and key == LOCK and json.loads(body)["body"] == "a" and not won:
+            won["b"] = b.create(LOCK, b"b")
+
+    backend.before = interleave
+    with pytest.raises(PreconditionFailed):
+        a.create(LOCK, b"a")
+    assert held(a, LOCK) == (b"b", won["b"])
 
 
 # 2. read absent, held, released, malformed ----------------------------------------
@@ -78,23 +101,39 @@ def test_read_distinguishes_absent_held_released_and_malformed():
     [
         b"not json",
         b"[]",
-        raw_envelope(cf_r2_store=2),
-        raw_envelope(cf_r2_store=True),
-        raw_envelope(nonce="short"),
-        raw_envelope(state="stolen"),
-        raw_envelope(state="released", body="residue"),
-        raw_envelope(extra="field"),
+        canonical(cf_r2_store=2),
+        canonical(cf_r2_store=True),
+        canonical(nonce="short"),
+        canonical(state="stolen"),
+        canonical(state="released", body="residue"),
+        canonical(extra="field"),
         b'{"body":"{}","body":"{}","cf_r2_store":1,"nonce":"' + b"0" * 32 + b'","state":"held"}',
+        # Not this store's canonical bytes.
+        json.dumps(json.loads(canonical())).encode(),
+        canonical() + b"\n",
+        canonical().decode().encode("utf-16"),
+        canonical().decode().encode("utf-32"),
+        b"\xef\xbb\xbf" + canonical(),
+        # A lone surrogate is well-formed JSON but not UTF-8.
+        canonical(body="\ud800"),
     ],
 )
-def test_foreign_or_malformed_objects_fail_closed(raw):
+def test_foreign_malformed_or_non_canonical_objects_fail_closed(raw):
     backend = R2Backend()
-    backend.objects[(CONTROL.bucket, LOCK)] = (raw, '"foreign"')
+    backend.put_raw(LOCK, raw, '"foreign"')
     store = store_for(backend)
     with pytest.raises(ControlStoreIntegrity):
         store.read(LOCK)
     with pytest.raises(ControlStoreIntegrity):
         store.create(LOCK, b"x")
+
+
+def test_a_missing_bucket_is_unavailable_not_absent():
+    backend = R2Backend()
+    other = R2Target(account_id=CONTROL.account_id, bucket="another-bucket")
+    store = R2ObjectStore(make_client(backend, other), other)
+    with pytest.raises(ControlStoreUnavailable):
+        store.read(LOCK)
 
 
 # 3. replace with stale and current ETags ------------------------------------------
@@ -110,10 +149,10 @@ def test_replace_requires_the_current_etag():
     assert store.read(LOCK) == (b"two", second)
 
 
-# 4. exact-owner delete leaves a marker; no DeleteObject ever ------------------------
+# 4. exact-owner delete leaves a marker; no deleting request ever ---------------------
 
 
-def test_delete_writes_a_released_marker_and_never_sends_delete_object():
+def test_delete_writes_a_released_marker_and_never_sends_a_deleting_request():
     backend = R2Backend()
     store = store_for(backend)
     etag = store.create(LOCK, b"held")
@@ -123,7 +162,7 @@ def test_delete_writes_a_released_marker_and_never_sends_delete_object():
     store.delete(LOCK, if_match=etag)
     assert store.read(LOCK) is None
     assert backend.get(LOCK) is not None, "the marker remains; nothing is deleted"
-    assert backend.requests("DELETE") == []
+    assert backend.deleting_requests() == []
     release = [
         r for r in backend.requests("PUT") if r.envelope_state == "released" and r.status == 200
     ]
@@ -147,22 +186,17 @@ def test_two_stores_racing_for_one_marker_produce_exactly_one_owner():
     backend = R2Backend()
     a, b = store_for(backend), store_for(backend)
     a.delete(LOCK, if_match=a.create(LOCK, b"released-owner"))
-    outcome: dict[str, object] = {}
+    outcome: dict[str, str] = {}
 
     def interleave(method, key, body):
-        # Just before A's conditional marker replacement lands, B wins the race.
-        if (
-            method == "PUT"
-            and key == LOCK
-            and json.loads(body)["body"] == "a"
-            and "b" not in outcome
-        ):
+        # Just before A's first write for "a" lands, B takes the marker.
+        if method == "PUT" and key == LOCK and json.loads(body)["body"] == "a" and not outcome:
             outcome["b"] = b.create(LOCK, b"b")
 
     backend.before = interleave
     with pytest.raises(PreconditionFailed):
         a.create(LOCK, b"a")
-    assert a.read(LOCK) == (b"b", outcome["b"])
+    assert held(a, LOCK) == (b"b", outcome["b"])
 
 
 # 6. ABA defence under content-derived ETags -----------------------------------------
@@ -183,10 +217,16 @@ def test_identical_bodies_in_two_incarnations_get_distinct_etags(etags):
     assert store.read(LOCK) == (body, second)
 
 
+def test_the_nonce_source_is_not_a_constructor_option():
+    options: dict = {"nonce_factory": lambda: "0" * 32}
+    with pytest.raises(TypeError):
+        R2ObjectStore(make_client(R2Backend()), CONTROL, **options)
+
+
 # 7. request shapes -------------------------------------------------------------------
 
 
-def test_requests_carry_exact_conditions_and_no_checksum_trailers():
+def test_requests_carry_exact_conditions_and_no_checksum_headers():
     backend = R2Backend()
     store = store_for(backend)
     store.replace(LOCK, b"b", if_match=store.create(LOCK, b"a"))
@@ -204,7 +244,7 @@ def test_requests_carry_exact_conditions_and_no_checksum_trailers():
     assert puts[1].headers["if-match"].startswith('"')
 
 
-def test_client_contract_is_validated_before_any_request():
+def test_client_contract_is_validated_before_any_request(monkeypatch):
     backend = R2Backend()
     validate_client(make_client(backend), CONTROL)
     assert endpoint_for(R2Target(CONTROL.account_id, "b-1", "eu")) == (
@@ -219,11 +259,19 @@ def test_client_contract_is_validated_before_any_request():
         ),
         "read_timeout": lambda: make_client(backend, read_timeout=600),
         "addressing_style": lambda: make_client(backend, s3={"addressing_style": "virtual"}),
+        "tls_verification": lambda: make_client(backend, verify=False),
+        "proxies": lambda: make_client(backend, proxies={"https": "http://192.0.2.1:9"}),
     }
     for reason, build in rejected.items():
         with pytest.raises(R2ClientRejected) as error:
             R2ObjectStore(build(), CONTROL)
         assert error.value.reason == reason
+    monkeypatch.setenv("HTTPS_PROXY", "http://192.0.2.1:9")
+    with pytest.raises(R2ClientRejected) as error:
+        R2ObjectStore(make_client(backend, proxies=None), CONTROL)
+    assert error.value.reason == "proxies", "an ambient proxy is caught"
+    R2ObjectStore(make_client(backend), CONTROL)  # explicit no-proxy wins over the ambient one
+    R2ObjectStore(make_client(backend, verify=os.devnull), CONTROL)  # an explicit CA bundle
     assert backend.log == []
     for bad in (
         {"account_id": "UPPERCASE0123456789abcdef0123456"},
@@ -244,10 +292,10 @@ def test_chain_credentials_are_rejected():
     assert error.value.reason == "credentials"
 
 
-# 8. superseded journal versions are copied before the head moves ------------------
+# 8. every committed journal version is retained -------------------------------------
 
 
-def test_each_superseded_journal_version_is_copied_before_the_replace():
+def test_each_committed_journal_version_is_copied_after_its_write():
     backend = R2Backend()
     store = store_for(backend)
     first = store.create(JOURNAL, b'{"events":[1]}')
@@ -255,69 +303,98 @@ def test_each_superseded_journal_version_is_copied_before_the_replace():
     second = store.replace(JOURNAL, b'{"events":[1,2]}', if_match=first)
     v2 = backend.raw(JOURNAL)
     store.replace(JOURNAL, b'{"events":[1,2,3]}', if_match=second)
+    v3 = backend.raw(JOURNAL)
     order = [entry.key for entry in backend.requests("PUT")]
-    assert order == [JOURNAL, version_key(JOURNAL, v1), JOURNAL, version_key(JOURNAL, v2), JOURNAL]
-    assert {backend.raw(k) for k in backend.keys(VERSIONS)} == {v1, v2}
+    assert order == [JOURNAL, copy_key(v1), JOURNAL, copy_key(v2), JOURNAL, copy_key(v3)]
+    assert copies(backend) == {v1, v2, v3}, "the newest version is retained too"
     for key in backend.keys(VERSIONS):
-        raw = backend.raw(key)
-        assert key.endswith(hashlib.sha256(raw).hexdigest() + ".json")
+        assert key.endswith(hashlib.sha256(backend.raw(key)).hexdigest() + ".json")
     assert version_key(LOCK, b"x") is None
 
 
-def test_copy_failure_leaves_the_head_unchanged():
+def test_copies_live_under_one_prefix_that_holds_no_mutable_key():
+    backend = R2Backend()
+    store = store_for(backend)
+    store.create(JOURNAL, b"{}")
+    store.create("releases/1111-2222/journal.json", b"{}")
+    store.create(LOCK, b"{}")
+    retained = backend.keys(VERSIONS_PREFIX)
+    assert len(retained) == 2
+    mutable = [key for key in backend.keys() if key not in retained]
+    assert mutable and not any(key.startswith(VERSIONS_PREFIX) for key in mutable)
+
+
+def test_an_unconfirmed_copy_after_a_committed_write_stops_and_a_read_retains_it():
     backend = R2Backend()
     store = store_for(backend)
     etag = store.create(JOURNAL, b'{"events":[1]}')
     backend.faults.append(Fault("PUT", VERSIONS + ".*", "http_500"))
     with pytest.raises(ControlStoreUnavailable):
         store.replace(JOURNAL, b'{"events":[1,2]}', if_match=etag)
-    assert store.read(JOURNAL) == (b'{"events":[1]}', etag)
+    committed = backend.raw(JOURNAL)
+    assert parse_envelope(committed)[1] == b'{"events":[1,2]}', "the head write committed"
+    assert committed not in copies(backend)
+    assert held(store_for(backend), JOURNAL)[0] == b'{"events":[1,2]}'
+    assert committed in copies(backend), "reading the head retained it"
 
 
-def test_a_stale_replace_copies_nothing_and_a_raced_replace_copies_only_committed():
+def test_a_refused_or_lost_write_is_never_copied():
     backend = R2Backend()
     a, b = store_for(backend), store_for(backend)
     first = a.create(JOURNAL, b'{"events":[1]}')
-    second = b.replace(JOURNAL, b'{"events":[1,"b"]}', if_match=first)
-    copies = backend.keys(VERSIONS)
+    b.replace(JOURNAL, b'{"events":[1,"b"]}', if_match=first)
+    retained = copies(backend)
     with pytest.raises(PreconditionFailed):
         a.replace(JOURNAL, b'{"events":[1,"a"]}', if_match=first)
-    assert backend.keys(VERSIONS) == copies, "a stale writer copied nothing"
-    raced: list[str] = []
+    assert copies(backend) == retained, "a refused write left no copy"
+    backend.faults.append(Fault("PUT", JOURNAL, "lost_response"))
+    with pytest.raises(ControlStoreUnavailable):
+        b.replace(JOURNAL, b'{"events":[1,"b","lost"]}', if_match=backend.etag(JOURNAL))
+    assert backend.raw(JOURNAL) not in copies(backend), "an unknown outcome is not copied"
+    held(b, JOURNAL)
+    assert backend.raw(JOURNAL) in copies(backend), "the committed head is retained on read"
+    bodies = {parse_envelope(raw)[1] for raw in copies(backend)}
+    assert bodies == {b'{"events":[1]}', b'{"events":[1,"b"]}', b'{"events":[1,"b","lost"]}'}
 
-    def interleave(method, key, body):
-        # After A copied the committed head, B commits first; A's replace fails.
-        if method == "PUT" and key.startswith(VERSIONS) and not raced:
-            raced.append(key)
-            b.replace(JOURNAL, b'{"events":[1,"b","b2"]}', if_match=second)
 
-    backend.before = interleave
-    with pytest.raises(PreconditionFailed):
-        a.replace(JOURNAL, b'{"events":[1,"b","a"]}', if_match=second)
-    committed = {b'{"events":[1]}', b'{"events":[1,"b"]}'}
-    assert {parse_envelope(backend.raw(k))[1] for k in backend.keys(VERSIONS)} == committed
-    assert held(store_for(backend), JOURNAL)[0] == b'{"events":[1,"b","b2"]}'
+def test_copies_survive_an_outside_overwrite_of_the_head():
+    backend = R2Backend()
+    store = store_for(backend)
+    etag = store.create(JOURNAL, b'{"events":["first"]}')
+    store.replace(JOURNAL, b'{"events":["first","terminal"]}', if_match=etag)
+    backend.put_raw(JOURNAL, b"overwritten by an unconditional writer", '"outside"')
+    bodies = {parse_envelope(raw)[1] for raw in copies(backend)}
+    assert b'{"events":["first","terminal"]}' in bodies
+    with pytest.raises(ControlStoreIntegrity):
+        store.read(JOURNAL)
 
 
 def test_a_foreign_object_at_a_copy_key_is_an_integrity_failure():
     backend = R2Backend()
     store = store_for(backend)
-    etag = store.create(JOURNAL, b"{}")
-    raw = backend.raw(JOURNAL)
-    backend.put_raw(copy_key(raw), b"tampered", '"x"')
+
+    class Fixed(R2ObjectStore):
+        def _new_nonce(self) -> str:
+            return "a" * 32
+
+    fixed = Fixed(make_client(backend), CONTROL)
+    expected = canonical(body="{}", nonce="a" * 32)
+    backend.put_raw(copy_key(expected), b"tampered", '"x"')
     with pytest.raises(ControlStoreIntegrity):
-        store.replace(JOURNAL, b'{"x":1}', if_match=etag)
-    assert store.read(JOURNAL) == (b"{}", etag)
+        fixed.create(JOURNAL, b"{}")
+    assert parse_envelope(backend.raw(JOURNAL))[1] == b"{}", "the head committed first"
+    with pytest.raises(ControlStoreIntegrity):
+        store.read(JOURNAL)
 
 
 def test_an_identical_existing_copy_counts_as_present():
     backend = R2Backend()
     store = store_for(backend)
-    etag = store.create(JOURNAL, b"{}")
+    store.create(JOURNAL, b"{}")
     raw = backend.raw(JOURNAL)
-    backend.put_raw(copy_key(raw), raw, '"earlier"')
-    store.replace(JOURNAL, b'{"x":1}', if_match=etag)
-    assert held(store, JOURNAL)[0] == b'{"x":1}'
+    assert held(store, JOURNAL)[0] == b"{}"
+    assert held(store, JOURNAL)[0] == b"{}"
+    assert copies(backend) == {raw}
 
 
 # 9. unknown outcomes never become success ---------------------------------------------
@@ -336,16 +413,52 @@ def test_unknown_outcomes_raise_and_a_rerun_observes_the_truth(kind):
     assert body == (b"two" if kind == "lost_response" else b"one")
 
 
-def test_get_errors_other_than_404_are_unavailable():
+@pytest.mark.parametrize(
+    "status, code",
+    [
+        (409, "ConditionalRequestConflict"),
+        (403, "AccessDenied"),
+        (503, "SlowDown"),
+        (301, "PermanentRedirect"),
+        (400, "InvalidRequest"),
+        (404, "NoSuchKey"),
+    ],
+)
+@pytest.mark.parametrize("operation", ["create", "replace", "delete"])
+def test_other_statuses_are_unavailable_never_success_or_conflict(status, code, operation):
+    backend = R2Backend()
+    store = store_for(backend)
+    etag = store.create(LOCK, b"one")
+    before = dict(backend.objects)
+    backend.faults.append(
+        Fault("PUT", "locks/.*", "http_status", status=status, code=code, count=5)
+    )
+    with pytest.raises(ControlStoreUnavailable) as error:
+        if operation == "create":
+            store.create("locks/other.json", b"x")
+        elif operation == "replace":
+            store.replace(LOCK, b"two", if_match=etag)
+        else:
+            store.delete(LOCK, if_match=etag)
+    assert code not in str(error.value)
+    assert backend.objects == before
+
+
+def test_get_errors_other_than_no_such_key_are_unavailable():
     backend = R2Backend()
     store = store_for(backend)
     store.create(LOCK, b"x")
     backend.faults.append(Fault("GET", LOCK, "http_500"))
     with pytest.raises(ControlStoreUnavailable):
         store.read(LOCK)
+    backend.faults.append(Fault("GET", LOCK, "http_status", status=404, code="NoSuchBucket"))
+    with pytest.raises(ControlStoreUnavailable):
+        store.read(LOCK)
 
 
-def test_nonce_factory_output_is_validated():
-    store = store_for(R2Backend(), nonce_factory=lambda: "predictable")
+def test_writes_beyond_the_read_bound_are_refused_before_any_request():
+    backend = R2Backend()
+    store = store_for(backend)
     with pytest.raises(ControlStoreIntegrity):
-        store.create(LOCK, b"x")
+        store.create(JOURNAL, b'"' * (MAX_OBJECT_BYTES // 2))
+    assert backend.log == []

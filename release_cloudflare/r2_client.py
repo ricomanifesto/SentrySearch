@@ -1,10 +1,12 @@
 """R2 S3-API target identity and fail-closed validation of an injected client.
 
 The adapter never constructs a client. It checks that the caller's botocore
-client talks to exactly one R2 endpoint, uses explicit static credentials, and
-has the request shape R2's S3 compatibility documents: region ``auto``, no
-flexible-checksum trailers, path-style addressing, and no SDK retries (the
-release controller owns every retry decision).
+client talks to exactly one R2 endpoint over verified TLS without a proxy, uses
+explicit static credentials, and has the request shape R2's S3 compatibility
+documents: region ``auto``, no flexible-checksum trailers, path-style
+addressing, and no SDK retries (the release controller owns every retry
+decision). Botocore's S3 region redirector can still resend once, and only
+after a redirect-shaped error response, which did not apply the request.
 """
 
 from __future__ import annotations
@@ -64,6 +66,9 @@ def validate_client(client: Any, target: R2Target) -> None:
         config = meta.config
         service = meta.service_model.service_name
         credentials = client._get_credentials()
+        http_session = client._endpoint.http_session
+        verify = http_session._verify
+        proxies = http_session._proxy_config._proxies
     except AttributeError:
         raise R2ClientRejected("client") from None
     if service != "s3":
@@ -75,6 +80,12 @@ def validate_client(client: Any, target: R2Target) -> None:
     # client's ignore_configured_endpoint_urls setting is not readable back.
     if meta.endpoint_url != endpoint_for(target):
         raise R2ClientRejected("endpoint")
+    # True uses the default trust store; a string is an explicit CA bundle.
+    if verify is not True and not (isinstance(verify, str) and verify):
+        raise R2ClientRejected("tls_verification")
+    # Includes proxies taken from HTTP(S)_PROXY when the client did not set none.
+    if proxies != {}:
+        raise R2ClientRejected("proxies")
     if getattr(config, "request_checksum_calculation", None) != "when_required":
         raise R2ClientRejected("request_checksum")
     if getattr(config, "response_checksum_validation", None) != "when_required":

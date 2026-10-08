@@ -29,7 +29,7 @@ from tests.release_fakes import (
 
 RELEASE = "0b9f7c1e-4d2a-4f6b-9a3e-2c1d0e9f8a7b"
 JOURNAL = f"releases/{RELEASE}/journal.json"
-VERSIONS = f"releases/{RELEASE}/journal-versions/"
+VERSIONS = f"journal-versions/{RELEASE}/"
 LOCK = "locks/staging.json"
 
 
@@ -125,24 +125,29 @@ def assert_intent_precedes_every_mutation(r: R2Rig) -> None:
             assert event["kind"] == "intent" and event["action"] == entry[1], (entry, event)
 
 
-def assert_versions_reproduce_journal(r: R2Rig) -> None:
-    """Copies hold exactly the superseded committed versions; the head holds the rest.
-
-    Every copy must be a prefix of the committed journal (no attempt that never
-    committed is retained), and together with the head they cover every version.
-    """
-    head = r.journal()
-    verify_chain(head)
-    lengths = []
+def retained_versions(r: R2Rig) -> list[dict]:
+    """Copies as journal documents, shortest first; each must be committed history."""
+    documents = []
     for key in r.backend.keys(VERSIONS):
         state, body = parse_envelope(r.backend.raw(key))
         assert state == "held"
         document = json.loads(body)
         verify_chain(document)
+        documents.append(document)
+    return sorted(documents, key=lambda document: len(document["events"]))
+
+
+def assert_versions_reproduce_journal(r: R2Rig) -> None:
+    """Copies hold exactly the committed versions, the newest included."""
+    head = r.journal()
+    verify_chain(head)
+    documents = retained_versions(r)
+    for document in documents:
         n = len(document["events"])
         assert document["events"] == head["events"][:n], "a copy is not committed history"
-        lengths.append(n)
-    assert sorted(lengths) == list(range(1, len(head["events"]))), lengths
+    lengths = [len(document["events"]) for document in documents]
+    assert lengths == list(range(1, len(head["events"]) + 1)), lengths
+    assert documents[-1] == head, "the current head is retained"
 
 
 # 10. happy path ------------------------------------------------------------------
@@ -157,7 +162,7 @@ def test_release_reaches_held_paused_and_releases_the_lock_as_a_marker():
     state, body = r.head(LOCK)
     assert state == "released" and body == b""
     assert r.results("lock_released")
-    assert r.backend.requests("DELETE") == []
+    assert r.backend.deleting_requests() == []
     assert_intent_precedes_every_mutation(r)
     assert_versions_reproduce_journal(r)
 
@@ -208,7 +213,7 @@ def test_lock_transferred_between_read_and_marker_write_halts_and_stays_transfer
     state, body = r.head(LOCK)
     assert state == "held" and json.loads(body)["session_id"] == "session-b"
     assert not r.results("lock_released")
-    assert r.backend.requests("DELETE") == []
+    assert r.backend.deleting_requests() == []
 
 
 # 13. crash after the marker write ---------------------------------------------------
@@ -280,3 +285,23 @@ def test_lost_response_on_the_lock_create_holds_without_losing_the_lock():
     assert r.ecs.mutations == []
     assert r.controller().run().state == "hold"
     assert_versions_reproduce_journal(r)
+
+
+# Evidence survives an outside overwrite ---------------------------------------------
+
+
+@pytest.mark.parametrize("outcome", ["held_paused", "hold"])
+def test_terminal_journal_survives_an_unconditional_overwrite_of_the_head(outcome):
+    r = r2_rig()
+    if outcome == "hold":
+        r.ecs.plans[r.document["jobs"][2]["task"]["task_definition"]] = JobPlan(exits={"init": 1})
+    assert r.controller().run().state == outcome
+    final = r.journal()
+    r.backend.put_raw(JOURNAL, b"overwritten by an unconditional writer", '"outside"')
+    recovered = retained_versions(r)[-1]
+    assert recovered == final
+    last = recovered["events"][-1]
+    if outcome == "held_paused":
+        assert last["kind"] == "observation" and last["result"] == "lock_released"
+    else:
+        assert last["kind"] == "transition" and last["to"] == "hold" and "rollback" in last

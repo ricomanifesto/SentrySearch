@@ -17,6 +17,7 @@ from release.journal import PreconditionFailed, verify_chain
 from release_cloudflare.r2_client import R2ClientRejected
 from release_cloudflare.r2_store import (
     HELD,
+    JOURNAL_KEY,
     RELEASED,
     ControlStoreUnavailable,
     R2ObjectStore,
@@ -24,7 +25,7 @@ from release_cloudflare.r2_store import (
     version_key,
 )
 from tests.r2_fakes import AMBIENT, CONTROL, Fault, R2Backend, make_client
-from tests.release_fakes import SimulatedCrash, sha
+from tests.release_fakes import JobPlan, SimulatedCrash, sha
 from tests.test_release_r2_controller import JOURNAL, LOCK, VERSIONS, R2Rig, r2_rig
 
 
@@ -32,12 +33,11 @@ class GuardViolation(AssertionError):
     """A named guard did not hold."""
 
 
-def unvalidated(cls: type, client: Any, **attrs: Any) -> R2ObjectStore:
+def unvalidated(cls: type, client: Any) -> R2ObjectStore:
     """Build a store without client validation, as a careless port would."""
     store = object.__new__(cls)
     store._client = client
     store._bucket = CONTROL.bucket
-    store._nonce = attrs.get("nonce_factory") or (lambda: __import__("uuid").uuid4().hex)
     return store
 
 
@@ -61,6 +61,23 @@ class IfMatchDelete(R2ObjectStore):
         self._client.delete_object(Bucket=self._bucket, Key=key, IfMatch=if_match)
 
 
+class BatchDelete(R2ObjectStore):
+    """Compare on read, then use DeleteObjects, which R2 supports unconditionally."""
+
+    def delete(self, key: str, *, if_match: str) -> None:
+        current = self._get(key)
+        if current is None or current[1] != if_match:
+            raise PreconditionFailed(key)
+        self._client.delete_objects(Bucket=self._bucket, Delete={"Objects": [{"Key": key}]})
+
+
+class ConstantNonce(R2ObjectStore):
+    """Drop the per-write nonce."""
+
+    def _new_nonce(self) -> str:
+        return "0" * 32
+
+
 class MarkerAsHeld(R2ObjectStore):
     """Treat a released marker as a live lock."""
 
@@ -75,21 +92,48 @@ class MarkerAsHeld(R2ObjectStore):
         return self._put(key, self._envelope(HELD, body), IfNoneMatch="*")
 
 
-class HeadBeforeCopy(R2ObjectStore):
-    """Move the journal head first, then copy the superseded version."""
+class SupersededOnly(R2ObjectStore):
+    """Copy only the version being replaced: the newest is never retained."""
+
+    def create(self, key: str, body: bytes) -> str:
+        return self._put(key, self._envelope(HELD, body), IfNoneMatch="*")
+
+    def read(self, key: str):
+        current = self._get(key)
+        if current is None:
+            return None
+        raw, etag = current
+        state, body = parse_envelope(raw)
+        return None if state == RELEASED else (body, etag)
 
     def replace(self, key: str, body: bytes, *, if_match: str) -> str:
-        current = self._get(key)
-        etag = self._put(key, self._envelope(HELD, body), IfMatch=if_match)
-        if current is not None:
+        if JOURNAL_KEY.fullmatch(key):
+            current = self._get(key)
+            if current is None or current[1] != if_match:
+                raise PreconditionFailed(key)
             copy_key = version_key(key, current[0])
             if copy_key is not None:
-                self._put(copy_key, current[0], IfNoneMatch="*")
-        return etag
+                try:
+                    self._put(copy_key, current[0], IfNoneMatch="*")
+                except PreconditionFailed:
+                    pass
+        return self._put(key, self._envelope(HELD, body), IfMatch=if_match)
+
+
+class NoReadRetention(R2ObjectStore):
+    """Copy after each confirmed write, but never fill a gap when reading."""
+
+    def read(self, key: str):
+        current = self._get(key)
+        if current is None:
+            return None
+        raw, etag = current
+        state, body = parse_envelope(raw)
+        return None if state == RELEASED else (body, etag)
 
 
 class CopyNewEnvelope(R2ObjectStore):
-    """Copy the new envelope before the head write: retains uncommitted attempts."""
+    """Copy the new envelope before writing it: retains attempts that never committed."""
 
     def replace(self, key: str, body: bytes, *, if_match: str) -> str:
         envelope = self._envelope(HELD, body)
@@ -114,10 +158,11 @@ def check_transfer_race(store_cls: type) -> None:
     fired: list[str] = []
 
     def transfer(method, key, body):
-        releasing = method == "DELETE" or (
-            method == "PUT" and json.loads(body).get("state") == RELEASED
-        )
-        if key == LOCK and releasing and not fired:
+        releasing = (
+            method in ("DELETE", "POST")
+            or (method == "PUT" and json.loads(body).get("state") == RELEASED)
+        ) and key in (LOCK, "")
+        if releasing and not fired:
             fired.append("recovery")
             r.controller("session-b").recover(
                 RecoveryAuthorization(
@@ -148,14 +193,14 @@ def check_transfer_race(store_cls: type) -> None:
         raise GuardViolation(f"unexpected halt {halted}")
 
 
-def check_no_delete_requests(store_cls: type) -> None:
+def check_no_deleting_requests(store_cls: type) -> None:
     r = rig_with(store_cls)
     try:
         r.controller().run()
     except ReleaseHalted:
         pass
-    if r.backend.requests("DELETE"):
-        raise GuardViolation("DeleteObject was sent to R2")
+    if r.backend.deleting_requests():
+        raise GuardViolation("a deleting request was sent to R2")
 
 
 def check_aba(store: R2ObjectStore) -> None:
@@ -211,14 +256,30 @@ def check_lost_response_is_unknown(store: R2ObjectStore, backend: R2Backend) -> 
     raise GuardViolation("a lost response was reported as success")
 
 
+def committed_copies(r: R2Rig) -> list[dict]:
+    head = json.loads(parse_envelope(r.backend.raw(JOURNAL))[1])
+    verify_chain(head)
+    documents = []
+    for key in r.backend.keys(VERSIONS):
+        document = json.loads(parse_envelope(r.backend.raw(key))[1])
+        n = len(document["events"])
+        if document["events"] != head["events"][:n]:
+            raise GuardViolation("a retained copy is not committed history")
+        documents.append(document)
+    lengths = sorted(len(document["events"]) for document in documents)
+    if lengths != list(range(1, len(head["events"]) + 1)):
+        raise GuardViolation(f"committed versions missing: {lengths}")
+    return documents
+
+
 def check_versions_complete_after_crash(store_cls: type) -> None:
-    """A crash at any journal write never loses a superseded committed version."""
+    """A crash between a committed head write and its copy loses no version."""
     r = rig_with(store_cls)
     r.backend.faults.append(Fault("PUT", JOURNAL, "crash_after", skip=6))
     with pytest.raises(SimulatedCrash):
         r.controller().run()
     r.controller().run()
-    assert_committed_copies(r)
+    committed_copies(r)
 
 
 def check_copies_are_committed(store_cls: type) -> None:
@@ -228,59 +289,50 @@ def check_copies_are_committed(store_cls: type) -> None:
     with pytest.raises((ControlStoreUnavailable, ReleaseHalted)):
         r.controller().run()
     r.controller().run()
-    assert_committed_copies(r)
+    committed_copies(r)
 
 
-def assert_committed_copies(r: R2Rig) -> None:
-    head = json.loads(parse_envelope(r.backend.raw(JOURNAL))[1])
-    verify_chain(head)
-    lengths = []
-    for key in r.backend.keys(VERSIONS):
-        document = json.loads(parse_envelope(r.backend.raw(key))[1])
-        n = len(document["events"])
-        if document["events"] != head["events"][:n]:
-            raise GuardViolation("a retained copy is not committed history")
-        lengths.append(n)
-    if sorted(lengths) != list(range(1, len(head["events"]))):
-        raise GuardViolation(f"superseded versions missing: {sorted(lengths)}")
+def check_terminal_survives_overwrite(store_cls: type) -> None:
+    """The final journal of a held release is recoverable after the head is lost."""
+    r = rig_with(store_cls)
+    r.ecs.plans[r.document["jobs"][2]["task"]["task_definition"]] = JobPlan(exits={"init": 1})
+    r.controller().run()
+    final = json.loads(parse_envelope(r.backend.raw(JOURNAL))[1])
+    r.backend.put_raw(JOURNAL, b"overwritten by an unconditional writer", '"outside"')
+    retained = [
+        json.loads(parse_envelope(r.backend.raw(key))[1]) for key in r.backend.keys(VERSIONS)
+    ]
+    if final not in retained:
+        raise GuardViolation("the terminal journal was lost with the head")
 
 
 # Positive controls and broken variants -----------------------------------------------
 
 
-def test_real_store_passes_every_check(monkeypatch):
+def test_real_store_passes_every_check():
     check_transfer_race(R2ObjectStore)
-    check_no_delete_requests(R2ObjectStore)
-    backend = R2Backend()
-    check_aba(R2ObjectStore(make_client(backend), CONTROL))
+    check_no_deleting_requests(R2ObjectStore)
+    check_aba(R2ObjectStore(make_client(R2Backend()), CONTROL))
     check_reacquire(R2ObjectStore(make_client(R2Backend()), CONTROL))
     check_crash_after_marker(R2ObjectStore)
     backend = R2Backend()
     check_lost_response_is_unknown(R2ObjectStore(make_client(backend), CONTROL), backend)
     check_versions_complete_after_crash(R2ObjectStore)
     check_copies_are_committed(R2ObjectStore)
+    check_terminal_survives_overwrite(R2ObjectStore)
 
 
-@pytest.mark.parametrize("variant", [UnconditionalDelete, IfMatchDelete])
+@pytest.mark.parametrize("variant", [UnconditionalDelete, IfMatchDelete, BatchDelete])
 def test_delete_shortcuts_lose_a_transferred_lock(variant):
     with pytest.raises(GuardViolation, match="deleted|success"):
         check_transfer_race(variant)
-    with pytest.raises(GuardViolation, match="DeleteObject"):
-        check_no_delete_requests(variant)
+    with pytest.raises(GuardViolation, match="deleting request"):
+        check_no_deleting_requests(variant)
 
 
-def test_if_match_delete_is_unsafe_when_r2_ignores_the_condition():
-    # Whichever way R2 answers, the store must not depend on it.
-    with pytest.raises(GuardViolation):
-        check_transfer_race(IfMatchDelete)
-
-
-def test_no_nonce_envelope_accepts_a_stale_etag_under_content_etags():
-    store = R2ObjectStore(
-        make_client(R2Backend(etags="md5")), CONTROL, nonce_factory=lambda: "0" * 32
-    )
+def test_constant_nonce_accepts_a_stale_etag_under_content_etags():
     with pytest.raises(GuardViolation, match="stale ETag"):
-        check_aba(store)
+        check_aba(ConstantNonce(make_client(R2Backend(etags="md5")), CONTROL))
 
 
 def test_marker_read_as_held_blocks_reacquire_and_finalization():
@@ -301,12 +353,9 @@ def test_default_checksum_client_is_rejected_and_its_trailer_is_refused():
 
 def test_retrying_client_is_rejected_and_reports_a_lost_response_as_a_conflict():
     backend = R2Backend()
-    check_client_validated(
-        lambda: make_client(backend, retries={"mode": "standard", "total_max_attempts": 3})
-    )
-    careless = unvalidated(
-        R2ObjectStore, make_client(backend, retries={"mode": "standard", "total_max_attempts": 3})
-    )
+    retrying: dict[str, Any] = {"retries": {"mode": "standard", "total_max_attempts": 3}}
+    check_client_validated(lambda: make_client(backend, **retrying))
+    careless = unvalidated(R2ObjectStore, make_client(backend, **retrying))
     with pytest.raises(GuardViolation, match="definite conflict"):
         check_lost_response_is_unknown(careless, backend)
 
@@ -319,9 +368,16 @@ def test_ambient_endpoint_client_is_rejected(monkeypatch):
     check_client_validated(lambda: client)
 
 
-def test_head_moved_before_its_copy_loses_a_committed_version():
-    with pytest.raises(GuardViolation, match="superseded versions missing"):
-        check_versions_complete_after_crash(HeadBeforeCopy)
+def test_superseded_only_retention_loses_the_newest_and_terminal_versions():
+    with pytest.raises(GuardViolation, match="terminal journal was lost"):
+        check_terminal_survives_overwrite(SupersededOnly)
+    with pytest.raises(GuardViolation, match="committed versions missing"):
+        check_versions_complete_after_crash(SupersededOnly)
+
+
+def test_without_read_retention_a_crash_window_loses_a_committed_version():
+    with pytest.raises(GuardViolation, match="committed versions missing"):
+        check_versions_complete_after_crash(NoReadRetention)
 
 
 def test_copying_the_new_envelope_retains_an_uncommitted_attempt():
@@ -337,6 +393,8 @@ def test_every_unsafe_client_is_caught_by_validation():
         {"retries": {"mode": "standard", "total_max_attempts": 2}},
         {"s3": {"addressing_style": "virtual"}},
         {"connect_timeout": None},
+        {"verify": False},
+        {"proxies": {"https": "http://192.0.2.1:9"}},
     ]
     for overrides in cases:
         check_client_validated(lambda overrides=overrides: make_client(backend, **overrides))

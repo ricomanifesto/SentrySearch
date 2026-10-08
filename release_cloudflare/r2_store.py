@@ -5,25 +5,30 @@ and an exact-owner delete. R2 supports conditional ``PutObject`` (``If-Match``,
 ``If-None-Match``) but documents no conditional ``DeleteObject``. This store
 therefore never deletes:
 
-* Every object is an envelope ``{"body", "cf_r2_store", "nonce", "state"}``.
-  The random nonce makes every write's bytes unique, so a content-derived ETag
-  can never repeat for a later incarnation of the same controller body (ABA).
+* Every object is a canonical envelope ``{"body", "cf_r2_store", "nonce",
+  "state"}``. The random nonce makes every write's bytes unique, so a
+  content-derived ETag can never repeat for a later incarnation of the same
+  controller body (ABA).
 * ``delete(key, if_match)`` is a conditional replace of the owner's object with
   a ``released`` marker. A concurrent owner change moves the ETag, so the
   replace fails with ``PreconditionFailed`` exactly as a conditional delete
   would.
 * ``read`` reports a released marker as absent, and ``create`` re-acquires a
   released key by conditionally replacing that marker.
-* Before a release journal is replaced, the version being superseded is read,
-  confirmed to be the committed head carrying the expected ETag, and stored as
-  a create-only copy named by its SHA-256 under ``journal-versions/``. Copies
-  therefore only ever hold committed versions, like S3's noncurrent object
-  versions, which R2 does not implement; the head holds the current version.
-  Copying the new envelope instead would retain attempts that never committed.
-  Retention of the copies is enforced by bucket configuration, not here.
+* Every committed release-journal version is retained as a create-only copy at
+  ``journal-versions/<release>/<sha256>.json``: after a confirmed write of
+  ``releases/<release>/journal.json``, and whenever the head is read (which
+  fills the gap if a process stopped between its write and the copy). Copies
+  therefore hold exactly the committed versions, including the newest, the
+  role S3 object versioning plays; R2 does not implement versioning. A write
+  whose outcome is unknown or refused is never copied. The dedicated top-level
+  prefix lets one bucket-lock rule protect every copy without covering the
+  mutable heads or locks; retention itself is bucket configuration.
 
-Only HTTP 412 is a precondition failure. Every other error, including a lost
-response, raises ``ControlStoreUnavailable`` with a fixed message so the
+A conditional write's 412 is ``PreconditionFailed``; so is a create that finds
+a held object. A missing object (``NoSuchKey``) reads as absent. Every other
+error, including a lost response or a copy that cannot be confirmed after a
+committed write, raises ``ControlStoreUnavailable`` with a fixed message so the
 controller stops and a rerun reloads the journal; nothing here retries.
 """
 
@@ -32,7 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import Any, Callable
+from typing import Any
 import uuid
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -46,6 +51,7 @@ RELEASED = "released"
 ENVELOPE_KEYS = frozenset({"body", "cf_r2_store", "nonce", "state"})
 NONCE = re.compile(r"[0-9a-f]{32}")
 JOURNAL_KEY = re.compile(r"releases/(?P<release>[A-Za-z0-9-]{1,64})/journal\.json")
+VERSIONS_PREFIX = "journal-versions/"
 MAX_OBJECT_BYTES = 16 * 1024 * 1024
 
 
@@ -66,26 +72,35 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return document
 
 
+def _canonical(document: dict[str, Any]) -> bytes:
+    return json.dumps(document, sort_keys=True, separators=(",", ":")).encode("ascii")
+
+
 def _status(error: ClientError) -> int | None:
     status = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
     return status if isinstance(status, int) else None
 
 
 def version_key(key: str, envelope: bytes) -> str | None:
-    """The create-only copy key for a superseded journal version, or None."""
+    """The create-only copy key for a journal version, or None for other keys."""
     match = JOURNAL_KEY.fullmatch(key)
     if match is None:
         return None
     digest = hashlib.sha256(envelope).hexdigest()
-    return f"releases/{match['release']}/journal-versions/{digest}.json"
+    return f"{VERSIONS_PREFIX}{match['release']}/{digest}.json"
 
 
 def parse_envelope(raw: bytes) -> tuple[str, bytes]:
-    """Return ``(state, controller body)`` or raise ``ControlStoreIntegrity``."""
+    """Return ``(state, controller body)`` or raise ``ControlStoreIntegrity``.
+
+    Only the exact canonical ASCII bytes this store writes are accepted, so
+    other encodings, byte-order marks and reformatted objects are foreign.
+    """
     try:
-        document = json.loads(raw, object_pairs_hook=_unique_object)
+        text = raw.decode("ascii")
+        document = json.loads(text, object_pairs_hook=_unique_object)
     except (ValueError, UnicodeDecodeError):
-        raise ControlStoreIntegrity("envelope is not JSON") from None
+        raise ControlStoreIntegrity("envelope is not canonical JSON") from None
     if not isinstance(document, dict) or set(document) != ENVELOPE_KEYS:
         raise ControlStoreIntegrity("envelope fields")
     version = document["cf_r2_store"]
@@ -98,41 +113,39 @@ def parse_envelope(raw: bytes) -> tuple[str, bytes]:
         raise ControlStoreIntegrity("envelope state")
     if state == RELEASED and body:
         raise ControlStoreIntegrity("released marker carries a body")
-    return state, body.encode("utf-8")
+    if _canonical(document) != raw:
+        raise ControlStoreIntegrity("envelope is not canonical")
+    try:
+        return state, body.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ControlStoreIntegrity("envelope body is not UTF-8") from None
 
 
 class R2ObjectStore:
     """``release.journal.ObjectStore`` over an injected, validated R2 client."""
 
-    def __init__(
-        self,
-        client: Any,
-        target: R2Target,
-        *,
-        nonce_factory: Callable[[], str] | None = None,
-    ) -> None:
+    def __init__(self, client: Any, target: R2Target) -> None:
         validate_client(client, target)
         self._client = client
         self._bucket = target.bucket
-        self._nonce = nonce_factory or (lambda: uuid.uuid4().hex)
 
     # ObjectStore ---------------------------------------------------------------
 
     def create(self, key: str, body: bytes) -> str:
         envelope = self._envelope(HELD, body)
         try:
-            return self._put(key, envelope, IfNoneMatch="*")
+            etag = self._put(key, envelope, IfNoneMatch="*")
         except PreconditionFailed:
-            pass
-        current = self._get(key)
-        if current is None:
-            # Something removed the object between our writes; never guess.
-            raise PreconditionFailed(key)
-        raw, etag = current
-        state, _ = parse_envelope(raw)
-        if state != RELEASED:
-            raise PreconditionFailed(key)
-        return self._put(key, envelope, IfMatch=etag)
+            current = self._get(key)
+            if current is None:
+                # Something removed the object between our writes; never guess.
+                raise PreconditionFailed(key) from None
+            raw, current_etag = current
+            if parse_envelope(raw)[0] != RELEASED:
+                raise
+            etag = self._put(key, envelope, IfMatch=current_etag)
+        self._retain(key, envelope)
+        return etag
 
     def read(self, key: str) -> tuple[bytes, str] | None:
         current = self._get(key)
@@ -142,12 +155,14 @@ class R2ObjectStore:
         state, body = parse_envelope(raw)
         if state == RELEASED:
             return None
+        self._retain(key, raw)
         return body, etag
 
     def replace(self, key: str, body: bytes, *, if_match: str) -> str:
         envelope = self._envelope(HELD, body)
-        self._retain_superseded(key, if_match)
-        return self._put(key, envelope, IfMatch=if_match)
+        etag = self._put(key, envelope, IfMatch=if_match)
+        self._retain(key, envelope)
+        return etag
 
     def delete(self, key: str, *, if_match: str) -> None:
         """Release exactly the owner's object by conditionally writing a marker."""
@@ -155,36 +170,37 @@ class R2ObjectStore:
 
     # Wire ------------------------------------------------------------------------
 
+    def _new_nonce(self) -> str:
+        return uuid.uuid4().hex
+
     def _envelope(self, state: str, body: bytes) -> bytes:
-        nonce = self._nonce()
+        nonce = self._new_nonce()
         if not isinstance(nonce, str) or not NONCE.fullmatch(nonce):
-            raise ControlStoreIntegrity("nonce factory")
+            raise ControlStoreIntegrity("nonce source")
         try:
             text = body.decode("utf-8")
         except UnicodeDecodeError:
             raise ControlStoreIntegrity("controller body is not UTF-8") from None
         document = {"body": text, "cf_r2_store": ENVELOPE_VERSION, "nonce": nonce, "state": state}
-        return json.dumps(document, sort_keys=True, separators=(",", ":")).encode("ascii")
+        envelope = _canonical(document)
+        if len(envelope) > MAX_OBJECT_BYTES:
+            # Never commit an object that every later read must refuse.
+            raise ControlStoreIntegrity("envelope exceeds the size bound")
+        return envelope
 
-    def _retain_superseded(self, key: str, if_match: str) -> None:
-        """Copy the committed journal version that ``if_match`` names, or refuse."""
-        if JOURNAL_KEY.fullmatch(key) is None:
+    def _retain(self, key: str, envelope: bytes) -> None:
+        """Keep a create-only copy of a committed journal version, or stop."""
+        copy_key = version_key(key, envelope)
+        if copy_key is None:
             return
-        current = self._get(key)
-        if current is None or current[1] != if_match:
-            # The conditional replace would fail; copy nothing uncommitted.
-            raise PreconditionFailed(key)
-        raw, _ = current
-        parse_envelope(raw)
-        copy_key = version_key(key, raw)
-        if copy_key is None:  # unreachable: the key matched JOURNAL_KEY above
-            raise ControlStoreIntegrity("journal key")
         try:
-            self._put(copy_key, raw, IfNoneMatch="*")
+            self._put(copy_key, envelope, IfNoneMatch="*")
         except PreconditionFailed:
             existing = self._get(copy_key)
-            if existing is None or existing[0] != raw:
+            if existing is None or existing[0] != envelope:
                 raise ControlStoreIntegrity("journal version copy differs") from None
+        except ControlStoreUnavailable:
+            raise ControlStoreUnavailable("journal version retention unconfirmed") from None
 
     def _put(self, key: str, envelope: bytes, **condition: str) -> str:
         try:
@@ -211,7 +227,7 @@ class R2ObjectStore:
             response = self._client.get_object(Bucket=self._bucket, Key=key)
             raw = response["Body"].read(MAX_OBJECT_BYTES + 1)
         except ClientError as error:
-            if _status(error) == 404:
+            if error.response.get("Error", {}).get("Code") == "NoSuchKey":
                 return None
             raise ControlStoreUnavailable(f"get failed (HTTP {_status(error)})") from None
         except BotoCoreError:
