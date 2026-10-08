@@ -823,7 +823,7 @@ def test_observer_receipts_through_the_sdk_bind_the_recorded_service_tasks():
     outcome = adapted(r, aws).run()
     assert outcome.state == "held_paused", outcome
     passes = [e["subject"] for e in r.events("observation", result="operational_passed")]
-    assert passes == ["worker-readiness", "runtime-protected-readiness", "api-operational"]
+    assert passes == ["runtime-protected-readiness", "api-operational", "worker-readiness"]
     streams = {(c[2]["logGroupName"], c[2]["logStreamName"].split("/")[0])
                for c in aws.bridge.calls if c[1] == "GetLogEvents"}  # fmt: skip
     assert {("/staging/observe", "runtime-protected-readiness"),

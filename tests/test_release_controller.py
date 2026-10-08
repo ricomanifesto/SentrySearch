@@ -1309,7 +1309,7 @@ def test_each_observer_is_its_own_task_bound_to_the_recorded_service_address():
     outcome = r.controller().run()
     assert outcome.state == "held_paused", outcome
     passes = [e["subject"] for e in r.events("observation", result="operational_passed")]
-    assert passes == ["worker-readiness", RUNTIME_CHECK, API_CHECK]
+    assert passes == [RUNTIME_CHECK, API_CHECK, "worker-readiness"]
     for check_id, key in ((RUNTIME_CHECK, "runtime"), (API_CHECK, "api")):
         [launched] = r.events("observation", subject=check_id, result="launched")
         [passed] = r.events("observation", subject=check_id, result="operational_passed")
@@ -1450,6 +1450,42 @@ def test_a_recorded_service_without_one_known_address_holds_before_its_observer(
     assert RUNTIME_CHECK not in launched_job_ids(r)
 
 
+def test_an_observer_receipt_read_crossing_its_deadline_cannot_pass(monkeypatch):
+    r = rig()
+    original = r.evidence.operational_receipt
+
+    def slow_receipt(release_id, check_id, task_arn):
+        receipt = original(release_id, check_id, task_arn)
+        if check_id == RUNTIME_CHECK:
+            r.clock.advance(seconds=check_document(r, check_id)["deadline_seconds"])
+        return receipt
+
+    monkeypatch.setattr(r.evidence, "operational_receipt", slow_receipt)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "operational_deadline_exceeded", "services_started")
+    assert not r.events("observation", subject=RUNTIME_CHECK, result="operational_passed")
+
+
+def test_a_recorded_task_whose_address_changes_during_observation_holds(monkeypatch):
+    r = rig()
+    original = r.evidence.operational_receipt
+
+    def readdress(release_id, check_id, task_arn):
+        receipt = original(release_id, check_id, task_arn)
+        if check_id == RUNTIME_CHECK:
+            arn = r.events("observation", subject="runtime", result="service_ready")[-1]["task_arn"]
+            details = r.ecs.attachments[arn][0]["details"]
+            for detail in details:
+                if detail["name"] == "privateIPv4Address":
+                    detail["value"] = "10.0.9.9"
+        return receipt
+
+    monkeypatch.setattr(r.evidence, "operational_receipt", readdress)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "task_replaced", "services_started")
+    assert not r.events("observation", subject=RUNTIME_CHECK, result="operational_passed")
+
+
 @pytest.mark.parametrize("replaced", ["worker", "runtime"])
 def test_replacement_during_observation_requires_a_fresh_window(monkeypatch, replaced):
     r = rig()
@@ -1493,6 +1529,34 @@ def test_an_observer_launch_crash_recovers_to_exactly_one_observer_task():
 
 GATE = "worker-readiness"
 STAMP = "%Y-%m-%dT%H:%M:%S.%fZ"
+
+
+def gate_rig() -> Rig:
+    """Observers finish at once, so the gate's epoch is where these receipt sequences assume.
+
+    The observers run before the gate; their duration is not what these tests are about.
+    """
+    r = rig()
+    for check in r.document["operational_checks"]:
+        if "task" in check:
+            r.ecs.plans[check["task"]["task_definition"]] = JobPlan(seconds=0)
+    return r
+
+
+def during_gate(monkeypatch) -> list[bool]:
+    """A flag that is set only while the worker gate runs (after the observers)."""
+    running = [False]
+    original = ReleaseController._await_worker_readiness
+
+    def gate(self, check_id, recorded_tasks):
+        running[0] = True
+        try:
+            return original(self, check_id, recorded_tasks)
+        finally:
+            running[0] = False
+
+    monkeypatch.setattr(ReleaseController, "_await_worker_readiness", gate)
+    return running
 
 
 def gate_events(r: Rig, result: str) -> list[dict]:
@@ -1544,7 +1608,7 @@ def reboot(at: int):
 
 
 def test_worker_readiness_needs_sixty_seconds_of_receipts_observed_after_the_epoch():
-    r = rig()
+    r = gate_rig()
     outcome = r.controller().run()
     assert outcome.state == "held_paused", outcome
     [started] = gate_events(r, "readiness_observing")
@@ -1638,7 +1702,7 @@ def test_unproven_worker_readiness_holds_at_the_fixed_gate_deadline(configure, l
 def test_an_anomaly_restarts_the_window_and_only_a_full_new_window_passes(
     configure, first, last, last_reset
 ):
-    r = rig()
+    r = gate_rig()
     configure(r.logs)
     outcome = r.controller().run()
     assert outcome.state == "held_paused", outcome
@@ -1774,19 +1838,21 @@ def test_platform_identity_changes_during_the_gate_hold_without_waiting(change, 
 def slow_final_enumeration(r: Rig, monkeypatch, seconds: float) -> None:
     """The first re-enumeration inside the gate takes ``seconds`` of clock time."""
     original = ReleaseController._require_recorded_tasks
+    in_gate = during_gate(monkeypatch)
     calls = []
 
     def enumerate_slowly(self, recorded_tasks):
-        calls.append(1)
-        if len(calls) == 2:  # the first call precedes the gate
-            r.clock.advance(seconds=seconds)
+        if in_gate[0]:
+            calls.append(1)
+            if len(calls) == 1:
+                r.clock.advance(seconds=seconds)
         return original(self, recorded_tasks)
 
     monkeypatch.setattr(ReleaseController, "_require_recorded_tasks", enumerate_slowly)
 
 
 def test_success_needs_the_deadline_after_the_final_enumeration(monkeypatch):
-    r = rig()
+    r = gate_rig()
     # Ready only from receipt 54, so the window completes 10 s before the deadline;
     # a 10 s enumeration then crosses it while the receipts are still fresh.
     r.logs.edit = lambda sequence, receipt: [{**receipt, "ready": sequence >= 54}]
@@ -1801,7 +1867,7 @@ def test_success_needs_the_deadline_after_the_final_enumeration(monkeypatch):
 
 
 def test_success_needs_fresh_receipts_after_the_final_enumeration(monkeypatch):
-    r = rig()
+    r = gate_rig()
     slow_final_enumeration(r, monkeypatch, 40)
     outcome = r.controller().run()
     assert outcome.state == "held_paused", outcome
@@ -1810,14 +1876,16 @@ def test_success_needs_fresh_receipts_after_the_final_enumeration(monkeypatch):
 
 
 def test_controller_clock_rollback_at_final_success_holds(monkeypatch):
-    r = rig()
+    r = gate_rig()
     original = ReleaseController._require_recorded_tasks
+    in_gate = during_gate(monkeypatch)
     calls = []
 
     def roll_back(self, recorded_tasks):
-        calls.append(1)
-        if len(calls) == 2:  # the gate's final enumeration
-            r.clock.moment -= timedelta(seconds=30)
+        if in_gate[0]:
+            calls.append(1)
+            if len(calls) == 1:  # the gate's final enumeration
+                r.clock.moment -= timedelta(seconds=30)
         return original(self, recorded_tasks)
 
     monkeypatch.setattr(ReleaseController, "_require_recorded_tasks", roll_back)

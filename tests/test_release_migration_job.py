@@ -127,6 +127,8 @@ def run(env: dict[str, str], monkeypatch, capsys, *, now=START) -> tuple[int, li
         ({"RELEASE_EXPECT_PRINCIPAL": "other_owner"}, "principal_mismatch"),
         ({"RELEASE_EXPECT_DATABASE": "other_db"}, "database_mismatch"),
         ({"DB_SSLMODE": "disable"}, "storage_settings_invalid"),
+        # Verified TLS must be stated, not inherited from a deployed default.
+        ({"DB_SSLMODE": "<unset>"}, "storage_settings_invalid"),
         ({"DB_SSLROOTCERT": "/tmp/other-ca.pem"}, "storage_settings_invalid"),
         ({"ENVIRONMENT": "development"}, "storage_settings_invalid"),
         ({"DB_DEBUG": "true"}, "storage_settings_invalid"),

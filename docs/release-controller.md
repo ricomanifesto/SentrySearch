@@ -253,10 +253,10 @@ observation completes before the service's start deadline. Tasks from an older
 deployment of the same revision never count. Count drift, a failed or superseded
 deployment, or timeout holds.
 
-The task set is enumerated before the checks. The worker gate runs first (below);
-then each observer, Runtime then API, launches like a job (journaled intent, send
-authorization, exact definition, token, no overrides, Exec disabled) against
-the services as recorded:
+The task set is enumerated before the checks. Each observer, Runtime then API,
+launches like a job (journaled intent, send authorization, exact definition,
+token, no overrides, Exec disabled) against the services as recorded; the worker
+gate (below) follows:
 
 - Before the launch the recorded service task must report exactly one attached
   ENI with one private IPv4 address; otherwise `service_network_identity_unknown`
@@ -281,8 +281,8 @@ the services as recorded:
 
 The pass records the receipt hash, the peer and the service task. All services
 are enumerated once more immediately before `operational_verified`. A recovered
-run re-proves the worker gate in a new epoch and keeps observer passes already
-journaled.
+run keeps observer passes already journaled and re-proves the worker gate in a
+new epoch.
 
 ### Worker readiness gate
 

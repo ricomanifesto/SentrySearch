@@ -1120,11 +1120,11 @@ class ReleaseController:
             assert ready is not None
             recorded[key] = ready["task_arn"]
         self._require_recorded_tasks(recorded)
-        # The worker gate (every attempt a new epoch), then one observer per target
-        # against the settled services; each starts from the recorded tasks.
-        self._await_worker_readiness(WORKER_READINESS_CHECK, recorded)
+        # One observer per target, then the worker gate (every attempt a new epoch);
+        # each starts from the recorded tasks.
         for check in self.observers:
             self._run_observer(check, recorded)
+        self._await_worker_readiness(WORKER_READINESS_CHECK, recorded)
         # Re-enumerate immediately before success: a replacement needs a fresh window.
         self._require_recorded_tasks(recorded)
         self._transition(State.OPERATIONAL_VERIFIED)
