@@ -2335,18 +2335,71 @@ def test_a_launch_resend_is_never_sent_at_or_after_its_recorded_token_lifetime(o
         assert len(launches) == 1 and launches[0]["clientToken"] == intent["token"]
 
 
-def test_a_safety_stop_after_approval_expiry_is_still_sent():
-    # Stopping the run's own job is cleanup, not a forward launch: a slow stop
-    # intent that crosses approval expiry still sends StopTask.
+def test_expiry_cleanup_still_stops_the_runs_own_running_job():
+    # Approval expires while the job runs: expiry cleanup, not a forward action,
+    # stops the release's own task.
     r = rig(not_after=iso(APPROVAL_END))
     definition = r.document["jobs"][0]["task"]["task_definition"]
     r.ecs.plans[definition] = JobPlan(hang=True)
-    slow_intent_write(r, lambda event: event["action"] == "stop_task", lambda _r, _i: APPROVAL_END)
     outcome = r.controller().run()
-    assert len(r.calls("stop_task")) == 1
+    assert_held(r, outcome, "approval_expired", "quiesced")
+    assert [c["reason"] for c in r.calls("stop_task")] == ["release authorization window expired"]
     assert r.ecs._status(r.job_tasks("runtime-migrate")[0]) == "STOPPED"
-    assert outcome.state == "hold"
     assert r.events("observation", result="stop_confirmed")[-1]["sql_outcome"] == "unknown"
+
+
+def test_a_deadline_stop_whose_intent_write_crosses_approval_expiry_is_still_sent():
+    # The job reaches its own deadline while approval is still valid; the stop
+    # intent's journal write then returns after approval has ended. Stopping the
+    # run's own job is a safety action, not a forward launch: StopTask is sent.
+    approval_end = START + timedelta(minutes=20)  # after the 900 s job deadline
+    r = rig(not_after=iso(approval_end))
+    definition = r.document["jobs"][0]["task"]["task_definition"]
+    r.ecs.plans[definition] = JobPlan(hang=True)
+    slow = slow_intent_write(
+        r, lambda event: event["action"] == "stop_task", lambda _r, _intent: approval_end
+    )
+    original = r.ecs.stop_task
+    sent_at: list[datetime] = []
+
+    def stop(cluster: str, task_arn: str, reason: str) -> dict:
+        sent_at.append(r.clock.now())
+        return original(cluster, task_arn, reason)
+
+    setattr(r.ecs, "stop_task", stop)
+    outcome = r.controller().run()
+    assert slow.intent is not None
+    assert at_time(slow.intent["at"]) < approval_end <= sent_at[0], "the write crossed expiry"
+    assert [c["reason"] for c in r.calls("stop_task")] == ["release job deadline exceeded"]
+    assert r.ecs._status(r.job_tasks("runtime-migrate")[0]) == "STOPPED"
+    confirmed = r.events("observation", result="stop_confirmed")
+    assert confirmed and confirmed[-1]["sql_outcome"] == "unknown"
+    assert_held(r, outcome, "job_deadline_exceeded", "quiesced")
+
+
+@pytest.mark.parametrize("resend", [False, True], ids=["first", "resend"])
+def test_scale_to_zero_acquires_no_service_start_deadline_at_send(resend):
+    # A scale-to-zero intent write slower than service_start_seconds, inside
+    # approval and the window, still sends the identical request: quiescing is
+    # bound only by approval and the window.
+    r = rig(rollback="compatible_release", running_prior=True)
+    sent = lose_first_scale_down(r) if resend else None
+    late = timedelta(seconds=r.document["window"]["service_start_seconds"] + 1)
+    slow = slow_intent_write(
+        r,
+        lambda event: event["action"] == "update_service"
+        and event["subject"] == "runtime"
+        and event.get("desired_count") == 0
+        and ("retry_of" in event) == resend,
+        lambda rr, _intent: rr.clock.now() + late,
+    )
+    outcome = r.controller().run()
+    assert slow.intent is not None
+    scale_downs = service_updates(r, "runtime", 0) if sent is None else sent
+    assert len(scale_downs) == (2 if resend else 1)
+    assert canonical_sha256(scale_downs[-1]) == slow.intent["request_sha256"]
+    assert r.events("observation", subject="runtime", result="scaled_to_zero")
+    assert outcome.state == "held_paused", outcome
 
 
 def test_expiry_cleanup_after_a_withheld_launch_stops_only_matching_tasks():
