@@ -140,6 +140,8 @@ class ReleaseController:
             "release_tools": images.release_tools.arm64_digest,
         }
         self.jobs = {job.id: job for job in self.manifest.jobs}
+        # Once the Clock fails to vouch for time, this controller never trusts it again.
+        self._clock_untrusted = False
 
     # Entry points ----------------------------------------------------------
 
@@ -275,11 +277,32 @@ class ReleaseController:
                 session_id=self.session_id,
             )
 
+    # Clock -----------------------------------------------------------------
+
+    def _now(self) -> datetime:
+        """Controller time; after one ``ClockUntrusted`` every later reading refuses too."""
+        if self._clock_untrusted:
+            raise ClockUntrusted("controller clock untrusted")
+        try:
+            return self.clock.now()
+        except ClockUntrusted:
+            self._clock_untrusted = True
+            raise
+
+    def _sleep(self, seconds: float) -> None:
+        if self._clock_untrusted:
+            raise ClockUntrusted("controller clock untrusted")
+        try:
+            self.clock.sleep(seconds)
+        except ClockUntrusted:
+            self._clock_untrusted = True
+            raise
+
     # Journal ---------------------------------------------------------------
 
     def _approval_error(self) -> str | None:
         try:
-            verify_approval(self.loaded, self.approval, self.clock.now())
+            verify_approval(self.loaded, self.approval, self._now())
         except ReleaseRejected as error:
             return error.code
         return None
@@ -309,7 +332,7 @@ class ReleaseController:
                 "session_id": self.session_id,
             }
             prepared = {
-                "at": _iso(self.clock.now()),
+                "at": _iso(self._now()),
                 "kind": "transition",
                 "to": State.PREPARED.value,
                 "approval_sha256": self.approval.sha256,
@@ -344,15 +367,24 @@ class ReleaseController:
             )
         return True
 
-    def _append(self, event: dict[str, Any], **header: Any) -> dict[str, Any]:
+    def _append(
+        self, event: dict[str, Any], *, safety: bool = False, **header: Any
+    ) -> dict[str, Any]:
+        """Append one event. Without a trusted clock only safety events are written.
+
+        Safety events are a hold transition, an observation, or a ``guard=False``
+        intent (stopping the release's own job, releasing its lock). They are
+        journaled at the latest time already recorded, marked ``clock_untrusted``,
+        because that is only a lower bound. Anything else raises ``ClockUntrusted``
+        and the run holds.
+        """
         stamp: dict[str, Any]
         try:
-            stamp = {"at": _iso(self.clock.now())}
+            stamp = {"at": _iso(self._now())}
         except ClockUntrusted:
-            # Holds and safety observations are still journaled when the clock
-            # fails. Forward intents never reach here: their guard needs the
-            # clock. The latest recorded time is only a lower bound.
-            latest = max(_time(event["at"]) for event in self.journal.events)
+            if not safety:
+                raise
+            latest = max(_time(item["at"]) for item in self.journal.events)
             stamp = {"at": _iso(latest), "clock_untrusted": True}
         try:
             return self.journal.append({**stamp, **event}, **header)
@@ -374,7 +406,8 @@ class ReleaseController:
         check_transition(self.state, target)
         if target != State.HOLD:
             self._guard()
-        self._append({"kind": "transition", "to": target.value, **data})
+        self._append({"kind": "transition", "to": target.value, **data},
+                     safety=target == State.HOLD)  # fmt: skip
 
     def _intent(self, action: str, subject: str, request: dict[str, Any], *, guard: bool = True,
                 **data: Any) -> dict[str, Any]:  # fmt: skip
@@ -387,7 +420,8 @@ class ReleaseController:
                 "subject": subject,
                 "request_sha256": canonical_sha256(request),
                 **data,
-            }
+            },
+            safety=not guard,
         )
 
     def _observe(
@@ -396,7 +430,7 @@ class ReleaseController:
         event = {"kind": "observation", "subject": subject, "result": result, **data}
         if resolves is not None:
             event["resolves"] = resolves
-        self._append(event)
+        self._append(event, safety=True)
 
     def _results(self, subject: str) -> list[dict[str, Any]]:
         return [
@@ -436,7 +470,7 @@ class ReleaseController:
         already recorded event would extend them.
         """
         latest = max(_time(event["at"]) for event in self.journal.events)
-        if self.clock.now() < latest:
+        if self._now() < latest:
             raise _Hold("controller_clock_rollback")
 
     def _window_deadline(self) -> datetime:
@@ -450,7 +484,7 @@ class ReleaseController:
         Safety intents (stopping the release's own job, releasing the lock) are
         journaled with ``guard=False`` and never come here.
         """
-        now = self.clock.now() if now is None else now
+        now = self._now() if now is None else now
         if now >= self.approval.approval.not_after:
             raise _Hold("approval_expired")
         if now >= self._window_deadline():
@@ -466,7 +500,7 @@ class ReleaseController:
         outstanding, so it counts as possibly sent. Scale-to-zero needs only the
         approval and window; safety stops and lock release never come here.
         """
-        now = self.clock.now()
+        now = self._now()
         self._guard(now)
         if intent["action"] == "run_task":
             if now >= _time(intent["deadline_at"]) or now >= _time(intent["token_expires_at"]):
@@ -496,7 +530,7 @@ class ReleaseController:
             "release_id": self.release_id,
             "session_id": self.session_id,
             "manifest_sha256": self.loaded.sha256,
-            "acquired_at": _iso(self.clock.now()),
+            "acquired_at": _iso(self._now()),
         }
         try:
             self.store.create(self.lock, encode(body))
@@ -531,7 +565,7 @@ class ReleaseController:
                     if task is not None:
                         break
                     # Briefly invisible right after launch is eventual consistency.
-                    self.clock.sleep(self.poll)
+                    self._sleep(self.poll)
                     task = self._describe_task(arns[0])
                 if task is None:
                     raise _Hold("launch_outcome_unknown")
@@ -542,7 +576,7 @@ class ReleaseController:
                               reason="launch_task_count")  # fmt: skip
                 raise _Hold("launch_task_count")
             # An eventually consistent empty listing is not proof that nothing launched.
-            now = self.clock.now()
+            now = self._now()
             if (
                 now >= _time(intent["token_expires_at"])
                 or now >= _time(intent["deadline_at"])
@@ -563,7 +597,7 @@ class ReleaseController:
             try:
                 response = self.ecs.run_task(request)
             except AmbiguousResponse:
-                self.clock.sleep(self.poll)
+                self._sleep(self.poll)
                 continue
             self._accept_launch(job, retry, response)
             return
@@ -580,8 +614,8 @@ class ReleaseController:
             for _ in range(VISIBILITY_POLLS):
                 if self._update_observed(key, desired, prior):
                     return
-                self.clock.sleep(self.poll)
-            if self.clock.now() >= deadline or attempt == IDENTICAL_RETRIES:
+                self._sleep(self.poll)
+            if self._now() >= deadline or attempt == IDENTICAL_RETRIES:
                 raise _Hold("service_update_unconfirmed")
             # Decide the identical resend on a fresh observation, not one a poll old.
             if self._update_observed(key, desired, prior):
@@ -612,7 +646,7 @@ class ReleaseController:
 
     def _before_forward_deadline(self, desired: int, deadline: datetime) -> None:
         # Scaling to zero keeps only the approval and release-window guard.
-        if desired and self.clock.now() >= deadline:
+        if desired and self._now() >= deadline:
             raise _Hold("service_update_unconfirmed")
 
     def _update_observed(self, key: str, desired: int, prior: list[str]) -> bool:
@@ -691,7 +725,7 @@ class ReleaseController:
             for service in self._describe_services().values()
         ):  # fmt: skip
             self._guard()
-            self.clock.sleep(self.poll)
+            self._sleep(self.poll)
         # Every task not yet stopped is a possible writer. One that ECS still
         # intends to run is unaccounted for; one already stopping must finish.
         while arns := self.ecs.list_tasks(self.cluster):
@@ -699,7 +733,7 @@ class ReleaseController:
             if any(task.get("desiredStatus") != "STOPPED" for task in tasks):
                 raise _Hold("standalone_writer_present")
             self._guard()
-            self.clock.sleep(self.poll)
+            self._sleep(self.poll)
         self._transition(State.QUIESCED)
 
     # Jobs ----------------------------------------------------------------------
@@ -746,7 +780,7 @@ class ReleaseController:
         if not TOKEN.fullmatch(token):
             raise ReleaseHalted("invalid_launch_token")
         request = self._launch_request(job, token)
-        now = self.clock.now()
+        now = self._now()
         deadline = min(now + timedelta(seconds=job.deadline_seconds), self._window_deadline())
         intent = self._intent(
             "run_task",
@@ -819,7 +853,7 @@ class ReleaseController:
             self._guard()
             # A missing task is eventual consistency, not proof that it never ran.
             task = self._describe_task(arn)
-            now = self.clock.now()
+            now = self._now()
             if now >= deadline:
                 if task is None or task.get("lastStatus") != "STOPPED":
                     self._stop_after_deadline(job, arn)
@@ -831,7 +865,7 @@ class ReleaseController:
                 receipt = self.evidence.job_receipt(self.release_id, job.id, arn)
                 # There is no trusted completion timestamp in this port contract.
                 # Even a timely task needs its complete receipt before the deadline.
-                if self.clock.now() >= deadline:
+                if self._now() >= deadline:
                     self._observe(job.id, "job_failed", task_arn=arn,
                                   reason="job_deadline_exceeded", sql_outcome="unknown")  # fmt: skip
                     raise _Hold("job_deadline_exceeded")
@@ -847,7 +881,7 @@ class ReleaseController:
                 if failure != "job_receipt_missing":
                     self._observe(job.id, "job_failed", task_arn=arn, reason=failure)
                     raise _Hold(failure)
-            self.clock.sleep(self.poll)
+            self._sleep(self.poll)
 
     def _stop_after_deadline(self, job: Job, arn: str) -> None:
         """Request a stop and confirm it. A stopped client never proves SQL stopped."""
@@ -908,19 +942,17 @@ class ReleaseController:
             self.ecs.stop_task(self.cluster, arn, reason)
         except AmbiguousResponse:
             pass
-        give_up = (
-            self.clock.now() + timedelta(seconds=job.stop_grace_seconds) + STOP_CONFIRMATION_MARGIN
-        )
+        give_up = self._now() + timedelta(seconds=job.stop_grace_seconds) + STOP_CONFIRMATION_MARGIN
         while True:
             task = self._describe_task(arn)
             if task is not None and task.get("lastStatus") == "STOPPED":
                 self._observe(job.id, "stop_confirmed", resolves="stop_task", task_arn=arn,
                               sql_outcome="unknown")  # fmt: skip
                 break
-            if self.clock.now() >= give_up:
+            if self._now() >= give_up:
                 self._observe(job.id, "stop_unconfirmed", task_arn=arn, sql_outcome="unknown")
                 break
-            self.clock.sleep(self.poll)
+            self._sleep(self.poll)
 
     # Services ------------------------------------------------------------------
 
@@ -966,7 +998,7 @@ class ReleaseController:
         service = services[key]
         prior = [str(item.get("id")) for item in service.get("deployments") or []]
         request = self._deploy_request(key)
-        now = self.clock.now()
+        now = self._now()
         deadline = min(now + timedelta(seconds=self.manifest.window.service_start_seconds),
                        self._window_deadline())  # fmt: skip
         intent = self._intent("update_service", key, request, desired_count=1,
@@ -1009,7 +1041,7 @@ class ReleaseController:
         while True:
             status, detail, _ = self._service_snapshot(key, deployment)
             # One snapshot is several calls: readiness must still be inside the deadline.
-            late = self.clock.now() >= deadline
+            late = self._now() >= deadline
             if status == "ready" and not late:
                 self._observe(key, "service_ready", deployment_id=deployment, task_arn=detail)
                 return
@@ -1017,7 +1049,7 @@ class ReleaseController:
                 raise _Hold(detail)
             if late:
                 raise _Hold("service_start_deadline_exceeded" if status == "ready" else detail)
-            self.clock.sleep(self.poll)
+            self._sleep(self.poll)
 
     def _verify_operational(self) -> None:
         recorded = {}
@@ -1062,7 +1094,7 @@ class ReleaseController:
         deployment = self._deployment_id("worker")
         assert deployment is not None
         group, stream = worker_stream(self.manifest.environment.name, self.release_id, task_arn)
-        epoch = self.clock.now()
+        epoch = self._now()
         # Journal times are controller time, rounded down: an epoch before any of
         # them means the clock moved backwards at some earlier step.
         if epoch < max(_time(event["at"]) for event in self.journal.events):
@@ -1089,7 +1121,7 @@ class ReleaseController:
         def observed_now() -> datetime:
             # Deadlines and freshness assume the clock never moves backwards.
             nonlocal latest
-            current = self.clock.now()
+            current = self._now()
             if current < latest:
                 raise _Hold("controller_clock_rollback")
             latest = current
@@ -1134,7 +1166,7 @@ class ReleaseController:
                     self._observe(check_id, "operational_passed", task_arn=task_arn,
                                   last_reset=gate.reason, **gate.summary())  # fmt: skip
                     return
-            self.clock.sleep(self.poll)
+            self._sleep(self.poll)
 
     def _require_recorded_tasks(self, recorded: dict[str, str]) -> None:
         for key in SERVICE_KEYS:

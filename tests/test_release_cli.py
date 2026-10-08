@@ -13,6 +13,8 @@ import io
 import json
 import os
 import stat
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
@@ -52,8 +54,10 @@ from tests.release_fakes import (
     JobPlan,
     SimulatedCrash,
     Trace,
+    OPERATOR_ROLE,
     approval_document,
     encode,
+    forward_document,
     manifest_document,
     sha,
 )
@@ -62,7 +66,7 @@ ENVIRONMENT = (
     "sentry-staging"  # the roots' name_prefix: control bucket sentry-staging-<acct>-control
 )
 OPERATOR = "fixture-operator"
-ROLE_ARN = f"arn:aws:iam::{ACCOUNT}:role/sentry-staging/sentry-staging-operator"
+ROLE_ARN = OPERATOR_ROLE
 ASSUMED = f"arn:aws:sts::{ACCOUNT}:assumed-role/sentry-staging-operator/{OPERATOR}"
 ROLE_ID = "AROA" + "Q" * 17
 KEY_ID = "ASIA" + "F" * 16
@@ -78,7 +82,8 @@ def no_network():
 
 
 def cli_document() -> dict:
-    document = manifest_document()
+    """Schema 2: the approved operator role travels with the hash-approved manifest."""
+    document = forward_document(bootstrap=False)
     document["environment"]["name"] = ENVIRONMENT
     document["operational_checks"] = [
         check for check in document["operational_checks"] if check["id"] == "worker-readiness"
@@ -147,7 +152,7 @@ class CliRig:
         seconds = lambda: self.clock.now().timestamp()  # noqa: E731
         return MonotonicUtcClock(wall=seconds, monotonic=seconds, wait=self.clock.sleep)
 
-    def main(self, *argv: str, session: str = "cli-session-a") -> tuple[int, dict]:
+    def main(self, *argv: str, session: str = "cli-session-a", environ=None) -> tuple[int, dict]:
         out = io.StringIO()
         self.sessions.append(session)
         code = cli.main(
@@ -157,6 +162,7 @@ class CliRig:
             tokens=self.tokens,
             session_ids=lambda: session,
             out=out,
+            environ={} if environ is None else environ,
         )
         return code, json.loads(out.getvalue())
 
@@ -168,7 +174,7 @@ class CliRig:
         base = [command, "--manifest", self.manifest_path]
         if approval:
             base += ["--approval", self.approval_path]
-        return base + ["--credentials", self.credentials_path, "--operator-role", ROLE_ARN]
+        return base + ["--credentials", self.credentials_path]
 
     def calls(self) -> list[tuple[str, str]]:
         return [(service, operation) for service, operation, _ in self.aws.bridge.calls]
@@ -441,14 +447,33 @@ def test_preflight_errors_are_refusals_without_provider_text(tmp_path):
     assert "fixture error" not in json.dumps(report)
 
 
-def test_an_invalid_operator_role_is_refused_before_reading_credentials(tmp_path):
-    r = cli_rig(tmp_path)
+def test_a_schema_one_manifest_names_no_approved_role_and_is_refused_unread(tmp_path):
+    document = manifest_document()
+    document["environment"]["name"] = ENVIRONMENT
+    r = cli_rig(tmp_path, document=document)
     os.chmod(r.credentials_path, 0o600)  # would be refused if it were read
-    args = r.args("run")
-    args[args.index("--operator-role") + 1] = "arn:aws:iam::999999999999:role/x"
-    code, report = r.main(*args)
-    assert_refused_before_release(r, code, report, "operator_role_invalid")
+    code, report = r.main(*r.args("run"))
+    assert_refused_before_release(r, code, report, "operator_role_unapproved")
     assert r.built == []
+
+
+def test_no_command_line_role_can_replace_the_approved_one(tmp_path):
+    r = cli_rig(tmp_path)
+    with pytest.raises(SystemExit):
+        r.main(*r.args("run"), "--operator-role", "arn:aws:iam::111122223333:role/Admin")
+    # A session for another role in the approved account is refused by the preflight.
+    r.identity = {"Arn": f"arn:aws:sts::{ACCOUNT}:assumed-role/OrganizationAccountAccessRole/"
+                         f"{OPERATOR}"}  # fmt: skip
+    code, report = r.main(*r.args("run"))
+    assert_refused_before_release(r, code, report, "identity_mismatch")
+
+
+def test_a_tls_key_log_in_the_environment_refuses_before_any_client(tmp_path):
+    r = cli_rig(tmp_path)
+    log = tmp_path / "keys.log"
+    code, report = r.main(*r.args("run"), environ={"SSLKEYLOGFILE": str(log)})
+    assert_refused_before_release(r, code, report, "unsafe_environment")
+    assert report["detail"] == "SSLKEYLOGFILE" and r.built == [] and not log.exists()
 
 
 def test_refused_credentials_build_no_client(tmp_path):
@@ -565,6 +590,29 @@ def test_a_group_or_world_writable_parent_is_refused(custody):
         assert refused(path) == "credentials_path_unsafe"
     finally:
         custody.chmod(0o700)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS extended ACLs")
+def test_an_acl_allowing_anyone_anything_on_the_file_or_a_parent_is_refused(custody):
+    path = custody / "session.json"
+    write_credentials(path)
+    chmod = "/bin/chmod"
+    subprocess.run([chmod, "+a", "everyone allow read", str(path)], check=True)
+    assert refused(path) == "credentials_file_unsafe"
+    subprocess.run([chmod, "-N", str(path)], check=True)
+    assert load(path).session_name == OPERATOR
+    subprocess.run([chmod, "+a", "everyone allow list,search,add_file,delete_child", str(custody)],
+                   check=True)  # fmt: skip
+    try:
+        assert refused(path) == "credentials_path_unsafe"
+    finally:
+        subprocess.run([chmod, "-N", str(custody)], check=True)
+    # Deny-only entries (macOS gives home folders "everyone deny delete") only restrict.
+    subprocess.run([chmod, "+a", "everyone deny delete", str(custody)], check=True)
+    try:
+        assert load(path).session_name == OPERATOR
+    finally:
+        subprocess.run([chmod, "-N", str(custody)], check=True)
 
 
 def test_a_file_inside_a_repository_is_refused(custody):
@@ -749,7 +797,7 @@ def test_every_client_is_explicit_isolated_and_accepted_by_the_adapters():
     assert endpoints == {
         "ecs": "https://ecs.us-east-1.amazonaws.com",
         "logs": "https://logs.us-east-1.amazonaws.com",
-        "s3": "https://s3.amazonaws.com",
+        "s3": "https://s3.us-east-1.amazonaws.com",
         "sts": "https://sts.us-east-1.amazonaws.com",
     }
     with pytest.raises(ValueError):
@@ -772,8 +820,26 @@ def test_operator_identity_inputs_are_validated():
     assert OperatorIdentity(ACCOUNT, ROLE_ARN, OPERATOR).assumed_role_arn == ASSUMED
 
 
-def test_the_credentials_file_mode_constant_is_owner_read_only():
-    assert stat.S_IMODE(0o100400) == 0o400 and BUCKET.endswith("-control")
+def test_deeply_nested_json_is_a_refusal_and_unexpected_errors_report_only_their_class(
+    tmp_path, custody
+):
+    path = custody / "session.json"
+    path.write_text("[" * 4000 + "]" * 4000)
+    path.chmod(0o400)
+    assert refused(path) == "credentials_malformed"
+    r = cli_rig(tmp_path)
+
+    def broken_factory(credentials, region):
+        raise RuntimeError(f"factory failed for {credentials.access_key_id}")
+
+    out = io.StringIO()
+    code = cli.main(r.args("run"), clients=broken_factory, clock_factory=r.operator_clock,
+                    out=out, environ={})  # fmt: skip
+    report = json.loads(out.getvalue())
+    assert (code, report["error"], report["detail"]) == (cli.EXIT_HALTED, "unexpected",
+                                                          "RuntimeError")  # fmt: skip
+    assert KEY_ID not in out.getvalue()
+    assert BUCKET.endswith("-control") and stat.S_IMODE(0o100400) == 0o400
 
 
 def test_status_cannot_write_even_if_its_reader_tried(tmp_path, monkeypatch):
@@ -793,8 +859,9 @@ def test_status_cannot_write_even_if_its_reader_tried(tmp_path, monkeypatch):
             return False
 
     monkeypatch.setattr(cli, "Journal", WritingJournal)
-    with pytest.raises(PermissionError):
-        r.main(*r.args("status", approval=False))
+    code, report = r.main(*r.args("status", approval=False))
+    assert (code, report["error"], report["detail"]) == (cli.EXIT_HALTED, "unexpected",
+                                                          "PermissionError")  # fmt: skip
     assert r.store.objects == {}
 
 
@@ -802,7 +869,8 @@ def test_the_session_lifetime_is_rechecked_against_the_referenced_clock(tmp_path
     # Valid by the first reading; one second of preflight later it no longer
     # covers the window plus ten minutes.
     r = cli_rig(tmp_path)
-    write_credentials(Path(r.credentials_path), expires_at="2026-10-07T13:10:00Z")
+    # Window 3600 s + 120 s journal-start slack + 10 min margin from 12:00:00.
+    write_credentials(Path(r.credentials_path), expires_at="2026-10-07T13:12:00Z")
     r.sts_delay = 1.0
     code, report = r.main(*r.args("run"))
     assert_refused_before_release(r, code, report, "session_expires_too_soon")

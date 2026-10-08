@@ -19,6 +19,7 @@ from release.manifest import (
 )
 from release.readiness import WORKER_READINESS_CHECK, WORKER_RECEIPT_KIND
 from tests.release_fakes import (
+    OPERATOR_ROLE,
     ACCOUNT,
     FAILED_RELEASE_ID,
     PRIOR_RELEASE_ID,
@@ -135,6 +136,8 @@ def test_ambiguous_json_is_rejected_before_hashing(raw, code):
         # Schema 2 states its purpose; schema 1 cannot.
         ("schema_version", 2, "missing_field", "purpose"),
         ("purpose", {"kind": "forward"}, "unknown_field", "purpose"),
+        ("purpose", None, "unknown_field", "purpose"),  # not even an explicit null
+        ("operator_role", None, "unknown_field", "operator_role"),
         ("network.assign_public_ip", "ENABLED", "invalid_field", "network.assign_public_ip"),
         ("rollback", {"kind": "previous"}, "invalid_field", "rollback"),
         ("rollback", {"kind": "empty_hold", "release_id": "x"}, "unknown_field", "rollback"),
@@ -447,6 +450,7 @@ def test_schema_two_states_forward_purpose_and_may_bootstrap_first():
 def test_a_forward_upgrade_with_a_compatible_fallback_still_migrates():
     document = manifest_document(rollback="compatible_release")
     document["schema_version"], document["purpose"] = 2, {"kind": "forward"}
+    document["operator_role"] = OPERATOR_ROLE
     manifest = load_manifest(encode(document)).manifest
     assert manifest.execution == "forward"
     assert {job.phase for job in manifest.jobs} == {"migrate", "grant", "proof"}
@@ -476,7 +480,7 @@ def test_bootstrap_is_only_for_a_first_deployment():
     [
         lambda d: d["jobs"].pop(0),  # one database only
         lambda d: d["jobs"].insert(3, d["jobs"].pop(0)),  # after a migration
-        lambda d: (d.update(schema_version=1), d.pop("purpose")),  # schema 1
+        lambda d: (d.update(schema_version=1), d.pop("purpose"), d.pop("operator_role")),
     ],
     ids=["one-database", "out-of-order", "schema-one"],
 )
@@ -620,3 +624,17 @@ def test_a_rollback_run_cannot_carry_the_forward_job_plan():
         document["jobs"] = manifest_document(rollback="compatible_release")["jobs"]
 
     assert rejected(edited(rollback_run_document(), forward_jobs)).code == "job_plan_invalid"
+
+
+def test_schema_two_names_the_approved_operator_role_in_its_own_account():
+    def drop(document: dict) -> None:
+        del document["operator_role"]
+
+    assert rejected(edited(forward_document(), drop)).code == "missing_field"
+    foreign = "arn:aws:iam::999999999999:role/sentry-staging/sentry-staging-operator"
+    error = rejected(edited(forward_document(), lambda d: d.update(operator_role=foreign)))
+    assert error.code == "resource_scope_mismatch"
+    for bad in ("arn:aws:iam::111122223333:user/fixture-operator",
+                "arn:aws:iam::111122223333:role/a b"):  # fmt: skip
+        error = rejected(edited(forward_document(), lambda d, bad=bad: d.update(operator_role=bad)))
+        assert error.code in {"resource_scope_mismatch", "mutable_reference"}

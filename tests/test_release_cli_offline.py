@@ -67,6 +67,13 @@ def poisoned_environment(root: Path) -> dict[str, str]:
         "ALL_PROXY": "http://192.0.2.1:9",
         "NO_PROXY": "",
         "REQUESTS_CA_BUNDLE": str(root / "ca.pem"),
+        # Read by the SDK directly rather than through session variables.
+        "AWS_S3_US_EAST_1_REGIONAL_ENDPOINT": "legacy",
+        "AWS_S3_USE_ARN_REGION": "true",
+        "AWS_S3_DISABLE_MULTIREGION_ACCESS_POINTS": "false",
+        "AWS_EXECUTION_ENV": "poisoned-execution-env",
+        "AWS_LAMBDA_FUNCTION_NAME": "poisoned-function",
+        "_X_AMZN_TRACE_ID": "Root=1-poisoned",
         "PYTHON_DOTENV_DISABLED": "1",
     }
 
@@ -76,13 +83,42 @@ def test_cli_ignores_poisoned_environment_profiles_models_proxies_and_providers(
     root.mkdir()
     work = tmp_path.resolve() / "work"
     work.mkdir()
+    receipt, result = run_poisoned(root, work, poisoned_environment(root))
+    assert receipt["events"] == [], "an ambient file, process or socket was used"
+    assert not (root / "credential-process-ran").exists()
+    assert receipt["run"]["code"] == 0 and receipt["run"]["state"] == "held_paused"
+    assert receipt["bridge_services"] == ["ecs", "logs", "s3", "sts"]
+    for service, built in receipt["clients"].items():
+        assert built["region"] == "us-east-1"
+        assert built["retries"] == {"total_max_attempts": 1, "mode": "standard"}
+        assert built["proxies"] == {}
+        assert built["verify_default"] is True
+        assert built["credential_method"] == "explicit" and built["explicit_key"] is True
+        assert built["s3"]["us_east_1_regional_endpoint"] == "regional"
+        assert built["s3"]["use_arn_region"] is False
+        assert built["s3"]["s3_disable_multiregion_access_points"] is True
+        assert built["user_agent"] == "sentry-release-cli/1"
+    # A real prepared request carries the fixed user agent and no Lambda trace header.
+    assert receipt["headers"] == {"User-Agent": "sentry-release-cli/1"}
+    assert {service: built["endpoint"] for service, built in receipt["clients"].items()} == {
+        "ecs": "https://ecs.us-east-1.amazonaws.com",
+        "logs": "https://logs.us-east-1.amazonaws.com",
+        "s3": "https://s3.us-east-1.amazonaws.com",
+        "sts": "https://sts.us-east-1.amazonaws.com",
+    }
+    assert "poisoned" not in result.stdout + result.stderr
+
+
+def run_poisoned(
+    root: Path, work: Path, poison: dict[str, str]
+) -> tuple[dict, subprocess.CompletedProcess[str]]:
     env = {
         key: value
         for key, value in os.environ.items()
         if not key.startswith(("AWS_", "HTTP", "http", "ALL_PROXY", "NO_PROXY", "PYTHON",
-                               "REQUESTS_CA"))
+                               "REQUESTS_CA", "SSLKEYLOG", "_X_AMZN"))
     }  # fmt: skip
-    env.update(poisoned_environment(root))
+    env.update(poison)
     env.update({"SENTRY_CLI_POISON_ROOT": str(root), "SENTRY_CLI_WORK": str(work)})
     result = subprocess.run(
         [sys.executable, "-B", str(REPO / "tests" / "release_cli_process.py")],
@@ -94,24 +130,22 @@ def test_cli_ignores_poisoned_environment_profiles_models_proxies_and_providers(
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    receipt = json.loads(result.stdout)
-    assert receipt["events"] == [], "an ambient file, process or socket was used"
-    assert not (root / "credential-process-ran").exists()
-    assert receipt["run"] == {"code": 0, "state": "held_paused", "reason": None}
-    assert receipt["bridge_services"] == ["ecs", "logs", "s3", "sts"]
-    for service, built in receipt["clients"].items():
-        assert built["region"] == "us-east-1"
-        assert built["retries"] == {"total_max_attempts": 1, "mode": "standard"}
-        assert built["proxies"] == {}
-        assert built["verify_default"] is True
-        assert built["credential_method"] == "explicit" and built["explicit_key"] is True
-    assert {service: built["endpoint"] for service, built in receipt["clients"].items()} == {
-        "ecs": "https://ecs.us-east-1.amazonaws.com",
-        "logs": "https://logs.us-east-1.amazonaws.com",
-        "s3": "https://s3.amazonaws.com",
-        "sts": "https://sts.us-east-1.amazonaws.com",
-    }
-    assert "poisoned" not in result.stdout + result.stderr
+    return json.loads(result.stdout), result
+
+
+def test_a_tls_key_log_variable_refuses_the_run_before_any_client_exists(tmp_path):
+    root = tmp_path.resolve() / "poison"
+    root.mkdir()
+    work = tmp_path.resolve() / "work"
+    work.mkdir()
+    log = root / "tls-keys.log"
+    receipt, result = run_poisoned(
+        root, work, {"SSLKEYLOGFILE": str(log), "SENTRY_CLI_MODE": "refusal"}
+    )
+    assert receipt["run"]["error"] == "unsafe_environment"
+    assert receipt["run"]["detail"] == "SSLKEYLOGFILE"
+    assert receipt["bridge_services"] == [] and receipt["events"] == []
+    assert not log.exists()
 
 
 def _names(path: Path) -> tuple[set[str], set[str]]:
@@ -144,7 +178,18 @@ def test_only_the_cli_client_module_builds_sessions_or_clients():
     assert builders
 
 
-def test_the_cli_never_reads_or_changes_the_process_environment():
+def test_the_cli_reads_the_environment_only_to_refuse_unsafe_variables_and_never_changes_it():
+    """The one read is ``main``'s default for the refusal check; nothing writes it."""
     for path in sorted((REPO / "release_cli").glob("*.py")):
-        _modules, attributes = _names(path)
-        assert not {"environ", "getenv", "putenv", "unsetenv", "environb"} & attributes, path.name
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        functions = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]
+        inside = {id(n): f.name for f in functions for n in ast.walk(f)}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in {
+                "environ", "getenv", "putenv", "unsetenv", "environb"
+            }:  # fmt: skip
+                where = inside.get(id(node))
+                assert (path.name, where, node.attr) == ("main.py", "main", "environ"), path.name
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in {"putenv", "unsetenv", "environb"}:
+                raise AssertionError(path.name)

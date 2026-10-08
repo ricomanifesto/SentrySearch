@@ -23,10 +23,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import secrets
 import sys
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol, TextIO
@@ -70,6 +71,15 @@ class ClientSource(Protocol):
 
 
 ClientsFactory = Callable[[SessionCredentials, str], ClientSource]
+
+
+# Environment variables the SDK reads directly that would weaken the session.
+UNSAFE_ENVIRONMENT = ("SSLKEYLOGFILE",)
+
+
+def unsafe_environment(environ: Mapping[str, str]) -> list[str]:
+    """Names of set variables that would make the SDK log or weaken TLS sessions."""
+    return [name for name in UNSAFE_ENVIRONMENT if environ.get(name)]
 
 
 class Refused(Exception):
@@ -125,9 +135,16 @@ def _approval(path: str, loaded: LoadedManifest) -> LoadedApproval:
     return approval
 
 
+# The release window starts when the journal is created, after the preflight;
+# the check allows for the S3 requests in between (connect plus read timeouts).
+JOURNAL_START_SLACK = timedelta(seconds=120)
+
+
 def _required_until(manifest: Manifest, now: datetime) -> datetime:
+    """The latest the release window can end if it starts now (plus the slack)."""
     window = manifest.window
-    return min(now + timedelta(seconds=window.total_seconds), window.expires_at)
+    return min(now + JOURNAL_START_SLACK + timedelta(seconds=window.total_seconds),
+               window.expires_at)  # fmt: skip
 
 
 def _operator_clients(
@@ -135,11 +152,22 @@ def _operator_clients(
     manifest: Manifest,
     clock: MonotonicUtcClock,
     clients: ClientsFactory,
+    environ: Mapping[str, str],
 ) -> ClientSource:
-    """Credentials file, isolated clients, then identity and time proven by preflight."""
+    """Credentials file, isolated clients, then identity and time proven by preflight.
+
+    The operator identity comes only from the approved manifest: its account, its
+    ``operator_role`` and its ``operator`` as the role-session name. A schema-1
+    manifest names no role and is refused.
+    """
+    if manifest.operator_role is None:
+        raise Refused("operator_role_unapproved")
+    unsafe = unsafe_environment(environ)
+    if unsafe:
+        raise Refused("unsafe_environment", ",".join(unsafe))
     identity = OperatorIdentity(
         account_id=manifest.environment.account_id,
-        role_arn=args.operator_role,
+        role_arn=manifest.operator_role,
         session_name=manifest.operator,
     )
     now = clock.now()
@@ -266,7 +294,6 @@ def build_parser() -> argparse.ArgumentParser:
         if name != "status":
             command.add_argument("--approval", required=True)
         command.add_argument("--credentials", required=True)
-        command.add_argument("--operator-role", required=True)
         if name in ("recover", "cleanup"):
             command.add_argument("--prior-session", required=True)
             command.add_argument("--lock-etag", required=True)
@@ -282,6 +309,7 @@ def _dispatch(
     clock_factory: Callable[[], MonotonicUtcClock],
     tokens: Callable[[], str],
     session_id: str,
+    environ: Mapping[str, str],
 ) -> tuple[int, dict[str, Any]]:
     loaded = _manifest(args.manifest)
     if args.command == "validate":
@@ -304,7 +332,7 @@ def _dispatch(
         }
     approval = None if args.command == "status" else _approval(args.approval, loaded)
     clock = clock_factory()
-    source = _operator_clients(args, loaded.manifest, clock, clients)
+    source = _operator_clients(args, loaded.manifest, clock, clients, environ)
     if not clock.reference_bound:
         raise Refused("clock_reference_unbound")
     if args.command == "status":
@@ -338,8 +366,12 @@ def main(
     tokens: Callable[[], str] = _token,
     session_ids: Callable[[], str] = lambda: uuid.uuid4().hex,
     out: TextIO | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> int:
-    """Run one command; ``clients`` is the only way an SDK client is obtained."""
+    """Run one command; ``clients`` is the only way an SDK client is obtained.
+
+    ``environ`` is consulted only for the variables the CLI refuses to run with.
+    """
     stream = out if out is not None else sys.stdout
     args = build_parser().parse_args(list(argv) if argv is not None else None)
     session_id = session_ids()
@@ -347,8 +379,9 @@ def main(
     document: dict[str, Any]
     try:
         code, document = _dispatch(
-            args, clients=clients, clock_factory=clock_factory, tokens=tokens, session_id=session_id
-        )
+            args, clients=clients, clock_factory=clock_factory, tokens=tokens,
+            session_id=session_id, environ=os.environ if environ is None else environ,
+        )  # fmt: skip
     except ReleaseRejected as error:
         code, document = EXIT_REFUSED, {"error": error.code, "detail": error.detail}
     except Refused as error:
@@ -364,6 +397,9 @@ def main(
     except (AmbiguousResponse, AwsRequestRejected) as error:
         # Only a read (status) or a client check reaches here; the class says enough.
         code, document = EXIT_HALTED, {"error": "aws_unconfirmed", "detail": type(error).__name__}
+    except Exception as error:
+        # Anything else is reported by class only: messages can quote inputs.
+        code, document = EXIT_HALTED, {"error": "unexpected", "detail": type(error).__name__}
     document = {"command": args.command, **document}
     stream.write(json.dumps(document, sort_keys=True) + "\n")
     stream.flush()

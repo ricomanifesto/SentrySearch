@@ -19,8 +19,9 @@ class ClockUntrusted(Exception):
     """The Clock can no longer vouch for UTC time; nothing may be timed by it.
 
     Raised by ``now`` and ``sleep`` once an adapter detects regression, drift
-    or an unverified offset. The controller holds without further forward
-    action and journals that hold at the latest time it already recorded.
+    or an unverified offset. The controller latches, holds without further
+    forward action and journals only safety events, at the latest time it
+    already recorded.
     """
 
 

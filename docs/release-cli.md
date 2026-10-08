@@ -12,8 +12,8 @@ called AWS; nothing here is evidence that an environment exists.
 
 ```bash
 python -m release_cli validate --manifest M.json --approval A.json
-python -m release_cli status   --manifest M.json --credentials SESSION.json --operator-role ROLE_ARN
-python -m release_cli run      --manifest M.json --approval A.json --credentials SESSION.json --operator-role ROLE_ARN
+python -m release_cli status   --manifest M.json --credentials SESSION.json
+python -m release_cli run      --manifest M.json --approval A.json --credentials SESSION.json
 python -m release_cli recover  ... --prior-session ID --lock-etag ETAG --fence-evidence-sha256 HASH --authorized-by NAME
 python -m release_cli cleanup  ... (same recovery arguments)
 ```
@@ -30,10 +30,16 @@ Each process has a fresh random session id; no command accepts one. Continuing a
 lost session always goes through `recover` or `cleanup`, which journal who
 authorized the takeover and the evidence that the prior process is fenced.
 
-Output is one JSON document on stdout: no credential, token or provider message.
-Exit codes: `0` success, `2` refused before any release action (input,
-credentials, identity or clock), `3` the release holds, `4` the controller halted
-(for example a journal conflict or a refused recovery).
+Output is one JSON document on stdout: no credential, token or provider message;
+an unexpected error is reported by its class only. Exit codes: `0` success, `2`
+refused before any release action (input, credentials, identity, environment or
+clock), `3` the release holds, `4` the controller halted (for example a journal
+conflict, a refused recovery or an unexpected error).
+
+Credentialed commands need a schema-2 manifest: its `operator_role` names the IAM
+role the operator's session must have assumed. A schema-1 manifest names no role
+and is refused (`operator_role_unapproved`) before the credentials file is read.
+There is no command-line role: the approved manifest is the only source.
 
 The control bucket is derived as the bootstrap root names it,
 `<environment.name>-<account_id>-control`, so the manifest's environment name
@@ -66,8 +72,12 @@ or root and not group- or world-writable (a root-owned sticky directory is
 allowed). The file is opened once without following links and checked through
 that descriptor. Long-lived `AKIA` keys and missing session tokens are refused.
 `expires_at` must cover the release window (the earlier of now plus the
-manifest's `total_seconds` and its `expires_at`) plus ten minutes, and be no
-more than 36 hours ahead. These are the custodian's statements, **not proof**:
+manifest's `total_seconds` plus a 120-second allowance for the journal to be
+created, and its `expires_at`) plus ten minutes, and be no more than 36 hours
+ahead. It is checked again after the preflight against the referenced clock. On
+macOS an extended ACL with any `allow` entry on the file or a parent directory
+is refused (mode bits do not show ACLs); `deny`-only entries, such as the
+`everyone deny delete` macOS gives home folders, only restrict and pass. These are the custodian's statements, **not proof**:
 the file's session name and expiry are unauthenticated, and a key prefix proves
 nothing. Identity is proven by the preflight; expiry remains a custodian trust
 input because `GetCallerIdentity` reports none. There is no refresh and no
@@ -75,26 +85,39 @@ fallback to any ambient source.
 
 ## Isolated clients
 
-`release_cli/clients.py` builds every client from a botocore session that reads
-no environment variable, configuration or shared-credentials file, customer model
-directory (`~/.aws/models`) or configured endpoint URL, with an empty credential
-provider chain. Each client gets the file's explicit credentials, the manifest's
-region, `total_max_attempts` 1 in standard mode, a 10 s connect and 30 s read
-timeout, an explicit empty proxy map (botocore otherwise reads `HTTP(S)_PROXY`)
-and the SDK's locked default CA bundle. The adapters still refuse any other
-client. `tests/test_release_cli_offline.py` runs the CLI in a subprocess whose
+`release_cli/clients.py` builds every client from a botocore session whose
+configuration variables read no environment variable, configuration or
+shared-credentials file, customer model directory (`~/.aws/models`) or configured
+endpoint URL, with an empty credential provider chain. Each client gets the
+file's explicit credentials, the manifest's region, `total_max_attempts` 1 in
+standard mode, a 10 s connect and 30 s read timeout, an explicit empty proxy map
+(botocore otherwise reads `HTTP(S)_PROXY`), the SDK's locked default CA bundle,
+fixed S3 settings (regional `us-east-1` endpoint, no ARN region, no multi-region
+access points, accelerate or dual-stack), a constant user agent and no Lambda
+recursion-detection header. The SDK still reads a few variables directly; those
+settings make `AWS_S3_*`, `AWS_EXECUTION_ENV` and `AWS_LAMBDA_FUNCTION_NAME` with
+`_X_AMZN_TRACE_ID` change nothing. It also reads `SSLKEYLOGFILE` when it builds a
+TLS context, which would log session secrets: the CLI refuses to run while it is
+set (`unsafe_environment`), before any client exists; that is the CLI's only read
+of its environment. The adapters still refuse any other client.
+`tests/test_release_cli_offline.py` runs the CLI in a subprocess whose
 environment poisons credentials, profiles, config and credential files (with a
-`credential_process`), model paths, endpoints, FIPS/dual-stack, retry settings,
-CA bundles, proxies, instance/container metadata and web identity, and records
-any poisoned file opened, process started or socket used: none are.
+`credential_process`), model paths, endpoints, FIPS/dual-stack, retry, S3 and
+execution-environment settings, CA bundles, proxies, instance/container metadata,
+web identity and the Lambda trace id, and records any poisoned file opened,
+process started or socket used: none are, and a prepared request carries only the
+fixed user agent. A second run with `SSLKEYLOGFILE` set is refused with no client
+built and no key log written.
 
 ## Preflight and Clock
 
 Before any journal, lock or ECS request, the CLI calls `sts:GetCallerIdentity`
 once. Its account, assumed-role ARN and role-session user id must equal the
-approved operator: the manifest account, the `--operator-role` role (in that
-account) and the manifest `operator` as session name. Errors are refusals with no
-provider text.
+approved operator: the manifest account, the manifest `operator_role` and the
+manifest `operator` as session name, all bound by the approval's manifest hash.
+Errors are refusals with no provider text. The session name proves the operator
+only as far as the role's trust policy pins it; the operator role and its trust
+policy are infrastructure inputs, not facts this code can establish.
 
 The Clock (`release_cli/clock.py`) is monotonic-anchored UTC: wall time sampled
 at start plus elapsed monotonic time, so it never moves backwards. Every reading
@@ -108,12 +131,16 @@ whole-second resolution, so local minus reference lies in
 that whole interval within ±5 s, or the run is refused. `sleep` waits at least
 the requested monotonic time (bounded to 60 s) and never moves time or deadlines.
 
-Once untrusted, the Clock raises `ClockUntrusted`. Before a journal exists the
-controller halts (`controller_clock_untrusted`); afterwards it holds with that
-reason, journaling the hold at the latest time already recorded and marking the
-event `clock_untrusted`. No forward intent can be journaled without the Clock. A
-restarted or recovered controller whose clock reads earlier than its journal
-holds with `controller_clock_rollback` before reconciling anything.
+Once untrusted, the Clock raises `ClockUntrusted`, and the controller latches: it
+never reads that Clock again in the run. Before a journal exists it halts
+(`controller_clock_untrusted`); afterwards it holds with that reason. Only safety
+events may be journaled without the Clock (the hold transition, observations, and
+`guard=False` intents to stop the release's own jobs or release its lock); they
+carry the latest time already recorded and `clock_untrusted`. A forward intent,
+any other transition (including `held_paused`) or a session event needs the Clock
+and holds instead, even when trust is lost between the guard and the journal
+timestamp. A restarted or recovered controller whose clock reads earlier than its
+journal holds with `controller_clock_rollback` before reconciling anything.
 
 ## Validation
 

@@ -15,8 +15,11 @@ environment exists or that a release has run.
 **Manifest (schema 1 or 2).** One immutable candidate, identified by the SHA-256
 of its canonical JSON (sorted keys, compact separators). Parsing rejects duplicate
 keys, non-integer numbers, unknown fields and any key containing `override`.
-Schema 2 adds a required, explicit execution `purpose`; schema 1 has none and is
-always a forward run, so no approved schema-1 manifest or journal changes meaning.
+Schema 2 adds a required, explicit execution `purpose` and the approved
+`operator_role` (an IAM role in the manifest account that the operator's session
+must have assumed; the [CLI](release-cli.md) binds the caller to it). Schema 1
+has neither key, not even as null, and is always a forward run, so no approved
+schema-1 manifest or journal changes meaning; the CLI does not run it.
 Required content:
 
 - release UUID, environment name, 12-digit account, region, cluster and the three
@@ -143,11 +146,14 @@ finished `held_paused` release is left unchanged.
 
 **Clock trust.** If the Clock raises `ClockUntrusted` before a journal exists,
 the run halts (`controller_clock_untrusted`) without writing. Afterwards the
-controller holds with that reason; the hold and any safety observation are
-journaled at the latest time already recorded and marked `clock_untrusted`.
-Forward intents always need the Clock for their guard, so none is written then.
-A restarted or recovered controller whose Clock reads earlier than the latest
-journal event holds with `controller_clock_rollback` before reconciling.
+controller latches (it never reads that Clock again) and holds with that reason.
+Only safety events (the hold transition, observations and `guard=False` stop or
+lock-release intents) are journaled without the Clock, at the latest time already
+recorded and marked `clock_untrusted`. Forward intents, every other transition
+and session events need the Clock, so a loss even between a guard and its journal
+timestamp holds. A restarted or recovered controller whose Clock reads earlier
+than the latest journal event holds with `controller_clock_rollback` before
+reconciling.
 
 ## Launch and job completion
 

@@ -6,6 +6,7 @@ import copy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
+import sys
 
 import pytest
 
@@ -18,6 +19,7 @@ from release.controller import (
 from release.manifest import canonical_sha256, load_approval, load_manifest
 from release.ports import AmbiguousResponse, ClockUntrusted
 from tests.release_fakes import (
+    OPERATOR_ROLE,
     PRIOR_RELEASE_ID,
     START,
     FakeClock,
@@ -2465,6 +2467,7 @@ def test_a_failed_bootstrap_holds_before_migrations_and_plans_its_reconciliation
 def test_a_forward_upgrade_with_a_compatible_fallback_still_migrates_under_schema_two():
     document = manifest_document(rollback="compatible_release")
     document["schema_version"], document["purpose"] = 2, {"kind": "forward"}
+    document["operator_role"] = OPERATOR_ROLE
     r = document_rig(document, running_prior=True)
     outcome = r.controller().run()
     assert outcome.state == "held_paused", outcome
@@ -2606,3 +2609,54 @@ def test_operator_abort_needs_this_sessions_journal_and_leaves_a_finished_releas
         other.controller("session-b").abort()
     assert error.value.code == "session_conflict"
     assert not other.calls("stop_task")
+
+
+class JournalTimeClock:
+    """Refuses to vouch for time exactly when one matching event is being timestamped.
+
+    The controller reads the clock for its guard and again for the journal time;
+    this double fails only the second read, the gap the latch must close.
+    """
+
+    def __init__(self, base: FakeClock, matches, *, once: bool = False) -> None:
+        self.base, self.matches, self.once, self.failed = base, matches, once, 0
+
+    def now(self) -> datetime:
+        caller = sys._getframe(1)
+        if caller.f_code.co_name == "_now":
+            caller = caller.f_back
+        event = (
+            caller.f_locals.get("event") if caller and caller.f_code.co_name == "_append" else None
+        )
+        if isinstance(event, dict) and self.matches(event) and not (self.once and self.failed):
+            self.failed += 1
+            raise ClockUntrusted("fixture: lost at the journal timestamp")
+        return self.base.now()
+
+    def sleep(self, seconds: float) -> None:
+        self.base.sleep(seconds)
+
+
+def test_no_forward_intent_is_journaled_once_the_clock_fails_at_its_timestamp():
+    r = rig()
+    clock = JournalTimeClock(r.clock, lambda e: e.get("action") == "run_task")
+    outcome = controller_with_clock(r, clock).run()
+    assert_held(r, outcome, "controller_clock_untrusted", "quiesced")
+    assert not r.events("intent", action="run_task") and not r.calls("run_task")
+    assert r.events("transition", to="hold")[-1]["clock_untrusted"] is True
+
+
+def test_a_clock_lost_at_the_success_transition_never_finishes_held_paused():
+    r = rig()
+    clock = JournalTimeClock(r.clock, lambda e: e.get("to") == "held_paused")
+    outcome = controller_with_clock(r, clock).run()
+    assert_held(r, outcome, "controller_clock_untrusted", "operational_verified")
+    assert "held_paused" not in r.transitions()
+
+
+def test_a_clock_that_refused_once_never_authorizes_a_later_send():
+    r = rig()
+    clock = JournalTimeClock(r.clock, lambda e: e.get("action") == "run_task", once=True)
+    outcome = controller_with_clock(r, clock).run()
+    assert_held(r, outcome, "controller_clock_untrusted", "quiesced")
+    assert not r.calls("run_task") and not r.calls("update_service")

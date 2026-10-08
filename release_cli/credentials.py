@@ -4,7 +4,8 @@ The CLI never resolves ambient credentials (environment, profiles, config files,
 instance or container metadata, web identity). The credential custodian writes a
 short-lived session to a regular file that only the operator can read (mode
 0400), outside any repository, with no symlink anywhere in its path and no
-group- or world-writable parent. The file is opened once, without following
+group- or world-writable parent, and on macOS no extended ACL entry that allows
+anything on the file or a parent. The file is opened once, without following
 links, and every check after that uses the same descriptor.
 
 Nothing in the file is authenticated identity. ``expires_at`` is the custodian's
@@ -17,10 +18,14 @@ or a missing token is refused, but their absence proves nothing.
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
+import errno
 import json
 import os
 import re
 import stat
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -73,6 +78,60 @@ def _no_float(_text: str) -> None:
     raise CredentialsRefused("credentials_malformed")
 
 
+_ACL_TYPE_EXTENDED = 0x00000100  # macOS <sys/acl.h>
+
+
+def _libc():
+    library = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    library.acl_get_fd_np.restype = ctypes.c_void_p
+    library.acl_get_fd_np.argtypes = [ctypes.c_int, ctypes.c_int]
+    library.acl_get_link_np.restype = ctypes.c_void_p
+    library.acl_get_link_np.argtypes = [ctypes.c_char_p, ctypes.c_int]
+    library.acl_to_text.restype = ctypes.c_void_p
+    library.acl_to_text.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ssize_t)]
+    library.acl_free.argtypes = [ctypes.c_void_p]
+    return library
+
+
+def _acl_grants_anything(*, descriptor: int | None = None, path: Path | None = None) -> bool:
+    """True if a macOS extended ACL has any allow entry; unverifiable is refused.
+
+    Mode bits alone do not show macOS ACLs: an ``allow`` entry can let anyone
+    read a 0400 file or replace entries in a 0700 directory. ``deny`` entries
+    only restrict (macOS gives home folders ``everyone deny delete``) and pass.
+    Elsewhere POSIX ACLs widen the group mode bits, which the mode checks refuse.
+    """
+    if sys.platform != "darwin":
+        return False
+    library = _libc()
+    if descriptor is not None:
+        acl = library.acl_get_fd_np(descriptor, _ACL_TYPE_EXTENDED)
+    else:
+        acl = library.acl_get_link_np(os.fsencode(str(path)), _ACL_TYPE_EXTENDED)
+    if not acl:
+        if ctypes.get_errno() == errno.ENOENT:
+            return False
+        raise CredentialsRefused("credentials_path_unsafe")
+    try:
+        length = ctypes.c_ssize_t()
+        text = library.acl_to_text(acl, ctypes.byref(length))
+        if not text:
+            raise CredentialsRefused("credentials_path_unsafe")
+        try:
+            entries = ctypes.string_at(text, length.value).decode("utf-8", "replace").splitlines()
+        finally:
+            library.acl_free(text)
+    finally:
+        library.acl_free(acl)
+    for entry in entries:
+        if not entry or entry.startswith("!#acl"):
+            continue
+        fields = entry.split(":")
+        if len(fields) < 3 or fields[-2] != "deny":
+            return True
+    return False
+
+
 def _check_path(path: Path, euid: int) -> None:
     """Absolute, symlink-free, outside any repository, under owner- or root-held directories."""
     if not path.is_absolute() or os.path.realpath(path) != str(path):
@@ -91,6 +150,8 @@ def _check_path(path: Path, euid: int) -> None:
             raise CredentialsRefused("credentials_path_unsafe")
         if os.path.lexists(parent / ".git"):
             raise CredentialsRefused("credentials_in_repository")
+        if _acl_grants_anything(path=parent):
+            raise CredentialsRefused("credentials_path_unsafe")
 
 
 def _read_once(path: Path, euid: int) -> bytes:
@@ -107,6 +168,7 @@ def _read_once(path: Path, euid: int) -> bytes:
             or stat.S_IMODE(info.st_mode) != 0o400
             or info.st_nlink != 1
             or not 0 < info.st_size <= MAX_FILE_BYTES
+            or _acl_grants_anything(descriptor=descriptor)
         ):
             raise CredentialsRefused("credentials_file_unsafe")
         data = os.read(descriptor, MAX_FILE_BYTES + 1)
@@ -128,7 +190,7 @@ def _parse(data: bytes) -> dict[str, object]:
             parse_float=_no_float,
             parse_constant=_no_float,
         )
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
         pass
     # Raised outside the handler: a JSON error can quote the file's content.
     if not isinstance(document, dict) or set(document) != FIELDS:

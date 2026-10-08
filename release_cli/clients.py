@@ -1,19 +1,24 @@
 """Isolated AWS SDK clients: the only place release code builds a session or client.
 
-Every client comes from a botocore session that reads no environment variable,
-configuration or credentials file, customer model directory, configured endpoint
-URL, proxy or CA-bundle override, and has no credential provider chain at all.
-Each client gets the operator's explicit session credentials, the manifest's
-region, no SDK retries (the controller owns every retry), bounded connect and
-read timeouts and an empty proxy map. ``release_aws`` adapters then refuse any
-client that does not match. Constructing a client sends nothing.
+Every client comes from a botocore session whose configuration variables read no
+environment variable, configuration or credentials file, customer model
+directory or configured endpoint URL, and which has no credential provider chain
+at all. Each client gets the operator's explicit session credentials, the
+manifest's region, no SDK retries (the controller owns every retry), bounded
+connect and read timeouts, an empty proxy map, fixed S3 settings, a fixed user
+agent and no Lambda recursion-detection header, so none of the SDK's remaining
+direct environment reads (``AWS_S3_*``, ``AWS_EXECUTION_ENV``,
+``AWS_LAMBDA_FUNCTION_NAME`` with ``_X_AMZN_TRACE_ID``) changes a request. The SDK
+also reads ``SSLKEYLOGFILE`` when it builds a TLS context; the CLI refuses to run
+with it set rather than let session secrets be logged. ``release_aws`` adapters
+refuse any client that does not match. Constructing a client sends nothing.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from botocore import configprovider
+from botocore import configprovider, handlers
 from botocore.config import Config
 from botocore.credentials import CredentialResolver
 from botocore.loaders import Loader
@@ -26,6 +31,7 @@ SERVICES = ("ecs", "logs", "s3", "sts")
 CONNECT_TIMEOUT_SECONDS = 10
 READ_TIMEOUT_SECONDS = 30
 _NOWHERE = "/nonexistent/sentry-release-cli"
+USER_AGENT = "sentry-release-cli/1"
 
 
 def client_config() -> Config:
@@ -35,6 +41,17 @@ def client_config() -> Config:
         read_timeout=READ_TIMEOUT_SECONDS,
         # An explicit empty map: botocore consults HTTP(S)_PROXY only when this is None.
         proxies={},
+        # Fixed rather than read from AWS_S3_* variables.
+        s3={
+            "addressing_style": "virtual",
+            "use_arn_region": False,
+            "us_east_1_regional_endpoint": "regional",
+            "s3_disable_multiregion_access_points": True,
+            "use_accelerate_endpoint": False,
+            "use_dualstack_endpoint": False,
+        },
+        # A constant user agent: nothing from AWS_EXECUTION_ENV or the host.
+        user_agent=USER_AGENT,
     )
 
 
@@ -60,6 +77,8 @@ def isolated_session() -> Session:
     )
     # No provider chain: a client without explicit credentials cannot sign anything.
     session.register_component("credential_provider", CredentialResolver(providers=[]))
+    # Never forward a Lambda trace id taken from the environment.
+    session.unregister("before-call", handlers.add_recursion_detection_header)
     return session
 
 

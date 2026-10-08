@@ -230,6 +230,8 @@ def manifest_document(*, rollback: str = "empty_hold") -> dict:
 
 
 FAILED_RELEASE_ID = "7c8d9e0f-2a3b-4c5d-8e6f-1a2b3c4d5e6f"
+# The approved operator role (schema 2); the operator's session assumes it.
+OPERATOR_ROLE = f"arn:aws:iam::{ACCOUNT}:role/sentry-staging/sentry-staging-operator"
 ROLLBACK_RELEASE_ID = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
 
 
@@ -248,6 +250,7 @@ def forward_document(*, bootstrap: bool = True) -> dict:
     document = manifest_document()
     document["schema_version"] = 2
     document["purpose"] = {"kind": "forward"}
+    document["operator_role"] = OPERATOR_ROLE
     if bootstrap:
         document["jobs"] = [bootstrap_job("runtime"), bootstrap_job("product"), *document["jobs"]]
     return document
@@ -257,6 +260,7 @@ def rollback_run_document() -> dict:
     """Schema 2 rollback run restoring the retained prior pair after a failed release."""
     document = manifest_document(rollback="compatible_release")
     document["schema_version"] = 2
+    document["operator_role"] = OPERATOR_ROLE
     document["release_id"] = ROLLBACK_RELEASE_ID
     prior = document["rollback"]
     schemas = {name: values[0] for name, values in prior["compatible_schemas"].items()}

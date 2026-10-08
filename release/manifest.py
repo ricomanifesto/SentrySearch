@@ -321,6 +321,9 @@ class Manifest(Strict):
     rollback: Annotated[EmptyHold | CompatibleRelease, Field(discriminator="kind")]
     # Required from schema 2, absent in schema 1 (which always means forward).
     purpose: Annotated[ForwardRun | RollbackRun, Field(discriminator="kind")] | None = None
+    # Schema 2: the IAM role the named operator's session must have assumed. The
+    # preflight binds the caller to it; schema 1 names no role and cannot be run.
+    operator_role: str | None = None
 
     @property
     def execution(self) -> str:
@@ -454,10 +457,12 @@ def verify_approval(loaded: LoadedManifest, receipt: LoadedApproval, now: dateti
 
 
 def _check_manifest(manifest: Manifest) -> None:
-    if manifest.schema_version == 1 and manifest.purpose is not None:
-        raise ReleaseRejected("unknown_field", "purpose")
-    if manifest.schema_version == 2 and manifest.purpose is None:
-        raise ReleaseRejected("missing_field", "purpose")
+    # Schema 1 has neither field at all, not even an explicit null.
+    for field in ("purpose", "operator_role"):
+        if manifest.schema_version == 1 and field in manifest.model_fields_set:
+            raise ReleaseRejected("unknown_field", field)
+        if manifest.schema_version == 2 and getattr(manifest, field) is None:
+            raise ReleaseRejected("missing_field", field)
     window = manifest.window
     if not window.not_before < window.expires_at <= window.not_before + MAX_VALIDITY:
         raise ReleaseRejected("window_invalid", "window")
@@ -514,6 +519,9 @@ def _check_scope(manifest: Manifest) -> None:
     _scoped(
         environment.cluster_arn, prefixes["ecs"] + "cluster/", r"[A-Za-z0-9_-]{1,255}", "cluster"
     )
+    if manifest.operator_role is not None:
+        _scoped(manifest.operator_role, prefixes["iam"], r"(?:[\w+=,.@-]+/)*[\w+=,.@-]{1,64}",
+                "operator_role")  # fmt: skip
     cluster = environment.cluster_arn.rsplit("/", 1)[1]
     for name in ("runtime", "api", "worker"):
         _scoped(
