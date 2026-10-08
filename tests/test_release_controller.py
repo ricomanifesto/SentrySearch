@@ -1073,13 +1073,20 @@ class DriftedRetryResponse(Interrupted):
     """Lose the first forward deploy, apply the identical resend, and report
     drift only in the resend's response: every later read is clean."""
 
-    def __init__(self, r: Rig, *, interruption: str, reported) -> None:
+    def __init__(self, r: Rig, *, interruption: str, reported, applied: bool = True) -> None:
         super().__init__(r, interruption=interruption, applied=False)
-        self.reported = reported
+        self.reported, self.resend_applied = reported, applied
 
     def __call__(self, request: dict) -> dict:
-        response = super().__call__(request)  # the first forward send raises
-        if request["service"] == self.arn and request["desiredCount"] == 1:
+        forward = request["service"] == self.arn and request["desiredCount"] == 1
+        if forward and self.forward and not self.resend_applied:
+            # The resend reaches ECS but is not applied: no new deployment.
+            self.forward.append(copy.deepcopy(request))
+            self.sent_at.append(self.r.clock.now())
+            response = {"service": self.r.ecs._service(self.arn)}
+        else:
+            response = super().__call__(request)  # the first forward send raises
+        if forward:
             response = copy.deepcopy(response)
             self.reported(response["service"])
         return response
@@ -1118,6 +1125,17 @@ def test_a_resend_response_reporting_drift_holds_although_later_reads_are_clean(
     assert wrapper.service.settings == terraform, "only the resend's response reported drift"
     assert_never_deployed_under_drift(r, outcome, wrapper, sends=2)
     assert forward_sends(r) == ["runtime"], "no forward progress after the drifted response"
+
+
+@pytest.mark.parametrize("interruption", ["ambiguous", "crash"])
+def test_a_drifted_resend_response_without_a_new_deployment_holds(interruption):
+    r = rig()
+    wrapper = DriftedRetryResponse(
+        r, interruption=interruption, reported=DRIFT_VARIANTS[-1], applied=False
+    )
+    outcome = wrapper.run(r)
+    assert_never_deployed_under_drift(r, outcome, wrapper, sends=2)
+    assert wrapper.service.desired == 0 and not wrapper.service.settings["enableExecuteCommand"]
 
 
 def test_a_clean_resend_response_is_still_confirmed_from_service_reads():
@@ -1163,6 +1181,26 @@ def test_a_journal_write_crossing_the_original_deadline_holds_before_the_resend(
     assert retry["retry_of"] == first["sequence"] and retry["deadline_at"] == first["deadline_at"]
 
 
+def test_a_slow_first_deploy_journal_write_never_sends_at_the_deadline():
+    # Near a window-bound deadline the intent write alone can reach it.
+    r = rig()
+    runtime_arn = r.document["environment"]["services"]["runtime"]
+    original = r.store.replace
+
+    def slow_append(key: str, body: bytes, *, if_match: str) -> str:
+        etag = original(key, body, if_match=if_match)
+        last = json.loads(body)["events"][-1]
+        if last.get("action") == "update_service" and last.get("desired_count") == 1:
+            r.clock.moment = datetime.fromisoformat(last["deadline_at"].replace("Z", "+00:00"))
+        return etag
+
+    setattr(r.store, "replace", slow_append)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "service_update_unconfirmed", "grants_verified")
+    assert not [c for c in r.calls("update_service") if c["desiredCount"] == 1]
+    assert r.ecs.services[runtime_arn].desired == 0
+
+
 @pytest.mark.parametrize("interruption", ["ambiguous", "crash"])
 def test_a_slow_pre_resend_read_inside_the_deadline_still_resends_identically(interruption):
     r = rig()
@@ -1178,7 +1216,7 @@ def test_a_slow_pre_resend_read_inside_the_deadline_still_resends_identically(in
     )  # fmt: skip
     assert r.events("observation", subject="runtime", result="service_deployed")
     # Two seconds is too little to become ready: readiness, not the resend, holds.
-    assert outcome.state == "hold" and outcome.reason != "service_update_unconfirmed", outcome
+    assert_held(r, outcome, "service_start_deadline_exceeded", "grants_verified")
 
 
 def lose_first_scale_down(r: Rig, key: str = "runtime") -> list[dict]:

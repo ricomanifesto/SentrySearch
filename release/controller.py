@@ -509,7 +509,8 @@ class ReleaseController:
             if self._update_observed(key, desired, prior):
                 return
             # That read and the journal write each take time: a forward resend is
-            # never sent at or after the original service-start deadline.
+            # never sent at or after the original service-start deadline. The
+            # limit of identical resends applies per reconciliation.
             self._before_forward_deadline(desired, deadline)
             self._intent(
                 "update_service",
@@ -888,6 +889,8 @@ class ReleaseController:
                        self._window_deadline())  # fmt: skip
         intent = self._intent("update_service", key, request, desired_count=1,
                               prior_deployments=prior, deadline_at=_iso(deadline))  # fmt: skip
+        # A slow journal write near a window-bound deadline must not carry the send past it.
+        self._before_forward_deadline(1, _time(intent["deadline_at"]))
         service: dict[str, Any] = {}
         try:
             response = self.ecs.update_service(request)

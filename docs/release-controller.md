@@ -148,8 +148,8 @@ a forward action the values are checked for every described service, not only th
 one being deployed:
 - before each deploy;
 - on every forward deploy response, the first request's and each identical
-  resend's, so a drifted response is neither recognized nor reconciled, and a
-  later clean read cannot undo that hold;
+  resend's, so a drifted response is neither recognized nor reconciled; once
+  that hold is journaled, a later clean read cannot undo it;
 - after a lost or crashed deploy, on every observation while the update is
   reconciled and again just before any identical resend, whether or not the
   lost request was applied;
@@ -157,10 +157,12 @@ one being deployed:
   holds at the next forward action or recorded-task check).
 
 A lost or crashed deploy is resent only as the identical request, journaled with
-the original deadline and `retry_of`, at most three times. It is never sent at or
-after the original service-start deadline: the deadline is checked again after
-the read that decides the resend and after its intent is journaled. Otherwise
-the update holds with `service_update_unconfirmed`.
+the original deadline and `retry_of`, at most three times per reconciliation;
+each authorized recovery reconciles again within the same original deadline. No
+forward deploy, first or resent, is sent at or after its recorded service-start
+deadline: the deadline is checked again after its intent is journaled, and for a
+resend also after the read that decides it. Otherwise the update holds with
+`service_update_unconfirmed`.
 
 The values are:
 - minimum healthy 0% and maximum 100% (no overlap);

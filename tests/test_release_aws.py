@@ -912,7 +912,7 @@ def test_the_pre_resend_read_through_the_sdk_is_bound_by_the_original_deadline(
     else:
         # A timely resend is identical; readiness, two seconds later, then times out.
         assert forward[0][0] == forward[1][0]
-        assert outcome.state == "hold" and outcome.reason != "service_update_unconfirmed"
+        assert_held(r, outcome, "service_start_deadline_exceeded", "grants_verified")
 
 
 def test_a_clean_resend_response_through_the_sdk_finishes_held_paused():
