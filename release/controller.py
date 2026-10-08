@@ -497,16 +497,20 @@ class ReleaseController:
         if canonical_sha256(request) != intent["request_sha256"]:
             raise ReleaseHalted("journal_integrity")
         prior = intent.get("prior_deployments", [])
+        deadline = _time(intent["deadline_at"])
         for attempt in range(IDENTICAL_RETRIES + 1):
             for _ in range(VISIBILITY_POLLS):
                 if self._update_observed(key, desired, prior):
                     return
                 self.clock.sleep(self.poll)
-            if self.clock.now() >= _time(intent["deadline_at"]) or attempt == IDENTICAL_RETRIES:
+            if self.clock.now() >= deadline or attempt == IDENTICAL_RETRIES:
                 raise _Hold("service_update_unconfirmed")
             # Decide the identical resend on a fresh observation, not one a poll old.
             if self._update_observed(key, desired, prior):
                 return
+            # That read and the journal write each take time: a forward resend is
+            # never sent at or after the original service-start deadline.
+            self._before_forward_deadline(desired, deadline)
             self._intent(
                 "update_service",
                 key,
@@ -516,10 +520,20 @@ class ReleaseController:
                 deadline_at=intent["deadline_at"],
                 retry_of=intent["sequence"],
             )
+            self._before_forward_deadline(desired, deadline)
             try:
-                self.ecs.update_service(request)
+                response = self.ecs.update_service(request)
             except AmbiguousResponse:
                 continue
+            # A resend response reporting drift holds, whatever later reads say.
+            service = response.get("service") or {}
+            if desired and service and service_settings_drift(service):
+                raise _Hold("service_settings_drift")
+
+    def _before_forward_deadline(self, desired: int, deadline: datetime) -> None:
+        # Scaling to zero keeps only the approval and release-window guard.
+        if desired and self.clock.now() >= deadline:
+            raise _Hold("service_update_unconfirmed")
 
     def _update_observed(self, key: str, desired: int, prior: list[str]) -> bool:
         """One observation of a pending service update; True once it is recorded.

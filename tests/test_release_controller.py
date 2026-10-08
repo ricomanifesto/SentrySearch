@@ -9,7 +9,12 @@ import json
 
 import pytest
 
-from release.controller import RecoveryAuthorization, ReleaseController, ReleaseHalted
+from release.controller import (
+    VISIBILITY_POLLS,
+    RecoveryAuthorization,
+    ReleaseController,
+    ReleaseHalted,
+)
 from release.manifest import load_approval, load_manifest
 from release.ports import AmbiguousResponse
 from tests.release_fakes import (
@@ -803,12 +808,14 @@ class Interrupted:
         self.service = r.ecs.services[self.arn]
         self.original = r.ecs.update_service
         self.forward: list[dict] = []
+        self.sent_at: list[datetime] = []
         setattr(r.ecs, "update_service", self)
 
     def __call__(self, request: dict) -> dict:
         if request["service"] != self.arn or request["desiredCount"] != 1:
             return self.original(request)
         self.forward.append(copy.deepcopy(request))
+        self.sent_at.append(self.r.clock.now())
         if len(self.forward) > 1:
             return self.original(request)
         response = self.original(request) if self.applied else None
@@ -1057,6 +1064,180 @@ def test_scale_to_zero_reconciliation_is_not_blocked_by_drift():
     assert_held(r, outcome, "service_settings_drift", "grants_verified")
     assert not [c for c in r.calls("update_service")
                 if c["service"] == runtime_arn and c["desiredCount"] == 1]  # fmt: skip
+
+
+# Identical resends: their responses and the original deadline ---------------
+
+
+class DriftedRetryResponse(Interrupted):
+    """Lose the first forward deploy, apply the identical resend, and report
+    drift only in the resend's response: every later read is clean."""
+
+    def __init__(self, r: Rig, *, interruption: str, reported) -> None:
+        super().__init__(r, interruption=interruption, applied=False)
+        self.reported = reported
+
+    def __call__(self, request: dict) -> dict:
+        response = super().__call__(request)  # the first forward send raises
+        if request["service"] == self.arn and request["desiredCount"] == 1:
+            response = copy.deepcopy(response)
+            self.reported(response["service"])
+        return response
+
+
+def original_deadline(r: Rig, key: str = "runtime") -> datetime:
+    first = r.events("intent", action="update_service", subject=key, desired_count=1)[0]
+    return datetime.fromisoformat(first["deadline_at"].replace("Z", "+00:00"))
+
+
+def slow_pre_resend_read(r: Rig, wrapper: Interrupted, *, returns_at: timedelta) -> None:
+    """The read deciding the first resend returns ``returns_at`` from the deadline."""
+    original = r.ecs.describe_services
+    reads: list[int] = []
+
+    def describe(cluster, arns):
+        described = original(cluster, arns)
+        if len(wrapper.forward) == 1:
+            reads.append(1)
+            if len(reads) == VISIBILITY_POLLS + 1:  # after three visibility polls
+                r.clock.moment = original_deadline(r) + returns_at
+        return described
+
+    setattr(r.ecs, "describe_services", describe)
+
+
+@pytest.mark.parametrize("interruption", ["ambiguous", "crash"])
+@pytest.mark.parametrize("reported", DRIFT_VARIANTS, ids=DRIFT_IDS)
+def test_a_resend_response_reporting_drift_holds_although_later_reads_are_clean(
+    interruption, reported
+):
+    r = rig()
+    wrapper = DriftedRetryResponse(r, interruption=interruption, reported=reported)
+    terraform = copy.deepcopy(wrapper.service.settings)
+    outcome = wrapper.run(r)
+    assert wrapper.service.settings == terraform, "only the resend's response reported drift"
+    assert_never_deployed_under_drift(r, outcome, wrapper, sends=2)
+    assert forward_sends(r) == ["runtime"], "no forward progress after the drifted response"
+
+
+def test_a_clean_resend_response_is_still_confirmed_from_service_reads():
+    r = rig()
+    wrapper = DriftedRetryResponse(r, interruption="ambiguous", reported=lambda service: None)
+    outcome = wrapper.run(r)
+    assert outcome.state == "held_paused", outcome
+    assert len(wrapper.forward) == 2
+    assert r.events("observation", subject="runtime", result="service_deployed")[0]["reconciled"]
+
+
+@pytest.mark.parametrize("interruption", ["ambiguous", "crash"])
+def test_a_pre_resend_read_crossing_the_original_deadline_holds_before_the_resend(interruption):
+    r = rig()
+    wrapper = Interrupted(r, interruption=interruption, applied=False)
+    slow_pre_resend_read(r, wrapper, returns_at=timedelta(seconds=1))
+    outcome = wrapper.run(r)
+    assert_held(r, outcome, "service_update_unconfirmed", "grants_verified")
+    assert len(wrapper.forward) == 1, "no resend after the original service deadline"
+    assert len(r.events("intent", action="update_service", subject="runtime")) == 1
+    assert wrapper.service.desired == 0
+
+
+def test_a_journal_write_crossing_the_original_deadline_holds_before_the_resend():
+    # Journal-before-mutation stays: the resend intent is written, then the
+    # deadline is checked once more before the request is sent.
+    r = rig()
+    wrapper = Interrupted(r, interruption="ambiguous", applied=False)
+    original = r.store.replace
+
+    def slow_append(key: str, body: bytes, *, if_match: str) -> str:
+        etag = original(key, body, if_match=if_match)
+        last = json.loads(body)["events"][-1]
+        if last.get("action") == "update_service" and "retry_of" in last:
+            r.clock.moment = original_deadline(r)
+        return etag
+
+    setattr(r.store, "replace", slow_append)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "service_update_unconfirmed", "grants_verified")
+    assert len(wrapper.forward) == 1
+    first, retry = r.events("intent", action="update_service", subject="runtime")
+    assert retry["retry_of"] == first["sequence"] and retry["deadline_at"] == first["deadline_at"]
+
+
+@pytest.mark.parametrize("interruption", ["ambiguous", "crash"])
+def test_a_slow_pre_resend_read_inside_the_deadline_still_resends_identically(interruption):
+    r = rig()
+    wrapper = Interrupted(r, interruption=interruption, applied=False)
+    slow_pre_resend_read(r, wrapper, returns_at=timedelta(seconds=-2))
+    outcome = wrapper.run(r)
+    deadline = original_deadline(r)
+    assert len(wrapper.forward) == 2 and wrapper.forward[0] == wrapper.forward[1]
+    assert wrapper.sent_at[1] == deadline - timedelta(seconds=2)
+    first, retry = r.events("intent", action="update_service", subject="runtime")
+    assert (retry["request_sha256"], retry["deadline_at"], retry["retry_of"]) == (
+        first["request_sha256"], first["deadline_at"], first["sequence"]
+    )  # fmt: skip
+    assert r.events("observation", subject="runtime", result="service_deployed")
+    # Two seconds is too little to become ready: readiness, not the resend, holds.
+    assert outcome.state == "hold" and outcome.reason != "service_update_unconfirmed", outcome
+
+
+def lose_first_scale_down(r: Rig, key: str = "runtime") -> list[dict]:
+    arn = r.document["environment"]["services"][key]
+    original = r.ecs.update_service
+    sent: list[dict] = []
+
+    def update(request: dict) -> dict:
+        if request["service"] != arn or request["desiredCount"] != 0:
+            return original(request)
+        sent.append(copy.deepcopy(request))
+        if len(sent) == 1:
+            raise AmbiguousResponse("scale-to-zero response lost before it was applied")
+        return original(request)
+
+    setattr(r.ecs, "update_service", update)
+    return sent
+
+
+def test_a_scale_to_zero_resend_response_reporting_drift_does_not_block_quiescing():
+    r = rig(rollback="compatible_release", running_prior=True)
+    sent = lose_first_scale_down(r)
+    resend = r.ecs.update_service
+
+    def drifted_response(request: dict) -> dict:
+        response = resend(request)
+        if request["desiredCount"] == 0 and len(sent) == 2:
+            response = copy.deepcopy(response)
+            DRIFT_VARIANTS[0](response["service"])
+        return response
+
+    setattr(r.ecs, "update_service", drifted_response)
+    outcome = r.controller().run()
+    assert len(sent) == 2 and sent[0] == sent[1]
+    assert r.events("observation", subject="runtime", result="scaled_to_zero")[0]["reconciled"]
+    assert outcome.state == "held_paused", outcome
+
+
+def test_a_scale_to_zero_resend_keeps_the_release_window_guard():
+    # Scale-to-zero uses the release window as its deadline; the approval and
+    # window guard on its resend intent is unchanged.
+    r = rig(rollback="compatible_release", running_prior=True)
+    sent = lose_first_scale_down(r)
+    original = r.ecs.describe_services
+    reads: list[int] = []
+
+    def describe(cluster, arns):
+        described = original(cluster, arns)
+        if len(sent) == 1:
+            reads.append(1)
+            if len(reads) == VISIBILITY_POLLS + 1:
+                first = r.events("intent", action="update_service", subject="runtime")[0]
+                r.clock.moment = datetime.fromisoformat(first["deadline_at"].replace("Z", "+00:00"))
+        return described
+
+    setattr(r.ecs, "describe_services", describe)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "release_window_exceeded", "locked")
+    assert len(sent) == 1
 
 
 @pytest.mark.parametrize(

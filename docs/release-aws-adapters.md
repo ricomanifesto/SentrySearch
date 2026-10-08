@@ -60,8 +60,9 @@ chains to provider or log content.
   Overrides, placement, capacity providers, groups and volume configuration are
   refused before anything is sent. `UpdateService` accepts only scale-to-zero, or
   a single-task forced deploy of a named revision. The controller, not the
-  adapter, verifies the reported settings: before any forward deploy, on each
-  observation while reconciling one, and before any resend. Deployment settings,
+  adapter, verifies the reported settings: before any forward deploy, on every
+  forward deploy response (resends included), on each observation while
+  reconciling one, and before any resend. Deployment settings,
   Exec and networking belong to Terraform (see the
   [ownership
   contract](../deploy/aws-staging/README.md)).

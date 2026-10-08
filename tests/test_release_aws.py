@@ -12,7 +12,7 @@ import ast
 import copy
 import io
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -21,7 +21,12 @@ from botocore.config import Config
 from botocore.response import StreamingBody
 from botocore.stub import Stubber
 
-from release.controller import RecoveryAuthorization, ReleaseController, ReleaseHalted
+from release.controller import (
+    VISIBILITY_POLLS,
+    RecoveryAuthorization,
+    ReleaseController,
+    ReleaseHalted,
+)
 from release.journal import PreconditionFailed
 from release.manifest import load_approval, load_manifest
 from release.ports import AmbiguousResponse
@@ -809,6 +814,113 @@ def test_reconciling_a_lost_deploy_through_the_sdk_never_proceeds_under_drift(
     assert len(forward) == 1, "no forward resend under observed drift"
     assert not r.events("observation", subject="runtime", result="service_deployed")
     assert runtime.desired == (1 if applied else 0)
+
+
+def lose_first_forward_deploy(r: Rig, aws: FakeAws, interruption: str, respond=None) -> list:
+    """Lose Runtime's first forward UpdateService before ECS applies it; answer
+    later sends normally, or through ``respond`` with the applied response."""
+    runtime_arn = r.document["environment"]["services"]["runtime"]
+    original = aws.bridge.handlers[("ecs", "UpdateService")]
+    forward: list[tuple[dict, datetime]] = []
+
+    def update(params):
+        if params["service"] != runtime_arn or params["desiredCount"] != 1:
+            return original(params)
+        forward.append((params, r.clock.now()))
+        if len(forward) == 1:
+            if interruption == "crash":
+                raise SimulatedCrash("controller lost after the forward intent")
+            raise Transport("forward UpdateService response lost")
+        response = original(params)
+        return respond(response) if respond else response
+
+    aws.bridge.handlers[("ecs", "UpdateService")] = update
+    return forward
+
+
+def run_through_the_sdk(r: Rig, aws: FakeAws, interruption: str):
+    if interruption != "crash":
+        return adapted(r, aws).run()
+    with pytest.raises(SimulatedCrash):
+        adapted(r, aws).run()
+    recovering = adapted(r, aws, session="session-b")
+    recovering.recover(
+        RecoveryAuthorization(
+            prior_session_id="session-a",
+            lock_etag=r.store.objects[LOCK][1],
+            fence_evidence_sha256=sha("prior session process confirmed terminated"),
+            authorized_by="fixture-operator",
+        )
+    )
+    return recovering.run()
+
+
+def runtime_deadline(r: Rig) -> datetime:
+    first = r.events("intent", action="update_service", subject="runtime", desired_count=1)[0]
+    return datetime.fromisoformat(first["deadline_at"].replace("Z", "+00:00"))
+
+
+@pytest.mark.parametrize("interruption", ["transport", "crash"])
+def test_a_resend_response_reporting_drift_through_the_sdk_holds(interruption):
+    r, aws = aws_rig(checks="worker")
+    runtime_arn = r.document["environment"]["services"]["runtime"]
+    runtime = r.ecs.services[runtime_arn]
+
+    def report_rollback(response):
+        response = copy.deepcopy(response)
+        breaker = response["service"]["deploymentConfiguration"]["deploymentCircuitBreaker"]
+        breaker["rollback"] = True
+        return response
+
+    forward = lose_first_forward_deploy(r, aws, interruption, report_rollback)
+    outcome = run_through_the_sdk(r, aws, interruption)
+    assert_held(r, outcome, "service_settings_drift", "grants_verified")
+    assert len(forward) == 2 and forward[0][0] == forward[1][0]
+    assert not runtime.settings["deploymentConfiguration"]["deploymentCircuitBreaker"]["rollback"]
+    assert not r.events("observation", subject="runtime", result="service_deployed")
+    deploys = [p["service"] for s, op, p in aws.bridge.calls
+               if op == "UpdateService" and p["desiredCount"] == 1]  # fmt: skip
+    assert set(deploys) == {runtime_arn}, "no other service deployed after the drifted response"
+
+
+@pytest.mark.parametrize(
+    "interruption, returns_at, sends",
+    [("transport", 1, 1), ("crash", 1, 1), ("transport", -2, 2), ("crash", -2, 2)],
+)
+def test_the_pre_resend_read_through_the_sdk_is_bound_by_the_original_deadline(
+    interruption, returns_at, sends
+):
+    r, aws = aws_rig(checks="worker")
+    forward = lose_first_forward_deploy(r, aws, interruption)
+    original = aws.bridge.handlers[("ecs", "DescribeServices")]
+    reads: list[int] = []
+
+    def describe(params):
+        described = original(params)
+        if len(forward) == 1:
+            reads.append(1)
+            if len(reads) == VISIBILITY_POLLS + 1:  # the read deciding the resend
+                r.clock.moment = runtime_deadline(r) + timedelta(seconds=returns_at)
+        return described
+
+    aws.bridge.handlers[("ecs", "DescribeServices")] = describe
+    outcome = run_through_the_sdk(r, aws, interruption)
+    assert len(forward) == sends
+    assert all(at < runtime_deadline(r) for _, at in forward)
+    if sends == 1:
+        assert_held(r, outcome, "service_update_unconfirmed", "grants_verified")
+    else:
+        # A timely resend is identical; readiness, two seconds later, then times out.
+        assert forward[0][0] == forward[1][0]
+        assert outcome.state == "hold" and outcome.reason != "service_update_unconfirmed"
+
+
+def test_a_clean_resend_response_through_the_sdk_finishes_held_paused():
+    r, aws = aws_rig(checks="worker")
+    forward = lose_first_forward_deploy(r, aws, "transport")
+    outcome = adapted(r, aws).run()
+    assert outcome.state == "held_paused", outcome
+    assert len(forward) == 2 and forward[0][0] == forward[1][0]
 
 
 @pytest.mark.parametrize("where, sends", [("run_task_before", 2), ("run_task_after", 1)])

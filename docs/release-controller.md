@@ -147,13 +147,20 @@ with `service_settings_drift` unless ECS reports exactly Terraform's values. Bef
 a forward action the values are checked for every described service, not only the
 one being deployed:
 - before each deploy;
-- on the deploy response, so a drifted response is neither recognized nor
-  reconciled;
+- on every forward deploy response, the first request's and each identical
+  resend's, so a drifted response is neither recognized nor reconciled, and a
+  later clean read cannot undo that hold;
 - after a lost or crashed deploy, on every observation while the update is
   reconciled and again just before any identical resend, whether or not the
   lost request was applied;
 - on every later observation of a started service (that service only; drift elsewhere
   holds at the next forward action or recorded-task check).
+
+A lost or crashed deploy is resent only as the identical request, journaled with
+the original deadline and `retry_of`, at most three times. It is never sent at or
+after the original service-start deadline: the deadline is checked again after
+the read that decides the resend and after its intent is journaled. Otherwise
+the update holds with `service_update_unconfirmed`.
 
 The values are:
 - minimum healthy 0% and maximum 100% (no overlap);
