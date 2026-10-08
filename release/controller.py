@@ -79,6 +79,12 @@ class _Hold(Exception):
         self.code = code
 
 
+def _hold_on_drift(services: dict[str, dict[str, Any]]) -> None:
+    """No forward deployment action while any service reports drifted settings."""
+    if any(service_settings_drift(service) for service in services.values()):
+        raise _Hold("service_settings_drift")
+
+
 @dataclass(frozen=True)
 class RecoveryAuthorization:
     """Recorded break-glass decision that the prior session is fenced and cannot resume."""
@@ -518,19 +524,20 @@ class ReleaseController:
     def _update_observed(self, key: str, desired: int, prior: list[str]) -> bool:
         """One observation of a pending service update; True once it is recorded.
 
-        A forward deployment is never recognized or resent while ECS reports
-        Terraform-owned settings other than the approved ones: the hold comes
-        before any further forward action, whether or not the lost request was
-        applied. Scaling to zero is the safe direction and drift never blocks it.
+        A forward deployment is never recognized or resent while ECS reports, for
+        any service, Terraform-owned settings other than the approved ones: the
+        hold comes before any further forward action, whether or not the lost
+        request was applied. Scaling to zero is the safe direction and drift
+        never blocks it.
         """
-        service = self._describe_services()[key]
+        services = self._describe_services()
+        service = services[key]
         if desired == 0:
             if service.get("desiredCount") != 0:
                 return False
             self._observe(key, "scaled_to_zero", resolves="update_service", reconciled=True)
             return True
-        if service_settings_drift(service):
-            raise _Hold("service_settings_drift")
+        _hold_on_drift(services)
         deployment = self._new_deployment(key, service, prior)
         if deployment is None:
             return False
@@ -856,10 +863,10 @@ class ReleaseController:
         self._transition(State.SERVICES_STARTED)
 
     def _deploy(self, key: str) -> str:
-        service = self._describe_services()[key]
+        services = self._describe_services()
         # Verify, never write, the Terraform-owned settings the release relies on.
-        if service_settings_drift(service):
-            raise _Hold("service_settings_drift")
+        _hold_on_drift(services)
+        service = services[key]
         prior = [str(item.get("id")) for item in service.get("deployments") or []]
         request = self._deploy_request(key)
         now = self.clock.now()
@@ -874,12 +881,12 @@ class ReleaseController:
             deployment = self._new_deployment(key, service, prior)
         except AmbiguousResponse:
             deployment = None
+        # A response reporting drifted settings is never recognized or reconciled.
+        if service and service_settings_drift(service):
+            raise _Hold("service_settings_drift")
         if deployment is None:
             self._reconcile_update(intent)
             return str(self._deployment_id(key))
-        # Applied, but never recognized while the response reports drifted settings.
-        if service_settings_drift(service):
-            raise _Hold("service_settings_drift")
         self._observe(key, "service_deployed", resolves="update_service", deployment_id=deployment)
         return deployment
 

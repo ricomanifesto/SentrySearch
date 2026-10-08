@@ -743,9 +743,8 @@ def test_terraform_owned_setting_drift_holds_before_the_service_is_deployed(chan
     change(r.ecs.services[api].settings)
     outcome = r.controller().run()
     assert_held(r, outcome, "service_settings_drift", "grants_verified")
-    assert [c["service"] for c in r.calls("update_service") if c["desiredCount"] == 1] == [
-        r.document["environment"]["services"]["runtime"]
-    ]
+    # Drift on any described service holds before the first forward deploy.
+    assert [c for c in r.calls("update_service") if c["desiredCount"] == 1] == []
     assert r.ecs.services[api].desired == 0
 
 
@@ -894,6 +893,130 @@ def test_drift_during_the_last_visibility_poll_blocks_the_resend():
     setattr(r.clock, "sleep", sleep)
     outcome = r.controller().run()
     assert_never_deployed_under_drift(r, outcome, wrapper, sends=1)
+
+
+def forward_sends(r: Rig) -> list[str]:
+    services = {arn: key for key, arn in r.document["environment"]["services"].items()}
+    return [services[c["service"]] for c in r.calls("update_service") if c["desiredCount"] == 1]
+
+
+def test_drift_on_another_service_holds_before_the_next_forward_deploy():
+    # Runtime is ready; its Exec is turned on while the API deploys. The worker
+    # deploy must not be sent under that observed drift.
+    r = rig()
+    services = r.document["environment"]["services"]
+    original = r.ecs.update_service
+
+    def drift_runtime_during_api(request: dict) -> dict:
+        response = original(request)
+        if request["service"] == services["api"] and request["desiredCount"] == 1:
+            r.ecs.services[services["runtime"]].settings["enableExecuteCommand"] = True
+        return response
+
+    setattr(r.ecs, "update_service", drift_runtime_during_api)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "service_settings_drift", "grants_verified")
+    assert forward_sends(r) == ["runtime", "api"]
+
+
+def test_drift_on_another_service_holds_a_reconciled_resend():
+    r = rig()
+    services = r.document["environment"]["services"]
+    original = r.ecs.update_service
+    lost: list[dict] = []
+
+    def lose_api_deploy(request: dict) -> dict:
+        if request["service"] == services["api"] and request["desiredCount"] == 1 and not lost:
+            lost.append(request)
+            r.ecs.mutations.append(("update_service", copy.deepcopy(request)))
+            r.ecs.services[services["runtime"]].settings["deploymentConfiguration"][
+                "deploymentCircuitBreaker"
+            ]["rollback"] = True
+            raise AmbiguousResponse("API deploy response lost before it was applied")
+        return original(request)
+
+    setattr(r.ecs, "update_service", lose_api_deploy)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "service_settings_drift", "grants_verified")
+    assert forward_sends(r) == ["runtime", "api"], "no API resend under runtime drift"
+
+
+def test_a_lost_deploy_that_never_appears_exhausts_identical_retries():
+    r = rig()
+    wrapper = Interrupted(r, interruption="ambiguous", applied=False)
+
+    def always_lost(request: dict) -> dict:
+        if request["service"] == wrapper.arn and request["desiredCount"] == 1:
+            wrapper.forward.append(copy.deepcopy(request))
+            raise AmbiguousResponse("every forward response lost before it was applied")
+        return wrapper.original(request)
+
+    setattr(r.ecs, "update_service", always_lost)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "service_update_unconfirmed", "grants_verified")
+    assert len(wrapper.forward) == 4 and all(c == wrapper.forward[0] for c in wrapper.forward)
+    intents = r.events("intent", action="update_service", subject="runtime")
+    assert len(intents) == 4
+    assert len({(e["request_sha256"], e["deadline_at"]) for e in intents}) == 1
+
+
+def test_a_lost_deploy_past_its_deadline_is_not_resent():
+    r = rig()
+    wrapper = Interrupted(r, interruption="ambiguous", applied=False)
+    original_call = wrapper.__call__
+
+    def late(request: dict) -> dict:
+        if request["service"] == wrapper.arn and request["desiredCount"] == 1:
+            r.clock.advance(seconds=601)  # past the 600 s service start deadline
+        return original_call(request)
+
+    setattr(r.ecs, "update_service", late)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "service_update_unconfirmed", "grants_verified")
+    assert len(wrapper.forward) == 1
+
+
+def test_drift_after_a_successful_resend_is_never_recognized():
+    r = rig()
+    wrapper = Interrupted(r, interruption="ambiguous", applied=False)
+    first = wrapper.__call__
+
+    def drift_after_resend(request: dict) -> dict:
+        response = first(request)
+        if len(wrapper.forward) == 2:
+            wrapper.service.settings["enableExecuteCommand"] = True
+        return response
+
+    setattr(r.ecs, "update_service", drift_after_resend)
+    outcome = r.controller().run()
+    assert_never_deployed_under_drift(r, outcome, wrapper, sends=2)
+
+
+def test_a_drifted_deploy_response_holds_without_further_observation():
+    r = rig()
+    services = r.document["environment"]["services"]
+    original = r.ecs.update_service
+    describes: list[int] = []
+    original_describe = r.ecs.describe_services
+
+    def drifted_without_deployment(request: dict) -> dict:
+        if request["service"] == services["runtime"] and request["desiredCount"] == 1:
+            r.ecs.mutations.append(("update_service", copy.deepcopy(request)))
+            runtime = r.ecs.services[services["runtime"]]
+            runtime.settings["enableExecuteCommand"] = True
+            describes.clear()
+            return {"service": r.ecs._service(services["runtime"])}  # not applied
+        return original(request)
+
+    def count(cluster, arns):
+        describes.append(1)
+        return original_describe(cluster, arns)
+
+    setattr(r.ecs, "update_service", drifted_without_deployment)
+    setattr(r.ecs, "describe_services", count)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "service_settings_drift", "grants_verified")
+    assert describes == [], "the response's own drift holds before any reconciliation poll"
 
 
 @pytest.mark.parametrize("interruption", ["ambiguous", "crash"])

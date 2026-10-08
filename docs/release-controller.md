@@ -143,10 +143,12 @@ still intends to run is an unaccounted writer and holds
 a forced new deployment. The deploy request carries only the controller-owned
 fields: cluster, service, task definition, desired count one and the forced
 deployment. Terraform alone writes every deployment setting. The controller holds
-with `service_settings_drift` unless ECS reports exactly Terraform's values,
-checked before any forward action:
+with `service_settings_drift` unless ECS reports exactly Terraform's values. Before
+a forward action the values are checked for every described service, not only the
+one being deployed:
 - before each deploy;
-- on the deploy response, so an applied deploy is not recognized under drift;
+- on the deploy response, so a drifted response is neither recognized nor
+  reconciled;
 - after a lost or crashed deploy, on every observation while the update is
   reconciled and again just before any identical resend, whether or not the
   lost request was applied;
