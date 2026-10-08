@@ -59,13 +59,27 @@ def _timeout(value: Any, limit: float) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value <= limit
 
 
-def validate_client(client: Any, target: R2Target, *, ca_bundle: str | None = None) -> None:
+MAX_IDEMPOTENT_ATTEMPTS = 3
+
+
+def validate_client(
+    client: Any, target: R2Target, *, ca_bundle: str | None = None, max_attempts: int = 1
+) -> None:
     """Raise ``R2ClientRejected`` unless ``client`` meets the adapter contract.
 
     ``ca_bundle`` names the trust bundle the caller configured; without it the
     client must use the default trust store, so a bundle substituted through
-    ``AWS_CA_BUNDLE`` or ``REQUESTS_CA_BUNDLE`` is rejected.
+    ``AWS_CA_BUNDLE`` or ``REQUESTS_CA_BUNDLE`` is rejected. The release-control
+    store requires exactly one attempt per call; callers whose every operation
+    is idempotent (content-addressed artifacts) may allow up to
+    ``MAX_IDEMPOTENT_ATTEMPTS``.
     """
+    if (
+        not isinstance(max_attempts, int)
+        or isinstance(max_attempts, bool)
+        or not 1 <= max_attempts <= MAX_IDEMPOTENT_ATTEMPTS
+    ):
+        raise R2ClientRejected("max_attempts")
     try:
         meta = client.meta
         config = meta.config
@@ -85,12 +99,21 @@ def validate_client(client: Any, target: R2Target, *, ca_bundle: str | None = No
     # client's ignore_configured_endpoint_urls setting is not readable back.
     if meta.endpoint_url != endpoint_for(target):
         raise R2ClientRejected("endpoint")
-    # botocore disables certificate checking for any falsy verify, so an empty
-    # bundle name is refused rather than treated as a bundle.
-    if ca_bundle is not None and (not isinstance(ca_bundle, str) or not ca_bundle):
-        raise R2ClientRejected("tls_verification")
-    expected_verify: bool | str = ca_bundle if ca_bundle is not None else True
-    if not verify or verify != expected_verify:
+    # Exactly the default trust store, or exactly the named bundle. botocore
+    # disables certificate checking for any falsy verify, and a relative path
+    # would resolve against the working directory at connect time, so only an
+    # absolute, unpadded path is a bundle name. Exact types rule out values that
+    # merely compare equal (1 == True, or an object overriding __eq__).
+    if ca_bundle is None:
+        if verify is not True:
+            raise R2ClientRejected("tls_verification")
+    elif (
+        type(ca_bundle) is not str
+        or not ca_bundle.startswith("/")
+        or ca_bundle != ca_bundle.strip()
+        or type(verify) is not str
+        or verify != ca_bundle
+    ):
         raise R2ClientRejected("tls_verification")
     # Includes proxies taken from HTTP(S)_PROXY when the client did not set none.
     if proxies != {}:
@@ -100,7 +123,13 @@ def validate_client(client: Any, target: R2Target, *, ca_bundle: str | None = No
     if getattr(config, "response_checksum_validation", None) != "when_required":
         raise R2ClientRejected("response_checksum")
     retries = getattr(config, "retries", None) or {}
-    if retries.get("total_max_attempts") != 1 and retries.get("max_attempts") != 0:
+    attempts = retries.get("total_max_attempts")
+    legacy = retries.get("max_attempts")
+    if attempts is None and isinstance(legacy, int) and not isinstance(legacy, bool):
+        attempts = legacy + 1
+    if not isinstance(attempts, int) or isinstance(attempts, bool):
+        raise R2ClientRejected("retries")
+    if not 1 <= attempts <= max_attempts:
         raise R2ClientRejected("retries")
     if not _timeout(getattr(config, "connect_timeout", None), MAX_CONNECT_TIMEOUT_SECONDS):
         raise R2ClientRejected("connect_timeout")

@@ -46,17 +46,28 @@ from src.core.evidence_admissibility import assert_no_virtual_event_promotions
 from src.core.report_content_policy import load_checked_report
 from src.domain.model_routes import generation_fallback_state
 
+from .artifact_store import ArtifactStore
+from .artifacts import artifact_store_from_environment
 from .database import db_manager
 from .models import Report, ReportDispositionEvent, ReportRuntimeDispatch
-from .s3_manager import s3_manager
 
 logger = logging.getLogger(__name__)
 
 
 class ReportStorageService:
-    def __init__(self):
+    def __init__(self, artifacts: ArtifactStore | None = None):
         self.db_manager = db_manager
-        self.s3_manager = s3_manager
+        self.artifacts = artifacts if artifacts is not None else artifact_store_from_environment()
+
+    # The artifact backend's original attribute name, kept for existing callers
+    # and tests that read or replace it; both names refer to one store.
+    @property
+    def s3_manager(self) -> ArtifactStore:
+        return self.artifacts
+
+    @s3_manager.setter
+    def s3_manager(self, store: ArtifactStore) -> None:
+        self.artifacts = store
 
     @staticmethod
     def _evidence_admissibility_fields(
@@ -839,14 +850,14 @@ class ReportStorageService:
             # Upload markdown content to S3
             markdown_s3_key = None
             if "markdown_content" in report_data:
-                markdown_s3_key = self.s3_manager.upload_markdown_report(
+                markdown_s3_key = self.artifacts.upload_markdown_report(
                     report_id, report_data["markdown_content"]
                 )
 
             # Upload trace data to S3 if available
             trace_s3_key = None
             if "trace_data" in report_data:
-                trace_s3_key = self.s3_manager.upload_trace_data(
+                trace_s3_key = self.artifacts.upload_trace_data(
                     report_id, report_data["trace_data"]
                 )
 
@@ -1018,7 +1029,7 @@ class ReportStorageService:
             markdown_s3_key = None
             if report_data.get("markdown_content"):
                 try:
-                    markdown_s3_key = self.s3_manager.upload_markdown_report(
+                    markdown_s3_key = self.artifacts.upload_markdown_report(
                         report_id, report_data["markdown_content"]
                     )
                 except Exception as e:
@@ -1027,7 +1038,7 @@ class ReportStorageService:
             trace_s3_key = None
             if report_data.get("trace_data"):
                 try:
-                    trace_s3_key = self.s3_manager.upload_trace_data(
+                    trace_s3_key = self.artifacts.upload_trace_data(
                         report_id, report_data["trace_data"]
                     )
                 except Exception as e:
@@ -1468,7 +1479,7 @@ class ReportStorageService:
         sources = (threat_data.get("webSearchSources") or {}).get("primarySources") or []
         assert_source_ledger_consistent(threat_data, sources)
         assert_markdown_source_ledger_consistent(markdown_content, sources)
-        markdown_s3_key = self.s3_manager.upload_markdown_report(report_id, markdown_content)
+        markdown_s3_key = self.artifacts.upload_markdown_report(report_id, markdown_content)
         with self.db_manager.get_session() as session:
             report = self._evaluation_report(session, report_id, evaluation_lease)
             if report is None:
@@ -1605,7 +1616,7 @@ class ReportStorageService:
                 if include_content:
                     if report.markdown_s3_key:
                         try:
-                            report_dict["markdown_content"] = self.s3_manager.download_content(
+                            report_dict["markdown_content"] = self.artifacts.download_content(
                                 report.markdown_s3_key
                             )
                         except Exception as e:
@@ -1613,7 +1624,7 @@ class ReportStorageService:
 
                     if report.trace_s3_key:
                         try:
-                            trace_content = self.s3_manager.download_content(report.trace_s3_key)
+                            trace_content = self.artifacts.download_content(report.trace_s3_key)
                             report_dict["trace_data"] = json.loads(trace_content)
                         except Exception as e:
                             logger.warning(f"Could not load trace data: {e}")
@@ -1804,7 +1815,7 @@ class ReportStorageService:
 
                 # Delete S3 files
                 try:
-                    self.s3_manager.delete_report_files(report_id)
+                    self.artifacts.delete_report_files(report_id)
                 except Exception as e:
                     logger.warning(f"Could not delete S3 files: {e}")
 
@@ -1823,7 +1834,7 @@ class ReportStorageService:
             raise
 
     def download_report_content(self, key: str) -> str:
-        return self.s3_manager.download_content(key)
+        return self.artifacts.download_content(key)
 
     def get_download_url(self, report_id: str, content_type: str = "markdown") -> Optional[str]:
         """Get presigned URL for downloading report content"""
@@ -1844,7 +1855,7 @@ class ReportStorageService:
             # Trace downloads are private audit access, not public Markdown exports.
             if content_type == "markdown":
                 load_checked_report(snapshot, self.download_report_content)
-            return self.s3_manager.get_presigned_url(s3_key)
+            return self.artifacts.get_presigned_url(s3_key)
 
         except Exception as e:
             logger.error(f"Error getting download URL: {e}")

@@ -15,6 +15,8 @@ modeled pessimistically and is configurable:
 * Streaming checksum trailers (``aws-chunked`` bodies, ``x-amz-trailer``) are
   refused, because R2's PutObject compatibility row does not list them. Plain
   checksum headers are accepted and logged so tests can assert their absence.
+* ``ListObjectsV2`` pages through keys in lexicographic order; ``page_size``
+  caps a page so tests can force pagination.
 * ``DeleteObjects`` (``POST ?delete``), which R2 documents as supported, deletes
   the listed keys and, like ``DeleteObject``, enforces no condition. Every
   deleting request is logged whatever its form.
@@ -164,6 +166,7 @@ class R2Backend:
     log: list[Logged] = field(default_factory=list)
     faults: list[Fault] = field(default_factory=list)
     before: Callable[[str, str, bytes], None] | None = None
+    page_size: int = 1000
 
     def __post_init__(self) -> None:
         self._lock = threading.Lock()
@@ -273,6 +276,8 @@ class R2Backend:
                 response = self._delete(bucket, key, url)
             elif method == "POST" and not key and "delete" in query:
                 response = self._delete_objects(bucket, body, url)
+            elif method == "GET" and not key and query.get("list-type") == ["2"]:
+                response = self._list(bucket, query, url)
             else:
                 response = _error("NotImplemented", 501, url)
         self._record(method, bucket, key, headers, response, state=state, query=parts.query)
@@ -337,6 +342,35 @@ class R2Backend:
         if self.trace is not None:
             self.trace.append(("store-delete", key, None))
         return AWSResponse(url, 204, HeadersDict({"Content-Length": "0"}), _Raw(b""))
+
+    def _list(self, bucket: str, query: dict[str, list[str]], url: str) -> AWSResponse:
+        """ListObjectsV2: lexicographic keys, at most ``page_size`` per page."""
+        prefix = query.get("prefix", [""])[0]
+        limit = min(int(query.get("max-keys", ["1000"])[0]), self.page_size)
+        start = query.get("continuation-token", [""])[0]
+        keys = sorted(k for b, k in self.objects if b == bucket and k.startswith(prefix))
+        if start:
+            keys = [k for k in keys if k > start]
+        page, more = keys[:limit], len(keys) > limit
+        contents = "".join(
+            f"<Contents><Key>{escape(k)}</Key><ETag>{escape(self.objects[(bucket, k)][1])}</ETag>"
+            f"<Size>{len(self.objects[(bucket, k)][0])}</Size>"
+            "<LastModified>2026-10-08T00:00:00.000Z</LastModified>"
+            "<StorageClass>STANDARD</StorageClass></Contents>"
+            for k in page
+        )
+        token = f"<NextContinuationToken>{escape(page[-1])}</NextContinuationToken>" if more else ""
+        result = (
+            '<?xml version="1.0" encoding="UTF-8"?><ListBucketResult>'
+            f"<Name>{bucket}</Name><Prefix>{escape(prefix)}</Prefix>"
+            f"<KeyCount>{len(page)}</KeyCount><MaxKeys>{limit}</MaxKeys>"
+            f"<IsTruncated>{'true' if more else 'false'}</IsTruncated>{contents}{token}"
+            "</ListBucketResult>"
+        ).encode()
+        headers = HeadersDict(
+            {"Content-Type": "application/xml", "Content-Length": str(len(result))}
+        )
+        return AWSResponse(url, 200, headers, _Raw(result))
 
     def _delete_objects(self, bucket: str, body: bytes, url: str) -> AWSResponse:
         # Pessimistic model: every listed key is deleted unconditionally.

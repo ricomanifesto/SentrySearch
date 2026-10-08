@@ -7,6 +7,11 @@ code, and nothing here has launched a task, changed a service or read real logs.
 It defines and tests the rules a future adapter must satisfy; it is not evidence
 that any environment exists or that a release has run.
 
+The controller's object store has an offline Cloudflare R2 implementation in
+`release_cloudflare/`, described in
+[the R2 control store](release-cloudflare-r2-store.md). It changes nothing in
+`release/`.
+
 ## Inputs
 
 **Manifest (schema v1).** One immutable candidate, identified by the SHA-256 of

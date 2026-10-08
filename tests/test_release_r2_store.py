@@ -284,6 +284,27 @@ def test_client_contract_is_validated_before_any_request(monkeypatch):
         with pytest.raises(R2ClientRejected) as error:
             R2ObjectStore(make_client(backend, verify=falsy), CONTROL, ca_bundle=falsy)
         assert error.value.reason == "tls_verification"
+
+    class EqualsAnything:
+        def __eq__(self, other: object) -> bool:
+            return True
+
+        __hash__ = object.__hash__
+
+    # Only the default store or exactly the named absolute bundle is trusted.
+    near_misses: list[tuple[Any, Any]] = [
+        (1, None),
+        (1.0, None),
+        (EqualsAnything(), None),
+        (" ", " "),
+        ("rel.pem", "rel.pem"),
+        (f"{os.devnull} ", f"{os.devnull} "),
+        (EqualsAnything(), os.devnull),
+    ]
+    for verify, bundle in near_misses:
+        with pytest.raises(R2ClientRejected) as error:
+            R2ObjectStore(make_client(backend, verify=verify), CONTROL, ca_bundle=bundle)
+        assert error.value.reason == "tls_verification", (verify, bundle)
     monkeypatch.setenv("AWS_CA_BUNDLE", os.devnull)
     with pytest.raises(R2ClientRejected) as error:
         R2ObjectStore(make_client(backend, verify=None), CONTROL)
