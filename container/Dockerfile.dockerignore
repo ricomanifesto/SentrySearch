@@ -10,6 +10,9 @@
 !dev/migrate_storage.py
 !dev/prepare_service_volumes.py
 !dev/check_worker_readiness.py
+!release_tools/__init__.py
+!release_tools/contract.py
+!release_tools/receipt.py
 !certs/**
 !container/build-requirements.txt
 !container/liblzma/**

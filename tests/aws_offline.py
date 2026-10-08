@@ -156,7 +156,7 @@ class FakeAws:
         self.job_page_size = 100
         # Extra ordinary lines written to each job stream, before its receipt.
         self.job_noise: tuple[str, ...] = SENSITIVE_LINES
-        # Job id -> lines replacing the generated stream (e.g. duplicated receipts).
+        # Job or observer id -> lines replacing the generated stream (e.g. duplicates).
         self.job_streams: dict[str, list[str]] = {}
         handlers = {
             ("ecs", "RunTask"): lambda p: self.ecs.run_task(_ecs_request(p)),
@@ -234,6 +234,23 @@ class FakeAws:
         job_id = task.tags.get("sentry:job-id")
         job = next((j for j in self.document["jobs"] if j["id"] == job_id), None)
         environment = self.document["environment"]["name"]
+        check = next(
+            (c for c in self.document["operational_checks"] if c["id"] == job_id and "task" in c),
+            None,
+        )
+        if check is not None:
+            # Terraform's observe log group: stream prefix <check id>, container "observer".
+            if group != f"/{environment}/observe" or (prefix, container) != (job_id, "observer"):
+                raise ServiceError("ResourceNotFoundException", 400)
+            if job_id in self.job_streams:
+                return list(self.job_streams[job_id])
+            observed = self.evidence.operational_receipt(
+                self.document["release_id"], check["id"], task.arn
+            )
+            lines = list(self.job_noise)
+            if observed is not None:
+                lines.append(f"{RECEIPT_MARKER} {json.dumps(observed, separators=(',', ':'))}")
+            return lines
         if (
             job_id is None
             or job is None

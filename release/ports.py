@@ -73,11 +73,17 @@ class EcsPort(Protocol):
 
 
 class EvidencePort(Protocol):
-    """Sanitized logical receipts read from fixed log streams, never raw log bodies."""
+    """Sanitized logical receipts read from fixed log streams, never raw log bodies.
+
+    Each receipt is read only from the stream of the task the controller observed
+    (a database job or an observer), parsed with that kind's strict codec.
+    """
 
     def job_receipt(self, release_id: str, job_id: str, task_arn: str) -> dict[str, Any] | None: ...
 
-    def operational_receipt(self, release_id: str, check_id: str) -> dict[str, Any] | None: ...
+    def operational_receipt(
+        self, release_id: str, check_id: str, task_arn: str
+    ) -> dict[str, Any] | None: ...
 
 
 class LogPort(Protocol):

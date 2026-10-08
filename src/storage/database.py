@@ -6,7 +6,7 @@ from contextlib import contextmanager
 
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import QueuePool
+from sqlalchemy.pool import NullPool, QueuePool
 
 from .config import database_url
 from . import schema
@@ -76,6 +76,17 @@ class DatabaseManager:
 
     def get_session_sync(self) -> Session:
         return self.SessionLocal()
+
+
+def release_engine(connect_args: dict) -> Engine:
+    """One unpooled session for the guarded release job, with its own bounds.
+
+    ``connect_args`` carries the job's application name and server-side limits;
+    they replace the serving defaults in the URL. Nothing is cached or reused.
+    """
+    return create_engine(
+        database_url(), poolclass=NullPool, hide_parameters=True, connect_args=connect_args
+    )
 
 
 db_manager = DatabaseManager()

@@ -57,8 +57,8 @@ def test_adapter_releases_ignore_the_ambient_aws_environment_and_never_touch_the
     receipt = json.loads(result.stdout)
     assert receipt["results"] == [
         {"state": "held_paused", "reason": None},
-        # Runtime and API observers do not exist yet: their checks stay unproven.
-        {"state": "hold", "reason": "operational_evidence_missing"},
+        # An observer whose receipt never arrives proves nothing by its deadline.
+        {"state": "hold", "reason": "operational_deadline_exceeded"},
     ]
     assert receipt["socket_attempts"] == []
     assert receipt["endpoints"] == [

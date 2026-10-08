@@ -66,6 +66,7 @@ The image has no default command. Each service selects exactly one role:
 | API | `python /app/run_api.py` | application | `PORT` (default 8001), execution admission |
 | Worker | `python -m dev.run_runtime_worker --health-port 8081` | application | runtime endpoint, trust, and distinct producer/worker tokens; OpenRouter; S3 |
 | Release job | `python -m dev.migrate_storage` | schema owner | none |
+| Guarded release job | `python -m dev.migrate_storage --release-job` | schema owner | release contract and expected identity, verified TLS with `/run/material/postgres-ca.pem` (see [storage release](storage-release.md#guarded-release-job)) |
 | Release check | `python -m dev.migrate_storage --check` | application | none |
 | Volume initializer | `python -m dev.prepare_service_volumes ...` | none | explicit material profile/version; root only for fresh-volume ownership |
 

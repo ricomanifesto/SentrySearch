@@ -12,7 +12,6 @@ import copy
 import io
 import json
 import os
-import stat
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -41,7 +40,7 @@ from release_cli.credentials import (
     load_session_credentials,
 )
 from release_cli.preflight import OperatorIdentity, PreflightRefused
-from tests.aws_offline import BUCKET, FakeAws, ServiceError, network_denied
+from tests.aws_offline import FakeAws, ServiceError, network_denied
 from tests.release_fakes import (
     ACCOUNT,
     REGION,
@@ -85,9 +84,6 @@ def cli_document() -> dict:
     """Schema 2: the approved operator role travels with the hash-approved manifest."""
     document = forward_document(bootstrap=False)
     document["environment"]["name"] = ENVIRONMENT
-    document["operational_checks"] = [
-        check for check in document["operational_checks"] if check["id"] == "worker-readiness"
-    ]
     return document
 
 
@@ -339,7 +335,12 @@ def test_recover_takes_the_exact_lock_then_continues_the_release(tmp_path):
     assert report["state"] == "held_paused" and report["session_id"] == "cli-session-b"
     events = r.store.journal()["events"]
     assert any(e.get("action") == "recovered" for e in events)
-    assert len([t for t in r.ecs.tasks.values() if t.tags.get("sentry:job-id")]) == 6
+    # Six database jobs and two observers, each launched exactly once.
+    launched = [t.tags.get("sentry:job-id") for t in r.ecs.tasks.values()]
+    assert sorted(filter(None, launched)) == sorted(
+        [job["id"] for job in r.document["jobs"]]
+        + ["runtime-protected-readiness", "api-operational"]
+    )
 
 
 def test_recover_refuses_a_wrong_lock_etag_without_any_ecs_request(tmp_path):
@@ -839,7 +840,6 @@ def test_deeply_nested_json_is_a_refusal_and_unexpected_errors_report_only_their
     assert (code, report["error"], report["detail"]) == (cli.EXIT_HALTED, "unexpected",
                                                           "RuntimeError")  # fmt: skip
     assert KEY_ID not in out.getvalue()
-    assert BUCKET.endswith("-control") and stat.S_IMODE(0o100400) == 0o400
 
 
 def test_status_cannot_write_even_if_its_reader_tried(tmp_path, monkeypatch):

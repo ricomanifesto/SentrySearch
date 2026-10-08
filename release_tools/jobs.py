@@ -11,12 +11,12 @@ import http.client
 import json
 import os
 import re
-import urllib.request
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 from release_tools import config, digest, guard, receipt, scram, session
+from release_tools.contract import task_identity
 
 EXIT_OK = 0
 EXIT_CONFIG = 2
@@ -29,14 +29,7 @@ EXIT_SQL = 11
 EXIT_DEADLINE = 124
 EXIT_TERMINATED = 143
 
-METADATA_HOSTS = frozenset({"169.254.170.2", "127.0.0.1"})
-METADATA_TIMEOUT_SECONDS = 2
-MAX_METADATA_BYTES = 65_536
 MAX_CA_BYTES = 65_536
-_TASK_ARN = re.compile(
-    r"arn:aws[a-z-]{0,16}:ecs:[a-z0-9-]{1,32}:\d{12}:task/[A-Za-z0-9_-]{1,255}/[0-9a-f]{32}"
-)
-_METADATA_URI = re.compile(r"http://([0-9.]{7,15})(?::(\d{1,5}))?/v4/[A-Za-z0-9_.-]{1,128}")
 _SESSION_FIELDS = ("pid", "backend_start", "database", "principal", "application_name", "state")
 _SESSION_PATTERNS = {
     "pid": re.compile(r"\d{1,10}"),
@@ -60,25 +53,6 @@ class JobFailed(Exception):
 def _preflight_failure(reason: str, code: int) -> int:
     receipt.log("job_failed", reason=reason, sql_outcome="none", exit_code=code)
     return code
-
-
-def task_identity(environ: dict[str, str]) -> str:
-    """The running task's ARN from the ECS task metadata endpoint, without proxies."""
-    match = _METADATA_URI.fullmatch(environ.get("ECS_CONTAINER_METADATA_URI_V4", ""))
-    if match is None or match.group(1) not in METADATA_HOSTS:
-        raise ValueError("metadata endpoint")
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(match.group(0) + "/task", timeout=METADATA_TIMEOUT_SECONDS) as response:
-        if response.status != 200:
-            raise ValueError("metadata status")
-        body = response.read(MAX_METADATA_BYTES + 1)
-    if len(body) > MAX_METADATA_BYTES:
-        raise ValueError("metadata size")
-    document = json.loads(body)
-    arn = document.get("TaskARN") if isinstance(document, dict) else None
-    if not isinstance(arn, str) or not _TASK_ARN.fullmatch(arn):
-        raise ValueError("metadata task arn")
-    return arn
 
 
 def _material_ok() -> bool:

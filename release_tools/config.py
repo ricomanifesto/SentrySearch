@@ -6,8 +6,10 @@ pinned secret versions. Anything unexpected fails closed before any connection.
 
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from urllib.parse import parse_qsl, unquote, urlsplit
+
+from release_tools import contract
 
 KINDS = frozenset({"bootstrap", "grant", "proof", "reconcile"})
 DATABASES = frozenset({"runtime", "product"})
@@ -23,19 +25,16 @@ MAIN_SQL = {
     ("bootstrap", "product"): "sql/bootstrap.sql",
 }
 CA_FILE = "/run/material/postgres-ca.pem"
-MIN_BUDGET_SECONDS, MAX_BUDGET_SECONDS = 60, 3600
-MAX_APPLICATION_NAME = 63  # PostgreSQL truncates longer names (NAMEDATALEN - 1).
+MIN_BUDGET_SECONDS, MAX_BUDGET_SECONDS = contract.MIN_BUDGET_SECONDS, contract.MAX_BUDGET_SECONDS
+MAX_APPLICATION_NAME = contract.MAX_APPLICATION_NAME
 
-_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-_JOB_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
-_IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]{0,62}")
-_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+_IDENTIFIER = contract.IDENTIFIER
 _HOST = re.compile(
     r"[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*"
 )
 _PASSWORD = re.compile(r"[!-~]{24,128}")
-_DIGITS = re.compile(r"[0-9]{1,5}")  # ASCII only: str.isdigit() also accepts other scripts
+_DIGITS = contract.DIGITS
 _DB_KEYS = ("DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD")
 
 
@@ -151,19 +150,15 @@ def _connection(environ: dict[str, str]) -> Connection:
 def load(kind: str, environ: dict[str, str]) -> JobConfig:
     if kind not in KINDS:
         raise ConfigError("command_invalid")
-    release_id = _value(environ, "RELEASE_ID", _UUID, "release_id_invalid")
-    job_id = _value(environ, "RELEASE_JOB_ID", _JOB_ID, "job_id_invalid")
+    try:
+        identity = contract.load_identity(environ)
+    except contract.ContractError as error:
+        raise ConfigError(error.reason) from None
+    release_id, job_id = identity.release_id, identity.subject
+    not_after, budget = identity.not_after, str(identity.budget_seconds)
     database = environ.get("RELEASE_DATABASE", "")
     if database not in DATABASES:
         raise ConfigError("database_invalid")
-    stamp = _value(environ, "RELEASE_NOT_AFTER", _TIMESTAMP, "not_after_invalid")
-    try:
-        not_after = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
-    except ValueError as error:
-        raise ConfigError("not_after_invalid") from error
-    budget = environ.get("RELEASE_JOB_BUDGET_SECONDS", "")
-    if not _DIGITS.fullmatch(budget) or not MIN_BUDGET_SECONDS <= int(budget) <= MAX_BUDGET_SECONDS:
-        raise ConfigError("budget_invalid")
     tools = _value(environ, "RELEASE_TOOLS_SHA256", _SHA256, "tools_sha256_invalid")
     sql = _value(environ, "RELEASE_SQL_SHA256", _SHA256, "sql_sha256_invalid")
     expect_database = _identifier(environ, "RELEASE_EXPECT_DATABASE")

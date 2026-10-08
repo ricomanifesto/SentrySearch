@@ -577,12 +577,59 @@ def test_an_unbounded_or_oversized_stream_is_incomplete_evidence():
         LogEvidence(PagedLogs(huge), MANIFEST).job_receipt(RELEASE_ID, "runtime-grant", TASK)
 
 
-def test_unimplemented_observers_stay_unproven():
+OBSERVED = {
+    "schema": "sentry.operational.v1",
+    "release_id": RELEASE_ID,
+    "check_id": "api-operational",
+    "task_arn": TASK,
+    "status": "passed",
+    "result": {"target": "api", "host": "api.sentry-staging.internal", "peer": "10.0.0.7",
+               "port": "8001", "tls": "none", "checks": "liveness,api_ready",
+               "denials": "unauthenticated:503"},
+}  # fmt: skip
+
+
+def test_observer_receipts_come_only_from_the_observer_tasks_own_stream():
+    logs = PagedLogs([*SENSITIVE_LINES, receipt_line(OBSERVED)])
+    assert (
+        LogEvidence(logs, MANIFEST).operational_receipt(RELEASE_ID, "api-operational", TASK)
+        == OBSERVED
+    )
+    task_id = TASK.rsplit("/", 1)[1]
+    assert {(c["group"], c["stream"]) for c in logs.calls} == {
+        ("/staging/observe", f"api-operational/observer/{task_id}")
+    }
+    # The worker gate has no observer; other releases and unknown checks are refused.
     evidence = LogEvidence(PagedLogs([]), MANIFEST)
-    for check in MANIFEST.operational_checks:
-        assert evidence.operational_receipt(RELEASE_ID, check.id) is None
+    for release_id, check_id in (
+        (RELEASE_ID, "worker-readiness"),
+        (RELEASE_ID, "api-ready"),
+        ("5e6f7a8b-1c2d-4e3f-8a9b-0c1d2e3f4a5b", "api-operational"),
+    ):
+        with pytest.raises(ValueError):
+            evidence.operational_receipt(release_id, check_id, TASK)
     with pytest.raises(ValueError):
         evidence.job_receipt("5e6f7a8b-1c2d-4e3f-8a9b-0c1d2e3f4a5b", "runtime-grant", TASK)
+    with pytest.raises(ValueError):
+        evidence.operational_receipt(RELEASE_ID, "api-operational", TASK.rsplit("/", 1)[0] + "/x")
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        # A job's envelope, a duplicate, or a line that is not exactly the envelope.
+        [receipt_line(RECEIPT)],
+        [receipt_line(OBSERVED), receipt_line(OBSERVED)],
+        [receipt_line({**OBSERVED, "job_id": "api-operational"})],
+        [RECEIPT_MARKER + json.dumps(OBSERVED)],
+    ],
+)
+def test_an_observer_stream_with_anything_but_one_operational_envelope_is_ambiguous(lines):
+    with pytest.raises(AmbiguousResponse) as error:
+        LogEvidence(PagedLogs(lines), MANIFEST).operational_receipt(
+            RELEASE_ID, "api-operational", TASK
+        )
+    assert "10.0.0.7" not in carried_text(error.value)
 
 
 # S3 journal and lock ----------------------------------------------------------------
@@ -700,17 +747,12 @@ def _bytes(data: bytes) -> io.BytesIO:
 
 def aws_rig(
     *,
-    checks: str = "all",
     rollback: str = "empty_hold",
     running_prior: bool = False,
     window_seconds: int | None = None,
     **approval,
 ) -> tuple[Rig, FakeAws]:
     document = manifest_document(rollback=rollback)
-    if checks == "worker":
-        document["operational_checks"] = [
-            check for check in document["operational_checks"] if check["id"] == "worker-readiness"
-        ]
     if window_seconds is not None:
         document["window"]["total_seconds"] = window_seconds
     loaded = load_manifest(encode(document))
@@ -762,7 +804,7 @@ def assert_no_application_output(r: Rig) -> None:
 
 
 def test_a_release_with_every_required_producer_finishes_held_paused_through_the_sdk():
-    r, aws = aws_rig(checks="worker")
+    r, aws = aws_rig()
     outcome = adapted(r, aws).run()
     assert outcome.state == "held_paused", outcome
     assert LOCK not in r.store.objects
@@ -772,16 +814,51 @@ def test_a_release_with_every_required_producer_finishes_held_paused_through_the
     assert_no_application_output(r)
 
 
-def test_unimplemented_runtime_and_api_observers_hold_after_worker_readiness_passes():
+def test_observer_receipts_through_the_sdk_bind_the_recorded_service_tasks():
     r, aws = aws_rig()
     outcome = adapted(r, aws).run()
-    assert_held(r, outcome, "operational_evidence_missing", "services_started")
-    assert r.events("observation", subject="worker-readiness", result="operational_passed")
+    assert outcome.state == "held_paused", outcome
+    passes = [e["subject"] for e in r.events("observation", result="operational_passed")]
+    assert passes == ["worker-readiness", "runtime-protected-readiness", "api-operational"]
+    streams = {(c[2]["logGroupName"], c[2]["logStreamName"].split("/")[0])
+               for c in aws.bridge.calls if c[1] == "GetLogEvents"}  # fmt: skip
+    assert {("/staging/observe", "runtime-protected-readiness"),
+            ("/staging/observe", "api-operational")} <= streams  # fmt: skip
+    assert_no_application_output(r)
+
+
+@pytest.mark.parametrize(
+    "stream, reason",
+    [
+        ([], "operational_deadline_exceeded"),
+        (lambda receipt: [receipt, receipt], "observation_ambiguous"),
+        (lambda receipt: [receipt.replace('"status":"passed"', '"status":"failed"')],
+         "observation_ambiguous"),
+    ],
+)  # fmt: skip
+def test_an_observer_stream_without_its_one_passing_receipt_holds_through_the_sdk(stream, reason):
+    r, aws = aws_rig()
+    if callable(stream):
+        original = aws._job_lines
+
+        def edited(group, name):
+            lines = original(group, name)
+            if not name.startswith("api-operational/"):
+                return lines
+            [receipt] = [line for line in lines if line.startswith(RECEIPT_MARKER)]
+            return [line for line in lines if line != receipt] + stream(receipt)
+
+        setattr(aws, "_job_lines", edited)
+    else:
+        aws.job_streams["api-operational"] = stream
+    outcome = adapted(r, aws).run()
+    assert_held(r, outcome, reason, "services_started")
+    assert not r.events("observation", subject="api-operational", result="operational_passed")
     assert_no_application_output(r)
 
 
 def test_throttled_service_observation_holds():
-    r, aws = aws_rig(checks="worker")
+    r, aws = aws_rig()
     aws.bridge.fail("ecs", "DescribeServices", ServiceError("ThrottlingException", 400))
     outcome = adapted(r, aws).run()
     assert_held(r, outcome, "observation_ambiguous", "locked")
@@ -798,7 +875,7 @@ def test_reconciling_a_lost_deploy_through_the_sdk_never_proceeds_under_drift(
     # The first forward UpdateService for Runtime is lost (connection timeout or
     # controller crash), before or after ECS applied it, while its circuit
     # breaker rollback is turned on. Recovery holds before any further deploy.
-    r, aws = aws_rig(checks="worker")
+    r, aws = aws_rig()
     runtime_arn = r.document["environment"]["services"]["runtime"]
     runtime = r.ecs.services[runtime_arn]
     original = aws.bridge.handlers[("ecs", "UpdateService")]
@@ -885,7 +962,7 @@ def runtime_deadline(r: Rig) -> datetime:
 
 @pytest.mark.parametrize("interruption", ["transport", "crash"])
 def test_a_resend_response_reporting_drift_through_the_sdk_holds(interruption):
-    r, aws = aws_rig(checks="worker")
+    r, aws = aws_rig()
     runtime_arn = r.document["environment"]["services"]["runtime"]
     runtime = r.ecs.services[runtime_arn]
 
@@ -913,7 +990,7 @@ def test_a_resend_response_reporting_drift_through_the_sdk_holds(interruption):
 def test_the_pre_resend_read_through_the_sdk_is_bound_by_the_original_deadline(
     interruption, returns_at, sends
 ):
-    r, aws = aws_rig(checks="worker")
+    r, aws = aws_rig()
     forward = lose_first_forward_deploy(r, aws, interruption)
     original = aws.bridge.handlers[("ecs", "DescribeServices")]
     reads: list[int] = []
@@ -939,7 +1016,7 @@ def test_the_pre_resend_read_through_the_sdk_is_bound_by_the_original_deadline(
 
 
 def test_a_clean_resend_response_through_the_sdk_finishes_held_paused():
-    r, aws = aws_rig(checks="worker")
+    r, aws = aws_rig()
     forward = lose_first_forward_deploy(r, aws, "transport")
     outcome = adapted(r, aws).run()
     assert outcome.state == "held_paused", outcome
@@ -950,7 +1027,7 @@ def test_a_clean_resend_response_through_the_sdk_finishes_held_paused():
 def test_a_lost_run_task_is_found_by_its_token_or_resent_identically(where, sends):
     # Lost before ECS applied it: nothing carries the token, so the identical
     # request is resent. Lost after: the token listing finds the one launch.
-    r, aws = aws_rig(checks="worker")
+    r, aws = aws_rig()
     r.ecs.ambiguous[where] = 1
     outcome = adapted(r, aws).run()
     assert outcome.state == "held_paused", outcome
@@ -961,7 +1038,7 @@ def test_a_lost_run_task_is_found_by_its_token_or_resent_identically(where, send
 
 
 def test_a_competing_journal_write_halts_without_forking():
-    r, aws = aws_rig(checks="worker")
+    r, aws = aws_rig()
 
     def competitor(key, body):
         if key == JOURNAL and json.loads(body)["events"][-1].get("action") == "run_task":
@@ -977,7 +1054,7 @@ def test_a_competing_journal_write_halts_without_forking():
 
 
 def test_an_intent_write_with_unknown_outcome_never_runs_its_side_effect():
-    r, aws = aws_rig(checks="worker")
+    r, aws = aws_rig()
     original = aws.bridge.handlers[("s3", "PutObject")]
     lost: list[str] = []
 
@@ -1013,7 +1090,7 @@ def test_an_intent_write_with_unknown_outcome_never_runs_its_side_effect():
 
 
 def test_another_sessions_lock_holds_without_any_ecs_mutation():
-    r, aws = aws_rig(checks="worker")
+    r, aws = aws_rig()
     r.store.create(LOCK, b'{"release_id":"other","session_id":"other"}')
     outcome = adapted(r, aws).run()
     assert outcome.state == "hold" and outcome.reason == "environment_locked"
@@ -1021,7 +1098,7 @@ def test_another_sessions_lock_holds_without_any_ecs_mutation():
 
 
 def test_duplicate_job_receipts_hold_as_ambiguous():
-    r, aws = aws_rig(checks="worker")
+    r, aws = aws_rig()
     original = aws._job_lines
 
     def doubled(group, stream):
@@ -1051,7 +1128,7 @@ def gate(r: Rig, result: str) -> list[dict]:
     ],
 )
 def test_unproven_readiness_through_the_adapter_holds_at_the_fixed_deadline(configure, last_reason):
-    r, aws = aws_rig(checks="worker")
+    r, aws = aws_rig()
     configure(r, aws)
     outcome = adapted(r, aws).run()
     assert_held(r, outcome, "worker_readiness_not_proven", "services_started")
@@ -1063,13 +1140,13 @@ def test_unproven_readiness_through_the_adapter_holds_at_the_fixed_deadline(conf
 
 
 def test_empty_pages_with_new_tokens_do_not_end_the_stream():
-    r, aws = aws_rig(checks="worker")
+    r, aws = aws_rig()
     r.logs.empty_pages = 3
     assert adapted(r, aws).run().state == "held_paused"
 
 
 def test_throttled_and_slow_reads_clear_stability_then_recover_a_full_window():
-    r, aws = aws_rig(checks="worker")
+    r, aws = aws_rig()
     reads = {"n": 0}
     original = aws.bridge.handlers[("logs", "GetLogEvents")]
 
@@ -1104,7 +1181,7 @@ class ControllerClock:
 
 
 def test_controller_clock_regression_during_the_gate_holds():
-    r, aws = aws_rig(checks="worker")
+    r, aws = aws_rig()
     clock = ControllerClock(r.clock)
     original = aws.bridge.handlers[("logs", "GetLogEvents")]
     reads: list[int] = []
@@ -1126,7 +1203,7 @@ def test_controller_clock_regression_during_the_gate_holds():
 
 
 def test_quiesce_waits_for_a_writer_whose_stop_is_still_in_progress():
-    r, aws = aws_rig(checks="worker")
+    r, aws = aws_rig()
     writer = r.ecs.standalone(r.document["services"]["worker"]["task_definition"])
     writer.stopped_at = r.clock.now() + timedelta(seconds=110)
     writer.stop_code = "UserInitiated"
@@ -1144,7 +1221,7 @@ def test_quiesce_waits_for_a_writer_whose_stop_is_still_in_progress():
 
 
 def test_a_writer_ecs_still_intends_to_run_holds_quiesce():
-    r, aws = aws_rig(checks="worker")
+    r, aws = aws_rig()
     r.ecs.standalone(r.document["services"]["worker"]["task_definition"])
     outcome = adapted(r, aws).run()
     assert_held(r, outcome, "standalone_writer_present", "locked")
@@ -1153,7 +1230,7 @@ def test_a_writer_ecs_still_intends_to_run_holds_quiesce():
 def test_no_exception_escaping_a_release_carries_application_output():
     # A malformed receipt quoting a sensitive line makes the grant ambiguous; a
     # competing journal writer then makes the hold itself fail to journal.
-    r, aws = aws_rig(checks="worker")
+    r, aws = aws_rig()
     aws.job_streams["runtime-grant"] = [*SENSITIVE_LINES, RECEIPT_MARKER + " " + SENSITIVE_LINES[0]]
 
     def competitor(key, body):
@@ -1177,9 +1254,9 @@ def test_no_exception_escaping_a_release_carries_application_output():
 def site_rig(site: DispatchSite, limit: str) -> tuple[Rig, FakeAws, datetime, str]:
     options = {"rollback": "compatible_release", "running_prior": True} if site.upgrade else {}
     if limit == "approval":
-        r, aws = aws_rig(checks="worker", not_after=iso(APPROVAL_END), **options)
+        r, aws = aws_rig(not_after=iso(APPROVAL_END), **options)
         return r, aws, APPROVAL_END, "approval_expired"
-    r, aws = aws_rig(checks="worker", window_seconds=SHORT_WINDOW_SECONDS, **options)
+    r, aws = aws_rig(window_seconds=SHORT_WINDOW_SECONDS, **options)
     return r, aws, window_end(r), "release_window_exceeded"
 
 

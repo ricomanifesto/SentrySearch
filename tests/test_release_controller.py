@@ -171,6 +171,9 @@ def test_first_release_journals_every_step_and_finishes_held_paused():
         "sentry-staging-product-grant:7",
         "sentry-staging-runtime-proof:7",
         "sentry-staging-product-proof:7",
+        # After the services start: one observer task for each of the Runtime and API.
+        "sentry-staging-runtime-protected-readiness:7",
+        "sentry-staging-api-operational:7",
     ]
     assert [c["service"].rsplit("/", 1)[1] for c in r.calls("update_service")] == [
         "runtime",
@@ -1284,38 +1287,206 @@ def test_a_scale_to_zero_resend_keeps_the_release_window_guard():
     assert len(sent) == 1
 
 
+# Runtime and API observers -------------------------------------------------------
+
+RUNTIME_CHECK, API_CHECK = "runtime-protected-readiness", "api-operational"
+OTHER_TASK = "arn:aws:ecs:us-east-1:111122223333:task/sentry-staging/" + "d" * 32
+MISMATCH = "operational_receipt_mismatch"
+
+
+def check_document(r: Rig, check_id: str) -> dict:
+    return next(c for c in r.document["operational_checks"] if c["id"] == check_id)
+
+
+def service_address(r: Rig, key: str) -> str:
+    arn = r.events("observation", subject=key, result="service_ready")[-1]["task_arn"]
+    details = r.ecs.attachments[arn][0]["details"]
+    return next(d["value"] for d in details if d["name"] == "privateIPv4Address")
+
+
+def test_each_observer_is_its_own_task_bound_to_the_recorded_service_address():
+    r = rig()
+    outcome = r.controller().run()
+    assert outcome.state == "held_paused", outcome
+    passes = [e["subject"] for e in r.events("observation", result="operational_passed")]
+    assert passes == ["worker-readiness", RUNTIME_CHECK, API_CHECK]
+    for check_id, key in ((RUNTIME_CHECK, "runtime"), (API_CHECK, "api")):
+        [launched] = r.events("observation", subject=check_id, result="launched")
+        [passed] = r.events("observation", subject=check_id, result="operational_passed")
+        service_task = r.events("observation", subject=key, result="service_ready")[-1]["task_arn"]
+        assert passed["task_arn"] == launched["task_arn"] != service_task
+        assert passed["service_task_arn"] == service_task
+        assert passed["peer"] == service_address(r, key)
+        receipt = r.evidence.operational_receipt(r.document["release_id"], check_id,
+                                                 passed["task_arn"])  # fmt: skip
+        assert passed["receipt_sha256"] == canonical_sha256(receipt)
+        [request] = [c for c in r.calls("run_task") if c["tags"][1]["value"] == check_id]
+        check = check_document(r, check_id)
+        assert request["taskDefinition"] == check["task"]["task_definition"]
+        assert request["networkConfiguration"]["awsvpcConfiguration"]["securityGroups"] == (
+            check["task"]["security_groups"]
+        )
+        assert "overrides" not in request and request["enableExecuteCommand"] is False
+        assert len(r.job_tasks(check_id)) == 1
+    assert_intent_precedes_every_mutation(r)
+
+
 @pytest.mark.parametrize(
-    "configure, reason",
+    "configure, failing, reason",
     [
-        (lambda r: r.evidence.missing_checks.add("runtime-protected-readiness"),
-         "operational_evidence_missing"),
-        (lambda r: r.evidence.check_changes.update({"api-operational": {"status": "failed"}}),
-         "operational_receipt_mismatch"),
-        (lambda r: r.evidence.check_changes.update({"runtime-protected-readiness": {
-            "tasks": {"worker": "arn:aws:ecs:us-east-1:111122223333:task/x"}}}),
-         "operational_receipt_mismatch"),
+        # Never visible before the observer's deadline: nothing was proven.
+        (lambda r: r.evidence.missing_checks.add(RUNTIME_CHECK), RUNTIME_CHECK,
+         "operational_deadline_exceeded"),
+        (lambda r: r.evidence.check_changes.update({API_CHECK: {"status": "failed"}}),
+         API_CHECK, MISMATCH),
+        # Another task's, release's, check's or kind's receipt is not this observer's.
+        (lambda r: r.evidence.check_changes.update({RUNTIME_CHECK: {"task_arn": OTHER_TASK}}),
+         RUNTIME_CHECK, MISMATCH),
+        (lambda r: r.evidence.check_changes.update({RUNTIME_CHECK: {
+            "release_id": PRIOR_RELEASE_ID}}), RUNTIME_CHECK, MISMATCH),
+        (lambda r: r.evidence.check_changes.update({API_CHECK: {"check_id": RUNTIME_CHECK}}),
+         API_CHECK, MISMATCH),
+        (lambda r: r.evidence.check_changes.update({API_CHECK: {
+            "schema": "sentry.release-tools.job.v1"}}), API_CHECK, MISMATCH),
+        (lambda r: r.evidence.check_changes.update({API_CHECK: {"tasks": {}}}), API_CHECK,
+         MISMATCH),
+        # The result names exactly the approved target, its checks and its denials.
+        (lambda r: r.evidence.result_changes.update({RUNTIME_CHECK: {
+            "host": "runtime.other.internal"}}), RUNTIME_CHECK, MISMATCH),
+        (lambda r: r.evidence.result_changes.update({RUNTIME_CHECK: {"port": "443"}}),
+         RUNTIME_CHECK, MISMATCH),
+        (lambda r: r.evidence.result_changes.update({RUNTIME_CHECK: {"target": "api"}}),
+         RUNTIME_CHECK, MISMATCH),
+        (lambda r: r.evidence.result_changes.update({RUNTIME_CHECK: {"tls": "none"}}),
+         RUNTIME_CHECK, MISMATCH),
+        (lambda r: r.evidence.result_changes.update({RUNTIME_CHECK: {"denials": "no_token"}}),
+         RUNTIME_CHECK, MISMATCH),
+        (lambda r: r.evidence.result_changes.update({RUNTIME_CHECK: {"checks": "healthz"}}),
+         RUNTIME_CHECK, MISMATCH),
+        (lambda r: r.evidence.result_changes.update({API_CHECK: {
+            "denials": "unauthenticated:200"}}), API_CHECK, MISMATCH),
+        (lambda r: r.evidence.result_changes.update({API_CHECK: {"denials": None}}), API_CHECK,
+         MISMATCH),
+        (lambda r: r.evidence.result_changes.update({API_CHECK: {"peer": None}}), API_CHECK,
+         MISMATCH),
+        (lambda r: r.evidence.result_changes.update({API_CHECK: {"extra": "x"}}), API_CHECK,
+         MISMATCH),
+        # DNS answered from an address other than the recorded task's interface.
+        (lambda r: r.evidence.dns_peers.update({"runtime": "10.0.9.9"}), RUNTIME_CHECK,
+         "operational_peer_mismatch"),
+        (lambda r: r.evidence.dns_peers.update({"api": "10.0.9.9"}), API_CHECK,
+         "operational_peer_mismatch"),
     ],
 )  # fmt: skip
-def test_operational_evidence_must_pass_and_bind_the_recorded_tasks(configure, reason):
+def test_only_the_observers_own_passing_receipt_about_the_recorded_task_passes(
+    configure, failing, reason
+):
     r = rig()
     configure(r)
     outcome = r.controller().run()
     assert_held(r, outcome, reason, "services_started")
+    [failed] = r.events("observation", result="operational_failed")
+    assert failed["subject"] == failing and failed["reason"] == reason
+    assert failed["task_arn"] == r.job_tasks(failing)[0].arn
+    assert not r.events("observation", subject=failing, result="operational_passed")
+    # Nothing is launched after a failed observer.
+    assert launched_job_ids(r)[-1] == failing
 
 
-def test_replacement_during_observation_requires_a_fresh_window(monkeypatch):
+@pytest.mark.parametrize(
+    "exits, reason",
+    [({"observer": 12}, "job_container_failed"), ({"observer": None}, "job_exit_missing"),
+     ({"init": 1}, "job_container_failed")],
+)  # fmt: skip
+def test_a_failed_observer_task_holds_whatever_its_stream_says(exits, reason):
+    r = rig()
+    definition = check_document(r, RUNTIME_CHECK)["task"]["task_definition"]
+    r.ecs.plans[definition] = JobPlan(seconds=10, exits=exits)
+    outcome = r.controller().run()
+    assert_held(r, outcome, reason, "services_started")
+    [failed] = r.events("observation", subject=RUNTIME_CHECK, result="operational_failed")
+    assert failed["reason"] == reason and API_CHECK not in launched_job_ids(r)
+
+
+def test_an_observer_still_running_at_its_deadline_is_stopped_then_holds():
+    r = rig()
+    check = check_document(r, API_CHECK)
+    r.ecs.plans[check["task"]["task_definition"]] = JobPlan(seconds=10_000)
+    outcome = r.controller().run()
+    assert_held(r, outcome, "operational_deadline_exceeded", "services_started")
+    [task] = r.job_tasks(API_CHECK)
+    [stop] = r.calls("stop_task")
+    assert stop["task"] == task.arn
+    [confirmed] = r.events("observation", subject=API_CHECK, result="stop_confirmed")
+    # An observer runs no SQL: its stop carries no SQL outcome.
+    assert "sql_outcome" not in confirmed
+    [intent] = r.events("intent", action="run_task", subject=API_CHECK)
+    assert intent["deadline_at"] <= iso(r.clock.now())
+
+
+ENI = {"type": "ElasticNetworkInterface", "status": "ATTACHED",
+       "details": [{"name": "privateIPv4Address", "value": "10.0.0.7"}]}  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "attachments",
+    [
+        [],
+        [ENI, ENI],
+        [{**ENI, "status": "DELETED"}],
+        [{**ENI, "details": []}],
+        [{**ENI, "details": ENI["details"] * 2}],
+        [{**ENI, "details": [{"name": "privateIPv4Address", "value": "10.0.0"}]}],
+        [{**ENI, "details": [{"name": "privateIPv4Address", "value": "runtime.internal"}]}],
+    ],
+)
+def test_a_recorded_service_without_one_known_address_holds_before_its_observer(attachments):
+    r = rig()
+    r.ecs.quirks[r.document["services"]["runtime"]["task_definition"]] = {
+        "attachments": attachments
+    }
+    outcome = r.controller().run()
+    assert_held(r, outcome, "service_network_identity_unknown", "services_started")
+    assert RUNTIME_CHECK not in launched_job_ids(r)
+
+
+@pytest.mark.parametrize("replaced", ["worker", "runtime"])
+def test_replacement_during_observation_requires_a_fresh_window(monkeypatch, replaced):
     r = rig()
     original = r.evidence.operational_receipt
 
-    def replace_worker(release_id, check_id):
-        receipt = original(release_id, check_id)
-        if check_id == "api-operational":
-            r.ecs.services[r.document["environment"]["services"]["worker"]].replace_after = 0
+    def replace_service(release_id, check_id, task_arn):
+        receipt = original(release_id, check_id, task_arn)
+        if check_id == RUNTIME_CHECK and receipt is not None:
+            service_of(r, replaced).replace_after = 0
         return receipt
 
-    monkeypatch.setattr(r.evidence, "operational_receipt", replace_worker)
+    monkeypatch.setattr(r.evidence, "operational_receipt", replace_service)
     outcome = r.controller().run()
     assert_held(r, outcome, "task_replaced", "services_started")
+    assert not r.events("observation", subject=RUNTIME_CHECK, result="operational_passed")
+
+
+def test_an_observer_launch_crash_recovers_to_exactly_one_observer_task():
+    r = rig()
+    original = r.ecs.run_task
+
+    def crash_after_observer(request):
+        response = original(request)
+        if request["tags"][1]["value"] == RUNTIME_CHECK:
+            raise SimulatedCrash("observer run_task after")
+        return response
+
+    setattr(r.ecs, "run_task", crash_after_observer)
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    setattr(r.ecs, "run_task", original)
+    outcome = r.recover().run()
+    assert outcome.state == "held_paused", outcome
+    assert len(r.job_tasks(RUNTIME_CHECK)) == 1
+    intents = r.events("intent", action="run_task", subject=RUNTIME_CHECK)
+    assert len({(e["token"], e["request_sha256"]) for e in intents}) == 1
+    assert_intent_precedes_every_mutation(r)
 
 
 # Worker readiness gate --------------------------------------------------------
@@ -2448,6 +2619,7 @@ def test_a_first_deployment_bootstraps_both_databases_before_any_migration():
     assert launched_job_ids(r) == [
         "runtime-bootstrap", "product-bootstrap", "runtime-migrate", "product-migrate",
         "runtime-grant", "product-grant", "runtime-proof", "product-proof",
+        "runtime-protected-readiness", "api-operational",
     ]  # fmt: skip
     assert r.transitions() == FORWARD
     assert_intent_precedes_every_mutation(r)
@@ -2660,3 +2832,51 @@ def test_a_clock_that_refused_once_never_authorizes_a_later_send():
     outcome = controller_with_clock(r, clock).run()
     assert_held(r, outcome, "controller_clock_untrusted", "quiesced")
     assert not r.calls("run_task") and not r.calls("update_service")
+
+
+def test_recovery_without_a_trusted_clock_moves_no_lock_and_journals_nothing():
+    r = rig()
+    r.ecs.crash[("run_task", "after")] = 1
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    before = {key: value for key, value in r.store.objects.items()}
+    clock = FailingClock(r.clock)
+    clock.fail = True
+    controller = controller_with_clock(r, clock, session="session-b")
+    with pytest.raises(ClockUntrusted):
+        controller.recover(
+            RecoveryAuthorization(
+                prior_session_id="session-a",
+                lock_etag=r.lock_etag(),
+                fence_evidence_sha256=sha("prior session process confirmed terminated"),
+                authorized_by="fixture-operator",
+            )
+        )
+    assert r.store.objects == before
+    assert json.loads(r.store.objects[LOCK][0])["session_id"] == "session-a"
+    # With its clock back, the same authorization still recovers the release.
+    outcome = r.recover().run()
+    assert outcome.state == "held_paused", outcome
+
+
+def test_a_takeover_is_journaled_at_the_time_read_before_the_lock_moved():
+    r = rig()
+    r.ecs.crash[("run_task", "after")] = 1
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    clock = JournalTimeClock(r.clock, lambda event: event.get("action") == "recovered")
+    controller = controller_with_clock(r, clock, session="session-b")
+    controller.recover(
+        RecoveryAuthorization(
+            prior_session_id="session-a",
+            lock_etag=r.lock_etag(),
+            fence_evidence_sha256=sha("prior session process confirmed terminated"),
+            authorized_by="fixture-operator",
+        )
+    )
+    # The journal time was read before the lock write; no second read could strand it.
+    assert clock.failed == 0
+    [recovered] = r.events("session", action="recovered")
+    assert "clock_untrusted" not in recovered
+    assert json.loads(r.store.objects[LOCK][0])["session_id"] == "session-b"
+    assert r.journal()["session_id"] == "session-b"

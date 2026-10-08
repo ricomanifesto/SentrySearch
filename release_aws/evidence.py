@@ -1,9 +1,12 @@
-"""EvidencePort: job receipts from the observed task's own log stream, nothing else.
+"""EvidencePort: receipts from the observed task's own log stream, nothing else.
 
-Only the single marked receipt line is returned, parsed by
-``release_tools.receipt.extract_receipt``. Ordinary application output is read
-but never returned, logged or carried into an exception. Producers that do not
-exist yet stay unproven: they return no receipt, never a fabricated one.
+Only the single marked receipt line is returned, parsed strictly by
+``release_tools.receipt.parse_receipt`` for its kind: migration jobs write the
+``migration`` envelope, release-tools jobs the ``tools`` one and observers the
+``operational`` one, each read from the stream of the task the controller
+observed. Ordinary application output is read but never returned, logged or
+carried into an exception. A receipt that is still missing stays unproven: none
+is returned, never a fabricated one.
 """
 
 from __future__ import annotations
@@ -12,10 +15,10 @@ import re
 from datetime import datetime
 from typing import Any
 
-from release.manifest import Job, Manifest
+from release.manifest import OBSERVER_CONTAINER, Job, Manifest, ObserverCheck
 from release.ports import AmbiguousResponse, LogPort
 from release_aws.logs import LogStreamMissing
-from release_tools.receipt import ReceiptAmbiguous, extract_receipt
+from release_tools.receipt import ReceiptAmbiguous, parse_receipt
 
 # A job stream holds one receipt and allowlisted, bounded log events. Anything
 # larger than this is not a stream these jobs write; it is incomplete evidence.
@@ -44,6 +47,18 @@ def job_stream(environment_name: str, job: Job, task_arn: str) -> tuple[str, str
     return f"/{environment_name}/{job.database}-release", f"{prefix}/{container}/{task_id}"
 
 
+def observer_stream(environment_name: str, check: ObserverCheck, task_arn: str) -> tuple[str, str]:
+    """The observe log group and the observer container's stream for this task.
+
+    Terraform gives each observer task definition the stream prefix ``<check id>``
+    in ``/<prefix>/observe``, so a receipt can only come from the observed task.
+    """
+    task_id = task_arn.rsplit("/", 1)[-1]
+    if not _TASK_ID.fullmatch(task_id):
+        raise ValueError("unexpected task identifier")
+    return f"/{environment_name}/observe", f"{check.id}/{OBSERVER_CONTAINER}/{task_id}"
+
+
 def _millis(moment: datetime) -> int:
     return int(moment.timestamp() * 1000)
 
@@ -55,6 +70,11 @@ class LogEvidence:
         self.logs = logs
         self.manifest = manifest
         self.jobs = {job.id: job for job in manifest.jobs}
+        self.observers = {
+            check.id: check
+            for check in manifest.operational_checks
+            if isinstance(check, ObserverCheck)
+        }
         # Fixed bounds for every read: receipts are written inside the window.
         self.start_ms = _millis(manifest.window.not_before)
         self.end_ms = _millis(manifest.window.expires_at)
@@ -88,24 +108,31 @@ class LogEvidence:
             token = following
         raise AmbiguousResponse("job receipt stream exceeds its read bound")
 
+    def _receipt(self, group: str, stream: str, kind: str) -> dict[str, Any] | None:
+        messages = self._messages(group, stream)
+        if messages is None:
+            # Not yet visible: the controller keeps waiting until the task deadline.
+            return None
+        try:
+            return parse_receipt(messages, kind)
+        except ReceiptAmbiguous:
+            pass
+        # Raised outside the handler: the parser's error chain quotes the raw line.
+        raise AmbiguousResponse("receipt stream is ambiguous")
+
     def job_receipt(self, release_id: str, job_id: str, task_arn: str) -> dict[str, Any] | None:
         if release_id != self.manifest.release_id or job_id not in self.jobs:
             raise ValueError("receipt requested outside the approved manifest")
         group, stream = job_stream(self.manifest.environment.name, self.jobs[job_id], task_arn)
-        messages = self._messages(group, stream)
-        if messages is None:
-            # Not yet visible: the controller keeps waiting until the job deadline.
-            return None
-        try:
-            return extract_receipt(messages)
-        except ReceiptAmbiguous:
-            pass
-        # Raised outside the handler: the parser's error chain quotes the raw line.
-        raise AmbiguousResponse("job receipt stream is ambiguous")
+        kind = "migration" if self.jobs[job_id].phase == "migrate" else "tools"
+        return self._receipt(group, stream, kind)
 
-    def operational_receipt(self, release_id: str, check_id: str) -> dict[str, Any] | None:
-        # Runtime and API operational observers are not implemented. Their checks
-        # stay unproven, so a release that requires them holds.
-        if release_id != self.manifest.release_id:
+    def operational_receipt(
+        self, release_id: str, check_id: str, task_arn: str
+    ) -> dict[str, Any] | None:
+        if release_id != self.manifest.release_id or check_id not in self.observers:
             raise ValueError("receipt requested outside the approved manifest")
-        return None
+        group, stream = observer_stream(
+            self.manifest.environment.name, self.observers[check_id], task_arn
+        )
+        return self._receipt(group, stream, "operational")

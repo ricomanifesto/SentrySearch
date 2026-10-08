@@ -119,27 +119,31 @@ It does no internal paging, retry or filtering. A page without a forward token i
 ambiguous.
 
 **`LogEvidence`** (`EvidencePort`):
-- **Stream.** It reads a job's receipt only from the stream Terraform configures
-  for the observed task:
-  - log group `/<prefix>/<database>-release`;
-  - stream `<database>-release/migration/<task-id>` for migrations;
-  - stream `<database>-<phase>/<phase>/<task-id>` for grants and proofs.
+- **Stream.** It reads a receipt only from the stream Terraform configures for
+  the observed task:
+  - jobs: log group `/<prefix>/<database>-release`, stream
+    `<database>-release/migration/<task-id>` for migrations and
+    `<database>-<phase>/<phase>/<task-id>` for grants and proofs;
+  - observers: log group `/<prefix>/observe`, stream
+    `<check-id>/observer/<task-id>`.
+
+  A request for another release, an unknown job or check (the worker gate has no
+  observer) or a malformed task id is refused before any read.
 - **Reading.** It reads from the head to the stream end within the manifest's
   fixed window, bounded to 20 pages and 256 KiB. Overflow is ambiguous.
-- **Parsing.** It parses with `release_tools.receipt.extract_receipt`. That
-  parser's `ReceiptAmbiguous` still chains the JSON error, which quotes the
-  raw line. The adapter drops that chain, and any other caller must do the
-  same. The parser is left unchanged here because it ships in the accepted
-  release-tools image. It returns only the parsed receipt. Ordinary application lines (report IDs,
+- **Parsing.** It parses with `release_tools.receipt.parse_receipt` for the
+  stream's kind: `migration` for migrations, `tools` for grants and proofs,
+  `operational` for observers. Each kind accepts only its own envelope. The
+  parser's `ReceiptAmbiguous` chains the JSON error, which quotes the raw line;
+  the adapter raises its own error outside the handler so that chain is dropped,
+  and any other caller must do the same. It returns only the parsed receipt. Ordinary application lines (report IDs,
   request lines, tracebacks) are read but never returned or put into an
   exception.
 - **Outcomes.** A missing stream or receipt is missing evidence, so the
   controller waits until its deadline. Duplicate or malformed receipts are
   ambiguous.
-- **Missing producers.** The migration images emit no receipts, and Runtime and
-  API operational observers do not exist. Those checks therefore stay unproven:
-  `operational_receipt` always returns `None`, and a manifest that requires them
-  holds with `operational_evidence_missing`.
+- **Producers.** The migration release jobs and the observers write these
+  receipts in source; images carrying them are not built yet.
 
 **`S3ObjectStore`** (`ObjectStore`) on the control bucket:
 - **Keys.** It accepts only `releases/<uuid>/journal.json` and

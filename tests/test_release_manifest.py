@@ -9,6 +9,8 @@ from datetime import timedelta
 import pytest
 
 from release.manifest import (
+    MIGRATION_RECEIPT_SCHEMA,
+    OPERATIONAL_RECEIPT_SCHEMA,
     RELEASE_TOOLS_RECEIPT_SCHEMA,
     CompatibleRelease,
     ReleaseRejected,
@@ -30,6 +32,7 @@ from tests.release_fakes import (
     forward_document,
     iso,
     manifest_document,
+    observer_check,
     rollback_run_document,
 )
 
@@ -222,21 +225,126 @@ def test_release_tools_jobs_use_the_tools_image_and_receipt_schema():
 
 
 @pytest.mark.parametrize(
-    "change",
+    ("change", "code"),
     [
-        lambda checks: checks.pop(0),
-        lambda checks: checks[0].update(receipt_schema="sentry.release.worker-readiness.v1"),
-        lambda checks: checks[1].update(receipt_schema=WORKER_RECEIPT_KIND),
+        (lambda checks: checks.pop(0), "worker_readiness_check_invalid"),
+        (lambda checks: checks[0].update(id="worker-ready"), "worker_readiness_check_invalid"),
+        (lambda checks: checks.append({"id": "worker-again", "receipt_schema": WORKER_RECEIPT_KIND}),
+         "worker_readiness_check_invalid"),
+        # The schema selects the check's shape: no other schema is a worker check,
+        # and an observer's fields never fit one.
+        (lambda checks: checks[0].update(receipt_schema="sentry.release.worker-readiness.v1"),
+         "invalid_field"),
+        (lambda checks: checks[1].update(receipt_schema=WORKER_RECEIPT_KIND), "unknown_field"),
     ],
-)
-def test_worker_readiness_is_proven_only_from_supervisor_receipts(change):
+)  # fmt: skip
+def test_worker_readiness_is_proven_only_from_supervisor_receipts(change, code):
     document = manifest_document()
     assert document["operational_checks"][0] == {
         "id": WORKER_READINESS_CHECK,
         "receipt_schema": WORKER_RECEIPT_KIND,
     }
     change(document["operational_checks"])
-    assert rejected(encode(document)).code == "worker_readiness_check_invalid"
+    assert rejected(encode(document)).code == code
+
+
+def _observers(document: dict) -> dict[str, dict]:
+    return {c["target"]: c for c in document["operational_checks"] if "target" in c}
+
+
+@pytest.mark.parametrize(
+    ("change", "code"),
+    [
+        # Exactly one observer for each of the Runtime and the API.
+        (lambda d: d["operational_checks"].pop(1), "observer_checks_invalid"),
+        (lambda d: d["operational_checks"].append(observer_check("api-again", "api")),
+         "observer_checks_invalid"),
+        # The service's own private name and port, in one shared namespace.
+        (lambda d: _observers(d)["runtime"].update(host="api.sentry-staging.internal"),
+         "observer_target_invalid"),
+        (lambda d: _observers(d)["api"].update(host="api.other.internal"),
+         "observer_target_invalid"),
+        (lambda d: _observers(d)["api"].update(host="api.10.0.0.7"), "observer_target_invalid"),
+        (lambda d: _observers(d)["runtime"].update(port=8001), "observer_target_invalid"),
+        (lambda d: _observers(d)["api"].update(port=443), "observer_target_invalid"),
+        (lambda d: _observers(d)["api"].update(host="api"), "invalid_field"),
+        (lambda d: _observers(d)["api"].update(host="API.sentry-staging.internal"),
+         "invalid_field"),
+        (lambda d: _observers(d)["api"].update(target="worker"), "invalid_field"),
+        # Its own release-tools task: an init container and the observer container.
+        (lambda d: _observers(d)["api"]["task"]["containers"][1].update(image="search"),
+         "observer_task_invalid"),
+        (lambda d: _observers(d)["api"]["task"]["containers"][1].update(name="app"),
+         "observer_task_invalid"),
+        (lambda d: _observers(d)["api"]["task"]["containers"].append(
+            {"name": "sidecar", "image": "release_tools"}), "observer_task_invalid"),
+        (lambda d: _observers(d)["runtime"]["task"]["containers"].pop(0), "invalid_field"),
+        # Bounded, and never sharing an identifier with a job.
+        (lambda d: _observers(d)["api"].update(deadline_seconds=59), "invalid_field"),
+        (lambda d: _observers(d)["api"].update(deadline_seconds=3601), "invalid_field"),
+        (lambda d: _observers(d)["api"].update(stop_grace_seconds=0), "invalid_field"),
+        (lambda d: _observers(d)["api"].update(id=d["jobs"][0]["id"]), "invalid_field"),
+        (lambda d: _observers(d)["api"].update(id="worker-readiness"), "invalid_field"),
+        (lambda d: _observers(d)["api"].update(extra=True), "unknown_field"),
+        (lambda d: _observers(d)["api"].pop("host"), "missing_field"),
+    ],
+)  # fmt: skip
+def test_runtime_and_api_are_each_proven_by_one_scoped_observer_task(change, code):
+    document = manifest_document()
+    assert {key: value["receipt_schema"] for key, value in _observers(document).items()} == {
+        "runtime": OPERATIONAL_RECEIPT_SCHEMA, "api": OPERATIONAL_RECEIPT_SCHEMA,
+    }  # fmt: skip
+    load_manifest(encode(document))
+    change(document)
+    assert rejected(encode(document)).code == code
+
+
+@pytest.mark.parametrize(
+    "share",
+    [
+        lambda d: d["jobs"][0]["task"]["secrets"][1],
+        lambda d: d["services"]["runtime"]["secrets"][1],
+        lambda d: _observers(d)["api"]["task"]["secrets"][1],
+    ],
+)
+def test_an_observers_material_is_its_own(share):
+    document = manifest_document()
+    _observers(document)["runtime"]["task"]["secrets"][1] = copy.deepcopy(share(document))
+    assert rejected(encode(document)).code == "shared_secret_bundle"
+
+
+@pytest.mark.parametrize(
+    "field, value, code",
+    [
+        ("task_definition", "arn:aws:ecs:us-east-1:444455556666:task-definition/x:1",
+         "resource_scope_mismatch"),
+        ("task_definition", "arn:aws:ecs:us-east-1:" + ACCOUNT
+         + ":task-definition/sentry-staging-api-operational", "mutable_reference"),
+        ("task_role", "arn:aws:iam::444455556666:role/observer", "resource_scope_mismatch"),
+    ],
+)  # fmt: skip
+def test_observer_tasks_are_scoped_to_the_environment_account(field, value, code):
+    document = manifest_document()
+    _observers(document)["api"]["task"][field] = value
+    assert rejected(encode(document)).code == code
+
+
+def test_migration_jobs_report_in_the_shared_migration_envelope():
+    document = manifest_document()
+    migrations = [job for job in document["jobs"] if job["phase"] == "migrate"]
+    assert {job["receipt_schema"] for job in migrations} == {MIGRATION_RECEIPT_SCHEMA}
+    assert all(set(job["expect"]) == {"database", "principal", "schema"} for job in migrations)
+    for change, code in (
+        (lambda job: job.update(receipt_schema=RELEASE_TOOLS_RECEIPT_SCHEMA),
+         "job_receipt_schema_invalid"),
+        (lambda job: job.update(receipt_schema="sentry.release.migrate.v1"),
+         "job_receipt_schema_invalid"),
+        (lambda job: job["expect"].pop("principal"), "job_expectation_incomplete"),
+        (lambda job: job["expect"].update(owner_role="product_owner"), "job_expectation_invalid"),
+    ):  # fmt: skip
+        document = manifest_document()
+        change(document["jobs"][1])
+        assert rejected(encode(document)).code == code
 
 
 @pytest.mark.parametrize(("name", "image"), [("worker", "search"), ("app", "runtime")])

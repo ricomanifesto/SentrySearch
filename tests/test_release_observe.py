@@ -1,0 +1,324 @@
+"""Operational observers against local fixture servers on loopback.
+
+A fixture HTTPS server stands in for the Runtime (private CA, the expected SAN,
+token-protected probes) and a plain HTTP server for the API. Name resolution is
+injected, so the test controls which single address "DNS" returns. Nothing here
+touches a network beyond loopback.
+"""
+
+from __future__ import annotations
+
+import json
+import socket
+import ssl
+import threading
+from datetime import UTC, datetime, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+import pytest
+
+from dev.tls_fixtures import create_certificates
+from release_tools import observe
+from release_tools.receipt import parse_receipt
+from tests.test_release_migration_job import _Metadata, TASK
+
+RELEASE = "0b9f7c1e-4d2a-4f6b-9a3e-2c1d0e9f8a7b"
+HOST = "runtime.staging.internal"
+TOKEN = "fixture-probe-token-0123456789abcdef"
+
+
+class Behaviour:
+    def __init__(self) -> None:
+        self.status = {"/healthz": (200, "alive"), "/readyz": (200, "ready"), "/": (200, "operational"),
+                       "/api/ready": (200, "ready"), "/api/reports": (503, "unavailable")}  # fmt: skip
+        self.require_token = True
+        self.requests: list[str] = []
+        # Path -> a raw body sent instead of the JSON status.
+        self.bodies: dict[str, bytes] = {}
+
+
+def handler(behaviour: Behaviour, *, runtime: bool):
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - http.server API
+            behaviour.requests.append(self.path)
+            if (
+                runtime
+                and behaviour.require_token
+                and self.headers.get("Authorization") != (f"Bearer {TOKEN}")
+            ):
+                code, status = 401, "unauthorized"
+            else:
+                code, status = behaviour.status.get(self.path, (404, "missing"))
+            body = behaviour.bodies.get(self.path) or json.dumps({"status": status}).encode()
+            self.send_response(code)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            pass
+
+    return Handler
+
+
+@pytest.fixture
+def metadata():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Metadata)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}/v4/fixture"
+    server.shutdown()
+
+
+def serve(behaviour: Behaviour, *, cert=None) -> int:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler(behaviour, runtime=cert is not None))
+    if cert is not None:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(cert.certificate, cert.key)
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server.server_address[1]
+
+
+def owner_only(path: Path, data: bytes) -> Path:
+    path.write_bytes(data)
+    path.chmod(0o400)
+    return path
+
+
+@pytest.fixture
+def material(tmp_path, monkeypatch):
+    cert = create_certificates(tmp_path / "runtime", hostname=HOST)
+    monkeypatch.setattr(observe, "RUNTIME_CA", owner_only(tmp_path / "runtime-ca.pem",
+                                                          cert.ca.read_bytes()))  # fmt: skip
+    monkeypatch.setattr(observe, "PROBE_TOKEN", owner_only(tmp_path / "probe-token",
+                                                           f"{TOKEN}\n".encode()))  # fmt: skip
+    return cert
+
+
+def answers(*addresses: str):
+    def resolve(host: str, port: int) -> list:
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, port)) for address in addresses
+        ]
+
+    return resolve
+
+
+def environment(metadata: str, port: int, *, check: str = "runtime-observe", host: str = HOST,
+                **changes: str) -> dict[str, str]:  # fmt: skip
+    base = {
+        "RELEASE_ID": RELEASE,
+        "RELEASE_CHECK_ID": check,
+        "RELEASE_NOT_AFTER": (datetime.now(UTC) + timedelta(minutes=10)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
+        "RELEASE_CHECK_BUDGET_SECONDS": "300",
+        "RELEASE_TARGET_HOST": host,
+        "RELEASE_TARGET_PORT": str(port),
+        "ECS_CONTAINER_METADATA_URI_V4": metadata,
+    }
+    base.update(changes)
+    return base
+
+
+def observed(capsys, command: str, env: dict[str, str], resolve) -> tuple[int, dict | None]:
+    code = observe.main([command], env, resolve=resolve)
+    out = capsys.readouterr().out.splitlines()
+    assert len(out) <= 1, out
+    assert TOKEN not in "\n".join(out)
+    return code, parse_receipt(out, "operational") if out else None
+
+
+def test_runtime_observer_passes_against_the_verified_target(material, metadata, capsys):
+    behaviour = Behaviour()
+    port = serve(behaviour, cert=material)
+    code, receipt = observed(capsys, "observe-runtime", environment(metadata, port),
+                             answers("127.0.0.1"))  # fmt: skip
+    assert code == 0
+    assert receipt == {
+        "schema": "sentry.operational.v1",
+        "release_id": RELEASE,
+        "check_id": "runtime-observe",
+        "task_arn": TASK,
+        "status": "passed",
+        "result": {"target": "runtime", "host": HOST, "peer": "127.0.0.1", "port": str(port),
+                   "tls": "verified", "checks": "healthz,readyz", "denials": "no_token,wrong_ca"},
+    }  # fmt: skip
+    assert behaviour.requests == ["/healthz", "/readyz", "/readyz"]
+
+
+def failure(capsys, command, env, resolve) -> str:
+    code, receipt = observed(capsys, command, env, resolve)
+    assert code != 0 and receipt is not None and receipt["status"] == "failed", (code, receipt)
+    return receipt["result"]["reason"]
+
+
+def test_a_certificate_for_another_name_or_from_another_ca_is_refused(material, metadata, capsys,
+                                                                      tmp_path):  # fmt: skip
+    wrong_name = create_certificates(tmp_path / "other-name", hostname="api.staging.internal")
+    port = serve(Behaviour(), cert=wrong_name)
+    assert failure(capsys, "observe-runtime", environment(metadata, port),
+                   answers("127.0.0.1")) == "tls_untrusted"  # fmt: skip
+    other_ca = create_certificates(tmp_path / "other-ca", hostname=HOST)
+    port = serve(Behaviour(), cert=other_ca)
+    assert failure(capsys, "observe-runtime", environment(metadata, port),
+                   answers("127.0.0.1")) == "tls_untrusted"  # fmt: skip
+
+
+def test_plaintext_where_tls_is_required_is_refused(material, metadata, capsys):
+    port = serve(Behaviour())  # plain HTTP
+    assert failure(capsys, "observe-runtime", environment(metadata, port),
+                   answers("127.0.0.1")) == "target_unreachable"  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "configure, reason",
+    [
+        (lambda b: setattr(b, "require_token", False), "unauthenticated_accepted"),
+        (lambda b: b.status.update({"/readyz": (503, "unready")}), "readyz_failed"),
+        (lambda b: b.status.update({"/healthz": (200, "starting")}), "healthz_failed"),
+    ],
+)
+def test_runtime_answers_other_than_exactly_required_fail(material, metadata, capsys, configure,
+                                                          reason):  # fmt: skip
+    behaviour = Behaviour()
+    configure(behaviour)
+    port = serve(behaviour, cert=material)
+    assert failure(capsys, "observe-runtime", environment(metadata, port),
+                   answers("127.0.0.1")) == reason  # fmt: skip
+
+
+def test_a_publicly_trusted_certificate_fails_the_wrong_ca_denial(material, metadata, capsys,
+                                                                  monkeypatch):  # fmt: skip
+    port = serve(Behaviour(), cert=material)
+    original = ssl.create_default_context
+    ca_text = observe.RUNTIME_CA.read_text()
+
+    def everything_trusted(*args, **kwargs):
+        return original(cadata=ca_text) if not kwargs else original(*args, **kwargs)
+
+    monkeypatch.setattr(observe.ssl, "create_default_context", everything_trusted)
+    assert failure(capsys, "observe-runtime", environment(metadata, port),
+                   answers("127.0.0.1")) == "wrong_ca_accepted"  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "resolve, reason",
+    [(answers(), "target_unresolved"), (answers("127.0.0.1", "127.0.0.2"), "target_ambiguous")],
+)
+def test_dns_must_name_exactly_one_peer(material, metadata, capsys, resolve, reason):
+    port = serve(Behaviour(), cert=material)
+    assert failure(capsys, "observe-runtime", environment(metadata, port), resolve) == reason
+
+
+def test_missing_or_shared_material_fails_before_any_request(material, metadata, capsys):
+    behaviour = Behaviour()
+    port = serve(behaviour, cert=material)
+    observe.PROBE_TOKEN.chmod(0o444)
+    assert failure(capsys, "observe-runtime", environment(metadata, port),
+                   answers("127.0.0.1")) == "material_invalid"  # fmt: skip
+    assert behaviour.requests == []
+
+
+def test_api_observer_requires_liveness_readiness_and_a_refused_protected_route(metadata, capsys):
+    behaviour = Behaviour()
+    port = serve(behaviour)
+    env = environment(metadata, port, check="api-observe", host="api.staging.internal")
+    code, receipt = observed(capsys, "observe-api", env, answers("127.0.0.1"))
+    assert code == 0 and receipt is not None
+    assert receipt["result"] == {"target": "api", "host": "api.staging.internal",
+                                 "peer": "127.0.0.1", "port": str(port), "tls": "none",
+                                 "checks": "liveness,api_ready",
+                                 "denials": "unauthenticated:503"}  # fmt: skip
+    behaviour.status["/api/reports"] = (200, "listing")
+    assert failure(capsys, "observe-api", env, answers("127.0.0.1")) == "unauthenticated_accepted"
+    behaviour.status.update({"/api/reports": (401, "unauthorized"), "/api/ready": (503, "unready")})
+    assert failure(capsys, "observe-api", env, answers("127.0.0.1")) == "ready_failed"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"RELEASE_TARGET_HOST": "10.0.0.5"},
+        {"RELEASE_TARGET_HOST": "runtime"},
+        {"RELEASE_TARGET_HOST": "Runtime.Staging.Internal"},
+        {"RELEASE_TARGET_PORT": "0"},
+        {"RELEASE_CHECK_ID": ""},
+        {"RELEASE_CHECK_BUDGET_SECONDS": "30"},
+    ],
+)
+def test_configuration_errors_fail_before_any_request(metadata, capsys, changes):
+    behaviour = Behaviour()
+    port = serve(behaviour)
+    code, receipt = observed(capsys, "observe-api", environment(metadata, port, **changes),
+                             answers("127.0.0.1"))  # fmt: skip
+    assert code == observe.EXIT_CONFIG and receipt is None and behaviour.requests == []
+
+
+def test_an_oversized_answer_fails_without_being_read_further(material, metadata, capsys):
+    behaviour = Behaviour()
+    behaviour.bodies["/healthz"] = b'{"status":"alive","pad":"' + b"x" * 8192 + b'"}'
+    port = serve(behaviour, cert=material)
+    assert failure(capsys, "observe-runtime", environment(metadata, port),
+                   answers("127.0.0.1")) == "response_too_large"  # fmt: skip
+
+
+def test_a_connection_that_reaches_another_peer_fails(material, metadata, capsys, monkeypatch):
+    """DNS named one address; the socket reached another (a redirect): no receipt passes."""
+    port = serve(Behaviour(), cert=material)
+    original = socket.create_connection
+
+    def redirected(address, *args, **kwargs):
+        return original(("127.0.0.1", address[1]), *args, **kwargs)
+
+    monkeypatch.setattr(observe.socket, "create_connection", redirected)
+    assert failure(capsys, "observe-runtime", environment(metadata, port),
+                   answers("127.0.0.2")) == "peer_changed"  # fmt: skip
+
+
+def test_the_check_ends_inside_its_deadline(material, metadata, capsys):
+    behaviour = Behaviour()
+    port = serve(behaviour, cert=material)
+    start = datetime.now(UTC)
+    readings = iter([start, start, start + timedelta(seconds=296)])
+
+    def now() -> datetime:
+        return next(readings, start + timedelta(seconds=296))
+
+    # 300 s budget less the 5 s stop grace: no request starts after 295 s.
+    code = observe.main(["observe-runtime"], environment(metadata, port), now=now,
+                        resolve=answers("127.0.0.1"))  # fmt: skip
+    out = capsys.readouterr().out.splitlines()
+    assert code == observe.EXIT_OBSERVATION
+    receipt = parse_receipt(out, "operational")
+    assert receipt is not None and receipt["result"] == {"reason": "deadline_exceeded"}
+    assert behaviour.requests == ["/healthz"]
+    # Too little time at start: no request and no receipt.
+    late = (start + timedelta(seconds=4)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    code, receipt = observed(capsys, "observe-runtime",
+                             environment(metadata, port, RELEASE_NOT_AFTER=late),
+                             answers("127.0.0.1"))  # fmt: skip
+    assert (code, receipt) == (observe.EXIT_DEADLINE_EXPIRED, None)
+    assert behaviour.requests == ["/healthz"]
+
+
+@pytest.mark.parametrize("token", [b"", b"\n", "t\u00f6ken".encode(), b"two words"])
+def test_an_unusable_probe_token_fails_before_any_request(material, metadata, capsys, token):
+    behaviour = Behaviour()
+    port = serve(behaviour, cert=material)
+    observe.PROBE_TOKEN.chmod(0o600)
+    observe.PROBE_TOKEN.write_bytes(token)
+    observe.PROBE_TOKEN.chmod(0o400)
+    assert failure(capsys, "observe-runtime", environment(metadata, port),
+                   answers("127.0.0.1")) == "material_invalid"  # fmt: skip
+    assert behaviour.requests == []
+
+
+def test_without_a_task_identity_nothing_is_requested(metadata, capsys):
+    behaviour = Behaviour()
+    port = serve(behaviour)
+    env = environment(metadata, port, check="api-observe", host="api.staging.internal")
+    env["ECS_CONTAINER_METADATA_URI_V4"] = "http://192.0.2.1/v4/x"
+    code, receipt = observed(capsys, "observe-api", env, answers("127.0.0.1"))
+    assert (code, receipt, behaviour.requests) == (observe.EXIT_TASK_IDENTITY, None, [])

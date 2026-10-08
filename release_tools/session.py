@@ -10,17 +10,21 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from release_tools import guard
+from release_tools import contract, guard
 from release_tools.config import CA_FILE, Connection, JobConfig
 
 PSQL = Path("/usr/lib/postgresql/16/bin/psql")
 CA_PATH = Path(CA_FILE)
 CONNECT_TIMEOUT_SECONDS = 5
 # Time kept back from the server-side statement limit for receipts and reaping.
-RESERVE_SECONDS = 2.0
-MIN_STATEMENT_MS = 1_000
-MAX_STATEMENT_MS, MAX_LOCK_MS, MAX_IDLE_MS = 60_000, 3_000, 10_000
-CHECK_INTERVAL_MS = 1_000
+RESERVE_SECONDS = contract.RESERVE_SECONDS
+MIN_STATEMENT_MS = contract.MIN_STATEMENT_MS
+MAX_STATEMENT_MS, MAX_LOCK_MS, MAX_IDLE_MS = (
+    contract.MAX_STATEMENT_MS,
+    contract.MAX_LOCK_MS,
+    contract.MAX_IDLE_MS,
+)
+CHECK_INTERVAL_MS = contract.CHECK_INTERVAL_MS
 PSQL_ENVIRONMENT_KEYS = (
     "PGHOST",
     "PGPORT",
@@ -46,20 +50,7 @@ _VARIABLE_NAME = re.compile(r"[a-z][a-z_]{0,31}")
 _VARIABLE_VALUE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 _RESULT = re.compile(r"result\|([a-z][a-z_]{0,31})\|([A-Za-z0-9_.:,/-]{1,256})")
 _SQLSTATE = re.compile(r"^psql:[^\n]*?: (?:ERROR|FATAL):  ([0-9A-Z]{5})$", re.MULTILINE)
-_CONNECT_FAILURES = (
-    ("certificate verify failed", "tls_untrusted"),
-    ("does not match host name", "tls_untrusted"),
-    ("server does not support SSL", "tls_unavailable"),
-    ("authentication method requirement", "auth_method_rejected"),
-    ("password authentication failed", "auth_failed"),
-    ("permission denied for database", "connect_denied"),
-    ("no pg_hba.conf entry", "connect_denied"),
-    ("does not exist", "target_missing"),
-    ("could not translate host name", "unreachable"),
-    ("Connection refused", "unreachable"),
-    ("timeout expired", "unreachable"),
-    ("No route to host", "unreachable"),
-)
+_CONNECT_FAILURES = contract.CONNECT_FAILURES
 _SQLSTATES = {
     "RT001": "wrong_database",
     "RT002": "wrong_principal",
@@ -67,12 +58,7 @@ _SQLSTATES = {
     "RT004": "session_identity_mismatch",
     "RT005": "session_limits_mismatch",
     "RT010": "budget_exhausted",
-    "42501": "permission_denied",
-    "57014": "statement_timeout",
-    "55P03": "lock_timeout",
-    "25P03": "idle_timeout",
-    "57P01": "session_terminated",
-    "40P01": "deadlock",
+    **contract.SQLSTATE_REASONS,
 }
 
 
@@ -107,14 +93,11 @@ class PsqlResult:
 
 def limits(remaining_seconds: float) -> Limits:
     """Per-session limits: never above the fixed caps or the remaining budget."""
-    usable_ms = int((remaining_seconds - RESERVE_SECONDS) * 1000)
-    if usable_ms < MIN_STATEMENT_MS:
-        raise BudgetExhausted("remaining job budget is too short for a statement")
-    return Limits(
-        statement_ms=min(MAX_STATEMENT_MS, usable_ms),
-        lock_ms=min(MAX_LOCK_MS, usable_ms),
-        idle_ms=min(MAX_IDLE_MS, usable_ms),
-    )
+    try:
+        statement_ms, lock_ms, idle_ms = contract.session_limits(remaining_seconds)
+    except contract.ContractError:
+        raise BudgetExhausted("remaining job budget is too short for a statement") from None
+    return Limits(statement_ms=statement_ms, lock_ms=lock_ms, idle_ms=idle_ms)
 
 
 def psql_environment(

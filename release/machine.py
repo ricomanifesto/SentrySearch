@@ -12,7 +12,14 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
-from release.manifest import CompatibleRelease, Job, Manifest, ReleaseRejected, TaskSpec
+from release.manifest import (
+    CompatibleRelease,
+    Job,
+    Manifest,
+    ObserverCheck,
+    ReleaseRejected,
+    TaskSpec,
+)
 
 
 class State(StrEnum):
@@ -103,24 +110,22 @@ def task_runtime_issue(task: Mapping[str, Any]) -> str | None:
     return None
 
 
-def evaluate_job(
-    job: Job,
-    digests: Mapping[str, str],
-    *,
-    release_id: str,
-    token: str,
-    task: Mapping[str, Any] | None,
-    receipt: Mapping[str, Any] | None,
+def evaluate_task(
+    spec: TaskSpec, digests: Mapping[str, str], *, token: str, task: Mapping[str, Any] | None
 ) -> str | None:
-    """Return None only for a STOPPED, exact, zero-exit task with its matching receipt."""
+    """Return None only for a STOPPED, exact, unmodified task whose containers all exited 0.
+
+    The same platform evidence is required of database jobs and observer tasks;
+    each then has its own receipt contract.
+    """
     if task is None:
         return "job_task_missing"
     if task.get("lastStatus") != "STOPPED":
         return "job_not_stopped"
-    expected = expected_digests(job.task, digests)
+    expected = expected_digests(spec, digests)
     containers = _containers(task)
     if (
-        task.get("taskDefinitionArn") != job.task.task_definition
+        task.get("taskDefinitionArn") != spec.task_definition
         or task.get("startedBy") != token
         or set(containers) != set(expected)
     ):
@@ -137,6 +142,23 @@ def evaluate_job(
         return "job_exit_missing"
     if any(exits):
         return "job_container_failed"
+    return None
+
+
+def evaluate_job(
+    job: Job,
+    digests: Mapping[str, str],
+    *,
+    release_id: str,
+    token: str,
+    task: Mapping[str, Any] | None,
+    receipt: Mapping[str, Any] | None,
+) -> str | None:
+    """Return None only for a STOPPED, exact, zero-exit task with its matching receipt."""
+    issue = evaluate_task(job.task, digests, token=token, task=task)
+    if issue is not None:
+        return issue
+    assert task is not None
     if receipt is None:
         return "job_receipt_missing"
     wanted = {
@@ -152,6 +174,83 @@ def evaluate_job(
     if dict(receipt) != wanted:
         return "job_receipt_mismatch"
     return None
+
+
+# The fixed observer results; the API's refused protected route may answer 401,
+# 403, or 503 while no authentication service is configured.
+OBSERVER_OUTCOMES = {
+    "runtime": {"tls": "verified", "checks": "healthz,readyz", "denials": "no_token,wrong_ca"},
+    "api": {"tls": "none", "checks": "liveness,api_ready"},
+}
+API_DENIALS = frozenset({"unauthenticated:401", "unauthenticated:403", "unauthenticated:503"})
+
+
+def evaluate_observation(
+    check: ObserverCheck,
+    *,
+    release_id: str,
+    task_arn: str,
+    peer: str,
+    receipt: Mapping[str, Any] | None,
+) -> str | None:
+    """Return None only for this observer task's passing receipt about the recorded peer.
+
+    The receipt names the observer task (this task, never a service task), the
+    exact target name and port, and the one address it connected to, which must
+    be the network interface of the service task the controller recorded.
+    """
+    if receipt is None:
+        return "operational_evidence_missing"
+    result = receipt.get("result")
+    if (
+        set(receipt) != {"schema", "release_id", "check_id", "task_arn", "status", "result"}
+        or receipt.get("schema") != check.receipt_schema
+        or receipt.get("release_id") != release_id
+        or receipt.get("check_id") != check.id
+        or receipt.get("task_arn") != task_arn
+        or receipt.get("status") != "passed"
+        or not isinstance(result, Mapping)
+    ):
+        return "operational_receipt_mismatch"
+    wanted = {
+        "target": check.target,
+        "host": check.host,
+        "port": str(check.port),
+        **OBSERVER_OUTCOMES[check.target],
+    }
+    keys = set(wanted) | {"peer"} | ({"denials"} if check.target == "api" else set())
+    if set(result) != keys or any(result.get(key) != value for key, value in wanted.items()):
+        return "operational_receipt_mismatch"
+    if check.target == "api" and result.get("denials") not in API_DENIALS:
+        return "operational_receipt_mismatch"
+    if result.get("peer") != peer:
+        # The address that answered is not the recorded task: stale DNS or another task.
+        return "operational_peer_mismatch"
+    return None
+
+
+def task_network_address(task: Mapping[str, Any] | None) -> str | None:
+    """The task's one attached ENI private IPv4 address, or None if not exactly one."""
+    if task is None:
+        return None
+    attachments = [
+        item
+        for item in task.get("attachments") or []
+        if isinstance(item, Mapping) and item.get("type") == "ElasticNetworkInterface"
+    ]
+    if len(attachments) != 1 or attachments[0].get("status") != "ATTACHED":
+        return None
+    addresses = [
+        detail.get("value")
+        for detail in attachments[0].get("details") or []
+        if isinstance(detail, Mapping) and detail.get("name") == "privateIPv4Address"
+    ]
+    if len(addresses) != 1 or not isinstance(addresses[0], str):
+        return None
+    parts = addresses[0].split(".")
+    if len(parts) != 4 or not all(part.isdigit() and 0 <= int(part) <= 255 for part in parts):
+        return None
+    return addresses[0]
 
 
 def service_settings_drift(service: Mapping[str, Any]) -> bool:

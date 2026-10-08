@@ -35,8 +35,9 @@ from tests.test_release_aws import adapted, aws_rig  # noqa: E402
 
 results = []
 endpoints = set()
-for checks in ("worker", "all"):
-    r, aws = aws_rig(checks=checks)
+for missing in ((), ("api-operational",)):
+    r, aws = aws_rig()
+    r.evidence.missing_checks.update(missing)
     outcome = adapted(r, aws).run()
     results.append({"state": outcome.state, "reason": outcome.reason})
     endpoints |= {

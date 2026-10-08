@@ -46,6 +46,14 @@ RUNTIME_GRANT_PIN = {
 # grant script path and the result keys each job reports are fixed here; the
 # tools emit exactly these keys, so an expectation must name all of them.
 RELEASE_TOOLS_RECEIPT_SCHEMA = "sentry.release-tools.job.v1"
+# Both migration images report the migrated schema in this fixed envelope.
+MIGRATION_RECEIPT_SCHEMA = "sentry.release-migration.v1"
+MIGRATION_RESULT_KEYS = frozenset({"database", "principal", "schema"})
+# Runtime and API operational checks run their own observer task (release-tools
+# image) and report in this envelope; ports are the staging security-group ports.
+OPERATIONAL_RECEIPT_SCHEMA = "sentry.operational.v1"
+OBSERVER_CONTAINER = "observer"
+OBSERVER_PORTS = {"runtime": 8443, "api": 8001}
 PRODUCT_GRANT_PATH = "release_tools/sql/product/grants.sql"
 RELEASE_TOOLS_RESULT_KEYS = {
     "bootstrap": frozenset({"database", "principal", "owner_role", "service_role"}),
@@ -237,9 +245,34 @@ class Job(Strict):
     sql: SqlPin | None = None
 
 
-class OperationalCheck(Strict):
+HostName = _pattern(
+    r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+", max_length=253
+)
+
+
+class WorkerReadinessCheck(Strict):
+    """Proven by the controller from the worker supervisor's own receipts."""
+
     id: Name
-    receipt_schema: SchemaId
+    receipt_schema: Literal["sentry.worker-readiness.v1"]
+
+
+class ObserverCheck(Strict):
+    """An observer task the controller launches against one recorded service task."""
+
+    id: Name
+    receipt_schema: Literal["sentry.operational.v1"]
+    target: Literal["runtime", "api"]
+    host: HostName
+    port: int = Field(ge=1, le=65535)
+    task: TaskSpec
+    deadline_seconds: int = Field(ge=60, le=3600)
+    stop_grace_seconds: int = Field(ge=1, le=120)
+
+
+OperationalCheck = Annotated[
+    WorkerReadinessCheck | ObserverCheck, Field(discriminator="receipt_schema")
+]
 
 
 class EmptyHold(Strict):
@@ -537,6 +570,9 @@ def _check_scope(manifest: Manifest) -> None:
         _check_task(getattr(manifest.services, name), prefixes, f"services.{name}")
     for job in manifest.jobs:
         _check_task(job.task, prefixes, f"jobs.{job.id}.task")
+    for check in manifest.operational_checks:
+        if isinstance(check, ObserverCheck):
+            _check_task(check.task, prefixes, f"operational_checks.{check.id}.task")
     rollback = manifest.rollback
     if isinstance(rollback, CompatibleRelease):
         for name in ("runtime", "search"):
@@ -596,9 +632,13 @@ def _check_release_tools_jobs(manifest: Manifest) -> None:
     """
     jobs = {(job.phase, job.database): job for job in manifest.jobs}
     for job in manifest.jobs:
-        if job.phase == "migrate":
-            continue
         where = f"jobs.{job.id}"
+        if job.phase == "migrate":
+            if job.receipt_schema != MIGRATION_RECEIPT_SCHEMA:
+                raise ReleaseRejected("job_receipt_schema_invalid", where)
+            if set(job.expect) != MIGRATION_RESULT_KEYS:
+                raise ReleaseRejected("job_expectation_invalid", f"{where}.expect")
+            continue
         # The task definition fixes RELEASE_JOB_ID; the receipt echoes it.
         if job.id != f"{job.database}-{job.phase}":
             raise ReleaseRejected("job_id_invalid", where)
@@ -679,22 +719,41 @@ def _check_rollback_run(manifest: Manifest, purpose: RollbackRun) -> None:
 
 
 def _check_operational(manifest: Manifest) -> None:
-    """The controller proves worker readiness from the worker's own receipts.
+    """Worker readiness from the worker's receipts; Runtime and API from observer tasks.
 
-    Those receipts are read from the configured stream of the worker's search
-    application container, so the manifest must name that exact container.
+    Worker receipts are read from the configured stream of the worker's search
+    application container, so the manifest must name that exact container. Each
+    of the Runtime and API has exactly one observer: its own release-tools task
+    on the service's private name and port, with a material bundle no service
+    or job shares.
     """
     checks = manifest.operational_checks
-    if len({check.id for check in checks}) != len(checks):
+    ids = [check.id for check in checks]
+    if len(set(ids)) != len(ids) or set(ids) & {job.id for job in manifest.jobs}:
         raise ReleaseRejected("invalid_field", "operational_checks")
-    if WORKER_READINESS_CHECK not in {check.id for check in checks} or any(
-        (check.id == WORKER_READINESS_CHECK) != (check.receipt_schema == WORKER_RECEIPT_KIND)
-        for check in checks
-    ):
+    workers = [check for check in checks if isinstance(check, WorkerReadinessCheck)]
+    if [check.id for check in workers] != [WORKER_READINESS_CHECK]:
         raise ReleaseRejected("worker_readiness_check_invalid", "operational_checks")
     images = {item.name: item.image for item in manifest.services.worker.containers}
     if images.get(WORKER_CONTAINER) != "search":
         raise ReleaseRejected("worker_container_invalid", "services.worker.containers")
+    observers = [check for check in checks if isinstance(check, ObserverCheck)]
+    if sorted(check.target for check in observers) != ["api", "runtime"]:
+        raise ReleaseRejected("observer_checks_invalid", "operational_checks")
+    namespaces = set()
+    for check in observers:
+        where = f"operational_checks.{check.id}"
+        prefix, _, namespace = check.host.partition(".")
+        if prefix != check.target or namespace.rsplit(".", 1)[-1].isdigit():
+            raise ReleaseRejected("observer_target_invalid", f"{where}.host")
+        namespaces.add(namespace)
+        if check.port != OBSERVER_PORTS[check.target]:
+            raise ReleaseRejected("observer_target_invalid", f"{where}.port")
+        containers = {item.name: item.image for item in check.task.containers}
+        if containers != {"init": "search", OBSERVER_CONTAINER: "release_tools"}:
+            raise ReleaseRejected("observer_task_invalid", f"{where}.task.containers")
+    if len(namespaces) != 1:
+        raise ReleaseRejected("observer_target_invalid", "operational_checks")
 
 
 def _check_secret_separation(manifest: Manifest) -> None:
@@ -720,3 +779,20 @@ def _check_secret_separation(manifest: Manifest) -> None:
         }
         if {item.arn for item in job.task.secrets} & others:
             raise ReleaseRejected("shared_secret_bundle", f"jobs.{job.id}")
+    # An observer's material (for the Runtime, its CA and probe token) is its own.
+    job_secrets = {item.arn for job in manifest.jobs for item in job.task.secrets}
+    for check in manifest.operational_checks:
+        if not isinstance(check, ObserverCheck):
+            continue
+        others = (
+            seen
+            | job_secrets
+            | {
+                item.arn
+                for other in manifest.operational_checks
+                if isinstance(other, ObserverCheck) and other is not check
+                for item in other.task.secrets
+            }
+        )
+        if {item.arn for item in check.task.secrets} & others:
+            raise ReleaseRejected("shared_secret_bundle", f"operational_checks.{check.id}")

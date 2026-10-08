@@ -48,49 +48,61 @@ def require_schema(engine: Engine) -> None:
 
 
 def migrate(engine: Engine) -> None:
-    # Import only in the release process; neither probing nor constructing an
-    # engine needs product reconciliation or provider clients.
-    from .report_service import ReportStorageService
-
     try:
         with engine.begin() as connection:
-            connection.execute(text("SET LOCAL search_path = public"))
-            connection.execute(text("SET LOCAL lock_timeout = '3s'"))
-            connection.execute(text("SET LOCAL statement_timeout = '60s'"))
-            if not connection.execute(
-                text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": MIGRATION_LOCK}
-            ).scalar_one():
-                raise RuntimeError("Another storage migration is running")
-            connection.execute(
-                text(
-                    "CREATE TABLE IF NOT EXISTS sentrysearch_schema_migrations ("
-                    "version INTEGER PRIMARY KEY, checksum VARCHAR(64) NOT NULL, "
-                    "applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
-                )
-            )
-            versions = connection.execute(
-                text("SELECT version FROM sentrysearch_schema_migrations")
-            ).all()
-            if not versions:
-                # This baseline contains simple DDL only, no procedural SQL or
-                # semicolons inside literals. Future revisions need explicit steps.
-                for statement in MIGRATION_SQL.read_text().split(";"):
-                    if statement.strip():
-                        connection.execute(text(statement))
-                with Session(bind=connection) as session:
-                    ReportStorageService().reconcile_reader_state(session=session)
-                    session.flush()
-                _check_columns(connection)
-                version, checksum = _revision()
-                connection.execute(
-                    text(
-                        "INSERT INTO sentrysearch_schema_migrations(version, checksum) VALUES (:version, :checksum)"
-                    ),
-                    {"version": version, "checksum": checksum},
-                )
-            _check_revision(connection)
-            _check_columns(connection)
+            migrate_connection(connection)
     except Exception:
         raise RuntimeError(
             "Storage migration failed; verify schema, role and release exclusivity"
         ) from None
+
+
+def migrate_connection(
+    connection: Connection, *, statement_timeout_ms: int = 60_000, lock_timeout_ms: int = 3_000
+) -> None:
+    """Apply the release inside the caller's transaction, with its server-side bounds.
+
+    The guarded release job passes bounds derived from its deadline; the plain
+    release command keeps the 60 s statement and 3 s lock limits.
+    """
+    # Import only in the release process; neither probing nor constructing an
+    # engine needs product reconciliation or provider clients.
+    from .report_service import ReportStorageService
+
+    statement_ms, lock_ms = int(statement_timeout_ms), int(lock_timeout_ms)
+    if not (0 < lock_ms <= 3_000 and 0 < statement_ms <= 60_000):
+        raise ValueError("migration limits outside the release bounds")
+    connection.execute(text("SET LOCAL search_path = public"))
+    connection.execute(text(f"SET LOCAL lock_timeout = '{lock_ms}ms'"))
+    connection.execute(text(f"SET LOCAL statement_timeout = '{statement_ms}ms'"))
+    if not connection.execute(
+        text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": MIGRATION_LOCK}
+    ).scalar_one():
+        raise RuntimeError("Another storage migration is running")
+    connection.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS sentrysearch_schema_migrations ("
+            "version INTEGER PRIMARY KEY, checksum VARCHAR(64) NOT NULL, "
+            "applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
+        )
+    )
+    versions = connection.execute(text("SELECT version FROM sentrysearch_schema_migrations")).all()
+    if not versions:
+        # This baseline contains simple DDL only, no procedural SQL or
+        # semicolons inside literals. Future revisions need explicit steps.
+        for statement in MIGRATION_SQL.read_text().split(";"):
+            if statement.strip():
+                connection.execute(text(statement))
+        with Session(bind=connection) as session:
+            ReportStorageService().reconcile_reader_state(session=session)
+            session.flush()
+        _check_columns(connection)
+        version, checksum = _revision()
+        connection.execute(
+            text(
+                "INSERT INTO sentrysearch_schema_migrations(version, checksum) VALUES (:version, :checksum)"
+            ),
+            {"version": version, "checksum": checksum},
+        )
+    _check_revision(connection)
+    _check_columns(connection)

@@ -102,13 +102,30 @@ def job(job_id: str, phase: str, database: str, *, image: str, expect: dict, sql
         "deadline_seconds": 900,
         "stop_grace_seconds": 30,
         "receipt_schema": (
-            f"sentry.release.{phase}.v1" if phase == "migrate" else "sentry.release-tools.job.v1"
+            "sentry.release-migration.v1" if phase == "migrate" else "sentry.release-tools.job.v1"
         ),
         "expect": expect,
     }
     if sql is not None:
         result["sql"] = sql
     return result
+
+
+OBSERVER_NAMESPACE = "sentry-staging.internal"
+
+
+def observer_check(check_id: str, target: str) -> dict:
+    """An observer task on the target's private name and port (release-tools image)."""
+    return {
+        "id": check_id,
+        "receipt_schema": "sentry.operational.v1",
+        "target": target,
+        "host": f"{target}.{OBSERVER_NAMESPACE}",
+        "port": 8443 if target == "runtime" else 8001,
+        "task": task_spec(check_id, "release_tools", app="observer"),
+        "deadline_seconds": 300,
+        "stop_grace_seconds": 30,
+    }
 
 
 def services(revision: int = 7) -> dict:
@@ -196,11 +213,8 @@ def manifest_document(*, rollback: str = "empty_hold") -> dict:
         ],  # fmt: skip
         "operational_checks": [
             {"id": "worker-readiness", "receipt_schema": "sentry.worker-readiness.v1"},
-            {
-                "id": "runtime-protected-readiness",
-                "receipt_schema": "sentry.release.runtime-ready.v1",
-            },
-            {"id": "api-operational", "receipt_schema": "sentry.release.api-ready.v1"},
+            observer_check("runtime-protected-readiness", "runtime"),
+            observer_check("api-operational", "api"),
         ],
         "rollback": {"kind": "empty_hold"},
     }
@@ -443,6 +457,8 @@ class FakeEcs:
         self.mutations: list[tuple[str, dict]] = []
         # Task definition -> fields replacing the observed task's (overrides, Exec).
         self.quirks: dict[str, dict] = {}
+        # Task ARN -> its ENI attachment list as DescribeTasks reports it.
+        self.attachments: dict[str, list] = {}
         self.counter = 0
 
     # Test configuration -------------------------------------------------
@@ -466,11 +482,18 @@ class FakeEcs:
                     prior["task_definition"], deployment["id"], f"service:{name}",
                     [(c["name"], prior_digests[c["image"]]) for c in prior["containers"]],
                 )  # fmt: skip
+        observers = [check for check in document["operational_checks"] if "task" in check]
         for item in document["jobs"]:
             self.plans.setdefault(item["task"]["task_definition"], JobPlan())
+        for item in observers:  # an observer's checks take seconds, not a migration's minutes
+            self.plans.setdefault(item["task"]["task_definition"], JobPlan(seconds=10))
         self.containers = {
             spec["task_definition"]: [(c["name"], c["image"]) for c in spec["containers"]]
-            for spec in [*document["services"].values(), *(j["task"] for j in document["jobs"])]
+            for spec in [
+                *document["services"].values(),
+                *(j["task"] for j in document["jobs"]),
+                *(c["task"] for c in observers),
+            ]
         }
 
     def _maybe_crash(self, method: str, when: str) -> None:
@@ -509,7 +532,22 @@ class FakeEcs:
             tags=tags or {},
         )
         self.tasks[arn] = task
+        self.attachments[arn] = [
+            {
+                "type": "ElasticNetworkInterface",
+                "status": "ATTACHED",
+                "details": [
+                    {"name": "subnetId", "value": "subnet-0a1b2c3d4e5f60718"},
+                    {"name": "networkInterfaceId", "value": f"eni-{self.counter:017x}"},
+                    {"name": "privateIPv4Address", "value": self.address(self.counter)},
+                ],
+            }
+        ]
         return task
+
+    @staticmethod
+    def address(number: int) -> str:
+        return f"10.0.{number // 250}.{number % 250 + 2}"
 
     # Derived task state --------------------------------------------------
     def _status(self, task: FakeTask) -> str:
@@ -561,6 +599,7 @@ class FakeEcs:
                 "inferenceAcceleratorOverrides": [],
             },
             "enableExecuteCommand": False,
+            "attachments": copy.deepcopy(self.attachments.get(task.arn, [])),
             **copy.deepcopy(self.quirks.get(task.task_definition, {})),
         }
         if status == "RUNNING" and task.plan is None:
@@ -781,6 +820,10 @@ class FakeEvidence:
         self.job_changes: dict[str, dict] = {}
         self.missing_checks: set[str] = set()
         self.check_changes: dict[str, dict] = {}
+        # Check id -> result fields replacing (or, as None, removing) the observer's.
+        self.result_changes: dict[str, dict] = {}
+        # Target -> the address DNS returns instead of the running task's (stale DNS).
+        self.dns_peers: dict[str, str] = {}
 
     def job_receipt(self, release_id: str, job_id: str, task_arn: str) -> dict | None:
         task = self.ecs.tasks.get(task_arn)
@@ -802,21 +845,46 @@ class FakeEvidence:
         receipt.update(self.job_changes.get(job_id, {}))
         return receipt
 
-    def operational_receipt(self, release_id: str, check_id: str) -> dict | None:
-        if check_id in self.missing_checks:
+    def service_peer(self, target: str) -> str | None:
+        """The address a fresh DNS lookup would return: the service's running task."""
+        if target in self.dns_peers:
+            return self.dns_peers[target]
+        running = self.ecs.list_tasks(CLUSTER, service_name=target)
+        if len(running) != 1:
             return None
-        tasks = {}
-        for name, arn in self.service_arns.items():
-            running = self.ecs.list_tasks(CLUSTER, service_name=name)
-            tasks[name] = running[0] if running else ""
+        details = self.ecs.attachments.get(running[0], [{}])[0].get("details", [])
+        return next((d["value"] for d in details if d["name"] == "privateIPv4Address"), None)
+
+    def operational_receipt(self, release_id: str, check_id: str, task_arn: str) -> dict | None:
+        """A correct observer's receipt, from the observer task the controller launched."""
+        task = self.ecs.tasks.get(task_arn)
+        if check_id in self.missing_checks or task is None or self.ecs._status(task) != "STOPPED":
+            return None
+        check = self.checks[check_id]
+        peer = self.service_peer(check["target"])
+        if peer is None:
+            return None
+        outcomes = {
+            "runtime": {"tls": "verified", "checks": "healthz,readyz",
+                        "denials": "no_token,wrong_ca"},
+            "api": {"tls": "none", "checks": "liveness,api_ready",
+                    "denials": "unauthenticated:503"},
+        }  # fmt: skip
         receipt = {
-            "schema": self.checks[check_id]["receipt_schema"],
-            "release_id": release_id,
-            "check_id": check_id,
+            "schema": check["receipt_schema"],
+            "release_id": task.tags.get("sentry:release-id"),
+            "check_id": task.tags.get("sentry:job-id"),
+            "task_arn": task_arn,
             "status": "passed",
-            "tasks": tasks,
-        }
-        receipt.update(self.check_changes.get(check_id, {}))
+            "result": {"target": check["target"], "host": check["host"], "peer": peer,
+                       "port": str(check["port"]), **outcomes[check["target"]]},
+        }  # fmt: skip
+        for key, value in self.result_changes.get(check_id, {}).items():
+            if value is None:
+                receipt["result"].pop(key, None)
+            else:
+                receipt["result"][key] = value
+        receipt.update(copy.deepcopy(self.check_changes.get(check_id, {})))
         return receipt
 
 

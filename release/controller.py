@@ -21,9 +21,12 @@ from release.machine import (
     State,
     check_transition,
     evaluate_job,
+    evaluate_observation,
     evaluate_service,
+    evaluate_task,
     plan_rollback,
     service_settings_drift,
+    task_network_address,
     task_runtime_issue,
     token_expires_at,
 )
@@ -32,6 +35,7 @@ from release.manifest import (
     Job,
     LoadedApproval,
     LoadedManifest,
+    ObserverCheck,
     ReleaseRejected,
     canonical_sha256,
     verify_approval,
@@ -142,6 +146,14 @@ class ReleaseController:
         self.jobs = {job.id: job for job in self.manifest.jobs}
         # Once the Clock fails to vouch for time, this controller never trusts it again.
         self._clock_untrusted = False
+        self.observers = [
+            check for check in self.manifest.operational_checks if isinstance(check, ObserverCheck)
+        ]
+        # Everything this release launches with RunTask: database jobs and observers.
+        self.launchables: dict[str, Job | ObserverCheck] = {
+            **self.jobs,
+            **{check.id: check for check in self.observers},
+        }
 
     # Entry points ----------------------------------------------------------
 
@@ -244,6 +256,9 @@ class ReleaseController:
             self.session_id,
         ):
             raise refused
+        # The takeover is journaled at a time read before the lock moves, so a
+        # clock that cannot vouch for time refuses here with nothing written.
+        taken_at = self._now()
         record = self._lock_record()
         if record is not None:
             body, etag = record
@@ -274,6 +289,7 @@ class ReleaseController:
                     "fence_evidence_sha256": auth.fence_evidence_sha256,
                     "authorized_by": auth.authorized_by,
                 },
+                at=taken_at,
                 session_id=self.session_id,
             )
 
@@ -368,7 +384,12 @@ class ReleaseController:
         return True
 
     def _append(
-        self, event: dict[str, Any], *, safety: bool = False, **header: Any
+        self,
+        event: dict[str, Any],
+        *,
+        safety: bool = False,
+        at: datetime | None = None,
+        **header: Any,
     ) -> dict[str, Any]:
         """Append one event. Without a trusted clock only safety events are written.
 
@@ -376,11 +397,11 @@ class ReleaseController:
         intent (stopping the release's own job, releasing its lock). They are
         journaled at the latest time already recorded, marked ``clock_untrusted``,
         because that is only a lower bound. Anything else raises ``ClockUntrusted``
-        and the run holds.
+        and the run holds. ``at`` is a trusted reading the caller already took.
         """
         stamp: dict[str, Any]
         try:
-            stamp = {"at": _iso(self._now())}
+            stamp = {"at": _iso(at if at is not None else self._now())}
         except ClockUntrusted:
             if not safety:
                 raise
@@ -545,13 +566,14 @@ class ReleaseController:
     def _reconcile_outstanding(self) -> None:
         for intent in self._outstanding():
             if intent["action"] == "run_task":
-                self._reconcile_launch(self.jobs[intent["subject"]], intent)
+                self._reconcile_launch(self.launchables[intent["subject"]], intent)
             elif intent["action"] == "update_service":
                 self._reconcile_update(intent)
             else:
-                self._stop_after_deadline(self.jobs[intent["subject"]], intent["task_arn"])
+                item = self.launchables[intent["subject"]]
+                self._stop_after_deadline(item, intent["task_arn"], self._deadline_code(item))
 
-    def _reconcile_launch(self, job: Job, intent: dict[str, Any]) -> None:
+    def _reconcile_launch(self, job: Job | ObserverCheck, intent: dict[str, Any]) -> None:
         """Find the task launched under this token, or retry the identical request."""
         request = self._launch_request(job, intent["token"])
         if canonical_sha256(request) != intent["request_sha256"]:
@@ -738,7 +760,7 @@ class ReleaseController:
 
     # Jobs ----------------------------------------------------------------------
 
-    def _launch_request(self, job: Job, token: str) -> dict[str, Any]:
+    def _launch_request(self, job: Job | ObserverCheck, token: str) -> dict[str, Any]:
         network = self.manifest.network
         return {
             "cluster": self.cluster,
@@ -775,7 +797,7 @@ class ReleaseController:
             self._await_job(job)
         self._transition(target)
 
-    def _launch(self, job: Job) -> None:
+    def _launch(self, job: Job | ObserverCheck) -> None:
         token = self.tokens()
         if not TOKEN.fullmatch(token):
             raise ReleaseHalted("invalid_launch_token")
@@ -799,7 +821,9 @@ class ReleaseController:
             return
         self._accept_launch(job, intent, response)
 
-    def _accept_launch(self, job: Job, intent: dict[str, Any], response: dict[str, Any]) -> None:
+    def _accept_launch(
+        self, job: Job | ObserverCheck, intent: dict[str, Any], response: dict[str, Any]
+    ) -> None:
         tasks = response.get("tasks") or []
         failures = response.get("failures") or []
         if failures and not tasks:
@@ -816,8 +840,9 @@ class ReleaseController:
         self._verify_launched(job, intent["token"], tasks[0], arns)
 
     def _verify_launched(
-        self, job: Job, token: str, task: dict[str, Any], arns: list[str], **data: Any
-    ) -> None:
+        self, job: Job | ObserverCheck, token: str, task: dict[str, Any], arns: list[str],
+        **data: Any,
+    ) -> None:  # fmt: skip
         """Record the launch only for the approved revision under this token, unmodified."""
         if (
             task.get("taskDefinitionArn") != job.task.task_definition
@@ -843,12 +868,31 @@ class ReleaseController:
         tasks = self.ecs.describe_tasks(self.cluster, [arn]).get("tasks") or []
         return next((task for task in tasks if task.get("taskArn") == arn), None)
 
-    def _await_job(self, job: Job) -> None:
-        intent = self._last_intent("run_task", job.id)
-        launched = self._last(job.id, "launched")
+    @staticmethod
+    def _deadline_code(item: Job | ObserverCheck) -> str:
+        return "job_deadline_exceeded" if isinstance(item, Job) else "operational_deadline_exceeded"
+
+    def _await_launched(
+        self,
+        item: Job | ObserverCheck,
+        settle: Callable[[dict[str, Any], str, str, datetime], tuple[str | None, dict[str, Any]]],
+        *,
+        missing: str,
+        succeeded: str,
+        failed: str,
+        **outcome: Any,
+    ) -> None:
+        """Poll the launched task to STOPPED and settle it inside its recorded deadline.
+
+        ``settle`` reads and evaluates the task's own receipt; ``missing`` keeps
+        waiting. At the deadline a live or unseen task receives a journaled stop.
+        """
+        intent = self._last_intent("run_task", item.id)
+        launched = self._last(item.id, "launched")
         assert launched is not None
         arn = launched["task_arn"]
         deadline = _time(intent["deadline_at"])
+        code = self._deadline_code(item)
         while True:
             self._guard()
             # A missing task is eventual consistency, not proof that it never ran.
@@ -856,37 +900,51 @@ class ReleaseController:
             now = self._now()
             if now >= deadline:
                 if task is None or task.get("lastStatus") != "STOPPED":
-                    self._stop_after_deadline(job, arn)
+                    self._stop_after_deadline(item, arn, code)
+                self._observe(item.id, failed, task_arn=arn, reason=code, **outcome)
+                raise _Hold(code)
+            self._guard()
+            if task is not None and task.get("lastStatus") == "STOPPED":
+                failure, data = settle(task, arn, intent["token"], deadline)
+                if failure is None:
+                    self._observe(item.id, succeeded, task_arn=arn, **data)
+                    return
+                if failure != missing:
+                    self._observe(item.id, failed, task_arn=arn, reason=failure)
+                    raise _Hold(failure)
+            self._sleep(self.poll)
+
+    def _await_job(self, job: Job) -> None:
+        def settle(task: dict[str, Any], arn: str, token: str,
+                   deadline: datetime) -> tuple[str | None, dict[str, Any]]:  # fmt: skip
+            receipt = self.evidence.job_receipt(self.release_id, job.id, arn)
+            # There is no trusted completion timestamp in this port contract.
+            # Even a timely task needs its complete receipt before the deadline.
+            if self._now() >= deadline:
                 self._observe(job.id, "job_failed", task_arn=arn,
                               reason="job_deadline_exceeded", sql_outcome="unknown")  # fmt: skip
                 raise _Hold("job_deadline_exceeded")
             self._guard()
-            if task is not None and task.get("lastStatus") == "STOPPED":
-                receipt = self.evidence.job_receipt(self.release_id, job.id, arn)
-                # There is no trusted completion timestamp in this port contract.
-                # Even a timely task needs its complete receipt before the deadline.
-                if self._now() >= deadline:
-                    self._observe(job.id, "job_failed", task_arn=arn,
-                                  reason="job_deadline_exceeded", sql_outcome="unknown")  # fmt: skip
-                    raise _Hold("job_deadline_exceeded")
-                self._guard()
-                failure = evaluate_job(
-                    job, self.digests, release_id=self.release_id, token=intent["token"],
-                    task=task, receipt=receipt,
-                )  # fmt: skip
-                if failure is None:
-                    self._observe(job.id, "job_succeeded", task_arn=arn,
-                                  receipt_sha256=canonical_sha256(receipt))  # fmt: skip
-                    return
-                if failure != "job_receipt_missing":
-                    self._observe(job.id, "job_failed", task_arn=arn, reason=failure)
-                    raise _Hold(failure)
-            self._sleep(self.poll)
+            failure = evaluate_job(
+                job, self.digests, release_id=self.release_id, token=token, task=task,
+                receipt=receipt,
+            )  # fmt: skip
+            if failure is not None:
+                return failure, {}
+            return None, {"receipt_sha256": canonical_sha256(receipt)}
 
-    def _stop_after_deadline(self, job: Job, arn: str) -> None:
+        self._await_launched(job, settle, missing="job_receipt_missing", succeeded="job_succeeded",
+                             failed="job_failed", sql_outcome="unknown")  # fmt: skip
+
+    @staticmethod
+    def _sql_unknown(item: Job | ObserverCheck) -> dict[str, str]:
+        """A stopped or unseen database job may have run SQL; an observer runs none."""
+        return {"sql_outcome": "unknown"} if isinstance(item, Job) else {}
+
+    def _stop_after_deadline(self, item: Job | ObserverCheck, arn: str, code: str) -> None:
         """Request a stop and confirm it. A stopped client never proves SQL stopped."""
-        self._stop_job(job, arn, "release job deadline exceeded")
-        raise _Hold("job_deadline_exceeded")
+        self._stop_job(item, arn, "release job deadline exceeded")
+        raise _Hold(code)
 
     def _cleanup_expired_jobs(self) -> None:
         """Best-effort safety cleanup only; no launch retry or success promotion.
@@ -903,11 +961,15 @@ class ReleaseController:
             return
         if not owns_lock:
             return
-        for job in self.manifest.jobs:
+        for job in self.launchables.values():
             intents = [e for e in self.journal.events
                        if e["kind"] == "intent" and e["action"] == "run_task"
                        and e["subject"] == job.id]  # fmt: skip
-            if not intents or self._last(job.id, "job_succeeded", "launch_failed") is not None:
+            if (
+                not intents
+                or self._last(job.id, "job_succeeded", "operational_passed", "launch_failed")
+                is not None
+            ):
                 continue
             intent = intents[-1]
             try:
@@ -915,26 +977,26 @@ class ReleaseController:
                 arns = ([launched["task_arn"]] if launched else
                         self.ecs.list_tasks(self.cluster, started_by=intent["token"]))  # fmt: skip
                 if not arns:
-                    self._observe(job.id, "cleanup_unconfirmed", sql_outcome="unknown")
+                    self._observe(job.id, "cleanup_unconfirmed", **self._sql_unknown(job))
                 for arn in arns:
                     task = self._describe_task(arn)
                     if task is None or (
                         task.get("taskDefinitionArn") != job.task.task_definition
                         or task.get("startedBy") != intent["token"]
                     ):
-                        self._observe(job.id, "cleanup_unconfirmed", sql_outcome="unknown")
+                        self._observe(job.id, "cleanup_unconfirmed", **self._sql_unknown(job))
                         continue
                     if task.get("lastStatus") != "STOPPED":
                         self._stop_job(job, arn, "release authorization window expired")
                     else:
                         self._observe(job.id, "cleanup_stopped", task_arn=arn,
-                                      sql_outcome="unknown")  # fmt: skip
+                                      **self._sql_unknown(job))  # fmt: skip
             except ReleaseHalted:
                 raise
             except Exception:
-                self._observe(job.id, "cleanup_unconfirmed", sql_outcome="unknown")
+                self._observe(job.id, "cleanup_unconfirmed", **self._sql_unknown(job))
 
-    def _stop_job(self, job: Job, arn: str, reason: str) -> None:
+    def _stop_job(self, job: Job | ObserverCheck, arn: str, reason: str) -> None:
         request = {"cluster": self.cluster, "task": arn, "reason": reason}
         # Stopping the release's own job is a covered safety action, even after expiry.
         self._intent("stop_task", job.id, request, guard=False, task_arn=arn)
@@ -947,10 +1009,10 @@ class ReleaseController:
             task = self._describe_task(arn)
             if task is not None and task.get("lastStatus") == "STOPPED":
                 self._observe(job.id, "stop_confirmed", resolves="stop_task", task_arn=arn,
-                              sql_outcome="unknown")  # fmt: skip
+                              **self._sql_unknown(job))  # fmt: skip
                 break
             if self._now() >= give_up:
-                self._observe(job.id, "stop_unconfirmed", task_arn=arn, sql_outcome="unknown")
+                self._observe(job.id, "stop_unconfirmed", task_arn=arn, **self._sql_unknown(job))
                 break
             self._sleep(self.poll)
 
@@ -1058,26 +1120,66 @@ class ReleaseController:
             assert ready is not None
             recorded[key] = ready["task_arn"]
         self._require_recorded_tasks(recorded)
-        for check in self.manifest.operational_checks:
-            if check.id == WORKER_READINESS_CHECK:
-                self._await_worker_readiness(check.id, recorded)
-                continue
-            receipt = self.evidence.operational_receipt(self.release_id, check.id)
-            if receipt is None:
-                raise _Hold("operational_evidence_missing")
-            wanted = {
-                "schema": check.receipt_schema,
-                "release_id": self.release_id,
-                "check_id": check.id,
-                "status": "passed",
-                "tasks": recorded,
-            }
-            if dict(receipt) != wanted:
-                raise _Hold("operational_receipt_mismatch")
-            self._observe(check.id, "operational_passed", receipt_sha256=canonical_sha256(receipt))
+        # The worker gate (every attempt a new epoch), then one observer per target
+        # against the settled services; each starts from the recorded tasks.
+        self._await_worker_readiness(WORKER_READINESS_CHECK, recorded)
+        for check in self.observers:
+            self._run_observer(check, recorded)
         # Re-enumerate immediately before success: a replacement needs a fresh window.
         self._require_recorded_tasks(recorded)
         self._transition(State.OPERATIONAL_VERIFIED)
+
+    def _service_address(self, task_arn: str) -> str:
+        """The recorded service task's one ENI address; anything else is not known."""
+        address = task_network_address(self._describe_task(task_arn))
+        if address is None:
+            raise _Hold("service_network_identity_unknown")
+        return address
+
+    def _run_observer(self, check: ObserverCheck, recorded: dict[str, str]) -> None:
+        """Launch the check's observer task and bind its receipt to the recorded task.
+
+        The receipt must come from this observer task, about the target's private
+        name and port, naming the one address it actually connected to; that
+        address must be the recorded service task's network interface, observed
+        before the launch and again after the observer stopped, with every
+        recorded service still in place. DNS answering from another healthy task
+        holds; so does a recorded task without exactly one known address.
+        """
+        if self._last(check.id, "operational_passed") is not None:
+            return
+        target = recorded[check.target]
+        peer = self._service_address(target)
+        if self._last(check.id, "launched") is None:
+            refused = self._last(check.id, *REFUSED_LAUNCHES)
+            if refused is not None:
+                raise _Hold(refused.get("reason", "launch_not_accepted"))
+            self._launch(check)
+
+        def settle(task: dict[str, Any], arn: str, token: str,
+                   deadline: datetime) -> tuple[str | None, dict[str, Any]]:  # fmt: skip
+            issue = evaluate_task(check.task, self.digests, token=token, task=task)
+            if issue is not None:
+                return issue, {}
+            receipt = self.evidence.operational_receipt(self.release_id, check.id, arn)
+            self._require_recorded_tasks(recorded)
+            if self._service_address(target) != peer:
+                raise _Hold("task_replaced")
+            if self._now() >= deadline:
+                self._observe(check.id, "operational_failed", task_arn=arn,
+                              reason="operational_deadline_exceeded")  # fmt: skip
+                raise _Hold("operational_deadline_exceeded")
+            self._guard()
+            failure = evaluate_observation(check, release_id=self.release_id, task_arn=arn,
+                                           peer=peer, receipt=receipt)  # fmt: skip
+            if failure is not None:
+                return failure, {}
+            assert receipt is not None
+            return None, {"receipt_sha256": canonical_sha256(receipt), "peer": peer,
+                          "service_task_arn": target}  # fmt: skip
+
+        self._await_launched(check, settle, missing="operational_evidence_missing",
+                             succeeded="operational_passed", failed="operational_failed")  # fmt: skip
 
     def _await_worker_readiness(self, check_id: str, recorded: dict[str, str]) -> None:
         """Observe the recorded worker task's own receipts for one bounded gate attempt.

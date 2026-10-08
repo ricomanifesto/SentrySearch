@@ -23,6 +23,37 @@ the release. A concurrent migrator fails immediately on the advisory lock;
 database lock waits are limited to 3 seconds and individual statements to 60
 seconds. Re-running an applied revision checks it without repeating the backfill.
 
+### Guarded release job
+
+The attended release controller runs the migration as
+`python -m dev.migrate_storage --release-job`, an ECS task with the schema-owner
+login. This mode reads only the task definition's environment and never loads a
+dotenv file. Before any connection it requires the release contract
+(`RELEASE_ID`, `RELEASE_JOB_ID`, `RELEASE_NOT_AFTER`,
+`RELEASE_JOB_BUDGET_SECONDS`), the expected database and login
+(`RELEASE_EXPECT_DATABASE`/`RELEASE_EXPECT_PRINCIPAL`, equal to `DB_NAME`/`DB_USER`),
+`DB_SSLMODE=verify-full` with `DB_SSLROOTCERT=/run/material/postgres-ca.pem`
+(owner-only), a deployed `ENVIRONMENT`, `DB_DEBUG=false`, enough time before
+the deadline and the ECS task identity. Failures there exit 2–6 with
+`sql_outcome: none`.
+
+It then opens one verified-TLS session tagged `release:<release>:<job>` with
+server-side `statement_timeout` (at most 60 s and the remaining time less a 5 s
+stop grace and a 2 s reserve), `lock_timeout` (≤3 s),
+`idle_in_transaction_session_timeout` (≤10 s, never above the statement limit)
+and `client_connection_check_interval=1000`, verifies them, re-derives them from
+the deadline before migrating and runs the same one-transaction migration. On
+stdout it writes one `sentry.release-migration.v1` receipt: on success `database`,
+`principal` and `schema` (`sentrysearch:<version>:<checksum16>`, the same value
+the product proof computes); on failure only `reason` and `sql_outcome`. SIGTERM
+cancels the statement and exits 143, the deadline exits 124, and any failure
+after SQL may have run reports `sql_outcome: unknown`. Tests:
+`tests/test_release_migration_job.py` (every refusal before a connection) and the
+explicit native suite `tests/release_migration_native.py`
+(`SENTRYSEARCH_TEST_PG_BIN` set to PostgreSQL 16 binaries: receipt and rerun,
+refused TLS and password, a blocked statement abandoned at its bound with no
+session left, SIGTERM in a real process).
+
 Backfill reads in batches of 250 and flushes each batch, but commits once. The
 transaction's WAL and total duration still scale with retained data. Statement
 limits are not a whole-release deadline; measure the dataset and use an operator

@@ -1,0 +1,1 @@
+SENTRY_RELEASE_RECEIPT {"job_id":"runtime-migrate","release_id":"0b9f7c1e-4d2a-4f6b-9a3e-2c1d0e9f8a7b","result":{"reason":"deadline_exceeded","sql_outcome":"unknown"},"schema":"sentry.release-migration.v1","status":"failed","task_arn":"arn:aws:ecs:us-east-1:111122223333:task/sentry-staging/0123456789abcdef0123456789abcdef"}

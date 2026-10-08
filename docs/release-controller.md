@@ -34,8 +34,11 @@ Required content:
   secret ARNs with exact VersionIds, security groups and container-to-image map;
 - jobs in fixed order (Runtime/product migrate, grant, proof), each with a
   deadline, stop grace, receipt schema and exact expected receipt fields.
-  Migrations state their schema; grants pin SQL source and hash. The Runtime
-  grant must match the reviewed `db/roles/service.sql` pin;
+  Migrations use the shared migration envelope `sentry.release-migration.v1`
+  (written by the Runtime `migrate -release-job` and the Search
+  `dev/migrate_storage.py --release-job`) and expect exactly `database`,
+  `principal` and `schema`; grants pin SQL source and hash. The Runtime grant
+  must match the reviewed `db/roles/service.sql` pin;
 - grant and proof jobs run only the [release-tools](release-tools.md) image
   (besides init), use receipt schema `sentry.release-tools.job.v1` and job ids
   `<database>-<phase>`, and expect exactly the keys the tools report: grants
@@ -45,7 +48,15 @@ Required content:
   must equal the Search source. Per database, the grant's identity matches the
   migration's, its service role is the proof's principal and the proof's schema
   equals the migrated schema;
-- operational checks and a tagged rollback plan: `empty_hold` for a first
+- operational checks: `worker-readiness` (schema `sentry.worker-readiness.v1`,
+  proven from the worker's own receipts) and exactly one observer each for the
+  Runtime and the API (schema `sentry.operational.v1`). An observer is its own
+  release-tools task (`init` from the Search image, `observer` from the
+  release-tools image) whose material is shared with no service, job or other
+  observer, on the service's private name `<target>.<namespace>` (one namespace
+  for both) and fixed port (Runtime 8443, API 8001), with its own deadline
+  (60 s to one hour) and stop grace. Check ids never repeat a job id;
+- a tagged rollback plan: `empty_hold` for a first
   release, or `compatible_release` with the prior release ID, images, task
   definitions, trust hash, compatible schemas and snapshot ARNs. This is the
   fallback after a failure, never the run's direction: a forward upgrade with a
@@ -242,9 +253,36 @@ observation completes before the service's start deadline. Tasks from an older
 deployment of the same revision never count. Count drift, a failed or superseded
 deployment, or timeout holds.
 
-Operational receipts must pass and bind the recorded task ARNs. The task set is
-enumerated again before and after the checks; a replacement holds because it
-needs a fresh observation window.
+The task set is enumerated before the checks. The worker gate runs first (below);
+then each observer, Runtime then API, launches like a job (journaled intent, send
+authorization, exact definition, token, no overrides, Exec disabled) against
+the services as recorded:
+
+- Before the launch the recorded service task must report exactly one attached
+  ENI with one private IPv4 address; otherwise `service_network_identity_unknown`
+  holds and no observer is launched.
+- The observer task must stop with the platform evidence a job needs (exact
+  definition, token, containers and digests, every exit code 0); a failed or
+  unfinished observer holds with the job codes (`job_container_failed`,
+  `job_exit_missing`) and its stream is not read.
+- Its receipt is read only from that task's own stream and must be exactly the
+  `operational` envelope for this release, this check and this observer task,
+  `passed`, naming the approved target, host and port, the fixed checks and
+  denials for its target and the one address it connected to. Anything else is
+  `operational_receipt_mismatch`.
+- That address must equal the recorded service task's ENI address; DNS that
+  answered from another task is `operational_peer_mismatch`.
+- Every recorded service is enumerated again and the target's address re-read
+  after the receipt; a replacement holds with `task_replaced` because it needs a
+  fresh observation.
+- The receipt must be observed before the observer's deadline. At the deadline a
+  live observer receives a journaled stop; the check holds with
+  `operational_deadline_exceeded`. Observer stops carry no SQL outcome.
+
+The pass records the receipt hash, the peer and the service task. All services
+are enumerated once more immediately before `operational_verified`. A recovered
+run re-proves the worker gate in a new epoch and keeps observer passes already
+journaled.
 
 ### Worker readiness gate
 
@@ -253,7 +291,7 @@ The manifest must include the `worker-readiness` check with receipt schema
 service's application container must be the Search image named `app`. The
 controller proves this check itself from the worker supervisor's own
 [readiness receipts](runtime-consistency.md#readiness-receipts) through
-`LogPort` (GetLogEvents); Runtime and API checks still use `EvidencePort`.
+`LogPort` (GetLogEvents); Runtime and API observer receipts use `EvidencePort`.
 
 Identity comes from ECS, never from the worker: the recorded deployment and task,
 whose revision and image digests are checked again on every poll, and the fixed
@@ -338,11 +376,15 @@ scheduling or real log ingestion.
   against in-process fakes. Their AWS behavior (IAM, `GetLogEvents` tokens as
   `endTime` advances, stopped-task listing, reported overrides, S3 conditional
   deletes, the STS `Date` header) is unverified.
-- In-image deadline guards and receipt producers for the two migration images,
-  and the bootstrap job's task definition and administrator path (its manifest
+- Built and scanned images carrying the migration release jobs and the
+  observers. The producers exist in source (the Runtime `migrate -release-job`,
+  the Search `dev/migrate_storage.py --release-job` and
+  [`release_tools observe-runtime`/`observe-api`](release-tools.md#operational-observers))
+  and are tested natively; their task definitions, the observe log group and the
+  launcher policy for them are not wired.
+- The bootstrap job's task definition and administrator path (its manifest
   phase and controller ordering exist; the grant, proof and reconciliation jobs
   are [implemented](release-tools.md) and mock-wired).
-- Observers for the Runtime and API operational checks.
 - Rollback execution (the `rollback` purpose is validated, never run) and teardown.
 
 These remain separate implementation and approval gates. See
@@ -368,9 +410,10 @@ boundary. The attended whole-release read is the selected design. It covers no
 other release, no unmasking and no sharing outside the attended session.
 Attaching the policies remains a separate approval. Each worker revision fixes
 its release's `SENTRYSEARCH_RELEASE_ID`, its `worker/<release-id>` stream prefix
-and non-blocking logging. A release still cannot complete: the migration images
-emit no receipts and the Runtime and API operational observers do not exist, so
-the adapters report both as missing evidence and the release holds.
+and non-blocking logging. The roots do not yet define the observer task
+definitions, the `/<prefix>/observe` log group or launch and read permissions for
+them, and the deployed images predate the migration release jobs, so a release
+against these roots would hold.
 The manifest's environment name must equal the roots' `name_prefix` so the lock
 key matches the release-evidence policy. These roots are not applied, and mocked
 plans do not prove IAM behavior.

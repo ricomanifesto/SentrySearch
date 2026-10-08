@@ -3,7 +3,9 @@
 `release_tools/` and `container/release-tools.Dockerfile` provide the database
 jobs the [release controller](release-controller.md) runs after migrations:
 Runtime and product **grants**, least-authority **proofs**, a same-database
-**reconciliation** job and a **bootstrap** job for a fresh instance. The image is
+**reconciliation** job and a **bootstrap** job for a fresh instance. It also
+carries the Runtime and API [operational observers](#operational-observers) the
+controller launches after the services start. The image is
 local and mock-wired only: ARM64 build, container tests and exact-image scanning
 have run, but it has not been published to a registry or run in AWS. Findings
 remain unaccepted, and nothing here grants access to a real database.
@@ -117,12 +119,54 @@ requires grant/proof jobs to use this schema, the job ids `<database>-<phase>`,
 exactly these result keys, `sql_digest` equal to the pinned SQL hash, and proof
 identities and schemas that agree with the migration and grant expectations.
 
-`release_tools.receipt.extract_receipt` is the parser `release_aws.evidence` uses
-on the exact stream of the observed task (`<job>/<container>/<task id>`). No
-marker is a missing receipt. Two markers, a malformed line or extra envelope
-fields are `ReceiptAmbiguous`, which the adapter reports as an ambiguous
-observation.
+`release_tools.receipt` defines three receipt kinds that share this line format:
+`tools` (these jobs), `migration` (`sentry.release-migration.v1`, written by the
+Runtime and Search migration release jobs) and `operational`
+(`sentry.operational.v1`, the observers, with `check_id` instead of `job_id`).
+`parse_receipt(lines, kind)` is the parser `release_aws.evidence` uses on the
+exact stream of the observed task. No marker is a missing receipt. Two markers, a
+malformed line, another kind's schema or subject field, extra or missing
+envelope fields, a non-string result value or one outside the allowlist are
+`ReceiptAmbiguous`, which the adapter reports as an ambiguous observation.
 Missing, stale (another task or release), ambiguous or failed receipts all hold.
+Golden lines in `tests/fixtures/release_receipts/` pin the migration envelope
+byte for byte; the Runtime's Go producer is tested against the same lines.
+
+`release_tools/__init__.py`, `contract.py` and `receipt.py` import only the
+standard library. The Search image copies exactly these three modules so its
+migration release job writes the same envelope under the same contract
+(identifiers, deadline, 5-second stop grace, session limits and failure
+classes); it carries none of this image's programs or SQL.
+
+## Operational observers
+
+`observe-runtime` and `observe-api` each run as one release task (`init` from the
+Search image, `observer` from this image) after the services start. Settings come
+from the task definition: `RELEASE_ID`, `RELEASE_CHECK_ID`, `RELEASE_NOT_AFTER`,
+`RELEASE_CHECK_BUDGET_SECONDS`, `RELEASE_TARGET_HOST` (a DNS name, never an
+address) and `RELEASE_TARGET_PORT`; the task identity comes from the metadata
+endpoint as for jobs. The check ends 5 seconds before its deadline and each
+request is bounded to 5 seconds.
+
+The observer resolves the private name once, requires exactly one IPv4 address
+and sends every request to that address, recording the peer at connect time. It
+does not retry. Response bodies, the token and certificates are never printed.
+
+| Target | Checks | Required denials |
+| --- | --- | --- |
+| Runtime (`8443`) | verified TLS against only the mounted private CA (`/run/material/runtime-ca.pem`) with the expected name for SNI and SAN; `/healthz` `alive` and `/readyz` `ready` with the probe token (`/run/material/probe-token`) | `/readyz` without the token answers 401; the platform's public trust store refuses the certificate |
+| API (`8001`) | plain HTTP on the private port: `/` `operational`, `/api/ready` `ready` | the unauthenticated `/api/reports` answers 401, 403 or 503 (503 while no authentication service is configured) |
+
+Material must be owner-only regular files of the observer's user, read without
+following links. The receipt (`operational` kind) names the target, host, the
+connected peer, port, TLS mode, checks and denials; a failure receipt carries
+only `reason` and the task exits non-zero (5 material, 12 observation, 2
+configuration, 4 deadline, 6 task identity). The observer cannot know which task
+answered: the controller compares the peer with the recorded service task's
+network interface and holds on any difference. Tests:
+`tests/test_release_observe.py` runs both observers against local TLS and HTTP
+servers (wrong CA, wrong name, missing denials, two DNS answers, a changed peer,
+oversized bodies, the deadline).
 
 ## SQL programs
 
@@ -268,8 +312,12 @@ controller holds when an observed task reports one.
   and `template1` (modelled locally by a CREATEROLE/CREATEDB login), `require_auth`
   with RDS authentication, `client_connection_check_interval` and statement
   logging.
-- S3 cross-prefix denial (needs the storage-proof task and real IAM) and migration
-  jobs' own in-image guards and receipts (Runtime and Search images).
+- S3 cross-prefix denial (needs the storage-proof task and real IAM).
+- An image containing the observers, the shared receipt kinds and the contract
+  module: the October 7 acceptance image predates them, so its build, container
+  tests and scans do not cover them. The migration release jobs are tested
+  natively against PostgreSQL 16, not yet inside rebuilt Runtime and Search
+  images. Observer task definitions and the observe log group are not wired.
 - A task that never reaches its container (pending, image pull, init) is outside
   the in-image guard; the controller's deadline StopTask and the attended operator
   cover it. The 0.25 vCPU / 512 MiB allocation is unmeasured.

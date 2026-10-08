@@ -156,6 +156,9 @@ COPY --from=build /app/.venv /app/.venv
 COPY run_api.py /app/
 COPY src /app/src
 COPY dev/run_runtime_worker.py dev/migrate_storage.py dev/prepare_service_volumes.py dev/check_worker_readiness.py /app/dev/
+# The guarded migration job's receipt and release contract: the standard-library
+# modules shared with release-tools, not that package's programs or SQL.
+COPY release_tools/__init__.py release_tools/contract.py release_tools/receipt.py /app/release_tools/
 COPY certs /app/certs
 # Code imports only from /app; PYTHONSAFEPATH keeps the writable working
 # directory off sys.path so it cannot shadow application modules.

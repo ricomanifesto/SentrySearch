@@ -53,7 +53,7 @@ def migration_evidence():
         **clean("init", "migration"),
     }
     receipt = {
-        "schema": "sentry.release.migrate.v1",
+        "schema": "sentry.release-migration.v1",
         "release_id": DOCUMENT["release_id"],
         "job_id": "runtime-migrate",
         "task_arn": observed_task["taskArn"],
