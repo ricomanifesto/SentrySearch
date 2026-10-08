@@ -72,7 +72,10 @@ records its sequence and the hash of its predecessor, so a reordered or edited
 journal is rejected. Polling is not journaled; intents, observations and
 transitions are. Before every forward mutation the controller re-checks approval and
 the release window, then appends an intent (request hash, stable token, deadline)
-and only then calls the port. A lost CAS race halts before any mutation.
+and only then calls the port. A lost CAS race halts before any mutation. Approval
+is not checked again between that append and the call: an approval that expires
+during a slow journal write does not stop that one request. For a forward service
+deploy the window still binds after the write, through its deadline.
 
 The environment lock is created with create-if-absent semantics and is never
 stolen by age. A different session cannot continue a journal. Recovery is an
@@ -160,7 +163,7 @@ A lost or crashed deploy is resent only as the identical request, journaled with
 the original deadline and `retry_of`, at most three times per reconciliation;
 each authorized recovery reconciles again within the same original deadline. No
 forward deploy, first or resent, is sent at or after its recorded service-start
-deadline: the deadline is checked again after its intent is journaled, and for a
+deadline: the deadline is checked after its intent is journaled, and for a
 resend also after the read that decides it. Otherwise the update holds with
 `service_update_unconfirmed`.
 

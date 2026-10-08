@@ -390,7 +390,7 @@ class ReleaseController:
         return min(started + timedelta(seconds=window.total_seconds), window.expires_at)
 
     def _guard(self) -> None:
-        """No mutation or promotion without a current approval inside the window."""
+        """Before each mutation intent or promotion: a current approval inside the window."""
         now = self.clock.now()
         if now >= self.approval.approval.not_after:
             raise _Hold("approval_expired")

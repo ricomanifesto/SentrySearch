@@ -1083,6 +1083,8 @@ class DriftedRetryResponse(Interrupted):
             # The resend reaches ECS but is not applied: no new deployment.
             self.forward.append(copy.deepcopy(request))
             self.sent_at.append(self.r.clock.now())
+            self.r.ecs.mutations.append(("update_service", copy.deepcopy(request)))
+            self.r.trace.append(("ecs", "update_service", request["service"]))
             response = {"service": self.r.ecs._service(self.arn)}
         else:
             response = super().__call__(request)  # the first forward send raises
@@ -1182,7 +1184,7 @@ def test_a_journal_write_crossing_the_original_deadline_holds_before_the_resend(
 
 
 def test_a_slow_first_deploy_journal_write_never_sends_at_the_deadline():
-    # Near a window-bound deadline the intent write alone can reach it.
+    # A journal write slow enough to reach the recorded deadline: nothing is sent.
     r = rig()
     runtime_arn = r.document["environment"]["services"]["runtime"]
     original = r.store.replace
