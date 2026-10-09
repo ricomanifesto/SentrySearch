@@ -146,14 +146,19 @@ CMD []
 # Cloudflare Durable Object job image (`--target cloudflare`): the JobRunner
 # starts each job as root through sentrysearch_cloudflare.cfinit, which writes the
 # job's material and drops every capability set through setpriv before the job
-# runs as 65532 (runtime-release) or 10001 (search-release). The JobRunner
-# passes the full entrypoint for each job. See deploy/cloudflare/README.md.
+# runs as 65532 (runtime-release) or 10001 (search-release). See
+# deploy/cloudflare/README.md.
 FROM release-tools AS cloudflare
 COPY --from=python-files /cloudflare-extra/ /
 COPY deploy/cloudflare/sentrysearch_cloudflare /usr/local/lib/python3.11/site-packages/sentrysearch_cloudflare
 COPY dev/prepare_service_volumes.py /usr/local/lib/python3.11/site-packages/sentrysearch_cloudflare/
 USER 0:0
-ENTRYPOINT ["/usr/local/bin/tini", "--", "/usr/local/bin/python3.11", "-I", "-B", "-m", "sentrysearch_cloudflare.cfinit", "start", "--profile", "runtime-release", "--"]
+# No entrypoint or command: start({entrypoint}) is documented only as the
+# "command and arguments to run", and local workerd appends it to an image
+# entrypoint. With neither set, the Durable Object's complete fixed argv, which
+# begins with the wrapper, runs the same way under either reading, and a start
+# without it has no command at all.
+ENTRYPOINT []
 CMD []
 
 # The default build target stays the unchanged release-tools image.

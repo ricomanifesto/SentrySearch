@@ -15,6 +15,7 @@ from dev.tls_fixtures import create_certificates
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy" / "cloudflare"))
 cfinit = importlib.import_module("sentrysearch_cloudflare.cfinit")
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 API = ("/app/.venv/bin/python", "/app/run_api.py")
 WORKER = ("/app/.venv/bin/python", "-m", "dev.run_runtime_worker", "--health-port", "8081")
@@ -70,6 +71,7 @@ class FakeSystem:
         return cfinit.System(
             machine=lambda: "x86_64",
             seccomp_path=seccomp_path,
+            home=lambda uid: {10001: "/nonexistent", 65532: "/home/nonroot"}[uid],
             close_filter_files=self.close_filter_files,
             geteuid=lambda: self.euid,
             read_status=lambda: self.status,
@@ -146,7 +148,7 @@ def test_start_materializes_as_root_then_drops_through_setpriv(material):
         "--",
         *API,
     ]
-    assert env == {"DB_HOST": "db", "PYTHONPATH": "/app"}
+    assert env == {"DB_HOST": "db", "PYTHONPATH": "/app", "HOME": "/nonexistent"}
 
 
 def test_continue_requires_the_kernel_to_report_a_full_drop():
@@ -209,7 +211,7 @@ def test_probe_drops_with_a_minimal_environment_and_no_material():
     assert invoke(fake, ["probe", "--profile", "search", "--", *PROBE], environ) == "executed"
     path, argv, env = executed(fake)
     assert argv[:10] == setpriv_prefix(10001) and "continue-probe" in argv
-    assert env == {"PYTHONPATH": "/app", "PATH": "/app/.venv/bin"}
+    assert env == {"PYTHONPATH": "/app", "PATH": "/app/.venv/bin", "HOME": "/nonexistent"}
     assert fake.prepared == []
     fake = FakeSystem()
     assert (
@@ -374,13 +376,7 @@ def test_the_filter_file_is_closed_before_the_service_starts():
 def test_every_root_phase_interpreter_ignores_the_working_directory():
     # The root phase runs before the drop with a writable working directory:
     # its interpreter must not put that directory (or a script's) on sys.path.
-    repo = Path(__file__).resolve().parents[1]
-    root_starts = []
-    for dockerfile in ("container/Dockerfile", "container/release-tools.Dockerfile"):
-        for line in (repo / dockerfile).read_text().splitlines():
-            if line.startswith("ENTRYPOINT") and "sentrysearch_cloudflare.cfinit" in line:
-                root_starts.append(json.loads(line.removeprefix("ENTRYPOINT ")))
-    worker = repo / "deploy" / "cloudflare" / "worker" / "src"
+    worker = REPO_ROOT / "deploy" / "cloudflare" / "worker" / "src"
     for source in ("api.ts", "worker.ts"):
         text = (worker / source).read_text()
         assert 'PYTHON, "-P", "-m", "sentrysearch_cloudflare.cfinit"' in text, source
@@ -388,7 +384,44 @@ def test_every_root_phase_interpreter_ignores_the_working_directory():
         'const RELEASE_PYTHON = ["/usr/local/bin/python3.11", "-I", "-B", "-m"];'
         in (worker / "jobs.ts").read_text()
     )
-    assert len(root_starts) == 2
-    for argv in root_starts:
-        interpreter = argv[2 : argv.index("-m")]
-        assert "-P" in interpreter or "-I" in interpreter, argv
+
+
+def test_cloudflare_targets_leave_the_whole_command_to_the_durable_object():
+    # start({entrypoint}) may replace or extend an image entrypoint; with none in
+    # the image, the Durable Object's fixed argv (wrapper first) runs either way.
+    for dockerfile in ("container/Dockerfile", "container/release-tools.Dockerfile"):
+        stage = (REPO_ROOT / dockerfile).read_text().split(" AS cloudflare\n", 1)[1]
+        stage = stage.split("\nFROM ", 1)[0]
+        directives = [line for line in stage.splitlines() if line.startswith(("ENTRYPOINT", "CMD"))]
+        assert directives == ["ENTRYPOINT []", "CMD []"], dockerfile
+    worker = REPO_ROOT / "deploy" / "cloudflare" / "worker" / "src"
+    for source, wrapper in (
+        (
+            "api.ts",
+            '"/usr/local/bin/tini", "--", PYTHON, "-P", "-m", "sentrysearch_cloudflare.cfinit", "start"',
+        ),
+        (
+            "worker.ts",
+            '"/usr/local/bin/tini", "--", PYTHON, "-P", "-m", "sentrysearch_cloudflare.cfinit", "start"',
+        ),
+        ("runtime.ts", '["/app/cfinit", "run", "--", "/app/sentryruntime"]'),
+        (
+            "jobs.ts",
+            '"/usr/local/bin/tini", "--", ...RELEASE_PYTHON, "sentrysearch_cloudflare.cfinit", "start"',
+        ),
+    ):
+        assert wrapper in (worker / source).read_text(), source
+
+
+def test_the_root_home_never_follows_the_service_user(material):
+    # libpq reads ~/.postgresql/postgresql.crt and fails on anything but "absent";
+    # /root is unreadable to the service user, so HOME must be the user's own.
+    for profile, uid, home in (
+        ("search", 10001, "/nonexistent"),
+        ("runtime-release", 65532, "/home/nonroot"),
+    ):
+        fake = FakeSystem()
+        command = API if profile == "search" else (*cfinit.RELEASE_PYTHON, "proof")
+        argv = ["start", "--profile", profile, "--", *command]
+        assert invoke(fake, argv, {**material, "HOME": "/root"}) == "executed"
+        assert executed(fake)[2]["HOME"] == home, uid

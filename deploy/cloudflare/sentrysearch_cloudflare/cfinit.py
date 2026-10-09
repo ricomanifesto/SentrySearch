@@ -36,6 +36,7 @@ import importlib
 import os
 from pathlib import Path
 import platform
+import pwd
 import re
 import struct
 import sys
@@ -134,6 +135,7 @@ class System:
     read_status: Callable[[], str] = lambda: Path("/proc/self/status").read_text()
     machine: Callable[[], str] = platform.machine
     seccomp_path: Callable[[bytes], str] = lambda program: _inherited_memfd(program)
+    home: Callable[[int], str] = lambda uid: _home(uid)
     close_filter_files: Callable[[], None] = lambda: _close_filter_files()
     prepare: Callable[..., None] = volumes.prepare
     chdir: Callable[[Path], None] = os.chdir
@@ -265,6 +267,13 @@ def _interpreter() -> list[str]:
 FILTER_FILE = "cfinit-seccomp"
 
 
+def _home(uid: int) -> str:
+    try:
+        return pwd.getpwuid(uid).pw_dir
+    except KeyError:
+        return "/nonexistent"
+
+
 def _inherited_memfd(program: bytes) -> str:
     """Hand setpriv the filter through an inherited memory file; nothing is written to disk."""
     if sys.platform != "linux":
@@ -348,6 +357,9 @@ def run(argv: Sequence[str], environ: Mapping[str, str], system: System) -> int:
                     raise Refused(EXIT_CONFIG, "probe must not receive material")
                 env = {key: environ[key] for key in PROBE_VARIABLES if key in environ}
                 follow = "continue-probe"
+            # The root start's HOME (/root) would follow the service user, and
+            # libpq treats an unreadable ~/.postgresql/postgresql.crt as fatal.
+            env["HOME"] = system.home(profile.uid)
             program = namespace_filter(system.machine())
             target = _setpriv(
                 profile.uid,

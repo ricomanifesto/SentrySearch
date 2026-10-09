@@ -6,6 +6,8 @@
 !.python-version
 !run_api.py
 !src/**
+!release_cloudflare/__init__.py
+!release_cloudflare/r2_client.py
 !dev/run_runtime_worker.py
 !dev/migrate_storage.py
 !dev/prepare_service_volumes.py

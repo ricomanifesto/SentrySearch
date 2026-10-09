@@ -469,6 +469,9 @@ def test_image_contract_ships_only_root_owned_release_files():
         "app/dev/migrate_storage.py",
         "app/dev/prepare_service_volumes.py",
         "app/dev/check_worker_readiness.py",
+        # The R2 artifact backend shares the release controller's R2 client.
+        "app/release_cloudflare/__init__.py",
+        "app/release_cloudflare/r2_client.py",
     }
     shipped = {name for name in members if name.startswith("app/") and "/.venv/" not in name}
     assert shipped == expected

@@ -179,6 +179,8 @@ COPY --from=init --chmod=0755 /tini /usr/local/bin/tini
 COPY --from=build /app/.venv /app/.venv
 COPY run_api.py /app/
 COPY src /app/src
+# Artifact storage shares the R2 client with the release controller's control store.
+COPY release_cloudflare/__init__.py release_cloudflare/r2_client.py /app/release_cloudflare/
 COPY dev/run_runtime_worker.py dev/migrate_storage.py dev/prepare_service_volumes.py dev/check_worker_readiness.py /app/dev/
 COPY certs /app/certs
 # Code imports only from /app; PYTHONSAFEPATH keeps the writable working
@@ -201,13 +203,17 @@ CMD []
 # init container or secret volume and runs every process with root-equivalent
 # capabilities, so it starts as root: sentrysearch_cloudflare.cfinit writes the
 # role's material, then setpriv drops every capability set and switches to
-# 10001 before the role runs. The Durable Object passes the full entrypoint for
-# each role. See deploy/cloudflare/README.md.
+# 10001 before the role runs. See deploy/cloudflare/README.md.
 FROM service AS cloudflare
 COPY --from=runtime-files /cloudflare-extra/ /
 COPY deploy/cloudflare/sentrysearch_cloudflare /app/sentrysearch_cloudflare
 USER 0:0
-ENTRYPOINT ["/usr/local/bin/tini", "--", "/app/.venv/bin/python", "-P", "-m", "sentrysearch_cloudflare.cfinit", "start", "--profile", "search", "--"]
+# No entrypoint or command: start({entrypoint}) is documented only as the
+# "command and arguments to run", and local workerd appends it to an image
+# entrypoint. With neither set, the Durable Object's complete fixed argv, which
+# begins with the wrapper, runs the same way under either reading, and a start
+# without it has no command at all.
+ENTRYPOINT []
 CMD []
 
 # The default build target stays the unchanged service image.
