@@ -448,7 +448,10 @@ def test_readiness_observer_reads_the_worker_stream_terraform_configures():
     assert "{ SENTRYSEARCH_RELEASE_ID = var.release_id }" in task_module
     uuid = "0b9f7c1e-4d2a-4f6b-9a3e-2c1d0e9f8a7b"
     assert release_id_from_environment({"SENTRYSEARCH_RELEASE_ID": uuid}) == uuid
-    assert 'worker_log_options = { mode = "non-blocking", max-buffer-size = "4m" }' in task_module
+    options = between(task_module, "  service_log_options = {", "  }\n")
+    assert re.search(r'^ +worker += \{ mode = "non-blocking", max-buffer-size = "4m" \}$', options,
+                     re.MULTILINE)  # fmt: skip
+    assert "}, local.service_log_options[name])\n" in logs
     assert "release_id          = each.value.release_id" in releases
 
 
