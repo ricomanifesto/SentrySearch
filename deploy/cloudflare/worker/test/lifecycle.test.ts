@@ -620,3 +620,68 @@ for (const rule of rules.cases) {
     for (const [key, value] of Object.entries(rule.expect.body ?? {})) assert.deepEqual(reply[key], value, key);
   });
 }
+
+test("an abandoned run leaves no claim, so the job can still run exactly once", async () => {
+  const container = new FakeContainer();
+  const name = `job-${RELEASE}-runtime-grant`;
+  const ctx = state(name, container);
+  const runner = new JobRunner(ctx as Any, env() as Any);
+  const body = JSON.stringify({ job_id: "runtime-grant", phase: "grant", database: "runtime", image: "release_tools", deadline_seconds: 60 });
+  const release = { resolve: () => {} };
+  const original = container.interceptOutboundHttp.bind(container);
+  let first = true;
+  (container as Any).interceptOutboundHttp = async (host: string, binding: Any) => {
+    if (first) {
+      first = false;
+      await new Promise<void>((resolve) => (release.resolve = resolve));
+    }
+    return original(host, binding);
+  };
+  const rows = () => ctx.storage.sql.exec("SELECT start_nonce, state FROM jobs").toArray();
+  const pending = runner.fetch(await signed("POST", `jobs/${name}`, "run", body, { expiresAt: Math.floor(now / 1000) + 30 }));
+  for (let i = 0; i < 3; i++) await tick();
+  assert.equal(rows().length, 1, "the claim exists while its binding is pending");
+  assert.equal((await json(await runner.fetch(await signed("POST", `jobs/${name}`, "run", body)))).code, "already_run");
+  now += 31_000;
+  release.resolve();
+  const reply = await json(await pending);
+  assert.equal(reply.abandoned, true);
+  assert.equal(rows().length, 0, "nothing started, so the claim is gone");
+  assert.equal(container.starts.length, 0);
+  const run = await json(await runner.fetch(await signed("POST", `jobs/${name}`, "run", body)));
+  assert.equal(typeof run.start_nonce, "string");
+  assert.equal(container.starts.length, 1);
+  assert.equal((await json(await runner.fetch(await signed("POST", `jobs/${name}`, "run", body)))).code, "already_run");
+});
+
+test("a service start abandoned after its binding leaves no row for its command id", async () => {
+  const container = new FakeContainer();
+  const ctx = state("worker-0", container);
+  const service = new WorkerService(ctx as Any, env() as Any);
+  const release = { resolve: () => {} };
+  const original = container.interceptOutboundHttp.bind(container);
+  let first = true;
+  (container as Any).interceptOutboundHttp = async (host: string, binding: Any) => {
+    if (first) {
+      first = false;
+      await new Promise<void>((resolve) => (release.resolve = resolve));
+    }
+    return original(host, binding);
+  };
+  const pending = service.fetch(
+    await signed("POST", "worker/worker-0", "start", START_BODY, { commandId: "start-abandoned", expiresAt: Math.floor(now / 1000) + 30 }),
+  );
+  for (let i = 0; i < 3; i++) await tick();
+  now += 31_000;
+  release.resolve();
+  const reply = await json(await pending);
+  assert.deepEqual([reply.started, reply.abandoned], [false, true]);
+  const rows = ctx.storage.sql.exec("SELECT * FROM starts WHERE command_id = ?", "start-abandoned").toArray();
+  assert.equal(rows.length, 0);
+  assert.equal(container.starts.length, 0);
+  // The same command id may start once a fresh copy arrives after the replay row expired.
+  now += 10 * 60_000;
+  const again = await json(await service.fetch(await signed("POST", "worker/worker-0", "start", START_BODY, { commandId: "start-abandoned" })));
+  assert.equal(again.started, true);
+  assert.equal(container.starts.length, 1);
+});

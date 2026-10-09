@@ -467,6 +467,11 @@ class FakeDOControl:
         # migration to run models the missing receipt producers by turning it on.
         self.wire_migrations = False
         self.image_override: dict[tuple[str, str], str] = {}
+        # Claims abandoned before anything starts (the command expired while
+        # interceptions were bound): the object drops the claim.
+        self.abandon: set[tuple[str, str]] = set()
+        # Seconds a service start stays "starting" before it runs.
+        self.starting_seconds = 0.0
 
     # Test helpers -------------------------------------------------------------
 
@@ -516,7 +521,7 @@ class FakeDOControl:
             "command_id": f"start-{service}-{release}",
             "version_id": self.versions.version_of(service),
             "image": self.image_for(service, "runtime" if service == "runtime" else "search"),
-            "state": "running",
+            "state": "starting" if self.starting_seconds else "running",
             "started_at": self.clock.now(),
             "drain_until": None,
             "exit_detail": None,
@@ -663,6 +668,10 @@ class FakeDOControl:
         if item.service == "jobs":
             self._progress_job(item, start, now)
             return
+        if start["state"] == "starting" and now >= start["started_at"] + timedelta(
+            seconds=self.starting_seconds
+        ):
+            start["state"] = "running"
         if start["state"] == "draining" and now >= start["drain_until"]:
             start.update(state="exited", exit_detail="exit 0")
             item.running = False
@@ -745,6 +754,11 @@ class FakeDOControl:
         if item.running or (current is not None and current["state"] in LIVE):
             return 200, {"started": False, "start_nonce": None if current is None
                          else current["start_nonce"]}  # fmt: skip
+        if (item.service, "start") in self.abandon:
+            self.abandon.discard((item.service, "start"))
+            item.replay.pop(command.command_id, None)
+            nonce = nonce_of(f"abandoned-{item.service}-{command.command_id}")
+            return 200, {"started": False, "abandoned": True, "start_nonce": nonce}
         image_key = "runtime" if item.service == "runtime" else "search"
         start = {
             "start_nonce": nonce_of(f"{item.service}-{command.command_id}-{len(item.starts)}"),
@@ -752,7 +766,7 @@ class FakeDOControl:
             "command_id": command.command_id,
             "version_id": self.versions.version_of(item.service),
             "image": self.image_for(item.service, image_key),
-            "state": "running",
+            "state": "starting" if self.starting_seconds else "running",
             "started_at": self.clock.now(),
             "drain_until": None,
             "exit_detail": None,
@@ -862,8 +876,6 @@ class FakeDOControl:
         }
 
     def _job_run(self, item, command, body):
-        if item.running or item.starts:
-            return 409, {"error": "this job object has already run", "code": "already_run"}
         fields = {"job_id", "phase", "database", "image", "deadline_seconds"}
         if not isinstance(body, dict) or set(body) != fields:
             return 400, {"error": "invalid job request", "code": "invalid_request"}
@@ -874,6 +886,16 @@ class FakeDOControl:
         if not wired and not (self.wire_migrations and body["phase"] == "migrate"):
             # As jobs.ts: only grant and proof with the tools image are wired.
             return 400, {"error": "job is not wired on this platform", "code": "invalid_request"}
+        if item.running or item.starts:
+            return 409, {"error": "this job object has already run", "code": "already_run"}
+        if ("jobs", "run") in self.abandon:
+            # A claim is abandoned only once its command has expired, so its
+            # replay row is gone by the next request too.
+            self.abandon.discard(("jobs", "run"))
+            item.replay.pop(command.command_id, None)
+            nonce = nonce_of(f"abandoned-{item.name}-{command.command_id}")
+            return 200, {"object_id": item.id, "start_nonce": nonce,
+                         "command_id": command.command_id, "abandoned": True}  # fmt: skip
         now = self.clock.now()
         row = {
             "start_nonce": nonce_of(f"job-{item.name}-{command.command_id}"),

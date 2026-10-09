@@ -71,6 +71,7 @@ Thumbs.db
 !/docs/release-controller.md
 !/docs/release-tools.md
 !/docs/release-cloudflare-r2-store.md
+!/docs/release-cloudflare.md
 !/docs/r2-artifacts.md
 backup_*/
 # Legacy main files (keep API files)

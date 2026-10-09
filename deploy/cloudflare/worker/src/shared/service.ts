@@ -207,14 +207,16 @@ export abstract class ServiceObject<Env extends ServiceEnv> extends DurableObjec
       case "GET receipts": {
         this.reconcile();
         const row = this.current();
-        if (!row) return Response.json({ error: "no start" }, { status: 404 });
+        if (!row) return Response.json({ error: "no start", code: "not_found" }, { status: 404 });
         return Response.json(this.receipts.view(row.start_nonce, !LIVE.has(row.state)));
       }
       case "POST receipts": {
         this.reconcile();
         const row = this.current();
         const page = jsonBody(body);
-        if (!row || page.start_nonce !== row.start_nonce) return Response.json({ error: "no such start" }, { status: 404 });
+        if (!row || page.start_nonce !== row.start_nonce) {
+          return Response.json({ error: "no such start", code: "not_found" }, { status: 404 });
+        }
         const after = Number(page.after ?? 0);
         const limit = Number(page.limit ?? MAX_PAGE);
         try {
@@ -267,7 +269,9 @@ export abstract class ServiceObject<Env extends ServiceEnv> extends DurableObjec
       // interception goes back to the live start (CF04-R31).
       const claim = this.current();
       if (Math.floor(Date.now() / 1000) >= command.expiresAt || claim?.start_nonce !== startNonce || claim.state !== "starting") {
-        this.finish(startNonce, "failed", "start abandoned before the container started");
+        // Nothing started under this claim: drop it, so neither the start's
+        // command id nor its row reads as a start (CF05-R18).
+        this.ctx.storage.sql.exec("DELETE FROM starts WHERE start_nonce = ?", startNonce);
         if (claim && claim.start_nonce !== startNonce && ["running", "draining"].includes(claim.state)) {
           await this.intercept(container, claim.start_nonce);
         }

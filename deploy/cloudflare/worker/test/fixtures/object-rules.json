@@ -412,6 +412,66 @@
       "expect": {
         "status": 200
       }
+    },
+    {
+      "name": "a malformed run is refused before run-once",
+      "object": "jobs",
+      "setup": [
+        {
+          "method": "POST",
+          "action": "run",
+          "body": "$RUN",
+          "release": "same",
+          "session": "s-a",
+          "fence": "1",
+          "expires_in": 60
+        }
+      ],
+      "command": {
+        "method": "POST",
+        "action": "run",
+        "body": "$RUN_MIGRATE",
+        "release": "same",
+        "session": "s-a",
+        "fence": "1",
+        "expires_in": 60
+      },
+      "expect": {
+        "status": 400,
+        "code": "invalid_request"
+      }
+    },
+    {
+      "name": "a receipt read for another start is not found",
+      "object": "worker",
+      "setup": [
+        {
+          "method": "POST",
+          "action": "start",
+          "body": "$START",
+          "release": "same",
+          "session": "s-a",
+          "fence": "1",
+          "expires_in": 60
+        }
+      ],
+      "command": {
+        "method": "POST",
+        "action": "receipts",
+        "body": {
+          "start_nonce": "ffffffffffffffffffffffffffffffff",
+          "after": 0,
+          "limit": 10
+        },
+        "release": "same",
+        "session": "s-a",
+        "fence": "1",
+        "expires_in": 60
+      },
+      "expect": {
+        "status": 404,
+        "code": "not_found"
+      }
     }
   ]
 }

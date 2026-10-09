@@ -295,7 +295,7 @@ def test_a_job_deadline_stops_the_named_start_and_never_claims_sql_cancellation(
     assert stops
     nonce = stops[0]["instance"].split("/")[1]
     sent = [q for q in r.control.requests if q["service"] == "jobs" and q["action"] == "stop"]
-    assert [q["command_id"] for q in sent] == [f"stop-{nonce}"]
+    assert [q["command_id"].rsplit("-", 1)[0] for q in sent] == [f"stop-{nonce}"]
     # The object had already signalled at its own deadline; the stop changes nothing.
     assert r.control.objects[("jobs", sent[0]["name"])].starts[-1]["state"] == "destroyed"
     outcomes = {e["result"]: e.get("sql_outcome") for e in r.events("observation",
@@ -427,7 +427,9 @@ def test_an_upgrade_quiesces_the_prior_release_with_nonce_bound_cross_release_st
     stops = r.events("intent", action="stop_service")
     assert {e["subject"]: e["start_nonce"] for e in stops} == prior
     sent = [q for q in r.control.requests if q["action"] == "stop" and q["service"] != "jobs"]
-    assert {q["command_id"] for q in sent} == {f"stop-{n}" for n in prior.values()}
+    assert {q["command_id"].rsplit("-", 1)[0] for q in sent} == {
+        f"stop-{n}" for n in prior.values()
+    }
     assert len(r.events("observation", result="scaled_to_zero")) == 3
     assert_intent_precedes_every_mutation(r)
 
@@ -592,30 +594,36 @@ def test_a_replaced_worker_during_the_gate_holds_at_once():
 # The plan's Cloudflare cases -------------------------------------------------------------
 
 
-def test_a_version_upload_is_idempotent_and_reconciled_by_its_tag():
+def test_a_version_upload_is_idempotent_and_reconciled_by_its_tag_and_bundle():
     r = rig()
     script = r.document["environment"]["workers"]["api"]
     later = START + timedelta(minutes=2)
-    first = upload_version(r.versions, script, tag="t1", message="m", bundle_sha256="a" * 64,
-                           not_after=later)  # fmt: skip
-    again = upload_version(r.versions, script, tag="t1", message="m", bundle_sha256="a" * 64,
-                           not_after=later)  # fmt: skip
-    assert first == again and len(r.versions.uploaded[script]) == 1
+
+    def upload(tag: str, bundle: str) -> str:
+        return upload_version(r.versions, script, tag=tag, message=f"bundle {bundle}",
+                              bundle_sha256=bundle, not_after=later)  # fmt: skip
+
+    first = upload("t1", "a" * 64)
+    assert upload("t1", "a" * 64) == first and len(r.versions.uploaded[script]) == 1
+    # The same tag for another bundle is never reused (CF05-R21).
+    other = upload("t1", "b" * 64)
+    assert other != first and len(r.versions.uploaded[script]) == 2
     r.versions.fault("upload", "lose_reply")
-    lost = upload_version(r.versions, script, tag="t2", message="m", bundle_sha256="b" * 64,
-                          not_after=later)  # fmt: skip
+    lost = upload("t2", "c" * 64)
     assert [v.id for v in r.versions.uploaded[script] if v.tag == "t2"] == [lost]
     r.versions.fault("upload", "drop")
     with pytest.raises(PlatformHold) as error:
-        upload_version(r.versions, script, tag="t3", message="m", bundle_sha256="c" * 64,
-                       not_after=later)  # fmt: skip
+        upload("t3", "d" * 64)
     assert error.value.code == "version_upload_unconfirmed"
-    r.versions.upload(script, tag="t4", message="m", bundle_sha256="d" * 64, not_after=later)
-    r.versions.upload(script, tag="t4", message="m", bundle_sha256="d" * 64, not_after=later)
+    for _ in range(2):
+        r.versions.upload(script, tag="t4", message="bundle " + "e" * 64, bundle_sha256="e" * 64,
+                          not_after=later)  # fmt: skip
     with pytest.raises(PlatformHold) as error:
-        upload_version(r.versions, script, tag="t4", message="m", bundle_sha256="d" * 64,
-                       not_after=later)  # fmt: skip
+        upload("t4", "e" * 64)
     assert error.value.code == "version_upload_ambiguous"
+    with pytest.raises(ValueError):
+        upload_version(r.versions, script, tag="t5", message="no digest", bundle_sha256="f" * 64,
+                       not_after=later)  # fmt: skip
 
 
 @pytest.mark.parametrize("fault", ["lose_reply", "drop"])
@@ -840,3 +848,64 @@ def test_read_errors_after_launch_hold_with_the_lock_retained():
     r.control._job_status = status  # ty: ignore[invalid-assignment]
     outcome = r.controller().run()
     assert_held(r, outcome, "observation_ambiguous", "quiesced")
+
+
+# Slice review P3s ---------------------------------------------------------------------
+
+
+def test_an_abandoned_run_is_definitively_not_started():
+    """CF05-R18: the object dropped the claim before starting anything."""
+    r = rig()
+    r.control.abandon.add(("jobs", "run"))
+    outcome = r.controller().run()
+    assert_held(r, outcome, "launch_failed", "quiesced")
+    assert not r.events("observation", subject="runtime-migrate", result="launched")
+    assert r.events("observation", subject="runtime-migrate", result="launch_failed")
+    assert "reconcile_partial_migration_before_rerun" not in rollback(outcome)["actions"]
+    assert not r.effects("run")
+
+
+def test_an_abandoned_start_is_resent_and_started_once():
+    r = rig()
+    r.control.abandon.add(("runtime", "start"))
+    outcome = r.controller().run()
+    assert outcome.state == "held_paused", outcome
+    starts = [e for e in r.effects("start") if e[2] == "runtime"]
+    assert len(starts) == 1
+    intents = r.events("intent", action="start_service", subject="runtime")
+    assert len(intents) == 2 and intents[1]["retry_of"] == intents[0]["sequence"]
+
+
+def test_a_quiesce_stop_that_did_nothing_is_reconciled_not_recorded_done():
+    """CF05-R19: the prior start is still starting when its stop arrives."""
+    r = upgrade()
+    for service in SERVICE_OBJECTS:
+        r.control.object(service, SERVICE_OBJECTS[service]).starts[-1]["state"] = "starting"
+    r.control.starting_seconds = 20
+    outcome = r.controller().run()
+    assert outcome.state == "held_paused", outcome
+    scaled = r.events("observation", result="scaled_to_zero")
+    # The first stop found its start still starting: reconciliation, not the
+    # reply, resolved it. By then the other starts ran and stopped at once.
+    assert len(scaled) == 3 and scaled[0].get("reconciled") is True
+    assert len(r.effects("stop")) == 3
+    first = scaled[0]["subject"]
+    sent = [q for q in r.control.requests if q["action"] == "stop" and q["service"] == first]
+    assert [q["result"] for q in sent][:1] == [200] and len(sent) >= 2
+
+
+def test_a_receipt_page_without_its_completeness_fields_never_proves_readiness():
+    """CF05-R20."""
+    r = rig()
+    r.control.receipt_flags["evicted"] = True
+    original = r.control._service_receipts
+
+    def receipts(item, command, body):
+        status, page = original(item, command, body)
+        for field in ("evictedAfterCursor", "duplicatesConflicting", "refusedBoots"):
+            page.pop(field, None)
+        return status, page
+
+    r.control._service_receipts = receipts  # ty: ignore[invalid-assignment]
+    outcome = r.controller().run()
+    assert_held(r, outcome, "worker_readiness_not_proven", "services_started")

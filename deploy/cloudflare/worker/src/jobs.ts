@@ -170,10 +170,8 @@ export class JobRunner extends DurableObject<JobsEnv> {
       // After the await: the command must still be valid and this run current.
       const claim = this.current();
       if (Math.floor(Date.now() / 1000) >= expiresAt || claim?.start_nonce !== startNonce || claim.state !== "running") {
-        this.ctx.storage.sql.exec(
-          "UPDATE jobs SET state = 'failed', exit_detail = 'run abandoned before the container started' WHERE start_nonce = ?",
-          startNonce,
-        );
+        // Nothing started: drop the claim, so the job can still run once (CF05-R18).
+        this.ctx.storage.sql.exec("DELETE FROM jobs WHERE start_nonce = ?", startNonce);
         return { object_id: this.ctx.id.toString(), start_nonce: startNonce, command_id: commandId, abandoned: true };
       }
       container.start({

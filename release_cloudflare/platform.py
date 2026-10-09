@@ -176,7 +176,7 @@ class CloudflarePlatform:
                 name=request["object"],
                 action=request["action"],
                 body=request["body"],
-                command_id=request["command_id"],
+                command_id=self._command_id(request, intent),
                 expires_at=expires,
                 send_before=deadline,
             )
@@ -185,6 +185,19 @@ class CloudflarePlatform:
         except TransportAmbiguous:
             raise AmbiguousResponse("control reply lost") from None
         return self._classify(reply)
+
+    @staticmethod
+    def _command_id(request: Mapping[str, Any], intent: Mapping[str, Any]) -> str:
+        """The command id: the request's own for starts and runs (deduplicated by
+        the object), a per-send id for stops.
+
+        A stop names its start nonce and is idempotent by itself; a fresh id per
+        journaled send lets a stop that found the start still starting be sent
+        again instead of being refused as a replay (CF05-R19).
+        """
+        if "command_id" in request:
+            return str(request["command_id"])
+        return f"stop-{request['body']['start_nonce']}-{intent['sequence']}"
 
     def _classify(self, reply: ControlReply) -> dict[str, Any]:
         body = reply.body
@@ -281,7 +294,6 @@ class CloudflarePlatform:
             "object": OBJECT_NAMES[key],
             "action": "stop",
             "body": {"start_nonce": nonce},
-            "command_id": f"stop-{nonce}",
         }
 
     def scaled_down(self, key: str, view: ServiceView, intent: Mapping[str, Any]) -> bool:
@@ -294,13 +306,22 @@ class CloudflarePlatform:
 
     def send_update(self, request: dict[str, Any], intent: Mapping[str, Any]) -> Any:
         try:
-            return self._command(request, intent)
+            reply = self._command(request, intent)
         except _Refused as refused:
             if refused.code == "not_sent" or refused.code in APPLIED_EARLIER:
                 raise AmbiguousResponse(refused.code) from None
             if refused.code == "version_mismatch":
                 return {"refused": "version_mismatch"}
             raise PlatformHold("command_refused") from None
+        if (
+            request["action"] == "stop"
+            and reply.get("stopping") is False
+            and reply.get("state") in WANTED
+        ):
+            # The named start is still wanted and nothing was signalled (it may
+            # still be starting): only an observation can resolve the stop.
+            raise AmbiguousResponse("stop did not take effect")
+        return reply
 
     def idle(self, views: Mapping[str, ServiceView]) -> bool:
         return all(not view.active for view in views.values())
@@ -362,12 +383,14 @@ class CloudflarePlatform:
             return Deploy(None, drift)
         nonce = reply.get("start_nonce")
         if (
-            reply.get("command_id") == request["command_id"]
+            not reply.get("abandoned")
+            and reply.get("command_id") == request["command_id"]
             and isinstance(nonce, str)
             and nonce not in prior
             and reply.get("state") in WANTED
         ):
             return Deploy(nonce)
+        # Not started (abandoned, or another start holds the object): observe.
         return Deploy(None)
 
     def new_generation(self, key: str, view: ServiceView, prior: list[str],
@@ -554,6 +577,11 @@ class CloudflarePlatform:
                 raise AmbiguousResponse(refused.code) from None
             # Nothing was sent, or the object definitively refused the only copy.
             return Launch(runs=(), failed=1)
+        if reply.get("abandoned"):
+            # The object dropped its claim before starting anything; every other
+            # copy of this command has expired (it was signed earlier) or will
+            # meet the object's run-once rule: definitively not started.
+            return Launch(runs=(), failed=1)
         object_id, nonce = reply.get("object_id"), reply.get("start_nonce")
         if not (
             isinstance(object_id, str)
@@ -632,7 +660,6 @@ class CloudflarePlatform:
             "object": self._job_object(job),
             "action": "stop",
             "body": {"start_nonce": nonce},
-            "command_id": f"stop-{nonce}",
         }
 
     def send_stop(self, request: dict[str, Any], intent: Mapping[str, Any]) -> None:
@@ -693,16 +720,25 @@ class _ObjectReceiptReader:
             )
             if page.get("startNonce") != self.start_nonce:
                 raise ValueError("receipt page for another start")
+            receipts, following = page.get("receipts"), page.get("next")
+            evicted, conflicts, refused = (
+                page.get("evictedAfterCursor"),
+                page.get("duplicatesConflicting"),
+                page.get("refusedBoots"),
+            )
+            # Every completeness field must be present with its type: a missing
+            # one never reads as clean (CF05-R20).
             if (
-                page.get("evictedAfterCursor")
-                or page.get("duplicatesConflicting")
-                or page.get("refusedBoots")
+                not isinstance(receipts, list)
+                or type(following) is not int
+                or type(page.get("more")) is not bool
+                or type(evicted) is not bool
+                or type(conflicts) is not int
+                or type(refused) is not int
             ):
-                complete = False
-            receipts = page.get("receipts")
-            following = page.get("next")
-            if not isinstance(receipts, list) or not isinstance(following, int):
                 raise ValueError("malformed receipt page")
+            if evicted or conflicts or refused:
+                complete = False
             for receipt in receipts:
                 line = f"{WORKER_RECEIPT_MARKER} " + json.dumps(receipt, separators=(",", ":"))
                 size += len(line.encode())
@@ -724,15 +760,22 @@ def upload_version(
     bundle_sha256: str,
     not_after: datetime,
 ) -> str:
-    """Upload a Worker version at most once per tag (a prepare step, before approval).
+    """Upload a Worker version at most once per bundle (a prepare step, before approval).
 
-    An existing version with this tag is reused; after a lost upload reply the
-    listing decides; two versions with one tag hold, because either could be the
-    one the manifest names.
+    The message must carry the bundle's SHA-256, and only a version with this tag
+    and this exact message is reused, so a tag never stands for another bundle.
+    After a lost upload reply the listing decides; two matching versions hold,
+    because either could be the one the manifest names.
     """
+    if bundle_sha256 not in message:
+        raise ValueError("the version message must carry the bundle digest")
 
     def tagged() -> list[Any]:
-        return [item for item in versions.versions(script) if item.tag == tag]
+        return [
+            item
+            for item in versions.versions(script)
+            if item.tag == tag and item.message == message
+        ]
 
     found = tagged()
     if len(found) > 1:
