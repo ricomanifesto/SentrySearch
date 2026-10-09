@@ -15,9 +15,13 @@ same validation and fresh-directory rules as the AWS initializer), removes every
 groups, the inheritable, ambient and bounding capability sets, switch to the
 profile's user and set ``no_new_privs``.
 
+``setpriv`` also loads a seccomp filter refusing new user namespaces: inside
+one, even a fully dropped process regains every capability (scoped to that
+namespace), which a container granted ``SYS_ADMIN`` would otherwise allow.
+
 ``continue`` (after the drop) refuses unless the kernel reports every capability
-set empty, ``NoNewPrivs`` set and exactly the profile's identity, then executes
-the command. ``probe`` and ``continue-probe`` do the same for a fixed readiness
+set empty, ``NoNewPrivs`` set, a seccomp filter and exactly the profile's
+identity, then executes the command. ``probe`` and ``continue-probe`` do the same for a fixed readiness
 probe with a minimal environment and no material: a platform ``exec()`` is a new
 process that does not inherit the main process's drop.
 
@@ -30,6 +34,8 @@ from dataclasses import dataclass
 import importlib
 import os
 from pathlib import Path
+import platform
+import struct
 import sys
 from types import ModuleType
 from typing import Callable, Mapping, NoReturn, Sequence
@@ -124,6 +130,8 @@ class System:
 
     geteuid: Callable[[], int] = os.geteuid
     read_status: Callable[[], str] = lambda: Path("/proc/self/status").read_text()
+    machine: Callable[[], str] = platform.machine
+    seccomp_path: Callable[[bytes], str] = lambda program: _inherited_memfd(program)
     prepare: Callable[..., None] = volumes.prepare
     chdir: Callable[[Path], None] = os.chdir
     execve: Callable[..., NoReturn] = os.execve
@@ -154,8 +162,47 @@ def _check_settings(environ: Mapping[str, str]) -> None:
             raise Refused(EXIT_CONFIG, f"unexpected {VARIABLE_PREFIX} setting")
 
 
+CLONE_NEWUSER = 0x10000000
+# (audit arch, unshare, clone, clone3) per machine; same program as sentryruntime's cfinit.
+SYSCALLS = {"x86_64": (0xC000003E, 272, 56, 435), "aarch64": (0xC00000B7, 97, 220, 435)}
+
+
+def namespace_filter(machine: str) -> bytes:
+    """A seccomp program (struct sock_filter array) refusing new user namespaces.
+
+    unshare and clone with CLONE_NEWUSER fail with EPERM; clone3, whose flags
+    sit behind a pointer, fails with ENOSYS so libc falls back to clone.
+    Another architecture, or the x32 ABI, kills the process.
+    """
+    if machine not in SYSCALLS:
+        raise Refused(EXIT_PRIVILEGE, "no namespace filter for this architecture")
+    arch, unshare, clone, clone3 = SYSCALLS[machine]
+    load, equal, at_least, has_bit, ret = 0x20, 0x15, 0x35, 0x45, 0x06
+    kill, allow, eperm, enosys = 0x80000000, 0x7FFF0000, 0x00050001, 0x00050026
+    program = [(load, 0, 0, 4), (equal, 1, 0, arch), (ret, 0, 0, kill), (load, 0, 0, 0)]
+    if machine == "x86_64":
+        program += [(at_least, 0, 1, 0x40000000), (ret, 0, 0, kill)]
+    program += [
+        (equal, 0, 1, clone3),
+        (ret, 0, 0, enosys),
+        (equal, 2, 0, unshare),
+        (equal, 1, 0, clone),
+        (ret, 0, 0, allow),
+        (load, 0, 0, 16),
+        (has_bit, 0, 1, CLONE_NEWUSER),
+        (ret, 0, 0, eperm),
+        (ret, 0, 0, allow),
+    ]
+    return b"".join(struct.pack("=HBBI", *instruction) for instruction in program)
+
+
 def _setpriv(
-    uid: int, python: Sequence[str], mode: str, name: str, command: Sequence[str]
+    uid: int,
+    filter_path: str,
+    python: Sequence[str],
+    mode: str,
+    name: str,
+    command: Sequence[str],
 ) -> list[str]:
     return [
         SETPRIV,
@@ -166,6 +213,7 @@ def _setpriv(
         "--ambient-caps=-all",
         "--bounding-set=-all",
         "--no-new-privs",
+        f"--seccomp-filter={filter_path}",
         "--",
         *python,
         "-m",
@@ -182,10 +230,25 @@ def _interpreter() -> list[str]:
     """Re-run this module with the interpreter and isolation it was started with."""
     flags = [
         flag
-        for flag, on in (("-I", sys.flags.isolated), ("-B", sys.flags.dont_write_bytecode))
+        for flag, on in (
+            ("-I", sys.flags.isolated),
+            ("-P", sys.flags.safe_path and not sys.flags.isolated),
+            ("-B", sys.flags.dont_write_bytecode),
+        )
         if on
     ]
     return [sys.executable, *flags]
+
+
+def _inherited_memfd(program: bytes) -> str:
+    """Hand setpriv the filter through an inherited memory file; nothing is written to disk."""
+    if sys.platform != "linux":
+        raise Refused(EXIT_PRIVILEGE, "seccomp requires Linux")
+    descriptor = os.memfd_create("cfinit-seccomp", 0)
+    os.write(descriptor, program)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    os.set_inheritable(descriptor, True)
+    return f"/proc/self/fd/{descriptor}"
 
 
 def verify_dropped(status: str, uid: int) -> None:
@@ -200,6 +263,7 @@ def verify_dropped(status: str, uid: int) -> None:
     identity = " ".join([str(uid)] * 4)
     if (
         fields.get("NoNewPrivs") != "1"
+        or fields.get("Seccomp") != "2"
         or fields.get("Uid") != identity
         or fields.get("Gid") != identity
         or fields.get("Groups") != ""
@@ -231,7 +295,10 @@ def run(argv: Sequence[str], environ: Mapping[str, str], system: System) -> int:
                     raise Refused(EXIT_CONFIG, "probe must not receive material")
                 env = {key: environ[key] for key in PROBE_VARIABLES if key in environ}
                 follow = "continue-probe"
-            target = _setpriv(profile.uid, _interpreter(), follow, name, command)
+            program = namespace_filter(system.machine())
+            target = _setpriv(
+                profile.uid, system.seccomp_path(program), _interpreter(), follow, name, command
+            )
         else:
             verify_dropped(system.read_status(), profile.uid)
             if volumes.MATERIAL_VARIABLE in environ or volumes.DIGEST_VARIABLE in environ:

@@ -5,7 +5,7 @@ or replaced task discards its volumes; this helper never overwrites or rotates
 an existing task's files. AWS is used only with an explicitly selected version.
 On Cloudflare the bundle arrives as an environment value checked against an
 operator-recorded SHA-256 (``--environment-source``); see
-``deploy/cloudflare/cfinit.py``.
+``deploy/cloudflare/sentrysearch_cloudflare/cfinit.py``.
 """
 
 from __future__ import annotations

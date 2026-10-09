@@ -8,6 +8,9 @@ import { ServiceObject, type ServiceEnv, type ServiceSpec } from "./shared/servi
 
 export { Evidence } from "./shared/evidence";
 
+/** Bytes from the worker waiting for the container's socket; more closes the tunnel. */
+const MAX_QUEUED_BYTES = 1024 * 1024;
+
 export class RuntimeService extends ServiceObject<ServiceEnv> {
   protected readonly spec: ServiceSpec = {
     service: "runtime",
@@ -40,13 +43,29 @@ export class RuntimeService extends ServiceObject<ServiceEnv> {
       } catch {}
       socket.close().catch(() => {});
     };
-    // Binary messages may arrive as Blob; keep them in order while converting.
+    // Binary messages may arrive as Blob; keep them in order while converting,
+    // and bound what waits for the socket: a client that outpaces the runtime
+    // loses its tunnel instead of growing this object's memory.
     let pending = Promise.resolve();
+    let queued = 0;
     server.addEventListener("message", (event) => {
-      pending = pending.then(async () => writer.write(await messageBytes(event.data))).catch(close);
+      const data = event.data as string | ArrayBuffer | ArrayBufferView | Blob;
+      if (typeof data === "string") return close(); // TLS records are binary
+      const size = data instanceof Blob ? data.size : data.byteLength;
+      queued += size;
+      if (queued > MAX_QUEUED_BYTES) return close();
+      pending = pending
+        .then(async () => {
+          await writer.write(await messageBytes(data));
+          queued -= size;
+        })
+        .catch(close);
     });
     server.addEventListener("close", close);
     server.addEventListener("error", close);
+    // The other direction reads the socket only as the loop runs; workerd's
+    // WebSocket exposes no send buffer level, so it is bounded by the runtime's
+    // own response sizes, not here (recorded residual).
     this.ctx.waitUntil(
       (async () => {
         const reader = socket.readable.getReader();

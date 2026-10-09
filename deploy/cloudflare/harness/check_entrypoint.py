@@ -7,7 +7,9 @@ puts an observer at the allowlisted ``/app/run_api.py`` path (with
 ``/app/.venv/bin/python`` linked to the base interpreter), so no test-only path
 exists in the entrypoint. Each case runs with no container network, as root
 with every capability added or Docker's defaults, through the image's two-phase
-start. The base image must already be present: this check never pulls.
+start, including with ``CAP_SYS_ADMIN`` added, where only the seccomp filter
+stops the dropped service from creating a user namespace. The base image must
+already be present: this check never pulls.
 
 Usage: .venv/bin/python deploy/cloudflare/harness/check_entrypoint.py --evidence out.json
 """
@@ -29,12 +31,16 @@ BASE = "docker.io/library/python@sha256:0dd364ba7e10242f07755449e3a3d0e35f9efd98
 ENTRY = ["/usr/local/bin/python", "-m", "sentrysearch_cloudflare.cfinit"]
 API = ["/app/.venv/bin/python", "/app/run_api.py"]
 OBSERVER = r"""
-import json, os, pathlib, stat, subprocess, sys
+import ctypes, json, os, pathlib, stat, subprocess, sys
 fields = {}
 for line in pathlib.Path("/proc/self/status").read_text().splitlines():
     key, _, value = line.partition(":")
-    if key in {"CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb", "NoNewPrivs", "Uid", "Gid", "Groups"}:
+    if key in {"CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb", "NoNewPrivs", "Seccomp", "Uid", "Gid", "Groups"}:
         fields[key] = " ".join(value.split())
+libc = ctypes.CDLL(None, use_errno=True)
+def unshare_newuser():
+    if libc.unshare(0x10000000) != 0:
+        raise OSError(ctypes.get_errno(), os.strerror(ctypes.get_errno()))
 def attempt(action):
     try:
         action()
@@ -47,7 +53,9 @@ regain = {
     "setgroups0": attempt(lambda: os.setgroups([0])),
     "read_root_only": attempt(lambda: open("/etc/shadow").read()),
     "write_app": attempt(lambda: open("/app/owned", "w").write("x")),
+    "unshare_newuser": attempt(unshare_newuser),
 }
+unshare_cli = subprocess.run(["unshare", "--user", "--map-root-user", "true"], capture_output=True, text=True).returncode
 setuid_euid = subprocess.run(["/app/regain", "-c", "import os; print(os.geteuid())"], capture_output=True, text=True).stdout.strip()
 material = {}
 root = pathlib.Path("/run/material")
@@ -59,8 +67,9 @@ child = subprocess.run([sys.executable, "-c", "print(open('/proc/self/status').r
 child_fields = {line.split(":")[0]: " ".join(line.split(":", 1)[1].split()) for line in child.splitlines() if ":" in line}
 print(json.dumps({
     "status": fields,
-    "child_status": {k: child_fields.get(k) for k in ("CapPrm", "CapEff", "CapBnd", "CapAmb", "NoNewPrivs", "Uid")},
+    "child_status": {k: child_fields.get(k) for k in ("CapPrm", "CapEff", "CapBnd", "CapAmb", "NoNewPrivs", "Seccomp", "Uid")},
     "regain": regain,
+    "unshare_cli_exit": unshare_cli,
     "setuid_binary_euid": setuid_euid,
     "material": material,
     "material_dir": [oct(stat.S_IMODE(root_info.st_mode)), root_info.st_uid],
@@ -137,6 +146,10 @@ def dropped(report: dict) -> list[str]:
             problems.append(f"child {key}={report['child_status'].get(key)}")
     if report["status"].get("NoNewPrivs") != "1" or report["child_status"].get("NoNewPrivs") != "1":
         problems.append("no_new_privs not set")
+    if report["status"].get("Seccomp") != "2" or report["child_status"].get("Seccomp") != "2":
+        problems.append("seccomp filter not installed")
+    if report["unshare_cli_exit"] == 0:
+        problems.append("unshare --user succeeded")
     if (
         report["status"].get("Uid") != "10001 10001 10001 10001"
         or report["status"].get("Groups") != ""
@@ -164,7 +177,11 @@ def main() -> int:
         "id": docker("image", "inspect", "--format", "{{.Id}}", tag).stdout.strip(),
     }
     start = [*ENTRY, "start", "--profile", "search", "--", *API]
-    for name, flags in (("cap_add_all", ["--cap-add", "ALL"]), ("docker_defaults", [])):
+    for name, flags in (
+        ("cap_add_all", ["--cap-add", "ALL"]),
+        ("cap_add_sys_admin", ["--cap-add", "SYS_ADMIN"]),
+        ("docker_defaults", []),
+    ):
         code, out, err = run(tag, *flags, env=good, command=start)
         report = json.loads(out) if code == 0 else {}
         problems = dropped(report) if report else [f"exit {code}: {err[-300:]}"]

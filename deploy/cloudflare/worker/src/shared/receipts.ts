@@ -12,6 +12,8 @@ import type { Sql } from "./control";
 export const RECEIPT_KIND = "sentry.worker-readiness.v1";
 export const MAX_RECEIPT_BYTES = 2048;
 export const MAX_ROWS = 512;
+/** Boot ids per start: one worker process per container start, so a few at most. */
+export const MAX_BOOTS = 8;
 const PHASES = new Set(["starting", "maintenance", "generation", "evaluation", "idle", "stopped", "unknown"]);
 const KEYS = [
   "kind",
@@ -86,12 +88,18 @@ export function parseReceipt(body: Uint8Array, releaseId: string): Receipt {
 
 export interface ReceiptView {
   startNonce: string;
+  /** The start has ended: its history must close with a "stopped" receipt per boot. */
+  ended: boolean;
   receipts: Receipt[];
   /** Highest sequence evicted per boot, or 0. */
   evictedThrough: Record<string, number>;
   /** Missing sequences (bounded list) between 1 and the highest received, beyond eviction. */
   gaps: Record<string, number[]>;
   duplicatesConflicting: number;
+  /** Receipts refused because the start already had MAX_BOOTS boot ids. */
+  refusedBoots: number;
+  /** Boots whose last receipt is not "stopped", for an ended start. */
+  unterminated: string[];
   complete: boolean;
 }
 
@@ -103,6 +111,14 @@ export class ReceiptStore {
     sql.exec(
       "CREATE TABLE IF NOT EXISTS receipt_meta (start_nonce TEXT NOT NULL, boot_id TEXT NOT NULL, evicted_through INTEGER NOT NULL DEFAULT 0, conflicts INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (start_nonce, boot_id))",
     );
+    sql.exec("CREATE TABLE IF NOT EXISTS receipt_starts (start_nonce TEXT PRIMARY KEY, refused_boots INTEGER NOT NULL DEFAULT 0)");
+  }
+
+  /** Drop everything kept for a start (the owner keeps only its recent starts). */
+  forget(startNonce: string): void {
+    for (const table of ["receipts", "receipt_meta", "receipt_starts"]) {
+      this.sql.exec(`DELETE FROM ${table} WHERE start_nonce = ?`, startNonce);
+    }
   }
 
   /** Store one receipt for the current start; identical redelivery is idempotent. */
@@ -116,11 +132,19 @@ export class ReceiptStore {
         receipt.sequence,
       )
       .toArray();
-    this.sql.exec(
-      "INSERT INTO receipt_meta (start_nonce, boot_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
-      startNonce,
-      receipt.boot_id,
-    );
+    this.sql.exec("INSERT INTO receipt_starts (start_nonce) VALUES (?) ON CONFLICT DO NOTHING", startNonce);
+    const known = this.sql
+      .exec("SELECT 1 FROM receipt_meta WHERE start_nonce = ? AND boot_id = ?", startNonce, receipt.boot_id)
+      .toArray();
+    if (known.length === 0) {
+      // Boot ids are chosen by the container: bound them, and remember the refusal.
+      const boots = Number(this.sql.exec("SELECT COUNT(*) AS n FROM receipt_meta WHERE start_nonce = ?", startNonce).toArray()[0]?.n ?? 0);
+      if (boots >= MAX_BOOTS) {
+        this.sql.exec("UPDATE receipt_starts SET refused_boots = refused_boots + 1 WHERE start_nonce = ?", startNonce);
+        throw new ReceiptRejected("too many boot ids for this start");
+      }
+      this.sql.exec("INSERT INTO receipt_meta (start_nonce, boot_id) VALUES (?, ?)", startNonce, receipt.boot_id);
+    }
     if (existing.length > 0) {
       if (existing[0]?.body !== body) {
         this.sql.exec(
@@ -169,7 +193,7 @@ export class ReceiptStore {
     }
   }
 
-  view(startNonce: string): ReceiptView {
+  view(startNonce: string, ended: boolean): ReceiptView {
     const rows = this.sql
       .exec("SELECT boot_id, sequence, body FROM receipts WHERE start_nonce = ? ORDER BY boot_id, sequence", startNonce)
       .toArray();
@@ -182,9 +206,11 @@ export class ReceiptStore {
       conflicts += Number(meta.conflicts);
     }
     const byBoot = new Map<string, number[]>();
-    for (const row of rows) {
-      const boot = String(row.boot_id);
-      byBoot.set(boot, [...(byBoot.get(boot) ?? []), Number(row.sequence)]);
+    const lastPhase = new Map<string, string>();
+    const receipts = rows.map((row) => JSON.parse(String(row.body)) as Receipt);
+    for (const receipt of receipts) {
+      byBoot.set(receipt.boot_id, [...(byBoot.get(receipt.boot_id) ?? []), receipt.sequence]);
+      lastPhase.set(receipt.boot_id, receipt.phase); // rows are ordered by sequence within a boot
     }
     for (const [boot, sequences] of byBoot) {
       const present = new Set(sequences);
@@ -194,13 +220,28 @@ export class ReceiptStore {
       }
       if (missing.length > 0) gaps[boot] = missing;
     }
+    const refusedBoots = Number(
+      this.sql.exec("SELECT refused_boots FROM receipt_starts WHERE start_nonce = ?", startNonce).toArray()[0]?.refused_boots ?? 0,
+    );
+    // An ended start whose last receipt is not "stopped" may have lost its tail:
+    // nothing after the highest received sequence can show up as a gap.
+    const unterminated = ended ? [...lastPhase].filter(([, phase]) => phase !== "stopped").map(([boot]) => boot) : [];
     return {
       startNonce,
-      receipts: rows.map((row) => JSON.parse(String(row.body)) as Receipt),
+      ended,
+      receipts,
       evictedThrough,
       gaps,
       duplicatesConflicting: conflicts,
-      complete: rows.length > 0 && Object.keys(gaps).length === 0 && conflicts === 0 && Object.values(evictedThrough).every((v) => v === 0),
+      refusedBoots,
+      unterminated,
+      complete:
+        rows.length > 0 &&
+        Object.keys(gaps).length === 0 &&
+        conflicts === 0 &&
+        refusedBoots === 0 &&
+        unterminated.length === 0 &&
+        Object.values(evictedThrough).every((v) => v === 0),
     };
   }
 }

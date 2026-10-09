@@ -16,13 +16,17 @@ as ``RuntimeUnavailable``.
 
 from __future__ import annotations
 
+import contextlib
+import socket
 import ssl
+import threading
 from typing import Any, Callable, Iterable
 from urllib.parse import urlsplit
 
 import httpcore
 import httpx
 from websockets.exceptions import ConnectionClosedOK, WebSocketException
+from websockets.protocol import State
 from websockets.sync.client import ClientConnection
 from websockets.sync.client import connect as websocket_connect
 
@@ -31,7 +35,8 @@ TUNNEL_HOST = "runtime.internal"
 MAX_MESSAGE_BYTES = 256 * 1024
 WRITE_CHUNK_BYTES = 64 * 1024
 TLS_RECORD_BYTES = 16384
-# Keepalive bounds how long a write to a peer that stopped reading can block.
+# Keepalive pings detect a vanished relay between requests; a write blocked on a
+# relay that stopped reading is bounded by the write's own timeout instead.
 KEEPALIVE_SECONDS = 5.0
 
 
@@ -69,7 +74,8 @@ class _TunnelStream(httpcore.NetworkStream):
     def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
         if not self._buffer and not self._closed:
             try:
-                message = self._connection.recv(timeout=timeout, decode=False)
+                # Text frames arrive as str and are refused below; TLS is binary.
+                message = self._connection.recv(timeout=timeout)
             except TimeoutError:
                 raise httpcore.ReadTimeout("runtime tunnel read timed out") from None
             except ConnectionClosedOK:
@@ -84,11 +90,24 @@ class _TunnelStream(httpcore.NetworkStream):
         return data
 
     def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        # A relay that stops reading blocks sendall inside send(); shutting the
+        # socket down at the deadline turns that into a write error.
+        deadline = None if timeout is None else threading.Timer(timeout, self._abort)
+        if deadline is not None:
+            deadline.start()
         try:
             for start in range(0, len(buffer), WRITE_CHUNK_BYTES):
                 self._connection.send(bytes(buffer[start : start + WRITE_CHUNK_BYTES]))
         except (WebSocketException, OSError):
             raise httpcore.WriteError("runtime tunnel write failed") from None
+        finally:
+            if deadline is not None:
+                deadline.cancel()
+
+    def _abort(self) -> None:
+        self._closed = True
+        with contextlib.suppress(OSError):
+            self._connection.socket.shutdown(socket.SHUT_RDWR)
 
     def close(self) -> None:
         self._closed = True
@@ -106,6 +125,10 @@ class _TunnelStream(httpcore.NetworkStream):
         return _TLSStream(self, ssl_context, server_hostname, timeout)
 
     def get_extra_info(self, info: str) -> Any:
+        if info == "is_readable":
+            # httpcore drops a pooled connection that reports readable: a closed
+            # relay must never be reused for the next request.
+            return self._closed or bool(self._buffer) or self._connection.state is not State.OPEN
         return None
 
 
@@ -182,6 +205,8 @@ class _TLSStream(httpcore.NetworkStream):
     def get_extra_info(self, info: str) -> Any:
         if info == "ssl_object":
             return self._tls
+        if info == "is_readable":
+            return bool(self._inner.get_extra_info("is_readable")) or self._incoming.pending > 0
         return None
 
 

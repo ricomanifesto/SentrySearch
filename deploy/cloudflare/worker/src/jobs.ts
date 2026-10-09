@@ -1,10 +1,11 @@
 // Jobs script: one JobRunner Durable Object per release job. It starts the
-// release-tools image through its Cloudflare entrypoint, enforces the job's
-// deadline with alarms (SIGTERM, then destroy() after a grace period), which
-// also covers deadlines beyond the 15-minute monitor() window (H-J1), and
-// never reports success on its own: destroy(), a deadline or a resolved
-// monitor() leaves sql_outcome "unknown" until the job's own completion
-// receipt for the current start exists (job receipts are CF-05).
+// release-tools image through its Cloudflare entrypoint, keeps the object (and
+// so the container) alive with a 10-second alarm, enforces the job's deadline
+// from that alarm against the container itself (SIGTERM, then destroy() after
+// a grace period), which also covers deadlines beyond the 15-minute monitor()
+// window (H-J1), and never reports success on its own: destroy(), a deadline
+// SIGTERM or a resolved monitor() leaves sql_outcome "unknown" until the job's
+// own completion receipt for the current start exists (job receipts are CF-05).
 
 import { DurableObject } from "cloudflare:workers";
 import { boundedBody } from "./shared/bytes";
@@ -22,6 +23,8 @@ const JOBS = new Set(["bootstrap", "grant", "proof", "reconcile"]);
 const PROFILES = new Set(["runtime-release", "search-release"]);
 const NAME = /^job-[0-9a-f-]{36}-[a-z0-9-]{1,40}$/;
 const GRACE_MS = 30_000;
+const KEEPALIVE_MS = 10_000;
+const INACTIVITY_TIMEOUT_MS = 5 * 60_000;
 const MAX_DEADLINE_SECONDS = 6 * 3600;
 
 interface JobRow {
@@ -31,21 +34,30 @@ interface JobRow {
   deadline_at: number;
   state: string;
   exit_detail: string | null;
+  /** When the deadline SIGTERM was sent; a signalled job never reads as applied. */
+  signalled_at: number | null;
   completion_receipt: string | null;
 }
 
 export class JobRunner extends DurableObject<JobsEnv> {
   private readonly replay: ReplayGuard;
   private keyPromise: Promise<CryptoKey> | undefined;
+  private observing: string | undefined;
 
   constructor(ctx: DurableObjectState, env: JobsEnv) {
     super(ctx, env);
     ctx.storage.sql.exec(
-      "CREATE TABLE IF NOT EXISTS jobs (start_nonce TEXT PRIMARY KEY, job TEXT NOT NULL, profile TEXT NOT NULL, deadline_at INTEGER NOT NULL, state TEXT NOT NULL, exit_detail TEXT, completion_receipt TEXT)",
+      "CREATE TABLE IF NOT EXISTS jobs (start_nonce TEXT PRIMARY KEY, job TEXT NOT NULL, profile TEXT NOT NULL, deadline_at INTEGER NOT NULL, state TEXT NOT NULL, exit_detail TEXT, signalled_at INTEGER, completion_receipt TEXT)",
     );
     this.replay = new ReplayGuard(ctx.storage.sql);
     ctx.blockConcurrencyWhile(async () => {
-      if (ctx.container?.running) this.observe(ctx.container);
+      const row = this.current();
+      if (ctx.container?.running) {
+        if (row) this.observe(ctx.container, row.start_nonce);
+        await this.keepAlive(ctx.container);
+      } else if (row) {
+        this.finish(row.start_nonce, "ended while unobserved");
+      }
     });
   }
 
@@ -100,70 +112,116 @@ export class JobRunner extends DurableObject<JobsEnv> {
     for (const [name, value] of Object.entries(this.env)) {
       if (name.startsWith("CONTAINER_") && typeof value === "string") env[name.slice("CONTAINER_".length)] = value;
     }
-    container.start({
-      image,
-      entrypoint: [
-        "/usr/local/bin/tini", "--", ...RELEASE_PYTHON, "sentrysearch_cloudflare.cfinit", "start", "--profile", profile, "--",
-        ...RELEASE_PYTHON, "release_tools", job,
-      ],
-      enableInternet: false,
-      env,
-      labels: { release_id: this.env.RELEASE_ID, start_nonce: startNonce, job },
-    });
-    const deadlineAt = Date.now() + (deadline as number) * 1000;
     this.ctx.storage.sql.exec(
       "INSERT INTO jobs (start_nonce, job, profile, deadline_at, state) VALUES (?, ?, ?, ?, 'running')",
       startNonce,
       job,
       profile,
-      deadlineAt,
+      Date.now() + (deadline as number) * 1000,
     );
-    this.observe(container);
-    await this.ctx.storage.setAlarm(deadlineAt);
-    return { start_nonce: startNonce, deadline_at: deadlineAt };
+    try {
+      container.start({
+        image,
+        entrypoint: [
+          "/usr/local/bin/tini", "--", ...RELEASE_PYTHON, "sentrysearch_cloudflare.cfinit", "start", "--profile", profile, "--",
+          ...RELEASE_PYTHON, "release_tools", job,
+        ],
+        enableInternet: false,
+        env,
+        labels: { release_id: this.env.RELEASE_ID, start_nonce: startNonce, job },
+      });
+    } catch (error) {
+      this.ctx.storage.sql.exec(
+        "UPDATE jobs SET state = 'failed', exit_detail = ? WHERE start_nonce = ?",
+        String(error).slice(0, 200),
+        startNonce,
+      );
+      throw error;
+    }
+    const row = this.current()!;
+    this.observe(container, startNonce);
+    await this.keepAlive(container);
+    return { start_nonce: startNonce, deadline_at: row.deadline_at };
   }
 
-  private observe(container: Container): void {
-    const nonce = this.current()?.start_nonce;
-    if (!nonce) return;
+  /**
+   * Record how the job ended. monitor() can settle while the container still
+   * runs (its 15-minute window, an object restart): only a container that is
+   * no longer running ends the job; otherwise the alarm observes it again.
+   */
+  private observe(container: Container, startNonce: string): void {
+    this.observing = startNonce;
+    const settled = (detail: string) => {
+      if (this.observing === startNonce) this.observing = undefined;
+      if (!container.running) this.finish(startNonce, detail);
+    };
     container.monitor().then(
-      () => this.finish(nonce, "exited", "exit 0"),
-      (error: unknown) => this.finish(nonce, "exited", String(error).slice(0, 200)),
+      () => settled("exit 0"),
+      (error: unknown) => settled(String(error).slice(0, 200)),
     );
   }
 
-  private finish(startNonce: string, state: string, detail: string): void {
+  /** End a running or signalled job; a deadline SIGTERM stays in its record. */
+  private finish(startNonce: string, detail: string): void {
     this.ctx.storage.sql.exec(
-      "UPDATE jobs SET state = ?, exit_detail = ? WHERE start_nonce = ? AND state IN ('running', 'signalled')",
-      state,
+      "UPDATE jobs SET exit_detail = CASE WHEN state = 'signalled' THEN 'deadline; ' || ? ELSE ? END, state = 'exited' WHERE start_nonce = ? AND state IN ('running', 'signalled')",
+      detail,
       detail,
       startNonce,
     );
   }
 
+  /** Re-arm the inactivity timeout and the next alarm: the earlier of the keepalive and the next deadline step. */
+  private async keepAlive(container: Container): Promise<void> {
+    const row = this.current();
+    if (!row) return;
+    await container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS);
+    const step = row.state === "signalled" && row.signalled_at !== null ? row.signalled_at + GRACE_MS : row.deadline_at;
+    await this.ctx.storage.setAlarm(Math.min(step, Date.now() + KEEPALIVE_MS));
+  }
+
+  /** Every enforcement step keys on the container itself, never on a recorded exit. */
   async alarm(): Promise<void> {
     const container = this.ctx.container;
     const row = this.current();
-    if (!container || !row || !container.running) return;
-    if (row.state === "running" && Date.now() >= row.deadline_at) {
+    if (!container || !row) return;
+    if (!container.running) {
+      this.finish(row.start_nonce, "ended while unobserved");
+      return;
+    }
+    const now = Date.now();
+    if (row.state === "running" && now >= row.deadline_at) {
       container.signal(15);
-      this.ctx.storage.sql.exec("UPDATE jobs SET state = 'signalled', exit_detail = 'deadline' WHERE start_nonce = ?", row.start_nonce);
-      await this.ctx.storage.setAlarm(Date.now() + GRACE_MS);
-      return;
-    }
-    if (row.state === "signalled") {
+      this.ctx.storage.sql.exec(
+        "UPDATE jobs SET state = 'signalled', signalled_at = ? WHERE start_nonce = ? AND state = 'running'",
+        now,
+        row.start_nonce,
+      );
+    } else if (
+      (row.state === "signalled" && row.signalled_at !== null && now >= row.signalled_at + GRACE_MS) ||
+      !["running", "signalled"].includes(row.state)
+    ) {
+      // Past the grace period, or a container still running for a job recorded as ended.
+      this.ctx.storage.sql.exec(
+        "UPDATE jobs SET state = 'destroyed', exit_detail = 'job deadline exceeded' WHERE start_nonce = ? AND state IN ('running', 'signalled')",
+        row.start_nonce,
+      );
       await container.destroy(new Error("job deadline exceeded"));
-      this.ctx.storage.sql.exec("UPDATE jobs SET state = 'destroyed' WHERE start_nonce = ?", row.start_nonce);
+      if (container.running) await this.ctx.storage.setAlarm(Date.now() + KEEPALIVE_MS);
       return;
     }
-    await this.ctx.storage.setAlarm(row.deadline_at);
+    if (this.observing !== row.start_nonce) this.observe(container, row.start_nonce);
+    await this.keepAlive(container);
   }
 
   private status(): Record<string, unknown> {
+    const before = this.current();
+    if (before && !this.ctx.container?.running) this.finish(before.start_nonce, "ended while unobserved");
     const row = this.current();
     if (!row) return { state: "none" };
     // Success needs the current start's completion receipt; nothing else proves it.
-    const succeeded = row.completion_receipt !== null && row.state === "exited" && row.exit_detail === "exit 0";
+    const succeeded =
+      row.completion_receipt !== null && row.signalled_at === null && row.state === "exited" && row.exit_detail === "exit 0";
     return { ...row, sql_outcome: succeeded ? "applied" : "unknown" };
   }
 }

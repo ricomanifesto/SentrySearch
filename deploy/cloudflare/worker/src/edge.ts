@@ -18,7 +18,7 @@ export default {
     if (url.pathname.startsWith("/api/")) {
       return env.API.getByName("api-0").fetch(new Request(`http://api${url.pathname}${url.search}`, request));
     }
-    const match = /^\/control\/(api|worker|runtime|jobs)\/([a-z0-9-]{1,80})\/([a-z]{1,16})$/.exec(url.pathname);
+    const match = /^\/control\/(api|worker|runtime|jobs)\/([a-z0-9-]{1,96})\/([a-z]{1,16})$/.exec(url.pathname);
     if (match) {
       const [, service, name, action] = match as unknown as [string, keyof typeof NAMESPACES, string, string];
       const headers = new Headers(request.headers);

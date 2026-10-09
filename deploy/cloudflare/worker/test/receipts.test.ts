@@ -2,7 +2,7 @@
 import { test } from "node:test";
 // @ts-expect-error node:assert has no types in this package.
 import assert from "node:assert/strict";
-import { MAX_ROWS, parseReceipt, ReceiptRejected, ReceiptStore, type Receipt } from "../src/shared/receipts";
+import { MAX_BOOTS, MAX_ROWS, parseReceipt, ReceiptRejected, ReceiptStore, type Receipt } from "../src/shared/receipts";
 import { memorySql } from "./sqlite";
 
 const RELEASE = "0b6f7d2e-5a64-4c43-9d0b-0a3f4c6e8d21";
@@ -54,27 +54,59 @@ test("complete history, gaps, conflicting duplicates and starts are kept apart",
   store.record("start-a", receipt(1));
   store.record("start-a", receipt(2));
   store.record("start-a", receipt(2)); // identical redelivery
-  assert.equal(store.view("start-a").complete, true);
+  assert.equal(store.view("start-a", false).complete, true);
   store.record("start-a", receipt(4));
-  assert.deepEqual(store.view("start-a").gaps, { [BOOT]: [3] });
-  assert.equal(store.view("start-a").complete, false);
+  assert.deepEqual(store.view("start-a", false).gaps, { [BOOT]: [3] });
+  assert.equal(store.view("start-a", false).complete, false);
   store.record("start-a", receipt(3));
   store.record("start-a", receipt(3, { ready: false }));
-  const view = store.view("start-a");
+  const view = store.view("start-a", false);
   assert.equal(view.duplicatesConflicting, 1);
   assert.equal(view.complete, false);
-  assert.equal(store.view("start-b").complete, false);
-  assert.equal(store.view("start-b").receipts.length, 0);
+  assert.equal(store.view("start-b", false).complete, false);
+  assert.equal(store.view("start-b", false).receipts.length, 0);
 });
 
 test("eviction keeps a watermark so evicted history is never reported complete", () => {
   const store = new ReceiptStore(memorySql());
   for (let sequence = 1; sequence <= MAX_ROWS + 10; sequence++) store.record("start-a", receipt(sequence));
-  const view = store.view("start-a");
+  const view = store.view("start-a", false);
   assert.equal(view.receipts.length, MAX_ROWS);
   assert.equal(view.evictedThrough[BOOT], 10);
   assert.deepEqual(view.gaps, {});
   assert.equal(view.complete, false);
   store.record("start-a", receipt(5)); // already evicted: not resurrected
-  assert.equal(store.view("start-a").receipts.length, MAX_ROWS);
+  assert.equal(store.view("start-a", false).receipts.length, MAX_ROWS);
+});
+
+test("an ended start is complete only when every boot closed with a stopped receipt", () => {
+  const store = new ReceiptStore(memorySql());
+  store.record("start-a", receipt(1));
+  store.record("start-a", receipt(2));
+  assert.equal(store.view("start-a", false).complete, true);
+  // The container died before its final receipts: nothing shows as a gap.
+  const cut = store.view("start-a", true);
+  assert.deepEqual(cut.gaps, {});
+  assert.deepEqual(cut.unterminated, [BOOT]);
+  assert.equal(cut.complete, false);
+  store.record("start-a", receipt(3, { phase: "stopped", ready: false, draining: true }));
+  assert.equal(store.view("start-a", true).complete, true);
+});
+
+test("boot ids per start are bounded and a refusal is never complete", () => {
+  const sql = memorySql();
+  const store = new ReceiptStore(sql);
+  for (let boot = 0; boot < MAX_BOOTS; boot++) store.record("start-a", receipt(1, { boot_id: boot.toString(16).padStart(32, "0") }));
+  assert.equal(store.view("start-a", false).complete, true);
+  for (let boot = MAX_BOOTS; boot < 2000; boot++) {
+    assert.throws(() => store.record("start-a", receipt(1, { boot_id: boot.toString(16).padStart(32, "0") })), ReceiptRejected);
+  }
+  const view = store.view("start-a", false);
+  assert.equal(view.refusedBoots, 2000 - MAX_BOOTS);
+  assert.equal(view.complete, false);
+  assert.equal(Number(sql.exec("SELECT COUNT(*) AS n FROM receipt_meta").toArray()[0]?.n), MAX_BOOTS);
+  store.forget("start-a");
+  for (const table of ["receipts", "receipt_meta", "receipt_starts"]) {
+    assert.equal(Number(sql.exec(`SELECT COUNT(*) AS n FROM ${table}`).toArray()[0]?.n), 0, table);
+  }
 });

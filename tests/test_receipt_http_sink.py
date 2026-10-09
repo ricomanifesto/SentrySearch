@@ -153,3 +153,63 @@ def test_worker_entrypoint_requires_a_release_for_the_intake(monkeypatch):
     monkeypatch.setattr(run_runtime_worker, "WorkerSettings", lambda **kwargs: object())
     with pytest.raises(SystemExit, match="requires SENTRYSEARCH_RELEASE_ID"):
         run_runtime_worker.main()
+
+
+def test_a_malformed_intake_reply_loses_only_that_receipt():
+    class Broken:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            raise http.client.BadStatusLine("garbage")
+
+        def close(self):
+            pass
+
+    read_fd, write_fd = os.pipe()
+    intake = HttpReceiptSink(
+        "http://evidence.internal/r", connection=Broken  # ty: ignore[invalid-argument-type]
+    )
+    sink = TeeSink(DescriptorSink(write_fd), intake)
+    receipts = ReadinessReceipts(RELEASE, sink, interval_seconds=0)
+    for _ in range(3):
+        receipts.observe(SNAPSHOT)
+    receipts.close({**SNAPSHOT, "phase": "stopped"})
+    os.close(write_fd)
+    stdout = os.read(read_fd, 65536).decode()
+    os.close(read_fd)
+    assert stdout.count(RECEIPT_MARKER) == 4
+
+
+def test_a_trickling_intake_reply_is_cut_off_at_the_timeout():
+    import socket as socket_module
+
+    server = socket_module.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+
+    def trickle() -> None:
+        connection, _ = server.accept()
+        connection.recv(65536)
+        for byte in b"HTTP/1.1 204 No Content\r\n\r\n":
+            time.sleep(0.4)
+            try:
+                connection.sendall(bytes([byte]))
+            except OSError:
+                break
+        connection.close()
+
+    threading.Thread(target=trickle, daemon=True).start()
+
+    def connection(host, port, timeout):
+        return http.client.HTTPConnection("127.0.0.1", server.getsockname()[1], timeout=timeout)
+
+    sink = HttpReceiptSink("http://evidence.internal/r", connection=connection, timeout=1.0)
+    started = time.monotonic()
+    with pytest.raises(OSError):
+        sink.write(f"{RECEIPT_MARKER} {{}}\n")
+    assert time.monotonic() - started < 2.5
+    server.close()

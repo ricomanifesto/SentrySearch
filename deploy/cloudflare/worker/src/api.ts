@@ -12,7 +12,7 @@ export class ApiService extends ServiceObject<ServiceEnv> {
   protected readonly spec: ServiceSpec = {
     service: "api",
     image: "search",
-    entrypoint: ["/usr/local/bin/tini", "--", PYTHON, "-m", "sentrysearch_cloudflare.cfinit", "start", "--profile", "search", "--", PYTHON, "/app/run_api.py"],
+    entrypoint: ["/usr/local/bin/tini", "--", PYTHON, "-P", "-m", "sentrysearch_cloudflare.cfinit", "start", "--profile", "search", "--", PYTHON, "/app/run_api.py"],
     receipts: false,
     runtimeTunnel: false,
     port: 8001,

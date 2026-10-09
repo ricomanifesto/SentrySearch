@@ -137,8 +137,6 @@ RUN set -eu; \
 # files except OpenSSL CLI/Perl helpers: only config, providers and licenses are
 # needed at runtime. Keep its package metadata too; scanners may overmatch the
 # absent commands, which requires evidence review rather than suppression.
-# Generation writes process-local traces and metrics relative to the working
-# directory. Give the service a private scratch directory instead of /app.
 # Cloudflare-only extras, used by the cloudflare target and never by the default
 # image: util-linux setpriv (only that file, with util-linux's package metadata
 # so scanners still see the version), its whole libcap-ng0 library package, and
@@ -163,6 +161,8 @@ RUN --network=none set -eu; \
     dpkg-query --status libcap-ng0 > "$root/var/lib/dpkg/status.d/libcap-ng0"; \
     cp "/var/lib/dpkg/info/$(dpkg-query -W -f='${binary:Package}' libcap-ng0).md5sums" \
         "$root/var/lib/dpkg/status.d/libcap-ng0.md5sums"
+# Generation writes process-local traces and metrics relative to the working
+# directory. Give the service a private scratch directory instead of /app.
 RUN groupadd --system --gid 10001 sentrysearch && \
     useradd --system --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent \
         --shell /usr/sbin/nologin sentrysearch && \
@@ -207,7 +207,7 @@ FROM service AS cloudflare
 COPY --from=runtime-files /cloudflare-extra/ /
 COPY deploy/cloudflare/sentrysearch_cloudflare /app/sentrysearch_cloudflare
 USER 0:0
-ENTRYPOINT ["/usr/local/bin/tini", "--", "/app/.venv/bin/python", "-m", "sentrysearch_cloudflare.cfinit", "start", "--profile", "search", "--"]
+ENTRYPOINT ["/usr/local/bin/tini", "--", "/app/.venv/bin/python", "-P", "-m", "sentrysearch_cloudflare.cfinit", "start", "--profile", "search", "--"]
 CMD []
 
 # The default build target stays the unchanged service image.

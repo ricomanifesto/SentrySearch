@@ -525,6 +525,38 @@ def fixture_scenarios(run: Run, lan: str | None, outside_port: int) -> None:
             "status_after_120s_idle": body,
         }
 
+    def restart_survival() -> dict[str, Any]:
+        """Reload the worker script (a Durable Object restart) and check what survives."""
+        _, before = control.send("worker", "worker-0", "receipts", "GET")
+        _, status_before = control.send("worker", "worker-0", "status", "GET")
+        log = run.dir / "wrangler.log"
+        reloads_before = log.read_text().count("Reloading")
+        source = WORKER / "src" / "worker.ts"
+        os.utime(source)  # Content unchanged; wrangler rebuilds and restarts the object.
+        wait_for(lambda: log.read_text().count("Reloading") > reloads_before, 60, 1)
+        time.sleep(10)
+
+        def receipts_after() -> Any:
+            s, view = control.send("worker", "worker-0", "receipts", "GET")
+            if s == 200 and len(view["receipts"]) > len(before["receipts"]):
+                return view
+            return None
+
+        after = wait_for(receipts_after, 60, 3)
+        _, status_after = control.send("worker", "worker-0", "status", "GET")
+        kept = bool(after) and all(r in after["receipts"] for r in before["receipts"])
+        same_start = (status_after.get("start") or {}).get("start_nonce") == (
+            status_before.get("start") or {}
+        ).get("start_nonce")
+        return {
+            "passed": kept and same_start and status_after.get("running") is True,
+            "receipts_before": len(before["receipts"]),
+            "receipts_after": len(after["receipts"]) if after else None,
+            "receipts_kept": kept,
+            "same_start_after_restart": same_start,
+            "running_after_restart": status_after.get("running"),
+        }
+
     def drain() -> dict[str, Any]:
         status, body = control.send("worker", "worker-0", "stop")
 
@@ -550,9 +582,17 @@ def fixture_scenarios(run: Run, lan: str | None, outside_port: int) -> None:
             "passed": status == 200
             and bool(final)
             and final["start"]["exit_detail"] == "exit 0"
-            and bool(draining),
+            and bool(draining)
+            and (view or {}).get("ended") is True
+            and (view or {}).get("unterminated") == [],
             "stop": body,
             "final": final,
+            "ended": (view or {}).get("ended"),
+            "unterminated": (view or {}).get("unterminated"),
+            # Observed, not required: receipts posted while the Durable Object
+            # reloaded (restart_survival) are lost and must show as gaps.
+            "complete": (view or {}).get("complete"),
+            "gaps": (view or {}).get("gaps"),
             "draining_receipts": len(draining),
             "last_receipts": [(r["sequence"], r["draining"], r["phase"]) for r in receipts[-4:]],
             "worker_output_tail": logs,
@@ -599,6 +639,7 @@ def fixture_scenarios(run: Run, lan: str | None, outside_port: int) -> None:
     run.scenario("api_ingress_and_denials", api_ingress_and_denials)
     run.scenario("control_refusals", control_refusals)
     run.scenario("keepalive_while_idle", keepalive)
+    run.scenario("restart_survival", restart_survival)
     run.scenario("drain_on_stop", drain)
     run.scenario("job_outcomes_and_deadline", jobs)
 

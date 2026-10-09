@@ -102,7 +102,12 @@ class Relay:
                 while data := upstream.recv(65536):
                     self.carried.extend(data)
                     websocket.send(data)
-            except OSError:
+                    if self.mode == "once" and b"\r\n\r\n" in bytes(self.carried):
+                        # Close the tunnel after one response, as a relay restart would.
+                        time.sleep(0.1)
+                        websocket.close(1011)
+                        return
+            except Exception:
                 pass
             finally:
                 websocket.close()
@@ -290,3 +295,77 @@ def test_client_and_configuration_require_remote_verified_https(certs):
         runtime_endpoint_from_environment({**remote, "SENTRYRUNTIME_TUNNEL_URL": ""}).tunnel_url
         is None
     )
+
+
+def test_text_frames_are_refused_by_the_stream_itself():
+    class TextConnection:
+        state = None
+
+        def recv(self, timeout=None):
+            return "not binary"
+
+    stream = runtime_tunnel._TunnelStream(TextConnection())  # ty: ignore[invalid-argument-type]
+    with pytest.raises(httpcore.ReadError):
+        stream.read(10)
+
+
+def test_a_write_to_a_relay_that_stopped_reading_fails_within_its_timeout():
+    # A peer that completes the upgrade and then never reads again (a library
+    # server would keep draining frames into its own queue).
+    import base64
+    import hashlib
+    import socket as socket_module
+
+    listener = socket_module.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    accepted: list = []
+
+    def upgrade_then_stall() -> None:
+        peer, _ = listener.accept()
+        accepted.append(peer)
+        request = b""
+        while b"\r\n\r\n" not in request:
+            request += peer.recv(4096)
+        key = next(
+            line.split(b":", 1)[1].strip()
+            for line in request.split(b"\r\n")
+            if line.lower().startswith(b"sec-websocket-key:")
+        )
+        accept = base64.b64encode(
+            hashlib.sha1(key + b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest()
+        )
+        peer.sendall(
+            b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+            b"Connection: Upgrade\r\nSec-WebSocket-Accept: " + accept + b"\r\n\r\n"
+        )
+
+    threading.Thread(target=upgrade_then_stall, daemon=True).start()
+    port = listener.getsockname()[1]
+    connection = real_connect(
+        f"ws://127.0.0.1:{port}/v1/tunnel", proxy=None, max_size=runtime_tunnel.MAX_MESSAGE_BYTES
+    )
+    stream = runtime_tunnel._TunnelStream(connection)
+    started = time.monotonic()
+    try:
+        with pytest.raises(httpcore.WriteError):
+            stream.write(b"x" * (64 * 1024 * 1024), timeout=1.0)
+        assert time.monotonic() - started < 5
+        assert stream.get_extra_info("is_readable") is True
+    finally:
+        stream.close()
+        for peer in accepted:
+            peer.close()
+        listener.close()
+
+
+def test_a_closed_pooled_tunnel_is_not_reused(certs, monkeypatch):
+    with tls_runtime(certs) as port, relay(port, monkeypatch, mode="once") as path:
+        runtime = client(certs.ca, port)
+        try:
+            assert runtime.get_run("run-1").run_id == "run-1"
+            time.sleep(0.5)  # the relay has closed the first tunnel
+            assert runtime.get_run("run-1").run_id == "run-1"
+        finally:
+            runtime.close()
+    assert len(path.paths) == 2

@@ -19,7 +19,7 @@ export class WorkerService extends ServiceObject<WorkerEnv> {
     service: "worker",
     image: "search",
     entrypoint: [
-      "/usr/local/bin/tini", "--", PYTHON, "-m", "sentrysearch_cloudflare.cfinit", "start", "--profile", "search", "--",
+      "/usr/local/bin/tini", "--", PYTHON, "-P", "-m", "sentrysearch_cloudflare.cfinit", "start", "--profile", "search", "--",
       PYTHON, "-m", "dev.run_runtime_worker", "--health-port", "8081",
     ],
     receipts: true,
@@ -28,8 +28,8 @@ export class WorkerService extends ServiceObject<WorkerEnv> {
     drainSeconds: 30,
   };
 
-  protected containerEnv(startNonce: string): Record<string, string> {
-    return { ...super.containerEnv(startNonce), SENTRYSEARCH_RECEIPT_URL: "http://evidence.internal/v1/receipts" };
+  protected containerEnv(): Record<string, string> {
+    return { ...super.containerEnv(), SENTRYSEARCH_RECEIPT_URL: "http://evidence.internal/v1/receipts" };
   }
 
   protected async serve(): Promise<Response> {

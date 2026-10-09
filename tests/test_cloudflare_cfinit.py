@@ -23,6 +23,7 @@ Uid:\t10001\t10001\t10001\t10001
 Gid:\t10001\t10001\t10001\t10001
 Groups:\t
 NoNewPrivs:\t1
+Seccomp:\t2
 CapInh:\t0000000000000000
 CapPrm:\t0000000000000000
 CapEff:\t0000000000000000
@@ -42,6 +43,7 @@ class FakeSystem:
         self.chdirs: list[Path] = []
         self.executed: tuple | None = None
         self.prepare_error, self.exec_error = prepare_error, exec_error
+        self.filters: list[bytes] = []
 
     def system(self) -> cfinit.System:
         def prepare(*args):
@@ -55,7 +57,13 @@ class FakeSystem:
             self.executed = (path, list(argv), dict(env))
             raise Executed()
 
+        def seccomp_path(program: bytes) -> str:
+            self.filters.append(program)
+            return "/proc/self/fd/9"
+
         return cfinit.System(
+            machine=lambda: "x86_64",
+            seccomp_path=seccomp_path,
             geteuid=lambda: self.euid,
             read_status=lambda: self.status,
             prepare=prepare,
@@ -98,6 +106,7 @@ def setpriv_prefix(uid):
         "--ambient-caps=-all",
         "--bounding-set=-all",
         "--no-new-privs",
+        "--seccomp-filter=/proc/self/fd/9",
         "--",
     ]
 
@@ -117,8 +126,8 @@ def test_start_materializes_as_root_then_drops_through_setpriv(material):
     ]
     path, argv, env = executed(fake)
     assert path == "/usr/bin/setpriv"
-    assert argv[:9] == setpriv_prefix(10001)
-    assert argv[9:] == [
+    assert argv[:10] == setpriv_prefix(10001)
+    assert argv[10:] == [
         *cfinit._interpreter(),
         "-m",
         "sentrysearch_cloudflare.cfinit",
@@ -151,6 +160,7 @@ def test_continue_requires_the_kernel_to_report_a_full_drop():
         ("Uid:\t10001\t10001\t10001\t10001", "Uid:\t10001\t0\t10001\t10001"),
         ("Gid:\t10001\t10001\t10001\t10001", "Gid:\t10001\t10001\t10001\t0"),
         ("Groups:\t", "Groups:\t0"),
+        ("Seccomp:\t2", "Seccomp:\t0"),
     ],
 )
 def test_continue_refuses_any_remaining_privilege(line, replacement):
@@ -172,7 +182,7 @@ def test_probe_drops_with_a_minimal_environment_and_no_material():
     environ = {"PYTHONPATH": "/app", "DB_PASSWORD": "secret", "PATH": "/app/.venv/bin"}
     assert invoke(fake, ["probe", "--profile", "search", "--", *PROBE], environ) == "executed"
     path, argv, env = executed(fake)
-    assert argv[:9] == setpriv_prefix(10001) and "continue-probe" in argv
+    assert argv[:10] == setpriv_prefix(10001) and "continue-probe" in argv
     assert env == {"PYTHONPATH": "/app", "PATH": "/app/.venv/bin"}
     assert fake.prepared == []
     fake = FakeSystem()
@@ -188,7 +198,7 @@ def test_release_profiles_select_their_own_identity(material):
         fake = FakeSystem()
         argv = ["start", "--profile", profile, "--", *cfinit.RELEASE_PYTHON, "proof"]
         assert invoke(fake, argv, material) == "executed"
-        assert executed(fake)[1][:9] == setpriv_prefix(uid)
+        assert executed(fake)[1][:10] == setpriv_prefix(uid)
         assert fake.prepared[0][2:] == (Path("/run/material"), None, None)
 
 
@@ -239,3 +249,51 @@ def test_refusals_before_the_drop(material, capsys):
 def test_exec_failure_is_reported_without_details():
     fake = FakeSystem(exec_error=FileNotFoundError("/app/run_api.py"))
     assert invoke(fake, ["continue", "--profile", "search", "--", *API], {}) == cfinit.EXIT_EXEC
+
+
+def run_filter(program: bytes, arch: int, nr: int, flags: int) -> int:
+    """Evaluate a classic BPF seccomp program for one call (seccomp_data layout)."""
+    import struct
+
+    data = struct.pack("<iIQQ", nr, arch, 0, flags) + bytes(40)
+    instructions = [struct.unpack("=HBBI", program[i : i + 8]) for i in range(0, len(program), 8)]
+    accumulator, pc = 0, 0
+    while pc < len(instructions):
+        code, jt, jf, k = instructions[pc]
+        if code == 0x20:
+            accumulator = struct.unpack_from("<I", data, k)[0]
+        elif code in (0x15, 0x35, 0x45):
+            taken = (
+                (code == 0x15 and accumulator == k)
+                or (code == 0x35 and accumulator >= k)
+                or (code == 0x45 and accumulator & k)
+            )
+            pc += jt if taken else jf
+        elif code == 0x06:
+            return k
+        pc += 1
+    raise AssertionError("program fell off the end")
+
+
+@pytest.mark.parametrize(
+    "machine,arch,unshare,clone",
+    [("x86_64", 0xC000003E, 272, 56), ("aarch64", 0xC00000B7, 97, 220)],
+)
+def test_namespace_filter_refuses_only_new_user_namespaces(machine, arch, unshare, clone):
+    program = cfinit.namespace_filter(machine)
+    allow, eperm, enosys, kill = 0x7FFF0000, 0x00050001, 0x00050026, 0x80000000
+    assert run_filter(program, arch, unshare, cfinit.CLONE_NEWUSER) == eperm
+    assert run_filter(program, arch, clone, cfinit.CLONE_NEWUSER | 0x11) == eperm
+    assert run_filter(program, arch, unshare, 0x00020000) == allow
+    assert run_filter(program, arch, clone, 0x003D0F00) == allow
+    assert run_filter(program, arch, 435, 0) == enosys
+    assert run_filter(program, arch, 0, 0) == allow
+    assert run_filter(program, 0x40000003, unshare, 0) == kill
+
+
+def test_start_hands_setpriv_the_filter_for_this_machine(material):
+    fake = FakeSystem()
+    assert invoke(fake, ["start", "--profile", "search", "--", *API], material) == "executed"
+    assert fake.filters == [cfinit.namespace_filter("x86_64")]
+    with pytest.raises(cfinit.Refused):
+        cfinit.namespace_filter("riscv64")

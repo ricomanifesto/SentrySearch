@@ -19,6 +19,7 @@ instead of delaying the supervisor or shutdown.
 
 from __future__ import annotations
 
+import contextlib
 import http.client
 import json
 import math
@@ -26,6 +27,7 @@ import os
 import queue
 import re
 import secrets
+import socket
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -132,6 +134,10 @@ class HttpReceiptSink:
         if marker != RECEIPT_MARKER:
             raise ValueError("not a readiness receipt")
         connection = self._connection(EVIDENCE_HOST, 80, timeout=self._timeout)
+        # The timeout bounds each socket operation; this bounds the whole post,
+        # so a trickling reply cannot hold the writer (and stdout receipts) back.
+        deadline = threading.Timer(self._timeout, _abort, (connection,))
+        deadline.start()
         try:
             body = line.strip().encode()
             connection.request(
@@ -141,12 +147,24 @@ class HttpReceiptSink:
             response.read(1024)
             if response.status != 204:
                 raise OSError("receipt intake refused the receipt")
+        except http.client.HTTPException:
+            raise OSError("receipt intake reply was malformed") from None
         finally:
+            deadline.cancel()
             connection.close()
         return len(text)
 
     def flush(self) -> None:
         pass
+
+
+def _abort(connection: http.client.HTTPConnection) -> None:
+    # Closing from another thread does not wake a blocked read (the reply's file
+    # object keeps the socket open); a shutdown does.
+    sock = connection.sock
+    if sock is not None:
+        with contextlib.suppress(OSError):
+            sock.shutdown(socket.SHUT_RDWR)
 
 
 class TeeSink:
@@ -297,6 +315,7 @@ class ReadinessReceipts:
             try:
                 self._sink.write(str(item))
                 self._sink.flush()
-            except (OSError, ValueError):
-                # A closed or broken pipe loses receipts; the observer sees gaps.
+            except Exception:
+                # Any sink failure loses only this receipt; the observer sees a gap,
+                # and the writer keeps serving later receipts.
                 continue
