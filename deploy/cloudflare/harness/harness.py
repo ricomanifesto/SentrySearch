@@ -132,7 +132,8 @@ class Control:
             "bodySha256": hashlib.sha256(body).hexdigest(),
             "releaseId": self.release_id,
             "session": "harness-session",
-            "fence": "harness-fence",
+            # The CF-05 fence is a session's takeover ordinal; the harness is one session.
+            "fence": "1",
             "commandId": uuid.uuid4().hex,
             "expiresAt": int(time.time()) + 60,
         }
@@ -157,6 +158,8 @@ class Control:
         headers: dict | None = None,
     ) -> tuple[int, Any]:
         target = f"{service}/{name}"
+        if headers is None and body == b"{}" and service != "jobs" and action in ("start", "stop"):
+            body = self._command_body(service, name, action)
         headers = (
             headers
             if headers is not None
@@ -169,6 +172,16 @@ class Control:
             headers={**headers, "content-type": "application/json"},
         )
         return http(request)
+
+    def _command_body(self, service: str, name: str, action: str) -> bytes:
+        """A start names this object's release and version; a stop names its current start."""
+        _, status = self.send(service, name, "status", "GET")
+        status = status if isinstance(status, dict) else {}
+        if action == "start":
+            body = {"release_id": self.release_id, "version_id": status.get("version_id")}
+        else:
+            body = {"start_nonce": (status.get("start") or {}).get("start_nonce")}
+        return json.dumps(body).encode()
 
 
 def http(request: urllib.request.Request, timeout: float = 30) -> tuple[int, Any]:
@@ -433,6 +446,19 @@ def fixture_image(run_dir: Path) -> str:
     return tag
 
 
+def job_body(job_id: str, phase: str, deadline_seconds: int) -> bytes:
+    """A JobRunner run request (CF-05): the object's job id, a wired phase, the tools image."""
+    return json.dumps(
+        {
+            "job_id": job_id,
+            "phase": phase,
+            "database": "runtime",
+            "image": "release_tools",
+            "deadline_seconds": deadline_seconds,
+        }
+    ).encode()
+
+
 def fixture_scenarios(
     run: Run, lan: str | None, outside_port: int, long_job_seconds: int = 0
 ) -> None:
@@ -642,12 +668,8 @@ def fixture_scenarios(
         release_name = f"job-{run.release_id}-"
         natural = f"{release_name}grant"
         stuck = f"{release_name}proof"
-        body_natural = json.dumps(
-            {"job": "grant", "profile": "runtime-release", "deadline_seconds": 120}
-        ).encode()
-        body_stuck = json.dumps(
-            {"job": "proof", "profile": "runtime-release", "deadline_seconds": 15}
-        ).encode()
+        body_natural = job_body("grant", "grant", 120)
+        body_stuck = job_body("proof", "proof", 15)
         n_status, n_start = control.send("jobs", natural, "run", body=body_natural)
         s_status, s_start = control.send("jobs", stuck, "run", body=body_stuck)
 
@@ -688,9 +710,7 @@ def fixture_scenarios(
         # stays silent until just before the deadline, so only the object's own
         # alarms keep it (and its container) alive in between.
         name = f"job-{run.release_id}-proof-long"
-        body = json.dumps(
-            {"job": "proof", "profile": "runtime-release", "deadline_seconds": long_job_seconds}
-        ).encode()
+        body = job_body("proof-long", "proof", long_job_seconds)
         started = time.time()
         status, start = control.send("jobs", name, "run", body=body)
         if status != 200:

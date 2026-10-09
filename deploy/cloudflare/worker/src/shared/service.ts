@@ -6,11 +6,17 @@
 // it alone sets: its own id, the service and the start nonce. Containers
 // therefore cannot claim another identity or another start. Every control
 // route requires an operator-signed command for this object's name.
+//
+// Authority (CF-05): a command for this version's release must carry the
+// current or a later session fence (Authority); a command signed for another
+// release may only read (status, receipts) or stop the start it names, so the
+// next release can quiesce objects still running this one's code. A start is
+// at most once per command id, also after its replay row expired.
 
 import { DurableObject } from "cloudflare:workers";
 import { boundedBody } from "./bytes";
-import { ControlRefused, importPublicKey, ReplayGuard, verifyControl, type ControlCommand } from "./control";
-import { parseReceipt, ReceiptRejected, ReceiptStore } from "./receipts";
+import { Authority, ControlRefused, importPublicKey, ReplayGuard, verifyControl, type ControlCommand } from "./control";
+import { MAX_PAGE, parseReceipt, ReceiptRejected, ReceiptStore } from "./receipts";
 
 export type ServiceName = "api" | "worker" | "runtime";
 
@@ -21,6 +27,8 @@ export interface ServiceEnv {
   RELEASE_ID: string;
   /** This script's own namespace, to bind names to object ids. */
   SELF: DurableObjectNamespace;
+  /** Version metadata binding: the Worker version this object runs. */
+  CF_VERSION_METADATA?: { id?: string };
   /** Container settings: every `CONTAINER_*` string binding, prefix removed. */
   [binding: string]: unknown;
 }
@@ -44,6 +52,8 @@ export interface ServiceSpec {
   port: number;
   /** SIGTERM-to-destroy window. The platform allows up to 15 minutes. */
   drainSeconds: number;
+  /** How status() probes health: an HTTP path on a port, or a TCP connect. */
+  health: { kind: "http"; port: number; path: string } | { kind: "tcp" };
 }
 
 const KEEPALIVE_MS = 10_000;
@@ -56,6 +66,9 @@ const KEPT_STARTS = 8;
 const START_CLAIM_MS = 60_000;
 /** Row states in which the start owns the container; every other state has ended. */
 const LIVE = new Set(["starting", "running", "draining"]);
+/** What a command signed for another release may do here. */
+const CROSS_RELEASE = new Set(["GET status", "GET receipts", "POST receipts", "POST stop"]);
+const HEALTH_TIMEOUT_MS = 2_000;
 
 interface StartRow {
   start_nonce: string;
@@ -64,22 +77,27 @@ interface StartRow {
   state: string;
   exit_detail: string | null;
   drain_deadline: number | null;
+  command_id: string | null;
+  version_id: string | null;
+  image: string | null;
 }
 
 export abstract class ServiceObject<Env extends ServiceEnv> extends DurableObject<Env> {
   protected abstract readonly spec: ServiceSpec;
   protected readonly receipts: ReceiptStore;
   private readonly replay: ReplayGuard;
+  private readonly authority: Authority;
   private keyPromise: Promise<CryptoKey> | undefined;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     const sql = ctx.storage.sql;
     sql.exec(
-      "CREATE TABLE IF NOT EXISTS starts (start_nonce TEXT PRIMARY KEY, release_id TEXT NOT NULL, started_at INTEGER NOT NULL, state TEXT NOT NULL, exit_detail TEXT, drain_deadline INTEGER)",
+      "CREATE TABLE IF NOT EXISTS starts (start_nonce TEXT PRIMARY KEY, release_id TEXT NOT NULL, started_at INTEGER NOT NULL, state TEXT NOT NULL, exit_detail TEXT, drain_deadline INTEGER, command_id TEXT, version_id TEXT, image TEXT)",
     );
     this.receipts = new ReceiptStore(sql);
     this.replay = new ReplayGuard(sql);
+    this.authority = new Authority(sql);
     // After a Durable Object restart the container may still be running:
     // re-arm the inactivity timeout and lifecycle observation (H-L3), and bind
     // the outbound interceptions again for the current start. Locally, the
@@ -112,6 +130,10 @@ export abstract class ServiceObject<Env extends ServiceEnv> extends DurableObjec
   private key(): Promise<CryptoKey> {
     this.keyPromise ??= importPublicKey(this.env.CONTROL_PUBLIC_KEY);
     return this.keyPromise;
+  }
+
+  private versionId(): string | null {
+    return this.env.CF_VERSION_METADATA?.id ?? null;
   }
 
   private current(): StartRow | undefined {
@@ -159,13 +181,17 @@ export abstract class ServiceObject<Env extends ServiceEnv> extends DurableObjec
     const body = await boundedBody(request, 16 * 1024);
     const now = Math.floor(Date.now() / 1000);
     const command = await verifyControl(request, body, `${this.spec.service}/${name}`, action, await this.key(), now);
-    if (command.releaseId !== this.env.RELEASE_ID) throw new ControlRefused(409, "command is for another release");
+    const route = `${request.method} ${action}`;
+    // From here to the effect's claim nothing awaits: authority, replay and
+    // the claim are one atomic step against every other request.
+    if (command.releaseId === this.env.RELEASE_ID) this.authority.admit(command, this.env.RELEASE_ID);
+    else if (!CROSS_RELEASE.has(route)) throw new ControlRefused(409, "command is for another release");
     this.replay.accept(command, now);
-    switch (`${request.method} ${action}`) {
+    switch (route) {
       case "POST start":
-        return Response.json(await this.start(command));
+        return Response.json(await this.start(command, jsonBody(body)));
       case "POST stop":
-        return Response.json(await this.stop());
+        return Response.json(await this.stop(jsonBody(body)));
       case "GET status":
         return Response.json(await this.status());
       case "GET receipts": {
@@ -174,32 +200,69 @@ export abstract class ServiceObject<Env extends ServiceEnv> extends DurableObjec
         if (!row) return Response.json({ error: "no start" }, { status: 404 });
         return Response.json(this.receipts.view(row.start_nonce, !LIVE.has(row.state)));
       }
+      case "POST receipts": {
+        this.reconcile();
+        const row = this.current();
+        const page = jsonBody(body);
+        if (!row || page.start_nonce !== row.start_nonce) return Response.json({ error: "no such start" }, { status: 404 });
+        const after = Number(page.after ?? 0);
+        const limit = Number(page.limit ?? MAX_PAGE);
+        try {
+          return Response.json(this.receipts.page(row.start_nonce, after, limit, !LIVE.has(row.state)));
+        } catch (error) {
+          if (error instanceof ReceiptRejected) throw new ControlRefused(400, error.message);
+          throw error;
+        }
+      }
     }
     throw new ControlRefused(404, "unknown action");
   }
 
-  private async start(command: ControlCommand): Promise<Record<string, unknown>> {
+  private async start(command: ControlCommand, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    // The controller names the version it deployed; another version here is drift.
+    if (Object.keys(body).length !== 2 || body.release_id !== this.env.RELEASE_ID || body.version_id !== this.versionId()) {
+      throw new ControlRefused(409, "start does not match this version");
+    }
     const container = this.ctx.container;
     if (!container) throw new Error("no container binding");
     const image = container.images[this.spec.image];
     if (!image) throw new Error("image is not in this version's images map");
     this.reconcile();
+    // At most one start per command id, also after its replay row expired.
+    const earlier = this.ctx.storage.sql
+      .exec("SELECT * FROM starts WHERE command_id = ?", command.commandId)
+      .toArray()[0] as StartRow | undefined;
+    if (earlier) return { started: false, replayed: true, ...publicStart(earlier) };
     const live = this.current();
     if (container.running || (live && LIVE.has(live.state))) return { started: false, start_nonce: live?.start_nonce ?? null };
     // Claim the start before the first await: a second start arriving while
     // the interceptions are being bound sees this row and changes nothing.
     const startNonce = crypto.randomUUID().replaceAll("-", "");
     this.ctx.storage.sql.exec(
-      "INSERT INTO starts (start_nonce, release_id, started_at, state) VALUES (?, ?, ?, 'starting')",
+      "INSERT INTO starts (start_nonce, release_id, started_at, state, command_id, version_id, image) VALUES (?, ?, ?, 'starting', ?, ?, ?)",
       startNonce,
       this.env.RELEASE_ID,
       Date.now(),
+      command.commandId,
+      this.versionId(),
+      imageReference(image),
     );
     this.forgetOldStarts();
     try {
       // Interception must be configured before start(); on a fresh container,
       // configuring it afterwards broke ingress (local probe).
       await this.intercept(container, startNonce);
+      // After the await: start only for an unexpired command whose claim is
+      // still the current one. An abandoned claim never starts, and the
+      // interception goes back to the live start (CF04-R31).
+      const claim = this.current();
+      if (Math.floor(Date.now() / 1000) >= command.expiresAt || claim?.start_nonce !== startNonce || claim.state !== "starting") {
+        this.finish(startNonce, "failed", "start abandoned before the container started");
+        if (claim && claim.start_nonce !== startNonce && ["running", "draining"].includes(claim.state)) {
+          await this.intercept(container, claim.start_nonce);
+        }
+        return { started: false, abandoned: true, start_nonce: startNonce };
+      }
       container.start({
         image,
         entrypoint: [...this.spec.entrypoint],
@@ -218,7 +281,8 @@ export abstract class ServiceObject<Env extends ServiceEnv> extends DurableObjec
     // booted (seconds under load); the reply does not wait, and every alarm
     // re-arms it.
     this.ctx.waitUntil(container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS).catch(() => undefined));
-    return { started: true, start_nonce: startNonce };
+    const row = this.current();
+    return { started: true, ...publicStart(row!) };
   }
 
   private forgetOldStarts(): void {
@@ -281,11 +345,14 @@ export abstract class ServiceObject<Env extends ServiceEnv> extends DurableObjec
     else if (Date.now() - row.started_at > START_CLAIM_MS) this.finish(row.start_nonce, "failed", "start did not complete");
   }
 
-  private async stop(): Promise<Record<string, unknown>> {
+  /** Drain exactly the start the command names; a stop for an older start changes nothing. */
+  private async stop(body: Record<string, unknown>): Promise<Record<string, unknown>> {
     const container = this.ctx.container;
     this.reconcile();
     const row = this.current();
-    if (!container?.running || !row || row.state !== "running") return { stopping: false, state: row?.state ?? null };
+    if (!container?.running || !row || row.state !== "running" || body.start_nonce !== row.start_nonce) {
+      return { stopping: false, state: row?.state ?? null };
+    }
     container.signal(15); // SIGTERM: tini forwards it to the role, which drains.
     const deadline = Date.now() + this.spec.drainSeconds * 1000;
     this.ctx.storage.sql.exec(
@@ -295,19 +362,56 @@ export abstract class ServiceObject<Env extends ServiceEnv> extends DurableObjec
     );
     // Keep the object (and so its container) alive through the drain window.
     await this.ctx.storage.setAlarm(Math.min(deadline, Date.now() + KEEPALIVE_MS));
-    return { stopping: true, drain_deadline: deadline };
+    return { stopping: true, start_nonce: row.start_nonce, drain_deadline: deadline };
   }
 
   private async status(): Promise<Record<string, unknown>> {
     const container = this.ctx.container;
     this.reconcile();
     const row = this.current();
+    const running = container?.running ?? false;
     return {
       service: this.spec.service,
-      running: container?.running ?? false,
-      inspect: container?.running ? await container.inspect() : null,
-      start: row ?? null,
+      object_id: this.ctx.id.toString(),
+      release_id: this.env.RELEASE_ID,
+      version_id: this.versionId(),
+      running,
+      image: row?.image ?? null,
+      health: running && row?.state === "running" ? await this.health(container!) : "unhealthy",
+      inspect: running ? await container!.inspect() : null,
+      start: row ? publicStart(row) : null,
     };
+  }
+
+  /** A bounded probe of the running container; anything but a clean answer is unhealthy. */
+  private async health(container: Container): Promise<string> {
+    const probe = this.spec.health;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("health timeout")), HEALTH_TIMEOUT_MS);
+    });
+    timeout.catch(() => undefined);
+    try {
+      if (probe.kind === "http") {
+        const response = await Promise.race([
+          container.getTcpPort(probe.port).fetch(new Request(`http://container${probe.path}`)),
+          timeout,
+        ]);
+        await response.body?.cancel();
+        return response.status === 200 ? "healthy" : "unhealthy";
+      }
+      const socket = container.getTcpPort(this.spec.port).connect(`container:${this.spec.port}`);
+      try {
+        await Promise.race([socket.opened, timeout]);
+      } finally {
+        socket.close().catch(() => undefined);
+      }
+      return "healthy";
+    } catch {
+      return "unhealthy";
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
   }
 
   private async scheduleAlarm(): Promise<void> {
@@ -364,4 +468,26 @@ export abstract class ServiceObject<Env extends ServiceEnv> extends DurableObjec
     }
     return 204;
   }
+}
+
+/** A control body: a JSON object or nothing (an empty object). */
+function jsonBody(body: Uint8Array): Record<string, unknown> {
+  if (body.byteLength === 0) return {};
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body));
+  } catch {
+    throw new ControlRefused(400, "body is not JSON");
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new ControlRefused(400, "body is not an object");
+  return value as Record<string, unknown>;
+}
+
+/** The version's image map entry as a string (production: a digest-pinned reference; unverified, H-V1). */
+function imageReference(image: unknown): string {
+  return typeof image === "string" ? image : JSON.stringify(image);
+}
+
+function publicStart(row: StartRow): Record<string, unknown> {
+  return { ...row };
 }

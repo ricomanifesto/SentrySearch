@@ -20,6 +20,7 @@ export class RuntimeService extends ServiceObject<ServiceEnv> {
     runtimeTunnel: false,
     port: 8443,
     drainSeconds: 30,
+    health: { kind: "tcp" },
   };
 
   protected async serve(request: Request, url: URL): Promise<Response> {

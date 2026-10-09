@@ -29,6 +29,38 @@ MODULE_IMPORTS: dict[str, set[str]] = {
         "release.journal",
         "release_cloudflare.r2_client",
     },
+    # CF-05: pure manifest parsing, the signed control client (the transport
+    # and the key object are injected; cryptography only signs) and port types.
+    "manifest.py": {
+        "__future__",
+        "dataclasses",
+        "datetime",
+        "re",
+        "typing",
+        "pydantic",
+        "release.manifest",
+        "release.readiness",
+    },
+    "control_client.py": {
+        "__future__",
+        "base64",
+        "collections.abc",
+        "dataclasses",
+        "datetime",
+        "hashlib",
+        "json",
+        "re",
+        "typing",
+        "cryptography.hazmat.primitives.asymmetric.ed25519",
+    },
+    "ports.py": {
+        "__future__",
+        "collections.abc",
+        "dataclasses",
+        "datetime",
+        "typing",
+        "release_cloudflare.control_client",
+    },
 }
 FORBIDDEN_MODULE_ROOTS = {
     "os",

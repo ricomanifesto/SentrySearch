@@ -9,8 +9,50 @@ that any environment exists or that a release has run.
 
 The controller's object store has an offline Cloudflare R2 implementation in
 `release_cloudflare/`, described in
-[the R2 control store](release-cloudflare-r2-store.md). It changes nothing in
-`release/`.
+[the R2 control store](release-cloudflare-r2-store.md).
+
+## Platform strategy
+
+The controller drives one provider-neutral strategy, `ReleasePlatform`
+(`release/ports.py`). The controller owns everything that decides safety:
+- the journal, lock and recovery;
+- guards, approval and window;
+- deadlines, identical-retry limits and visibility polls;
+- reconciliation order, the readiness gate, holds and finalization.
+
+A platform only:
+- builds requests that can be rebuilt from the recorded intent;
+- sends them;
+- classifies what it observes.
+
+`EcsPlatform` (`release/controller.py`) is the ECS code that ran before the
+extraction, moved without behavior change. The existing `ecs=`, `evidence=` and
+`logs=` constructor keywords build it, and its journal names (`run_task`,
+`update_service`, `task_arn`, `deployment_id`, …) are the historical ones. A
+recorded trace of every call the AWS release tests make on the store, ECS,
+evidence, logs and clock ports is identical before and after the extraction.
+
+A different platform is passed as `platform=`. It uses its own journal names, so
+no value of one platform is written under another platform's field. The flow
+gives it hooks that do nothing on ECS:
+- **A session authority** (`SessionAuthority`), derived from the journal:
+  - the fence is the session's takeover ordinal, 1 plus the number of
+    `recovered` events, each appended by journal CAS while the exact lock is
+    transferred;
+  - a recovered session sends nothing until every command an earlier session
+    journaled (`command_expires_at`) has expired, plus a 30 s clock allowance.
+- **Command intent fields** (`command_fields`), written on every command
+  intent.
+- **An activation step** before the first job, for platforms whose release code
+  is made current separately. Only an exact prior state may be moved forward.
+  Each reply is screened for drift, and recognition comes from a fresh
+  observation.
+- **Drift checks:**
+  - before a forward deployment is recognized;
+  - before every forward send and identical resend, on a fresh observation;
+  - on every forward resend's reply, which is never discarded.
+- **`PlatformHold(code)`**, which holds, and **`SessionSuperseded`**, which
+  halts `session_superseded` without writing again.
 
 ## Inputs
 
@@ -216,8 +258,16 @@ restore into isolated copies.
 ```bash
 uv run python -m pytest tests/test_release_manifest.py tests/test_release_machine.py \
   tests/test_release_controller.py tests/test_release_offline.py \
-  tests/test_release_readiness.py tests/test_worker_readiness_receipts.py
+  tests/test_release_readiness.py tests/test_worker_readiness_receipts.py \
+  tests/test_release_platform_neutral.py
 ```
+
+`tests/test_release_platform_neutral.py` covers:
+- both constructor forms;
+- the core's import boundary (no cloud SDK, network or Cloudflare module);
+- a rollback plan that depends on the rollback's kind;
+- the fence and quiet period after a recovery;
+- platform holds and a superseded session.
 
 Fakes in `tests/release_fakes.py` reproduce ECS response shapes, client-token
 idempotency, delayed visibility, crashes before and after requests, ambiguous

@@ -28,6 +28,7 @@ export class WorkerService extends ServiceObject<WorkerEnv> {
     // Above the worker's own 30 s drain budget, so a busy worker ends itself
     // (exit 124, drain_deadline_exceeded) before the object destroys it.
     drainSeconds: 45,
+    health: { kind: "http", port: 8081, path: "/healthz" },
   };
 
   protected containerEnv(): Record<string, string> {

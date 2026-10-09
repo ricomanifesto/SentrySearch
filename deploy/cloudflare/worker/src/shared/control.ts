@@ -152,3 +152,53 @@ export class ReplayGuard {
 }
 
 export const CONTROL_HEADERS = HEADERS;
+
+/** A session's takeover ordinal within its release: a positive decimal integer. */
+const FENCE = /^[1-9][0-9]{0,9}$/;
+const MAX_FENCE = 2 ** 31 - 1;
+
+/**
+ * Which session of this object's release may act (CF-05 authority protocol).
+ *
+ * The fence is the session's takeover ordinal, derived by the controller from
+ * its CAS-ordered journal: each recovery adds one, so a higher fence is a later
+ * session of the same release. Release ids, sessions and ETags are compared
+ * only for equality, never ordered. A same-release command with a higher fence
+ * is adopted (that is how a handover becomes visible here); the same fence must
+ * come from the same session; a lower fence is superseded. Authority recorded
+ * for another release (written by an older Worker version) is void.
+ *
+ * Call this in the same synchronous section as the replay check and the
+ * effect's claim, so no other request can interleave.
+ */
+export class Authority {
+  constructor(private readonly sql: Sql) {
+    sql.exec(
+      "CREATE TABLE IF NOT EXISTS control_authority (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), release_id TEXT NOT NULL, fence INTEGER NOT NULL, session TEXT NOT NULL)",
+    );
+  }
+
+  /** Throws `ControlRefused(409, "superseded")` for an older or conflicting session. */
+  admit(command: ControlCommand, releaseId: string): void {
+    if (command.releaseId !== releaseId) throw new ControlRefused(409, "command is for another release");
+    if (!FENCE.test(command.fence) || Number(command.fence) > MAX_FENCE) throw new ControlRefused(400, "invalid fence");
+    const fence = Number(command.fence);
+    const row = this.sql.exec("SELECT release_id, fence, session FROM control_authority WHERE singleton = 1").toArray()[0];
+    if (!row || row.release_id !== releaseId || fence > Number(row.fence)) {
+      this.sql.exec(
+        "INSERT INTO control_authority (singleton, release_id, fence, session) VALUES (1, ?, ?, ?) ON CONFLICT (singleton) DO UPDATE SET release_id = excluded.release_id, fence = excluded.fence, session = excluded.session",
+        releaseId,
+        fence,
+        command.session,
+      );
+      return;
+    }
+    if (fence === Number(row.fence) && command.session === row.session) return;
+    throw new ControlRefused(409, "superseded");
+  }
+
+  current(): { releaseId: string; fence: number; session: string } | null {
+    const row = this.sql.exec("SELECT release_id, fence, session FROM control_authority WHERE singleton = 1").toArray()[0];
+    return row ? { releaseId: String(row.release_id), fence: Number(row.fence), session: String(row.session) } : null;
+  }
+}

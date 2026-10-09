@@ -17,6 +17,7 @@ export class ApiService extends ServiceObject<ServiceEnv> {
     runtimeTunnel: false,
     port: 8001,
     drainSeconds: 30,
+    health: { kind: "http", port: 8001, path: "/api/health" },
   };
 
   protected async serve(request: Request, url: URL): Promise<Response> {

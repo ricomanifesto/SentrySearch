@@ -103,6 +103,27 @@ export interface ReceiptView {
   complete: boolean;
 }
 
+/**
+ * One page of a start's receipts in the order they were received, after a
+ * cursor. The reader follows `next` while `more`; any history it has not read
+ * that was evicted, conflicted or refused makes the read incomplete.
+ */
+export interface ReceiptPage {
+  startNonce: string;
+  receipts: Receipt[];
+  /** Received order of the last receipt returned (the cursor when none). */
+  next: number;
+  more: boolean;
+  /** A receipt received after the cursor was evicted before this read. */
+  evictedAfterCursor: boolean;
+  duplicatesConflicting: number;
+  refusedBoots: number;
+  ended: boolean;
+  unterminated: string[];
+}
+
+export const MAX_PAGE = 100;
+
 export class ReceiptStore {
   constructor(private readonly sql: Sql) {
     sql.exec(
@@ -111,7 +132,9 @@ export class ReceiptStore {
     sql.exec(
       "CREATE TABLE IF NOT EXISTS receipt_meta (start_nonce TEXT NOT NULL, boot_id TEXT NOT NULL, evicted_through INTEGER NOT NULL DEFAULT 0, conflicts INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (start_nonce, boot_id))",
     );
-    sql.exec("CREATE TABLE IF NOT EXISTS receipt_starts (start_nonce TEXT PRIMARY KEY, refused_boots INTEGER NOT NULL DEFAULT 0)");
+    sql.exec(
+      "CREATE TABLE IF NOT EXISTS receipt_starts (start_nonce TEXT PRIMARY KEY, refused_boots INTEGER NOT NULL DEFAULT 0, evicted_order INTEGER NOT NULL DEFAULT 0)",
+    );
   }
 
   /** Drop everything kept for a start (the owner keeps only its recent starts). */
@@ -184,6 +207,21 @@ export class ReceiptStore {
         victim.start_nonce,
         victim.boot_id,
       );
+      // Lower sequences can arrive later: the watermark is the latest received
+      // order among everything this eviction removes.
+      const lost = this.sql
+        .exec(
+          "SELECT MAX(received_order) AS latest FROM receipts WHERE start_nonce = ? AND boot_id = ? AND sequence <= ?",
+          victim.start_nonce,
+          victim.boot_id,
+          victim.sequence,
+        )
+        .toArray()[0]?.latest;
+      this.sql.exec(
+        "UPDATE receipt_starts SET evicted_order = MAX(evicted_order, ?) WHERE start_nonce = ?",
+        Number(lost ?? 0),
+        victim.start_nonce,
+      );
       this.sql.exec(
         "DELETE FROM receipts WHERE start_nonce = ? AND boot_id = ? AND sequence <= ?",
         victim.start_nonce,
@@ -191,6 +229,39 @@ export class ReceiptStore {
         victim.sequence,
       );
     }
+  }
+
+  page(startNonce: string, after: number, limit: number, ended: boolean): ReceiptPage {
+    if (!Number.isSafeInteger(after) || after < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > MAX_PAGE) {
+      throw new ReceiptRejected("invalid cursor or limit");
+    }
+    const rows = this.sql
+      .exec(
+        "SELECT received_order, body FROM receipts WHERE start_nonce = ? AND received_order > ? ORDER BY received_order LIMIT ?",
+        startNonce,
+        after,
+        limit + 1,
+      )
+      .toArray();
+    const more = rows.length > limit;
+    const kept = rows.slice(0, limit);
+    const meta = this.sql
+      .exec("SELECT refused_boots, evicted_order FROM receipt_starts WHERE start_nonce = ?", startNonce)
+      .toArray()[0];
+    const conflicts = Number(
+      this.sql.exec("SELECT COALESCE(SUM(conflicts), 0) AS n FROM receipt_meta WHERE start_nonce = ?", startNonce).toArray()[0]?.n ?? 0,
+    );
+    return {
+      startNonce,
+      receipts: kept.map((row) => JSON.parse(String(row.body)) as Receipt),
+      next: kept.length > 0 ? Number(kept[kept.length - 1]!.received_order) : after,
+      more,
+      evictedAfterCursor: Number(meta?.evicted_order ?? 0) > after,
+      duplicatesConflicting: conflicts,
+      refusedBoots: Number(meta?.refused_boots ?? 0),
+      ended,
+      unterminated: ended ? this.view(startNonce, true).unterminated : [],
+    };
   }
 
   view(startNonce: string, ended: boolean): ReceiptView {

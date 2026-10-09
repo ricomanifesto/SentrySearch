@@ -95,11 +95,39 @@ job) owning one container:
   (`src/execution/runtime_tunnel.py`). The relay refuses text messages and
   closes a tunnel with more than 1 MiB waiting for the runtime's socket. The
   API has no runtime interception.
-- **Control.** Every control route needs an Ed25519-signed command for the
-  object's own name (recomputed from its namespace), an unexpired lifetime of at
-  most five minutes, a body matching the signed digest and a command id never
-  accepted before. The signed release, session and fence values are carried for
-  the release controller's authority protocol.
+- **Control.** Every control route requires an Ed25519-signed command:
+  - for the object's own name, recomputed from its namespace;
+  - unexpired, with a lifetime of at most five minutes;
+  - with a body matching the signed digest;
+  - with a command id never accepted before.
+- **Authority (CF-05).** The checks below run in one synchronous step, so no
+  other request can interleave:
+  - **Commands for this Worker version's release:**
+    - must carry the current session's fence or a later one;
+    - the fence is the session's takeover ordinal, which the release
+      controller derives from its journal (`release/controller.py`);
+    - a higher fence is adopted; that is how a recovery's handover becomes
+      visible here;
+    - an equal fence must come from the same session;
+    - a lower fence is refused as `superseded`;
+    - fences are integers; release ids, sessions and ETags are never ordered.
+  - **Commands signed for another release** may only:
+    - read status;
+    - read receipts;
+    - stop the exact start they name.
+
+    So the next release can quiesce objects still running this one's code, and
+    a delayed stop never affects a newer start.
+  - **Dedup:**
+    - a start is at most once per command id, also after the command's replay
+      row expired;
+    - a `JobRunner` runs at most once.
+  - **A start re-checks after binding its interceptions**, and goes ahead only
+    if the command is still unexpired and its claim is still current.
+    Otherwise it is recorded `failed`, and the interception goes back to the
+    live start.
+  - **A start names the Worker version it expects** (`CF_VERSION_METADATA`); a
+    mismatch is refused as drift.
 - **Drain windows.** The worker object waits 45 seconds after SIGTERM, above
   the worker's own 30-second drain budget, so a busy worker ends itself (exit
   124, `drain_deadline_exceeded`) before the object destroys it; the API and
@@ -118,8 +146,20 @@ job) owning one container:
   unobserved`. Stopping sends SIGTERM and destroys only after the drain window,
   recording `destroyed` before calling `destroy()`. `destroy()` or a resolved
   `monitor()` never counts as success.
-- **Jobs.** A `JobRunner` starts one release-tools job and keeps it alive with
-  the same 10-second alarm. It sends SIGTERM at its deadline (alarms also cover
+- **Jobs.** A `JobRunner` (object `job-<release>-<job id>`) runs one job
+  from a closed table: grant and proof for either database, with the
+  release-tools image. Migration jobs are refused until their images have a
+  receipt producer, as on AWS. The job's environment carries:
+  - the shared `CONTAINER_*` settings;
+  - its own `JOB_<ID>__*` settings;
+  - its identity: `RELEASE_PLATFORM=cloudflare`,
+    `CLOUDFLARE_DURABLE_OBJECT_ID` and `SENTRY_LAUNCH_NONCE`.
+
+  The job posts its `sentry.release-tools.job.cloudflare.v1` receipt to
+  `evidence.internal`. The intake (`JobEvidence`) stores it only if its
+  identity fields equal the interception's props and the start is current. An
+  identical redelivery is accepted; a different receipt is refused. The object
+  keeps the job alive with the same 10-second alarm. It sends SIGTERM at its deadline (alarms also cover
   deadlines beyond the 15-minute `monitor()` window), keeps that SIGTERM in its
   record even if the job then exits 0, and destroys it after a grace period.
   It reports `sql_outcome` `unknown` unless the job's own completion receipt
@@ -228,8 +268,15 @@ npm ci --ignore-scripts
 npm run types && npm run check && npm test
 ```
 
-`npm test` covers signed control, receipt intake and the service and job
-lifecycles (a fake container and Durable Object state under node).
+`npm test` covers:
+- signed control;
+- the authority rules above;
+- receipt intake and cursor reads;
+- the service and job lifecycles (a fake container and Durable Object state
+  under node);
+- cross-language vectors: commands signed by the Python control client
+  (`tests/cloudflare_control_vectors.py`) must produce the same canonical bytes
+  and verify here.
 `tests/test_cloudflare_cfinit.py`, `tests/test_runtime_tunnel.py` and
 `tests/test_receipt_http_sink.py` run in the repository gate.
 
