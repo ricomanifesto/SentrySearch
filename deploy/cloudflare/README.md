@@ -11,6 +11,9 @@ account resource, publishes an image or reads Cloudflare credentials.
 | `worker/src/` | Five Worker scripts: `edge`, `api`, `worker`, `runtime`, `jobs` |
 | `worker/config/` | Wrangler configuration templates (no account id); `@@NAME@@` values are filled per run |
 | `worker/test/` | Unit tests for signed control and receipt intake |
+| `harness/harness.py` | Runs all five scripts under `wrangler dev` with containment and drives signed scenarios |
+| `harness/check_entrypoint.py` | Proves the Search entrypoint's privilege drop in real containers |
+| `harness/fixture/` | One static binary standing in for every service in the harness self-test |
 
 The runtime image has its own entrypoint, `cmd/cfinit` in the sentryruntime
 repository.
@@ -96,6 +99,33 @@ Measured with the pinned Wrangler 4.141.0 and workerd 2026-09-25:
   DNS servers.
 - An idle Durable Object's containers were killed about 30-60 seconds after
   the object went idle.
+
+## Local harness
+
+`harness/harness.py` renders the templates into a run directory outside the
+repository and runs the five scripts together under `wrangler dev`:
+
+- **Containment.** The host side runs under `sandbox-exec` with outbound
+  traffic allowed only to loopback and the Docker socket, an empty HOME, XDG
+  and Docker configuration and poisoned Cloudflare settings. Wrangler's Docker
+  calls go through a shim that logs every call and answers a `pull` only for an
+  image already present, so a run never contacts a registry. Containers start
+  with `enableInternet: false`; an outside canary bound to the Mac's LAN
+  address and the run's `lsof` samples record any escape.
+- **Scenarios.** Signed starts; the worker becoming ready through receipts and
+  a verified TLS request over the runtime relay; API ingress and the API's
+  denied runtime and outside access; refusal of unsigned, expired, replayed,
+  foreign-release, misdirected and foreign-key commands; two minutes idle
+  without the container stopping; drain on stop with exit 0 and a final
+  draining receipt; a job that exits and a job past its deadline, both with
+  `sql_outcome` `unknown`, and a refused second run.
+
+`--images fixture` runs every service from `harness/fixture` (one static
+binary installed at the paths the Durable Objects start), so it proves the
+Worker scripts, not the service images or their privilege drop.
+`check_entrypoint.py` covers the Search entrypoint's drop separately; the
+runtime's is covered by `scripts/cfinit_check.sh` in sentryruntime. Running the
+scenarios on the real `--target cloudflare` images is still to do.
 
 ## Validation
 
