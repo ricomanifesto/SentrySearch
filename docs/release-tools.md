@@ -64,10 +64,19 @@ port zero is invalid and never selects a different target by falling back.
 
 ## Guard
 
-Preflight runs in this order, each before any connection: configuration (2),
-tools/SQL digests (3), the deadline (4), the ECS task identity from
-`ECS_CONTAINER_METADATA_URI_V4` (`169.254.170.2` or loopback only, proxies
-disabled; 6) and the CA material (owner-only regular file; 5).
+Preflight runs in this order, each before any connection:
+1. **The platform** (2). `RELEASE_PLATFORM` is unset or `ecs` (the ECS path,
+   unchanged) or `cloudflare`; any other value is `release_platform_invalid`.
+2. **Configuration** (2).
+3. **Tools/SQL digests** (3).
+4. **The deadline** (4).
+5. **The run identity** (6):
+   - on ECS, the task ARN from `ECS_CONTAINER_METADATA_URI_V4`
+     (`169.254.170.2` or loopback only, proxies disabled);
+   - on Cloudflare, the launching JobRunner's `CLOUDFLARE_DURABLE_OBJECT_ID`
+     (64 hex) and the start's `SENTRY_LAUNCH_NONCE` (32 hex), both set by that
+     object (`instance_identity_unavailable`).
+6. **The CA material** (5): an owner-only regular file.
 
 - **Deadline.** The job ends by `min(RELEASE_NOT_AFTER, start + budget)`. psql gets
   that deadline less a 5-second stop grace; too little time left is
@@ -116,6 +125,25 @@ carries JSON events whose fields and values are allowlisted. The manifest
 requires grant/proof jobs to use this schema, the job ids `<database>-<phase>`,
 exactly these result keys, `sql_digest` equal to the pinned SQL hash, and proof
 identities and schemas that agree with the migration and grant expectations.
+
+**On Cloudflare** the job writes no stdout receipt, because container logs are
+never evidence there.
+- **The envelope:** `sentry.release-tools.job.cloudflare.v1`, with the fields
+  `schema`, `release_id`, `job_id`, `durable_object_id`, `launch_nonce`,
+  `status` and `result`. It is never the AWS envelope with another identity in
+  `task_arn`.
+- **Delivery:** the job posts it to
+  `http://evidence.internal/v1/job-receipt`, where its JobRunner stores it only
+  if the identity fields equal the interception's binding and the start is
+  current.
+- **Bounds on the post:**
+  - one deadline covers name resolution, connecting and the reply;
+  - a refusal (4xx) is final;
+  - a lost or failed exchange is retried with the identical body, at most four
+    attempts in all;
+  - no proxies.
+- **A lost receipt** is logged as `receipt_unsent`. It never changes the job's
+  result or exit code; the controller holds with `sql_outcome: unknown`.
 
 `release_tools.receipt.extract_receipt` is the parser a log adapter must use on
 the exact stream of the observed task (`<job>/<container>/<task id>`): no marker

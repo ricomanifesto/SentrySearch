@@ -9,7 +9,9 @@ that any environment exists or that a release has run.
 
 The controller's object store has an offline Cloudflare R2 implementation in
 `release_cloudflare/`, described in
-[the R2 control store](release-cloudflare-r2-store.md).
+[the R2 control store](release-cloudflare-r2-store.md), and the controller runs
+on Cloudflare through `CloudflarePlatform`, described in
+[the Cloudflare release controller](release-cloudflare.md).
 
 ## Platform strategy
 
