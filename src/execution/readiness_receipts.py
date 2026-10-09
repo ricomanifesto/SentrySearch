@@ -8,10 +8,18 @@ instead of looking fresh. The sequence advances before a bounded, nonblocking
 enqueue; a full queue drops the receipt and leaves a visible gap. A separate
 writer thread owns its own duplicate of the stdout descriptor, so a blocked log
 pipe never delays signals, drain, reaping or interpreter shutdown. Receipts carry no user, report, URL, credential or exception data.
+
+On Cloudflare the same receipts are also posted to ``http://evidence.internal``
+(``HttpReceiptSink``), which the Worker intercepts and stores in the worker's
+Durable Object; the Durable Object, not the receipt, supplies the container's
+identity. The post runs on the same writer thread after the stdout write, with
+a short timeout, so a slow or failed intake drops receipts (a visible gap)
+instead of delaying the supervisor or shutdown.
 """
 
 from __future__ import annotations
 
+import http.client
 import json
 import math
 import os
@@ -82,6 +90,89 @@ class DescriptorSink:
         if self._fd >= 0:
             fd, self._fd = self._fd, -1
             os.close(fd)
+
+
+EVIDENCE_HOST = "evidence.internal"
+HTTP_TIMEOUT_SECONDS = 2.0
+
+
+def receipt_url_from_environment(environ: Mapping[str, str]) -> str | None:
+    """The intercepted intake path on Cloudflare (``http://evidence.internal/...``)."""
+    value = environ.get("SENTRYSEARCH_RECEIPT_URL") or None
+    if (
+        value is not None
+        and re.fullmatch(rf"http://{re.escape(EVIDENCE_HOST)}/[a-z0-9/-]{{1,64}}", value) is None
+    ):
+        raise ValueError(f"SENTRYSEARCH_RECEIPT_URL must be http://{EVIDENCE_HOST}/<path>")
+    return value
+
+
+class HttpReceiptSink:
+    """Post each receipt to the Cloudflare intake; failures only leave gaps.
+
+    Plain HTTP to the intercepted host: the request never leaves the Workers
+    runtime and carries no credential, because the Durable Object binds the
+    container's identity to the interception itself. Environment proxies are
+    never consulted.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        timeout: float = HTTP_TIMEOUT_SECONDS,
+        connection: Callable[..., http.client.HTTPConnection] = http.client.HTTPConnection,
+    ) -> None:
+        self._path = url.removeprefix(f"http://{EVIDENCE_HOST}")
+        self._timeout = timeout
+        self._connection = connection
+
+    def write(self, text: str, /) -> int:
+        marker, _, line = text.partition(" ")
+        if marker != RECEIPT_MARKER:
+            raise ValueError("not a readiness receipt")
+        connection = self._connection(EVIDENCE_HOST, 80, timeout=self._timeout)
+        try:
+            body = line.strip().encode()
+            connection.request(
+                "POST", self._path, body=body, headers={"Content-Type": "application/json"}
+            )
+            response = connection.getresponse()
+            response.read(1024)
+            if response.status != 204:
+                raise OSError("receipt intake refused the receipt")
+        finally:
+            connection.close()
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+
+class TeeSink:
+    """The standard output receipt first, then the intake; one failure never hides the other."""
+
+    def __init__(self, primary: Sink, secondary: Sink) -> None:
+        self._primary, self._secondary = primary, secondary
+
+    def write(self, text: str, /) -> int:
+        failure: Exception | None = None
+        for sink in (self._primary, self._secondary):
+            try:
+                sink.write(text)
+                sink.flush()
+            except (OSError, ValueError) as error:
+                failure = failure or error
+        if failure is not None:
+            raise failure
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+    def close(self) -> None:
+        if isinstance(self._primary, DescriptorSink):
+            self._primary.close()
 
 
 def release_id_from_environment(environ: Mapping[str, str]) -> str | None:
@@ -182,7 +273,7 @@ class ReadinessReceipts:
         except queue.Full:
             pass
         self._writer.join(timeout)
-        if not self._writer.is_alive() and isinstance(self._sink, DescriptorSink):
+        if not self._writer.is_alive() and isinstance(self._sink, (DescriptorSink, TeeSink)):
             self._sink.close()
 
     def _emit(self, snapshot: Mapping[str, Any]) -> None:

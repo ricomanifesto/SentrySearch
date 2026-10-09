@@ -139,6 +139,30 @@ RUN set -eu; \
 # absent commands, which requires evidence review rather than suppression.
 # Generation writes process-local traces and metrics relative to the working
 # directory. Give the service a private scratch directory instead of /app.
+# Cloudflare-only extras, used by the cloudflare target and never by the default
+# image: util-linux setpriv (only that file, with util-linux's package metadata
+# so scanners still see the version), its whole libcap-ng0 library package, and
+# empty root-owned directories the entrypoint fills before dropping privileges.
+RUN --network=none set -eu; \
+    root=/cloudflare-extra; \
+    mkdir -p "$root/usr/bin" "$root/usr/share/doc/util-linux" "$root/var/lib/dpkg/status.d" \
+        "$root/run/material" "$root/run/tmp" "$root/run/work"; \
+    test "$(dpkg -S /usr/bin/setpriv)" = 'util-linux: /usr/bin/setpriv'; \
+    cp -p /usr/bin/setpriv "$root/usr/bin/setpriv"; \
+    cp -p /usr/share/doc/util-linux/copyright "$root/usr/share/doc/util-linux/copyright"; \
+    dpkg-query --status util-linux > "$root/var/lib/dpkg/status.d/util-linux"; \
+    grep '  usr/bin/setpriv$' "/var/lib/dpkg/info/$(dpkg-query -W -f='${binary:Package}' util-linux).md5sums" \
+        > "$root/var/lib/dpkg/status.d/util-linux.md5sums"; \
+    dpkg-query --listfiles libcap-ng0 > /tmp/capng-listed; \
+    : > /tmp/capng-files; \
+    while IFS= read -r path; do \
+        if [ -e "$path" ] || [ -L "$path" ]; then printf '%s\n' "$path" >> /tmp/capng-files; fi; \
+    done < /tmp/capng-listed; \
+    tar --create --no-recursion --verbatim-files-from --files-from=/tmp/capng-files --file=/tmp/capng.tar; \
+    tar --extract --file=/tmp/capng.tar --directory="$root"; \
+    dpkg-query --status libcap-ng0 > "$root/var/lib/dpkg/status.d/libcap-ng0"; \
+    cp "/var/lib/dpkg/info/$(dpkg-query -W -f='${binary:Package}' libcap-ng0).md5sums" \
+        "$root/var/lib/dpkg/status.d/libcap-ng0.md5sums"
 RUN groupadd --system --gid 10001 sentrysearch && \
     useradd --system --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent \
         --shell /usr/sbin/nologin sentrysearch && \
@@ -172,3 +196,19 @@ USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/tini", "--"]
 # Distroless has no default role; never inherit a command from a future base.
 CMD []
+
+# Cloudflare Durable Object container image (`--target cloudflare`). It has no
+# init container or secret volume and runs every process with root-equivalent
+# capabilities, so it starts as root: sentrysearch_cloudflare.cfinit writes the
+# role's material, then setpriv drops every capability set and switches to
+# 10001 before the role runs. The Durable Object passes the full entrypoint for
+# each role. See deploy/cloudflare/README.md.
+FROM service AS cloudflare
+COPY --from=runtime-files /cloudflare-extra/ /
+COPY deploy/cloudflare/sentrysearch_cloudflare /app/sentrysearch_cloudflare
+USER 0:0
+ENTRYPOINT ["/usr/local/bin/tini", "--", "/app/.venv/bin/python", "-m", "sentrysearch_cloudflare.cfinit", "start", "--profile", "search", "--"]
+CMD []
+
+# The default build target stays the unchanged service image.
+FROM service

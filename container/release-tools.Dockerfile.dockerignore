@@ -2,5 +2,7 @@
 # the release-tools programs and SQL.
 *
 !release_tools/**
+!deploy/cloudflare/sentrysearch_cloudflare/**
+!dev/prepare_service_volumes.py
 **/__pycache__
 **/*.py[cod]

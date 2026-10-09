@@ -5,6 +5,7 @@ import os
 from typing import Literal, Mapping
 
 from src.execution.runtime_client import validate_runtime_url
+from src.execution.runtime_tunnel import validate_tunnel_url
 
 # TODO(sentryruntime-cutover): Remove legacy admission after deployed canary,
 # legacy-report migration, and compatible rollback are verified.
@@ -16,6 +17,7 @@ class RuntimeEndpoint:
     url: str
     remote: bool
     ca_file: str | None
+    tunnel_url: str | None = None
 
 
 def runtime_endpoint_from_environment(env: Mapping[str, str] | None = None) -> RuntimeEndpoint:
@@ -27,7 +29,13 @@ def runtime_endpoint_from_environment(env: Mapping[str, str] | None = None) -> R
     ca_file = env.get("SENTRYRUNTIME_CA_FILE") or None
     if ca_file and not url.startswith("https://"):
         raise ValueError("runtime trust configuration requires HTTPS")
-    return RuntimeEndpoint(url, bool(remote), ca_file)
+    tunnel_url = env.get("SENTRYRUNTIME_TUNNEL_URL") or None
+    if tunnel_url is not None:
+        # Cloudflare's relay carries the remote TLS session; never plaintext or local.
+        if not remote or ca_file is None:
+            raise ValueError("runtime tunnel requires a remote HTTPS runtime and its CA file")
+        validate_tunnel_url(tunnel_url)
+    return RuntimeEndpoint(url, bool(remote), ca_file, tunnel_url)
 
 
 def execution_mode_from_environment(env: Mapping[str, str] | None = None) -> ExecutionMode:
@@ -41,7 +49,12 @@ def execution_mode_from_environment(env: Mapping[str, str] | None = None) -> Exe
     if mode == "legacy":
         if any(
             env.get(name)
-            for name in ("SENTRYRUNTIME_LOCAL_URL", "SENTRYRUNTIME_URL", "SENTRYRUNTIME_CA_FILE")
+            for name in (
+                "SENTRYRUNTIME_LOCAL_URL",
+                "SENTRYRUNTIME_URL",
+                "SENTRYRUNTIME_CA_FILE",
+                "SENTRYRUNTIME_TUNNEL_URL",
+            )
         ):
             raise ValueError("legacy execution conflicts with runtime endpoint settings")
         return "legacy"

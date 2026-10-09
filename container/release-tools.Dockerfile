@@ -94,6 +94,30 @@ RUN --network=none set -eu; \
         xxlimited_35; do \
         rm "$module".cpython-311-*-linux-gnu.so; \
     done
+# Cloudflare-only extras, used by the cloudflare target and never by the default
+# image: util-linux setpriv (only that file, with util-linux's package metadata
+# so scanners still see the version), its whole libcap-ng0 library package, and
+# empty root-owned directories the entrypoint fills before dropping privileges.
+RUN --network=none set -eu; \
+    root=/cloudflare-extra; \
+    mkdir -p "$root/usr/bin" "$root/usr/share/doc/util-linux" "$root/var/lib/dpkg/status.d" \
+        "$root/run/material"; \
+    test "$(dpkg -S /usr/bin/setpriv)" = 'util-linux: /usr/bin/setpriv'; \
+    cp -p /usr/bin/setpriv "$root/usr/bin/setpriv"; \
+    cp -p /usr/share/doc/util-linux/copyright "$root/usr/share/doc/util-linux/copyright"; \
+    dpkg-query --status util-linux > "$root/var/lib/dpkg/status.d/util-linux"; \
+    grep '  usr/bin/setpriv$' "/var/lib/dpkg/info/$(dpkg-query -W -f='${binary:Package}' util-linux).md5sums" \
+        > "$root/var/lib/dpkg/status.d/util-linux.md5sums"; \
+    dpkg-query --listfiles libcap-ng0 > /tmp/capng-listed; \
+    : > /tmp/capng-files; \
+    while IFS= read -r path; do \
+        if [ -e "$path" ] || [ -L "$path" ]; then printf '%s\n' "$path" >> /tmp/capng-files; fi; \
+    done < /tmp/capng-listed; \
+    tar --create --no-recursion --verbatim-files-from --files-from=/tmp/capng-files --file=/tmp/capng.tar; \
+    tar --extract --file=/tmp/capng.tar --directory="$root"; \
+    dpkg-query --status libcap-ng0 > "$root/var/lib/dpkg/status.d/libcap-ng0"; \
+    cp "/var/lib/dpkg/info/$(dpkg-query -W -f='${binary:Package}' libcap-ng0).md5sums" \
+        "$root/var/lib/dpkg/status.d/libcap-ng0.md5sums"
 # Jobs run as distroless nonroot (65532) or as the Search image's uid (10001) so
 # each reads only its own init-prepared, owner-only trust material.
 RUN --network=none set -eu; \
@@ -118,3 +142,19 @@ USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/tini", "--", "/usr/local/bin/python3.11", "-I", "-B", "-m", "release_tools"]
 # No default job: each task definition selects exactly one command.
 CMD []
+
+# Cloudflare Durable Object job image (`--target cloudflare`): the JobRunner
+# starts each job as root through sentrysearch_cloudflare.cfinit, which writes the
+# job's material and drops every capability set through setpriv before the job
+# runs as 65532 (runtime-release) or 10001 (search-release). The JobRunner
+# passes the full entrypoint for each job. See deploy/cloudflare/README.md.
+FROM release-tools AS cloudflare
+COPY --from=python-files /cloudflare-extra/ /
+COPY deploy/cloudflare/sentrysearch_cloudflare /usr/local/lib/python3.11/site-packages/sentrysearch_cloudflare
+COPY dev/prepare_service_volumes.py /usr/local/lib/python3.11/site-packages/sentrysearch_cloudflare/
+USER 0:0
+ENTRYPOINT ["/usr/local/bin/tini", "--", "/usr/local/bin/python3.11", "-I", "-B", "-m", "sentrysearch_cloudflare.cfinit", "start", "--profile", "runtime-release", "--"]
+CMD []
+
+# The default build target stays the unchanged release-tools image.
+FROM release-tools

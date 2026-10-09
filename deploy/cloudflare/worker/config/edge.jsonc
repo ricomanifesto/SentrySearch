@@ -1,0 +1,40 @@
+// Template for the local harness (deploy/cloudflare/harness). @@NAME@@ values are
+// filled per run; there is no account id. SSH and container logs stay off.
+{
+  "name": "sentry-edge",
+  "main": "../src/edge.ts",
+  "compatibility_date": "2026-09-25",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "API",
+        "class_name": "ApiService",
+        "script_name": "sentry-api"
+      },
+      {
+        "name": "WORKER",
+        "class_name": "WorkerService",
+        "script_name": "sentry-worker"
+      },
+      {
+        "name": "RUNTIME",
+        "class_name": "RuntimeService",
+        "script_name": "sentry-runtime"
+      },
+      {
+        "name": "JOBS",
+        "class_name": "JobRunner",
+        "script_name": "sentry-jobs"
+      }
+    ]
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "redact_query_string": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    }
+  }
+}

@@ -261,3 +261,67 @@ def test_cli_failure_is_redacted(monkeypatch, capsys):
     output = capsys.readouterr()
     assert output.out == ""
     assert output.err == "Service volume initialization failed\n"
+
+
+def _digest(payload: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def test_environment_source_requires_the_recorded_digest(materials):
+    payload = json.dumps({key: materials[key] for key in ("runtime-ca.pem", "postgres-ca.pem")})
+    environ = {"CFINIT_MATERIAL": payload, "CFINIT_MATERIAL_SHA256": _digest(payload)}
+    assert bootstrap.payload_from_environment(environ) == payload
+    for broken in (
+        {**environ, "CFINIT_MATERIAL_SHA256": "0" * 64},
+        {**environ, "CFINIT_MATERIAL_SHA256": _digest(payload).upper()},
+        {"CFINIT_MATERIAL": payload},
+        {"CFINIT_MATERIAL_SHA256": _digest("")},
+        {"CFINIT_MATERIAL": "", "CFINIT_MATERIAL_SHA256": _digest("")},
+    ):
+        with pytest.raises(ValueError) as error:
+            bootstrap.payload_from_environment(broken)
+        assert "BEGIN" not in str(error.value)
+    oversized = " " * (bootstrap.MAX_BYTES + 1)
+    with pytest.raises(ValueError):
+        bootstrap.payload_from_environment(
+            {"CFINIT_MATERIAL": oversized, "CFINIT_MATERIAL_SHA256": _digest(oversized)}
+        )
+
+
+def test_cli_environment_source_prepares_and_excludes_other_sources(materials, monkeypatch):
+    payload = json.dumps({key: materials[key] for key in ("runtime-ca.pem", "postgres-ca.pem")})
+    monkeypatch.setenv("CFINIT_MATERIAL", payload)
+    monkeypatch.setenv("CFINIT_MATERIAL_SHA256", _digest(payload))
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    calls = []
+    monkeypatch.setattr(bootstrap, "prepare", lambda *args: calls.append(args))
+    argv = [
+        "--profile",
+        "search-release",
+        "--material-dir",
+        "/run/material",
+        "--environment-source",
+    ]
+    assert bootstrap.main(argv) == 0
+    assert calls == [("search-release", payload, Path("/run/material"), None, None)]
+    assert bootstrap.main([*argv, "--region", "us-east-1"]) == 1
+    with pytest.raises(SystemExit):
+        bootstrap.main([*argv, "--fixture-stdin"])
+    monkeypatch.setenv("CFINIT_MATERIAL_SHA256", "0" * 64)
+    assert bootstrap.main(argv) == 1 and len(calls) == 1
+
+
+def test_material_logic_imports_without_the_aws_sdk():
+    script = (
+        "import sys; sys.modules['boto3'] = None; "
+        "import dev.prepare_service_volumes as m; print(m.payload_from_environment.__name__)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0 and result.stdout.strip() == "payload_from_environment"

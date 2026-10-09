@@ -133,6 +133,9 @@ frontend/.env.local
 
 # Cloudflare
 .wrangler/
+deploy/cloudflare/worker/.test-build/
+deploy/cloudflare/worker/worker-runtime.d.ts
+deploy/cloudflare/harness/runs/
 
 # Scripts directory (private)
 scripts/

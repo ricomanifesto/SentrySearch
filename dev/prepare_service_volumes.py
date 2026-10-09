@@ -3,22 +3,29 @@
 Run as root before the non-root service, with fresh task-local volumes. A failed
 or replaced task discards its volumes; this helper never overwrites or rotates
 an existing task's files. AWS is used only with an explicitly selected version.
+On Cloudflare the bundle arrives as an environment value checked against an
+operator-recorded SHA-256 (``--environment-source``); see
+``deploy/cloudflare/cfinit.py``.
 """
 
 from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
 import re
 import ssl
 import sys
-
-import boto3
+from typing import Mapping
 
 MAX_BYTES = 65536  # Secrets Manager SecretString ceiling; includes JSON overhead.
+# The Cloudflare bundle (a version-bound Worker secret) and its recorded digest.
+MATERIAL_VARIABLE = "CFINIT_MATERIAL"
+DIGEST_VARIABLE = "CFINIT_MATERIAL_SHA256"
 PROFILES = {
     "runtime": (
         65532,
@@ -160,6 +167,20 @@ def prepare(
             os.fchown(descriptor, uid, uid)
 
 
+def payload_from_environment(environ: Mapping[str, str]) -> str:
+    """Return the bundle only if it matches its operator-recorded SHA-256."""
+    payload = environ.get(MATERIAL_VARIABLE, "")
+    digest = environ.get(DIGEST_VARIABLE, "")
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ValueError("A recorded lowercase SHA-256 material digest is required")
+    encoded = payload.encode("utf-8")
+    if not encoded or len(encoded) > MAX_BYTES:
+        raise ValueError("Invalid material size")
+    if not hmac.compare_digest(hashlib.sha256(encoded).hexdigest(), digest):
+        raise ValueError("Material does not match its recorded digest")
+    return payload
+
+
 def fetch_secret(client, secret_id: str, version_id: str) -> str:
     if re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", version_id) is None:
         raise ValueError("An immutable UUID secret version is required")
@@ -177,6 +198,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--work-dir", type=Path)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--fixture-stdin", action="store_true", help="Disposable local proof only")
+    source.add_argument(
+        "--environment-source",
+        action="store_true",
+        help=f"Read {MATERIAL_VARIABLE} and verify it against {DIGEST_VARIABLE}",
+    )
     source.add_argument("--secret-id")
     parser.add_argument("--version-id")
     parser.add_argument("--region")
@@ -184,10 +210,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if os.geteuid() != 0:
             raise ValueError("Initializer must run as root")
-        if args.fixture_stdin:
+        if args.fixture_stdin or args.environment_source:
             if args.version_id or args.region:
-                raise ValueError("AWS options are invalid for fixture mode")
-            payload = sys.stdin.read(MAX_BYTES + 1)
+                raise ValueError("AWS options are invalid for fixture and environment sources")
+            if args.fixture_stdin:
+                payload = sys.stdin.read(MAX_BYTES + 1)
+            else:
+                payload = payload_from_environment(os.environ)
         else:
             if not args.version_id or not args.region:
                 raise ValueError("An exact version and region are required")
@@ -200,6 +229,10 @@ def main(argv: list[str] | None = None) -> int:
                 is None
             ):
                 raise ValueError("An explicit regional Secrets Manager ARN is required")
+            # Imported only for the AWS source, so the material logic also runs
+            # in images without the AWS SDK (the Cloudflare release-tools image).
+            import boto3
+
             payload = fetch_secret(
                 boto3.client("secretsmanager", region_name=args.region),
                 args.secret_id,

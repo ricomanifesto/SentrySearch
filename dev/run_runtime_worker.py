@@ -23,7 +23,10 @@ from src.execution.runtime_client import (
 )
 from src.execution.readiness_receipts import (
     DescriptorSink,
+    HttpReceiptSink,
     ReadinessReceipts,
+    TeeSink,
+    receipt_url_from_environment,
     release_id_from_environment,
 )
 from src.execution.worker import DurableGenerationWorker
@@ -63,11 +66,16 @@ def main() -> int:
         release_id = release_id_from_environment(os.environ)
         # Receipts go to the process's standard output descriptor, which the log
         # driver reads, never through the buffered sys.stdout object or its lock.
-        receipts = (
-            None
-            if release_id is None
-            else ReadinessReceipts(release_id, DescriptorSink(STDOUT_FILENO))
-        )
+        # On Cloudflare they are also posted to the intercepted intake.
+        receipt_url = receipt_url_from_environment(os.environ)
+        if receipt_url is not None and release_id is None:
+            raise ValueError("SENTRYSEARCH_RECEIPT_URL requires SENTRYSEARCH_RELEASE_ID")
+        receipts = None
+        if release_id is not None:
+            sink: DescriptorSink | TeeSink = DescriptorSink(STDOUT_FILENO)
+            if receipt_url is not None:
+                sink = TeeSink(sink, HttpReceiptSink(receipt_url))
+            receipts = ReadinessReceipts(release_id, sink)
         return WorkerSupervisor(settings, run_worker_loop, receipts=receipts).run()
     except ValueError as error:
         raise SystemExit(str(error)) from error
@@ -165,8 +173,14 @@ def runtime_clients_from_environment() -> tuple[RuntimeClient, RuntimeClient]:
         raise ValueError("remote runtime requires distinct producer and worker tokens")
     validate_runtime_token(producer_token)
     validate_runtime_token(worker_token)
+    # Only Cloudflare's relay adds a tunnel; other platforms keep the direct call.
+    tunnel = {"tunnel_url": endpoint.tunnel_url} if endpoint.tunnel_url else {}
     producer = RuntimeClient(
-        endpoint.url, bearer_token=producer_token, remote=endpoint.remote, ca_file=endpoint.ca_file
+        endpoint.url,
+        bearer_token=producer_token,
+        remote=endpoint.remote,
+        ca_file=endpoint.ca_file,
+        **tunnel,
     )
     try:
         worker = RuntimeClient(
@@ -174,6 +188,7 @@ def runtime_clients_from_environment() -> tuple[RuntimeClient, RuntimeClient]:
             bearer_token=worker_token,
             remote=endpoint.remote,
             ca_file=endpoint.ca_file,
+            **tunnel,
         )
     except Exception:
         producer.close()

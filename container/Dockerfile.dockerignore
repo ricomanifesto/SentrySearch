@@ -13,6 +13,7 @@
 !certs/**
 !container/build-requirements.txt
 !container/liblzma/**
+!deploy/cloudflare/sentrysearch_cloudflare/**
 **/__pycache__
 **/*.py[cod]
 **/.env

@@ -10,6 +10,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from src.execution.runtime_tunnel import TunnelBackend, TunnelTransport
+
 PRODUCT = "sentrysearch"
 WORKFLOW_NAME = "generate_report"
 WORKFLOW_VERSION = "v1"
@@ -72,6 +74,7 @@ class RuntimeClient:
         remote: bool = False,
         ca_file: str | None = None,
         http_client: httpx.Client | None = None,
+        tunnel_url: str | None = None,
     ) -> None:
         self.base_url = validate_runtime_url(base_url, remote=remote)
         validate_runtime_token(bearer_token)
@@ -83,6 +86,8 @@ class RuntimeClient:
             not self.base_url.startswith("https://") or http_client is not None
         ):
             raise ValueError("runtime trust configuration requires owned HTTPS transport")
+        if tunnel_url is not None and (not remote or ca_file is None or http_client is not None):
+            raise ValueError("runtime tunnel requires owned remote HTTPS with a trust bundle")
         verification: bool | ssl.SSLContext = True
         if ca_file is not None:
             if not ca_file:
@@ -94,11 +99,18 @@ class RuntimeClient:
             verification.minimum_version = ssl.TLSVersion.TLSv1_2
         self._headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
         self._owns_client = http_client is None
+        transport = None
+        if tunnel_url is not None and isinstance(verification, ssl.SSLContext):
+            # Cloudflare: the same verified TLS session, carried over the relay.
+            authority = httpx.URL(self.base_url)
+            backend = TunnelBackend(tunnel_url, authority.host, authority.port or 443)
+            transport = TunnelTransport(verification, backend)
         self._client = http_client or httpx.Client(
             timeout=httpx.Timeout(5.0, connect=2.0),
             trust_env=False,
             verify=verification,
             follow_redirects=False,
+            transport=transport,
         )
 
     def close(self) -> None:

@@ -1,0 +1,58 @@
+// Template for the local harness (deploy/cloudflare/harness). @@NAME@@ values are
+// filled per run; there is no account id. SSH and container logs stay off.
+{
+  "name": "sentry-api",
+  "main": "../src/api.ts",
+  "compatibility_date": "2026-09-25",
+  "containers": [
+    {
+      "class_name": "ApiService",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "search": {
+          "dockerfile": "./images/search.Dockerfile",
+          "build_vars": {
+            "BASE": "@@IMAGE_SEARCH@@"
+          }
+        }
+      },
+      "ssh": {
+        "enabled": false
+      },
+      "observability": {
+        "logs": {
+          "enabled": false
+        }
+      }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SELF",
+        "class_name": "ApiService"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "ApiService"
+      ]
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "redact_query_string": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    }
+  },
+  "vars": {
+    "RELEASE_ID": "@@RELEASE_ID@@",
+    "CONTROL_PUBLIC_KEY": "@@CONTROL_PUBLIC_KEY@@"
+  }
+}

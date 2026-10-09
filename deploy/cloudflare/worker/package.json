@@ -1,0 +1,15 @@
+{
+  "name": "sentrysearch-cloudflare-worker",
+  "private": true,
+  "description": "Local-only Cloudflare Worker, Durable Object and Container harness for SentrySearch and SentryRuntime. Never deployed from this package.",
+  "type": "module",
+  "scripts": {
+    "types": "wrangler types -c config/edge.jsonc --include-env=false worker-runtime.d.ts",
+    "check": "tsc --noEmit -p .",
+    "test": "esbuild test/control.test.ts test/receipts.test.ts --bundle --platform=node --format=esm --outdir=.test-build --log-level=warning && node --experimental-sqlite --test .test-build/control.test.js .test-build/receipts.test.js"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "wrangler": "4.141.0"
+  }
+}
