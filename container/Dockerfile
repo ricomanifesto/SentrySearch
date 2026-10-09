@@ -216,5 +216,5 @@ USER 0:0
 ENTRYPOINT []
 CMD []
 
-# The default build target stays the unchanged service image.
+# The default build target is the service image without the Cloudflare wrapper.
 FROM service
