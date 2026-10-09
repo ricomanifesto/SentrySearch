@@ -36,6 +36,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import signal
@@ -1309,7 +1310,9 @@ def real_scenarios(run: Run, helper_image: str) -> None:
             and "124" in str(final.get("exit_detail"))
             and last[0].get("error_code") == "drain_deadline_exceeded"
             and last[0].get("alive") is False
-            and (view or {}).get("unterminated") == [],
+            # A deadline kill ends in its working phase, not "stopped": the intake
+            # keeps that boot unterminated, so the history never reads complete.
+            and (view or {}).get("complete") is False,
             **result,
             "provider_connections": len(run.provider_connections),
             "last_receipt": {
@@ -1413,13 +1416,14 @@ def scrub_run_dir(run: Run) -> list[str]:
         config.write_text(json.dumps(rendered, indent=2))
     found = []
     for path in run.dir.rglob("*"):
-        if not path.is_file():
+        # The Docker CLI plugin is a link to Docker's own binary, not run output.
+        if path.is_symlink() or not path.is_file():
             continue
         text = path.read_text(errors="replace")
         for name, value in run.secret_values.items():
             if value in text:
                 found.append(f"{path.relative_to(run.dir)}: {name}")
-        if "PRIVATE KEY" in text:
+        if re.search(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", text):
             found.append(f"{path.relative_to(run.dir)}: private key")
     return sorted(found)
 
