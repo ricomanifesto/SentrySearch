@@ -10,7 +10,16 @@ from datetime import timedelta
 import hashlib
 from typing import Any
 
-from tests.release_fakes import PRIOR_RELEASE_ID, RELEASE_ID, RUNTIME_GRANT, START, digest, iso, sha
+from tests.release_fakes import (
+    PRIOR_RELEASE_ID,
+    RELEASE_ID,
+    RUNTIME_GRANT,
+    START,
+    SimulatedCrash,
+    digest,
+    iso,
+    sha,
+)
 
 ACCOUNT = hashlib.sha256(b"fixture-account").hexdigest()[:32]
 ZONE = hashlib.sha256(b"fixture-zone").hexdigest()[:32]
@@ -348,12 +357,16 @@ class FakeVersions:
         self.calls.append(("deploy", script, version_id, self.clock.now()))
         if fault == "drop":
             raise _Ambiguous("deploy request lost")
+        if fault == "crash_before":
+            raise SimulatedCrash("controller lost before deploy")
         self.trace.append(("versions", "deploy", script, version_id))
         self.mutations.append(("deploy", script, version_id, message))
         self._deployments += 1
         self.current[script] = _Deployment(f"dep-{self._deployments}", ((version_id, 100),))
         if fault == "lose_reply":
             raise _Ambiguous("deploy reply lost")
+        if fault == "crash_after":
+            raise SimulatedCrash("controller lost after deploy")
         if fault == "drift_reply":
             return _Deployment(f"dep-{self._deployments}", ((version_id, 90), ("other", 10)))
         return self.current[script]
@@ -419,6 +432,8 @@ class FakeObject:
     starts: list = _field(default_factory=list)
     running: bool = False
     restarts: int = 0
+    # CF-04 code: no authority protocol, refuses every other release's command.
+    legacy: bool = False
 
 
 class FakeDOControl:
@@ -448,6 +463,9 @@ class FakeDOControl:
         self.receipt_stall: tuple[int, float] | None = None
         self.receipt_flags: dict[str, object] = {}
         self.before_read: _Callable[[str, str], None] | None = None
+        # Tests supply migration receipts; the real JobRunner refuses migrate.
+        self.wire_migrations = True
+        self.image_override: dict[tuple[str, str], str] = {}
 
     # Test helpers -------------------------------------------------------------
 
@@ -467,6 +485,8 @@ class FakeDOControl:
         return self.versions.release_of(self.worker_for(service))
 
     def image_for(self, service: str, image_key: str) -> str | None:
+        if (service, image_key) in self.image_override:
+            return self.image_override[(service, image_key)]
         release = self.release_for(service)
         if release == self.document["release_id"]:
             spec = self.document["images"][image_key]
@@ -504,6 +524,35 @@ class FakeDOControl:
         item.running = True
         return start
 
+    def start_foreign(self, service: str) -> dict:
+        """A live start this release did not ask for (another operator or a bug)."""
+        item = self.object(service, SERVICE_OBJECTS.get(service, service))
+        current = self._current(item)
+        if current is not None and current["state"] in LIVE:
+            current.update(state="exited", exit_detail="replaced")
+        start = {
+            "start_nonce": nonce_of(f"foreign-{service}-{len(item.starts)}"),
+            "release_id": self.release_for(service),
+            "command_id": f"foreign-{len(item.starts)}",
+            "version_id": self.versions.version_of(service),
+            "image": self.image_for(service, "runtime" if service == "runtime" else "search"),
+            "state": "running",
+            "started_at": self.clock.now(),
+            "drain_until": None,
+            "exit_detail": None,
+        }
+        item.starts.append(start)
+        item.running = True
+        return start
+
+    def exit_service(self, service: str, detail: str = "exit 1") -> None:
+        """The service's container ends on its own."""
+        item = self.object(service, SERVICE_OBJECTS[service])
+        current = self._current(item)
+        if current is not None:
+            current.update(state="exited", exit_detail=detail)
+        item.running = False
+
     def restart(self, service: str, name: str) -> None:
         """An object restart: storage survives; the container keeps running."""
         self.object(service, name).restarts += 1
@@ -525,14 +574,21 @@ class FakeDOControl:
             self.before_read(service, action)
         if fault == "drop":
             raise _TransportAmbiguous("request lost")
+        if fault == "crash_before":
+            raise SimulatedCrash(f"controller lost before {service}/{action}")
         if fault == "delay":
             self.delayed.append(request)
             raise _TransportAmbiguous("request delayed")
         if fault == "5xx":
             return 502, b""
+        if fault == "steal":
+            # Someone else's start takes the object just before this request lands.
+            self.start_foreign(service)
         status, body = self._deliver(request)
         if fault == "lose_reply":
             raise _TransportAmbiguous("reply lost")
+        if fault == "crash_after":
+            raise SimulatedCrash(f"controller lost after {service}/{action}")
         return status, _json.dumps(body).encode()
 
     def _deliver(self, request) -> tuple[int, dict]:
@@ -557,38 +613,38 @@ class FakeDOControl:
             self.key.verify(_base64.b64decode(headers["x-sentry-signature"]), _canonical(command))
         except Exception:  # noqa: BLE001 - any malformed or unsigned request
             record["result"] = 401
-            return 401, {"error": "signature does not verify"}
+            return 401, {"error": "signature does not verify", "code": "unauthenticated"}
         now = int(self.clock.now().timestamp())
         if expires <= now or expires - now > 300:
             record["result"] = 401
-            return 401, {"error": "command expired"}
+            return 401, {"error": "command expired", "code": "expired"}
         item = self.object(service, name)
         self._progress(item)
         release = self.release_for(service)
         if command.release_id != release:
-            if (request.method, action) not in CROSS_RELEASE:
+            if item.legacy or (request.method, action) not in CROSS_RELEASE:
                 record["result"] = 409
-                return 409, {"error": "command is for another release"}
+                return 409, {"error": "command is for another release", "code": "another_release"}
         else:
             fence = command.fence
             if not fence.isdigit() or fence.startswith("0") or int(fence) > 2**31 - 1:
-                return 400, {"error": "invalid fence"}
+                return 400, {"error": "invalid fence", "code": "invalid_request"}
             held = item.authority
             if held is None or held["release_id"] != release or int(fence) > held["fence"]:
                 item.authority = {"release_id": release, "fence": int(fence),
                                   "session": command.session}  # fmt: skip
             elif not (int(fence) == held["fence"] and command.session == held["session"]):
                 record["result"] = 409
-                return 409, {"error": "superseded"}
+                return 409, {"error": "superseded", "code": "superseded"}
         item.replay = {key: until for key, until in item.replay.items() if until >= now}
         if command.command_id in item.replay:
             record["result"] = 409
-            return 409, {"error": "command id already accepted"}
+            return 409, {"error": "command id already accepted", "code": "replayed"}
         item.replay[command.command_id] = expires
         body = _json.loads(request.body) if request.body else None
         handler = getattr(self, f"_{'job' if service == 'jobs' else 'service'}_{action}", None)
         if handler is None:
-            return 404, {"error": "unknown action"}
+            return 404, {"error": "unknown action", "code": "not_found"}
         status, reply = handler(item, command, body)
         record["result"] = status
         return status, reply
@@ -660,7 +716,9 @@ class FakeDOControl:
             and start["state"] == "running"
             and now >= start["started_at"] + timedelta(seconds=self.boot_seconds)
         )
+        protocol = {} if item.legacy else {"control_protocol": "sentry.authority.v1"}
         return 200, {
+            **protocol,
             "service": item.service,
             "object_id": item.id,
             "release_id": self.release_for(item.service),
@@ -678,7 +736,7 @@ class FakeDOControl:
             "version_id": self.versions.version_of(item.service),
         }
         if body != expected:
-            return 409, {"error": "start does not match this version"}
+            return 409, {"error": "start does not match this version", "code": "version_mismatch"}
         for start in item.starts:
             if start["command_id"] == command.command_id:
                 return 200, {"started": False, "replayed": True, **_public_start(start)}
@@ -720,7 +778,7 @@ class FakeDOControl:
     def _service_receipts(self, item, command, body):
         current = self._current(item)
         if current is None or body.get("start_nonce") != current["start_nonce"]:
-            return 404, {"error": "no such start"}
+            return 404, {"error": "no such start", "code": "not_found"}
         receipts = self._worker_receipts(current)
         after, limit = int(body.get("after", 0)), int(body.get("limit", 100))
         page = [(order, receipt) for order, receipt in receipts if order > after][: limit + 1]
@@ -779,6 +837,7 @@ class FakeDOControl:
     def _job_status(self, item, command, body):
         row = self._current(item)
         identity = {
+            "control_protocol": "sentry.authority.v1",
             "object_id": item.id,
             "release_id": self.release_for("jobs"),
             "version_id": self.versions.version_of("jobs"),
@@ -803,13 +862,16 @@ class FakeDOControl:
 
     def _job_run(self, item, command, body):
         if item.running or item.starts:
-            return 409, {"error": "this job object has already run"}
+            return 409, {"error": "this job object has already run", "code": "already_run"}
         fields = {"job_id", "phase", "database", "image", "deadline_seconds"}
         if not isinstance(body, dict) or set(body) != fields:
-            return 400, {"error": "invalid job request"}
+            return 400, {"error": "invalid job request", "code": "invalid_request"}
         expected_name = f"job-{command.release_id}-{body['job_id']}"
         if item.name != expected_name:
-            return 400, {"error": "job does not match its object"}
+            return 400, {"error": "job does not match its object", "code": "invalid_request"}
+        if not self.wire_migrations and body["phase"] == "migrate":
+            # As the real JobRunner: migration images have no receipt producer.
+            return 400, {"error": "job is not wired on this platform", "code": "invalid_request"}
         now = self.clock.now()
         row = {
             "start_nonce": nonce_of(f"job-{item.name}-{command.command_id}"),
@@ -853,7 +915,7 @@ class FakeDOControl:
             or not isinstance(body, dict)
             or body.get("start_nonce") != row["start_nonce"]
         ):
-            return 404, {"error": "no such start"}
+            return 404, {"error": "no such start", "code": "not_found"}
         return 200, {"start_nonce": row["start_nonce"],
                      "receipt": _copy.deepcopy(row["completion_receipt"])}  # fmt: skip
 
