@@ -34,7 +34,6 @@ import re
 from typing import Any
 import uuid
 
-from release.manifest import LoadedManifest
 from release.ports import (
     AmbiguousResponse,
     Deploy,
@@ -54,6 +53,7 @@ from release_cloudflare.manifest import (
     WORKERS,
     CompatibleRelease,
     Job,
+    LoadedManifest,
     Manifest,
     expected_job_receipt,
     verify_approval,
@@ -146,7 +146,7 @@ class CloudflarePlatform:
 
     # Approval and authority ---------------------------------------------------------
 
-    def verify_approval(self, loaded: LoadedManifest, approval: Any, now: datetime) -> None:
+    def verify_approval(self, loaded: Any, approval: Any, now: datetime) -> None:
         verify_approval(loaded, approval, now)
 
     def bind(self, authority: SessionAuthority) -> None:

@@ -18,6 +18,26 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from release.readiness import GatePolicy, LogRead
 
 
+class LoadedRelease(Protocol):
+    """A loaded, hashed manifest of any platform (``release.manifest.LoadedManifest``)."""
+
+    @property
+    def manifest(self) -> Any: ...
+
+    @property
+    def sha256(self) -> str: ...
+
+
+class LoadedReleaseApproval(Protocol):
+    """A loaded approval receipt of any platform (``release.manifest.LoadedApproval``)."""
+
+    @property
+    def approval(self) -> Any: ...
+
+    @property
+    def sha256(self) -> str: ...
+
+
 class AmbiguousResponse(Exception):
     """The request may or may not have been applied; reconcile before retrying."""
 
@@ -184,7 +204,9 @@ class ReleasePlatform(Protocol):
     # Intent fields the request builders read; carried into identical retries.
     request_fields: tuple[str, ...]
 
-    def verify_approval(self, loaded: Any, approval: Any, now: datetime) -> None: ...
+    def verify_approval(
+        self, loaded: LoadedRelease, approval: LoadedReleaseApproval, now: datetime
+    ) -> None: ...
 
     def bind(self, authority: SessionAuthority) -> None: ...
 

@@ -48,6 +48,8 @@ class Exchange:
                 status = self.status
 
                 class Response:
+                    status = 0
+
                     def read(self, limit):
                         return b""
 

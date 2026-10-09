@@ -461,7 +461,7 @@ class FakeDOControl:
         self.ready_after = 0.0
         self.receipt_edit: _Callable[[int, dict], list[dict]] | None = None
         self.receipt_stall: tuple[int, float] | None = None
-        self.receipt_flags: dict[str, object] = {}
+        self.receipt_flags: dict[str, Any] = {}
         self.before_read: _Callable[[str, str], None] | None = None
         # Off, as jobs.ts: the JobRunner refuses migrate. A test that needs a
         # migration to run models the missing receipt producers by turning it on.

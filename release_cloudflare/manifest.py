@@ -36,7 +36,6 @@ from release.manifest import (
     EmptyHold,
     Expectation,
     ExpectValue,
-    LoadedManifest,
     Name,
     OperationalCheck,
     ReleaseRejected,
@@ -281,6 +280,12 @@ class Approval(Strict):
 
 
 @dataclass(frozen=True)
+class LoadedManifest:
+    manifest: Manifest
+    sha256: str
+
+
+@dataclass(frozen=True)
 class LoadedApproval:
     approval: Approval
     sha256: str
@@ -298,7 +303,7 @@ def load_approval(raw: bytes) -> LoadedApproval:
     return LoadedApproval(_validated(Approval, document), canonical_sha256(document))
 
 
-def verify_approval(loaded: LoadedManifest, receipt: Any, now: datetime) -> None:
+def verify_approval(loaded: Any, receipt: Any, now: datetime) -> None:
     """Raise unless this receipt authorizes exactly this Cloudflare manifest at ``now``."""
     manifest, approval = loaded.manifest, receipt.approval
     if not isinstance(manifest, Manifest) or not isinstance(approval, Approval):
@@ -515,6 +520,7 @@ __all__ = [
     "ExpectValue",
     "Job",
     "LoadedApproval",
+    "LoadedManifest",
     "Manifest",
     "expected_job_receipt",
     "load_approval",

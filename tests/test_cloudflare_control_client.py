@@ -9,6 +9,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from typing import Any
+
 import pytest
 
 from release_cloudflare import control_client
@@ -77,6 +79,12 @@ def test_the_committed_cross_language_vectors_are_what_python_builds():
     assert json.loads(FIXTURE.read_text()) == build()
 
 
+def changed(command: ControlCommand, field: str, value: Any) -> ControlCommand:
+    """A copy with one field replaced by a deliberately invalid value."""
+    values: dict[str, Any] = {**command.__dict__, field: value}
+    return ControlCommand(**values)
+
+
 def test_canonical_bytes_are_ten_fixed_lines_and_refuse_injected_newlines():
     command = ControlCommand(
         "POST", "api/api-0", "stop", "0" * 64, RELEASE, "session-a", "2", "stop-x", 1_800_000_000
@@ -89,13 +97,13 @@ def test_canonical_bytes_are_ten_fixed_lines_and_refuse_injected_newlines():
     for field in ("target", "session", "fence", "command_id", "release_id", "action", "method"):
         for bad in ("a\nb", "", "x" * 129, "a b", "ä"):
             with pytest.raises(ValueError):
-                canonical_bytes(command.__class__(**{**command.__dict__, field: bad}))
+                canonical_bytes(changed(command, field, bad))
     for bad in ("0" * 63, "G" * 64):
         with pytest.raises(ValueError):
-            canonical_bytes(command.__class__(**{**command.__dict__, "body_sha256": bad}))
+            canonical_bytes(changed(command, "body_sha256", bad))
     for bad in (0, -1, 2**53, 1.5, True):
         with pytest.raises(ValueError):
-            canonical_bytes(command.__class__(**{**command.__dict__, "expires_at": bad}))
+            canonical_bytes(changed(command, "expires_at", bad))
 
 
 def test_a_sent_command_is_signed_over_exactly_its_headers_target_and_body():

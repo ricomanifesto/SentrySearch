@@ -28,6 +28,7 @@ from release.machine import (
     token_expires_at,
 )
 from release.manifest import (
+    CompatibleRelease,
     Job,
     LoadedApproval,
     LoadedManifest,
@@ -44,6 +45,8 @@ from release.ports import (
     EvidencePort,
     JournalNames,
     Launch,
+    LoadedRelease,
+    LoadedReleaseApproval,
     LogPort,
     PlatformHold,
     ReleasePlatform,
@@ -87,6 +90,11 @@ def _time(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
+def _named(name: str, value: Any) -> dict[str, Any]:
+    """One journal field under a platform-chosen name."""
+    return {name: value}
+
+
 class ReleaseHalted(Exception):
     """The controller cannot act safely, or cannot even journal; nothing further ran."""
 
@@ -123,8 +131,8 @@ class Outcome:
 class ReleaseController:
     def __init__(
         self,
-        loaded: LoadedManifest,
-        approval: LoadedApproval,
+        loaded: LoadedRelease,
+        approval: LoadedReleaseApproval,
         *,
         store: ObjectStore,
         clock: Clock,
@@ -140,22 +148,23 @@ class ReleaseController:
             # As before the extraction, the three AWS ports are required keywords.
             if any(port is _UNSET for port in aws):
                 raise TypeError("pass ecs, evidence and logs, or a platform")
-            platform = EcsPlatform(loaded, ecs, evidence, logs)
+            resolved: ReleasePlatform = EcsPlatform(loaded, ecs, evidence, logs)
         elif any(port is not _UNSET for port in aws):
             raise TypeError("pass ecs, evidence and logs, or a platform, not both")
         elif getattr(platform, "manifest_sha256", None) != loaded.sha256:
             # Requests are built from the platform's manifest, approval binds this one.
             raise ValueError("the platform was built from another manifest")
-        ecs, evidence, logs = (None if port is _UNSET else port for port in aws)
+        else:
+            resolved = platform
         self.loaded = loaded
         self.manifest = loaded.manifest
         self.approval = approval
         self.store = store
-        self.ecs = ecs
-        self.evidence = evidence
-        self.logs = logs
-        self.platform = platform
-        self.names = platform.names
+        self.ecs: EcsPort | None = None if ecs is _UNSET else ecs
+        self.evidence: EvidencePort | None = None if evidence is _UNSET else evidence
+        self.logs: LogPort | None = None if logs is _UNSET else logs
+        self.platform = resolved
+        self.names = resolved.names
         self.clock = clock
         self.tokens = tokens
         self.session_id = session_id
@@ -903,7 +912,7 @@ class ReleaseController:
         names = self.names
         request = self.platform.stop_request(job, run, reason)
         # Stopping the release's own job is a covered safety action, even after expiry.
-        intent = self._intent(names.stop, job.id, request, guard=False, **{names.run: run})
+        intent = self._intent(names.stop, job.id, request, guard=False, **_named(names.run, run))
         try:
             self.platform.send_stop(request, intent)
         except AmbiguousResponse:
@@ -955,7 +964,8 @@ class ReleaseController:
         deadline = min(now + timedelta(seconds=self.manifest.window.service_start_seconds),
                        self._window_deadline())  # fmt: skip
         intent = self._intent(names.deploy, key, request, desired_count=1,
-                              **{names.prior: prior}, deadline_at=_iso(deadline), **fields)  # fmt: skip
+                              **_named(names.prior, prior), deadline_at=_iso(deadline),
+                              **fields)  # fmt: skip
         try:
             deployed = self.platform.deploy(key, request, intent, prior)
         except AmbiguousResponse:
@@ -1236,7 +1246,7 @@ class EcsPlatform:
     request_fields: tuple[str, ...] = ()
 
     def __init__(
-        self, loaded: LoadedManifest, ecs: EcsPort, evidence: EvidencePort, logs: LogPort
+        self, loaded: LoadedRelease, ecs: EcsPort, evidence: EvidencePort, logs: LogPort
     ) -> None:
         manifest: Manifest = loaded.manifest
         self.manifest = manifest
@@ -1253,9 +1263,9 @@ class EcsPlatform:
             "release_tools": images.release_tools.arm64_digest,
         }
 
-    def verify_approval(self, loaded: LoadedManifest, approval: LoadedApproval,
+    def verify_approval(self, loaded: LoadedRelease, approval: LoadedReleaseApproval,
                         now: datetime) -> None:  # fmt: skip
-        verify_approval(loaded, approval, now)
+        verify_approval(loaded, approval, now)  # ty: ignore[invalid-argument-type]
 
     def bind(self, authority: SessionAuthority) -> None:
         """ECS calls carry no session authority; the lock and journal CAS fence them."""
@@ -1295,6 +1305,7 @@ class EcsPlatform:
 
     def prior_matches(self, key: str, view: ServiceView) -> bool:
         rollback = self.manifest.rollback
+        assert isinstance(rollback, CompatibleRelease)  # asked only for a compatible rollback
         return view.raw.get("taskDefinition") == getattr(rollback.services, key).task_definition
 
     def scale_fields(self, key: str, view: ServiceView) -> dict[str, Any]:

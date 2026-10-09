@@ -165,6 +165,11 @@ def rig(*, rollback: str = "empty_hold", **approval) -> Rig:
     )
 
 
+def rollback(outcome) -> dict:
+    assert outcome.rollback is not None
+    return outcome.rollback
+
+
 def assert_intent_precedes_every_mutation(r: Rig) -> None:
     last_journal = None
     actions = {"run": "run_job", "start": "start_service", "stop": "stop_service",
@@ -297,7 +302,7 @@ def test_a_job_deadline_stops_the_named_start_and_never_claims_sql_cancellation(
                                                                       subject="runtime-migrate")}  # fmt: skip
     assert outcomes.get("stop_confirmed") == "unknown"
     assert "job_succeeded" not in outcomes
-    assert outcome.rollback["actions"][0] == "restore_prior_platform_versions"
+    assert rollback(outcome)["actions"][0] == "restore_prior_platform_versions"
 
 
 @pytest.mark.parametrize("when", ["crash_before", "crash_after"])
@@ -476,7 +481,7 @@ def test_an_extra_instance_for_a_started_service_never_counts_as_ready():
             found.append({"durable_object_id": "e" * 64, "state": "running"})
         return found
 
-    r.control.running_instances = running
+    r.control.running_instances = running  # ty: ignore[invalid-assignment]
     outcome = r.controller().run()
     assert_held(r, outcome, "instance_count_drift", "grants_verified")
 
@@ -490,11 +495,11 @@ def test_a_service_that_exits_after_starting_holds_without_rollback():
             r.control.exit_service("api", "Error: exit 3")
         return original(item, command, body)
 
-    r.control._service_status = status
+    r.control._service_status = status  # ty: ignore[invalid-assignment]
     outcome = r.controller().run()
     assert_held(r, outcome, "instance_stopped", "grants_verified")
-    assert outcome.rollback["actions"][0] == "restore_prior_platform_versions"
-    assert "set_started_services_desired_zero" in outcome.rollback["actions"]
+    assert rollback(outcome)["actions"][0] == "restore_prior_platform_versions"
+    assert "set_started_services_desired_zero" in rollback(outcome)["actions"]
 
 
 def test_an_unhealthy_service_holds_at_its_start_deadline():
@@ -578,7 +583,7 @@ def test_a_replaced_worker_during_the_gate_holds_at_once():
             r.control.start_foreign("worker")
         return original(item, command, body)
 
-    r.control._service_receipts = receipts
+    r.control._service_receipts = receipts  # ty: ignore[invalid-assignment]
     outcome = r.controller().run()
     assert outcome.state == "hold"
     assert outcome.reason in {"deployment_superseded", "task_replaced"}
@@ -709,7 +714,7 @@ def test_a_lost_job_response_and_a_deadline_hold_with_sql_outcome_unknown():
     assert any(e.get("sql_outcome") == "unknown" for e in observations)
     assert not r.events("observation", result="job_succeeded")
     # The migration may have run: the plan reconciles before any rerun.
-    assert "reconcile_partial_migration_before_rerun" in outcome.rollback["actions"]
+    assert "reconcile_partial_migration_before_rerun" in rollback(outcome)["actions"]
 
 
 def test_without_migration_receipt_producers_a_cloudflare_release_holds_not_started():
@@ -718,8 +723,8 @@ def test_without_migration_receipt_producers_a_cloudflare_release_holds_not_star
     outcome = r.controller().run()
     assert_held(r, outcome, "launch_failed", "quiesced")
     assert r.events("observation", subject="runtime-migrate", result="launch_failed")
-    assert outcome.rollback["kind"] == "empty_hold"
-    assert "reconcile_partial_migration_before_rerun" not in outcome.rollback["actions"]
+    assert rollback(outcome)["kind"] == "empty_hold"
+    assert "reconcile_partial_migration_before_rerun" not in rollback(outcome)["actions"]
 
 
 def test_without_operational_observers_a_cloudflare_release_holds():
@@ -750,7 +755,7 @@ def test_trap_1_drift_holds_before_recognizing_or_retrying_a_start(fault):
             )
         return original(request, timeout=timeout)
 
-    r.control.send = send
+    r.control.send = send  # ty: ignore[invalid-assignment]
     outcome = r.controller().run()
     assert (outcome.state, outcome.reason) == ("hold", "application_drift")
     assert not r.events("observation", subject="runtime", result="service_deployed")
@@ -780,7 +785,7 @@ def test_trap_3_no_resend_after_its_deadline_following_a_slow_fresh_read():
             slow["armed"] = False
         return original(script)
 
-    r.versions.deployment = deployment
+    r.versions.deployment = deployment  # ty: ignore[invalid-assignment]
     original_start = r.control.send
 
     def send(request, *, timeout):
@@ -788,7 +793,7 @@ def test_trap_3_no_resend_after_its_deadline_following_a_slow_fresh_read():
             slow["armed"] = True
         return original_start(request, timeout=timeout)
 
-    r.control.send = send
+    r.control.send = send  # ty: ignore[invalid-assignment]
     outcome = r.controller().run()
     assert (outcome.state, outcome.reason) == ("hold", "service_update_unconfirmed")
     [intent] = r.events("intent", action="start_service")
@@ -832,6 +837,6 @@ def test_read_errors_after_launch_hold_with_the_lock_retained():
             return 500, {"error": "internal"}
         return original(item, command, body)
 
-    r.control._job_status = status
+    r.control._job_status = status  # ty: ignore[invalid-assignment]
     outcome = r.controller().run()
     assert_held(r, outcome, "observation_ambiguous", "quiesced")

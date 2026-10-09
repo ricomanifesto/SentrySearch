@@ -95,7 +95,8 @@ class ControlPort(Protocol):
         action: str,
         body: Mapping[str, Any] | None,
         command_id: str,
-        not_after: datetime,
+        expires_at: datetime,
+        send_before: datetime | None = None,
     ) -> ControlReply: ...
 
 

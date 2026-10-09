@@ -18,6 +18,7 @@ import copy
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -46,6 +47,11 @@ FORBIDDEN_IMPORTS = (
 )
 
 
+def rollback(outcome) -> dict:
+    assert outcome.rollback is not None
+    return outcome.rollback
+
+
 def events(r, kind=None, **match):
     return [
         e
@@ -68,8 +74,9 @@ def hang_first_migration(r):
 def test_the_constructor_takes_the_aws_ports_or_one_platform_for_this_manifest():
     r = rig()
     loaded, approval = load_manifest(encode(r.document)), load_approval(r.approval_raw)
-    common = dict(store=r.store, clock=r.clock, tokens=r.tokens, session_id="session-a")
-    aws = dict(ecs=r.ecs, evidence=r.evidence, logs=r.logs)
+    common: dict[str, Any] = dict(store=r.store, clock=r.clock, tokens=r.tokens,
+                                  session_id="session-a")  # fmt: skip
+    aws: dict[str, Any] = dict(ecs=r.ecs, evidence=r.evidence, logs=r.logs)
     assert isinstance(ReleaseController(loaded, approval, **common, **aws).platform, EcsPlatform)
     platform = ProbePlatform(loaded, r.ecs, r.evidence, r.logs, clock=r.clock)
     assert ReleaseController(loaded, approval, **common, platform=platform).platform is platform
@@ -81,7 +88,8 @@ def test_the_constructor_takes_the_aws_ports_or_one_platform_for_this_manifest()
     with pytest.raises(TypeError):
         ReleaseController(loaded, approval, **common, logs=r.logs, platform=platform)
     # As before the extraction, an explicit None port is accepted at construction.
-    ReleaseController(loaded, approval, **common, ecs=None, evidence=r.evidence, logs=r.logs)
+    unset: dict[str, Any] = {"ecs": None, "evidence": r.evidence, "logs": r.logs}
+    ReleaseController(loaded, approval, **common, **unset)
 
 
 def test_a_platform_built_from_another_manifest_is_refused():
@@ -132,9 +140,11 @@ def test_a_rollback_plan_depends_on_the_rollback_kind_and_names_activated_code()
     manifest = load_manifest(encode(r.document)).manifest
     outcomes = {job.id: "succeeded" for job in manifest.jobs}
     expected = plan_rollback(manifest, outcomes, services_touched=True)
-    duck = SimpleNamespace(jobs=manifest.jobs, rollback=SimpleNamespace(**dict(manifest.rollback)))
+    duck: Any = SimpleNamespace(
+        jobs=manifest.jobs, rollback=SimpleNamespace(**dict(manifest.rollback))
+    )
     assert plan_rollback(duck, outcomes, services_touched=True) == expected
-    empty = SimpleNamespace(jobs=manifest.jobs, rollback=SimpleNamespace(kind="empty_hold"))
+    empty: Any = SimpleNamespace(jobs=manifest.jobs, rollback=SimpleNamespace(kind="empty_hold"))
     assert plan_rollback(empty, outcomes, services_touched=True)["kind"] == "empty_hold"
     moved = plan_rollback(manifest, outcomes, services_touched=True, activated=("version/jobs",))
     assert moved["actions"] == ["restore_prior_platform_versions", *expected["actions"]]
@@ -477,8 +487,8 @@ def test_a_hold_after_activation_plans_to_restore_the_prior_platform_versions():
     controller, _ = probe_controller(r, knobs=knobs)
     outcome = controller.run()
     assert (outcome.state, outcome.reason) == ("hold", "job_container_failed")
-    assert outcome.rollback["actions"][0] == "restore_prior_platform_versions"
-    assert outcome.rollback["activated"] == ["version/jobs"]
+    assert rollback(outcome)["actions"][0] == "restore_prior_platform_versions"
+    assert rollback(outcome)["activated"] == ["version/jobs"]
 
 
 # Refusals, holds and a superseded session ---------------------------------------------
@@ -664,11 +674,11 @@ def test_a_successor_finishes_a_held_paused_release_only_after_the_quiet_period(
             original(key, if_match=if_match)
         raise SimulatedCrash("lock release")
 
-    r.store.delete = crash_delete
+    r.store.delete = crash_delete  # ty: ignore[invalid-assignment]
     controller, _ = probe_controller(r)
     with pytest.raises(SimulatedCrash):
         controller.run()
-    r.store.delete = original
+    r.store.delete = original  # ty: ignore[invalid-assignment]
     successor, platform = probe_controller(r, "session-b")
     successor.recover(authorization(r, "session-a"))
     assert successor.run().state == "held_paused"
