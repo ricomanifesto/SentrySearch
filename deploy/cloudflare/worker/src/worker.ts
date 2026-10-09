@@ -25,7 +25,9 @@ export class WorkerService extends ServiceObject<WorkerEnv> {
     receipts: true,
     runtimeTunnel: true,
     port: 8081,
-    drainSeconds: 30,
+    // Above the worker's own 30 s drain budget, so a busy worker ends itself
+    // (exit 124, drain_deadline_exceeded) before the object destroys it.
+    drainSeconds: 45,
   };
 
   protected containerEnv(): Record<string, string> {

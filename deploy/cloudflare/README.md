@@ -100,6 +100,10 @@ job) owning one container:
   most five minutes, a body matching the signed digest and a command id never
   accepted before. The signed release, session and fence values are carried for
   the release controller's authority protocol.
+- **Drain windows.** The worker object waits 45 seconds after SIGTERM, above
+  the worker's own 30-second drain budget, so a busy worker ends itself (exit
+  124, `drain_deadline_exceeded`) before the object destroys it; the API and
+  runtime objects wait 30 seconds.
 - **Lifetime.** A start is claimed in storage before its first `await`, so
   concurrent signed starts produce one start; a claim whose interceptions do
   not bind within a minute is abandoned. The current start is the latest row
@@ -147,8 +151,8 @@ Measured with the pinned Wrangler 4.141.0 and workerd 2026-09-25:
   container's output for that reason.
 - Docker's `HOME=/root` from the root start would follow the service user.
   libpq treats an unreadable `~/.postgresql/postgresql.crt` as fatal, so the
-  Search wrapper sets `HOME` to the service user's home before dropping
-  privileges (release-tools jobs use `psql` too).
+  Search wrapper sets `HOME=/nonexistent`, as both images declare for their
+  users, before dropping privileges (release-tools jobs use `psql` too).
 - Containers reach a database on the host's loopback as
   `host.docker.internal` (the harness's disposable PostgreSQL); TLS still
   verifies that name.

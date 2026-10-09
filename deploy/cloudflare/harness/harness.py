@@ -70,9 +70,9 @@ SANDBOX = """(version 1)
 DOCKER_SHIM = """#!/bin/sh
 # Every Docker call Wrangler makes during a harness run is logged; a pull is
 # answered only for an image already present, so no registry is contacted.
-# With a native platform set, linux/amd64 builds are rewritten to it.
-printf '%s\\n' "$*" >> "{log}"
-if [ -n "{native}" ]; then
+# With a native platform set, a build's linux/amd64 is rewritten to it; the log
+# shows the command as run.
+if [ -n "{native}" ] && {{ [ "$1" = build ] || [ "$1" = buildx ]; }}; then
   for argument do
     shift
     case "$argument" in
@@ -82,6 +82,7 @@ if [ -n "{native}" ]; then
     set -- "$@" "$argument"
   done
 fi
+printf '%s\\n' "$*" >> "{log}"
 if [ "$1" = pull ]; then
   shift
   for argument in "$@"; do case "$argument" in --*) ;; *) image="$argument" ;; esac; done
@@ -258,6 +259,9 @@ class Run:
         }
         self.wrangler: subprocess.Popen | None = None
         self.trust_dir: Path | None = None  # Real images: CA files for host-side probes.
+        self.admit: Callable[[str], None] | None = None  # Real images: admit one report.
+        self.provider_connections: list[socket.socket] = []
+        self.secret_values: dict[str, str] = {}  # Real images: removed from the run directory.
 
     # Setup -----------------------------------------------------------------
 
@@ -748,6 +752,13 @@ SECRET_NAMES = (
 )
 
 
+def private_write(path: Path, text: str) -> None:
+    """Create a file readable only by this user from the start."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w") as handle:
+        handle.write(text)
+
+
 def docker(*args: str, check: bool = True, stdin: str | None = None) -> subprocess.CompletedProcess:
     result = subprocess.run(
         ["docker", *args], input=stdin, capture_output=True, text=True, check=False, timeout=300
@@ -786,6 +797,21 @@ def real_backing(
         directory.chmod(0o755)
     port = free_port()
     postgres = f"sentry-cf-postgres-{uuid.uuid4().hex[:8]}"
+    # A provider that accepts and never answers, so a generation stays in
+    # progress (the busy-drain case). It listens on host loopback only.
+    provider = socket.create_server(("127.0.0.1", 0))
+    provider.settimeout(0.5)
+    accepted: list[socket.socket] = []
+    stop_provider = threading.Event()
+
+    def hold_connections() -> None:
+        while not stop_provider.is_set():
+            try:
+                accepted.append(provider.accept()[0])
+            except OSError:
+                continue
+
+    threading.Thread(target=hold_connections, daemon=True).start()
 
     def psql(db: str, sql: str, user: str = "postgres") -> str:
         return docker(
@@ -794,8 +820,7 @@ def real_backing(
 
     def plain(image: str, env: dict[str, str], command: list[str]) -> str:
         env_file = root / f"{uuid.uuid4().hex[:8]}.env"
-        env_file.write_text("".join(f"{k}={v}\n" for k, v in env.items()))
-        env_file.chmod(0o600)
+        private_write(env_file, "".join(f"{k}={v}\n" for k, v in env.items()))
         scratch = "/var/lib/sentrysearch:uid=10001,gid=10001,mode=0700"
         result = docker(
             "run", "--rm", "--read-only", "--tmpfs", "/tmp", "--tmpfs", scratch,
@@ -940,7 +965,7 @@ def real_backing(
                 "SENTRYRUNTIME_PRODUCER_TOKEN": values["producer"],
                 "SENTRYRUNTIME_WORKER_TOKEN": values["worker"],
                 "OPENROUTER_API_KEY": values["provider"],
-                "OPENROUTER_BASE_URL": "http://provider.invalid/api/v1",
+                "OPENROUTER_BASE_URL": f"http://{DB_HOST}:{provider.getsockname()[1]}/api/v1",
                 "PYTHON_DOTENV_DISABLED": "1",
             },
             "api": {
@@ -956,8 +981,29 @@ def real_backing(
             "search_schema": "ready",
         }
         run.trust_dir = trust
+
+        def admit(report_id: str) -> None:
+            """Admit one report for runtime dispatch, as the API would (busy-drain case)."""
+            create = (
+                "import sys\nfrom src.storage.report_service import report_service\n"
+                "report_service.create_pending_report(sys.argv[1], 'Harness synthetic target',"
+                " 'harness-user', runtime_dispatch=True)"
+            )
+            plain(
+                search_default,
+                product("app", "/run/trust/postgres-ca.pem"),
+                ["python", "-c", create, report_id],
+            )
+
+        run.admit = admit
+        run.provider_connections = accepted
         yield settings, values
     finally:
+        stop_provider.set()
+        provider.close()
+        for held in accepted:
+            with contextlib.suppress(OSError):
+                held.close()
         docker("rm", "-f", "-v", postgres, check=False)
         shutil.rmtree(root, ignore_errors=True)
 
@@ -988,8 +1034,8 @@ READ_STATUS = (
     "import json,os,sys\n"
     "out={}\n"
     "for pid in sorted((p for p in os.listdir('/proc') if p.isdigit()), key=int):\n"
-    "    if int(pid) == os.getpid(): continue\n"
-    "    try: lines=open(f'/proc/{pid}/status').read().splitlines()\n"
+    "    if int(pid) == os.getpid(): pid='helper'\n"
+    "    try: lines=open('/proc/self/status' if pid == 'helper' else f'/proc/{pid}/status').read().splitlines()\n"
     "    except OSError: continue\n"
     "    f={}\n"
     "    for line in lines:\n"
@@ -1102,8 +1148,7 @@ def real_scenarios(run: Run, helper_image: str) -> None:
             env.pop("CFINIT_MATERIAL_SHA256", None)
             env["DB_SSLROOTCERT"] = "/run/trust/postgres-ca.pem"
             env_file = run.trust_dir.parent / "api-probe.env"
-            env_file.write_text("".join(f"{k}={v}\n" for k, v in env.items()))
-            env_file.chmod(0o600)
+            private_write(env_file, "".join(f"{k}={v}\n" for k, v in env.items()))
             check = (
                 "from src.storage.database import db_manager\n"
                 "try:\n db_manager.require_schema(); print('schema ok')\n"
@@ -1170,16 +1215,31 @@ def real_scenarios(run: Run, helper_image: str) -> None:
         problems = []
         expected = {"api": "10001", "worker": "10001", "runtime": "65532"}
         for service, report in reports.items():
-            for pid, fields in report["status"].items():
-                if fields.get("Name") in ("tini",):
-                    continue  # PID 1 init; signal forwarding and reaping only (CF04-R23)
-                uid = fields.get("Uid", "").split()
-                if not uid or set(uid) != {expected[service]}:
-                    problems.append(f"{service} pid {pid} {fields.get('Name')} uid {uid}")
+            status = dict(report["status"])
+            # The helper runs under Docker's default profile, as the containers do:
+            # the entrypoint's own filter is one more than that.
+            baseline = status.pop("helper", {}).get("Seccomp_filters")
+            if not baseline or not baseline.isdigit():
+                problems.append(f"{service}: no seccomp baseline")
+                continue
+            if status.get("1", {}).get("Name") == "tini":
+                status.pop("1")  # PID 1 init: forwards signals and reaps (CF04-R23 residual)
+            for pid, fields in status.items():
+                identity = expected[service]
+                if (
+                    fields.get("Uid", "").split() != [identity] * 4
+                    or fields.get("Gid", "").split() != [identity] * 4
+                    or fields.get("Groups") != ""
+                ):
+                    problems.append(f"{service} pid {pid} {fields.get('Name')} identity {fields}")
                 for key in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"):
                     if fields.get(key) != "0000000000000000":
                         problems.append(f"{service} pid {pid} {key}={fields.get(key)}")
-                if fields.get("NoNewPrivs") != "1" or fields.get("Seccomp") != "2":
+                if (
+                    fields.get("NoNewPrivs") != "1"
+                    or fields.get("Seccomp") != "2"
+                    or fields.get("Seccomp_filters") != str(int(baseline) + 1)
+                ):
                     problems.append(f"{service} pid {pid} no_new_privs/seccomp {fields}")
         return {
             "passed": set(reports) == {"api", "worker", "runtime"}
@@ -1218,6 +1278,46 @@ def real_scenarios(run: Run, helper_image: str) -> None:
             ],
         }
 
+    def busy_drain_deadline() -> dict[str, Any]:
+        """A worker stopped mid-generation ends itself at its drain deadline (exit 124)."""
+        status, body = control.send("worker", "worker-0", "start")
+        if status != 200 or not body.get("started") or run.admit is None:
+            return {"passed": False, "start": body}
+
+        def ready() -> Any:
+            s, view = control.send("worker", "worker-0", "receipts", method="GET")
+            return view if s == 200 and any(r["ready"] for r in view.get("receipts", [])) else None
+
+        if not wait_for(ready, 300, 5):
+            return {"passed": False, "detail": "restarted worker not ready"}
+        run.admit(str(uuid.uuid4()))
+
+        def generating() -> Any:
+            s, view = control.send("worker", "worker-0", "receipts", method="GET")
+            busy = [r for r in view.get("receipts", []) if r["phase"] == "generation"]
+            return view if s == 200 and busy and run.provider_connections else None
+
+        busy = wait_for(generating, 180, 3)
+        if not busy:
+            return {"passed": False, "detail": "worker never reached the provider"}
+        result = stop_and_observe("worker", "worker-0")
+        _, view = control.send("worker", "worker-0", "receipts", "GET")
+        final = result["final"] or {}
+        last = (view or {}).get("receipts", [])[-1:] or [{}]
+        return {
+            "passed": final.get("state") == "exited"
+            and "124" in str(final.get("exit_detail"))
+            and last[0].get("error_code") == "drain_deadline_exceeded"
+            and last[0].get("alive") is False
+            and (view or {}).get("unterminated") == [],
+            **result,
+            "provider_connections": len(run.provider_connections),
+            "last_receipt": {
+                k: last[0].get(k) for k in ("phase", "alive", "draining", "error_code")
+            },
+            "receipts_complete": (view or {}).get("complete"),
+        }
+
     def drain_api() -> dict[str, Any]:
         result = stop_and_observe("api", "api-0")
         final = result["final"] or {}
@@ -1241,6 +1341,7 @@ def real_scenarios(run: Run, helper_image: str) -> None:
     run.scenario("api_ready_through_ingress", api_ready)
     run.scenario("dropped_processes", dropped_processes)
     run.scenario("drain_worker", drain_worker)
+    run.scenario("busy_drain_deadline", busy_drain_deadline)
     run.scenario("drain_api", drain_api)
     run.scenario("drain_runtime", drain_runtime)
 
@@ -1299,6 +1400,28 @@ def real_run(run: Run, args: argparse.Namespace) -> None:
         run.evidence["secrets_in_evidence"] = sorted(
             name for name, value in values.items() if value in evidence
         )
+        run.secret_values = dict(values)
+
+
+def scrub_run_dir(run: Run) -> list[str]:
+    """Redact the rendered container settings, then report any disposable secret left."""
+    for config in (run.dir / "config").glob("*.jsonc"):
+        rendered = json.loads(config.read_text())
+        for key in rendered.get("vars", {}):
+            if key.startswith("CONTAINER_"):
+                rendered["vars"][key] = "<redacted after the run>"
+        config.write_text(json.dumps(rendered, indent=2))
+    found = []
+    for path in run.dir.rglob("*"):
+        if not path.is_file():
+            continue
+        text = path.read_text(errors="replace")
+        for name, value in run.secret_values.items():
+            if value in text:
+                found.append(f"{path.relative_to(run.dir)}: {name}")
+        if "PRIVATE KEY" in text:
+            found.append(f"{path.relative_to(run.dir)}: private key")
+    return sorted(found)
 
 
 def main() -> int:
@@ -1309,6 +1432,7 @@ def main() -> int:
     parser.add_argument(
         "--native-platform",
         default="",
+        choices=("", "linux/arm64", "linux/amd64"),
         help="build the Worker image map for this platform instead of linux/amd64 (real images)",
     )
     parser.add_argument("--runtime-repo", type=Path, help="SentryRuntime checkout (real images)")
@@ -1339,6 +1463,7 @@ def main() -> int:
         # A watchdog's SIGTERM must still stop Wrangler (its own session) and
         # remove the run's containers: turn it into an ordinary exit that fails.
         run.evidence["interrupted"] = f"signal {signum}"
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)  # Let the cleanup finish.
         raise SystemExit(128 + signum)
 
     signal.signal(signal.SIGTERM, terminated)
@@ -1356,6 +1481,8 @@ def main() -> int:
             run.evidence["outside_canary_hits"] = list(outside_hits)
     finally:
         run.stop_wrangler()
+        if run.secret_values:
+            run.evidence["secrets_left_in_run_dir"] = scrub_run_dir(run)
         calls = (
             (run.dir / "docker-calls.log").read_text().splitlines()
             if (run.dir / "docker-calls.log").exists()
@@ -1374,6 +1501,7 @@ def main() -> int:
             and not run.evidence.get("outside_canary_hits")
             and not run.evidence.get("secrets_in_evidence")
             and not run.evidence.get("interrupted")
+            and not run.evidence.get("secrets_left_in_run_dir")
         )
         Path(args.evidence).write_text(json.dumps(run.evidence, indent=2, default=str))
     print(f"overall: {'passed' if run.evidence['passed'] else 'FAILED'}")

@@ -71,7 +71,6 @@ class FakeSystem:
         return cfinit.System(
             machine=lambda: "x86_64",
             seccomp_path=seccomp_path,
-            home=lambda uid: {10001: "/nonexistent", 65532: "/home/nonroot"}[uid],
             close_filter_files=self.close_filter_files,
             geteuid=lambda: self.euid,
             read_status=lambda: self.status,
@@ -418,7 +417,7 @@ def test_the_root_home_never_follows_the_service_user(material):
     # /root is unreadable to the service user, so HOME must be the user's own.
     for profile, uid, home in (
         ("search", 10001, "/nonexistent"),
-        ("runtime-release", 65532, "/home/nonroot"),
+        ("runtime-release", 65532, "/nonexistent"),
     ):
         fake = FakeSystem()
         command = API if profile == "search" else (*cfinit.RELEASE_PYTHON, "proof")
