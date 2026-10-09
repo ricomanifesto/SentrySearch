@@ -13,6 +13,7 @@ import os
 import re
 import urllib.request
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -47,6 +48,10 @@ _SESSION_PATTERNS = {
     "state": re.compile(r"[a-z_]{1,40}"),
 }
 SQL = digest.PACKAGE_ROOT / "sql"
+# Where the job's identity comes from. Unset means ECS, the existing path.
+PLATFORMS = frozenset({"ecs", "cloudflare"})
+_OBJECT_ID = re.compile(r"[0-9a-f]{64}")
+_LAUNCH_NONCE = re.compile(r"[0-9a-f]{32}")
 
 
 class JobFailed(Exception):
@@ -81,6 +86,28 @@ def task_identity(environ: dict[str, str]) -> str:
     return arn
 
 
+@dataclass(frozen=True)
+class CloudflareIdentity:
+    """The JobRunner object and the start it launched; set by that object, not the job."""
+
+    durable_object_id: str
+    launch_nonce: str
+
+
+def cloudflare_identity(environ: dict[str, str]) -> CloudflareIdentity:
+    """The launching Durable Object's id and this start's nonce, from the start() environment.
+
+    The JobRunner's intake binds a posted receipt to its own id and current start
+    from the interception, and refuses a receipt naming anything else; these
+    values only let the receipt state which run it describes.
+    """
+    object_id = environ.get("CLOUDFLARE_DURABLE_OBJECT_ID", "")
+    nonce = environ.get("SENTRY_LAUNCH_NONCE", "")
+    if not _OBJECT_ID.fullmatch(object_id) or not _LAUNCH_NONCE.fullmatch(nonce):
+        raise ValueError("cloudflare identity")
+    return CloudflareIdentity(object_id, nonce)
+
+
 def _material_ok() -> bool:
     """The init profile's CA file: a regular, owner-only file of this job's user."""
     path = session.CA_PATH
@@ -103,12 +130,32 @@ class Job:
         task_arn: str,
         deadline: datetime,
         now: Callable[[], datetime],
+        *,
+        cloudflare: CloudflareIdentity | None = None,
     ) -> None:
         self.config = loaded
         self.task_arn = task_arn
+        self.cloudflare = cloudflare
         self.deadline = deadline
         self.now = now
         self.sql_attempted = False
+
+    def _receipt(self, *, status: str, result: dict[str, str]) -> None:
+        common = {"release_id": self.config.release_id, "job_id": self.config.job_id}
+        if self.cloudflare is None:
+            receipt.emit_receipt(**common, task_arn=self.task_arn, status=status, result=result)
+            return
+        envelope = receipt.cloudflare_envelope(
+            **common,
+            durable_object_id=self.cloudflare.durable_object_id,
+            launch_nonce=self.cloudflare.launch_nonce,
+            status=status,
+            result=result,
+        )
+        # A lost receipt is missing evidence: the controller holds with an unknown
+        # SQL outcome. It never changes this job's result or exit code.
+        if not receipt.post_cloudflare_receipt(envelope):
+            receipt.log("receipt_unsent", **common)
 
     def _session(
         self,
@@ -278,9 +325,7 @@ class Job:
                 raise JobFailed("material_invalid", "none", EXIT_MATERIAL)
             result = getattr(self, self.config.kind)()
         except JobFailed as failure:
-            receipt.emit_receipt(
-                **common,
-                task_arn=self.task_arn,
+            self._receipt(
                 status="failed",
                 result={"reason": failure.reason, "sql_outcome": failure.sql_outcome},
             )
@@ -291,7 +336,7 @@ class Job:
                 exit_code=failure.code,
             )
             return failure.code
-        receipt.emit_receipt(**common, task_arn=self.task_arn, status="succeeded", result=result)
+        self._receipt(status="succeeded", result=result)
         receipt.log("job_succeeded", **common)
         return EXIT_OK
 
@@ -307,6 +352,9 @@ def main(
         return EXIT_OK
     if len(argv) != 1 or argv[0] not in config.KINDS:
         return _preflight_failure("command_invalid", EXIT_CONFIG)
+    platform = environ.get("RELEASE_PLATFORM", "ecs")
+    if platform not in PLATFORMS:
+        return _preflight_failure("release_platform_invalid", EXIT_CONFIG)
     started = now()
     try:
         loaded = config.load(argv[0], environ)
@@ -324,6 +372,12 @@ def main(
     deadline = guard.job_deadline(loaded, started)
     if deadline <= started:
         return _preflight_failure("deadline_expired", EXIT_DEADLINE_EXPIRED)
+    if platform == "cloudflare":
+        try:
+            identity = cloudflare_identity(environ)
+        except ValueError:
+            return _preflight_failure("instance_identity_unavailable", EXIT_TASK_IDENTITY)
+        return Job(loaded, "", deadline, now, cloudflare=identity).run()
     try:
         task_arn = task_identity(environ)
     except (OSError, ValueError, http.client.HTTPException):

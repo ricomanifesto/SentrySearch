@@ -6,7 +6,7 @@
   "scripts": {
     "types": "wrangler types -c config/edge.jsonc --include-env=false worker-runtime.d.ts",
     "check": "tsc --noEmit -p .",
-    "test": "esbuild test/control.test.ts test/receipts.test.ts test/lifecycle.test.ts --bundle --platform=node --format=esm --alias:cloudflare:workers=./test/workers-stub.ts --outdir=.test-build --log-level=warning && node --experimental-sqlite --test .test-build/control.test.js .test-build/receipts.test.js .test-build/lifecycle.test.js"
+    "test": "esbuild test/control.test.ts test/receipts.test.ts test/lifecycle.test.ts test/vectors.test.ts --bundle --platform=node --format=esm --alias:cloudflare:workers=./test/workers-stub.ts --outdir=.test-build --log-level=warning && node --experimental-sqlite --test .test-build/control.test.js .test-build/receipts.test.js .test-build/lifecycle.test.js .test-build/vectors.test.js"
   },
   "devDependencies": {
     "typescript": "6.0.3",
