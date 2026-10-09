@@ -369,3 +369,26 @@ def test_the_filter_file_is_closed_before_the_service_starts():
     cfinit._close_filter_files()
     with pytest.raises(OSError):
         os.fstat(descriptor)
+
+
+def test_every_root_phase_interpreter_ignores_the_working_directory():
+    # The root phase runs before the drop with a writable working directory:
+    # its interpreter must not put that directory (or a script's) on sys.path.
+    repo = Path(__file__).resolve().parents[1]
+    root_starts = []
+    for dockerfile in ("container/Dockerfile", "container/release-tools.Dockerfile"):
+        for line in (repo / dockerfile).read_text().splitlines():
+            if line.startswith("ENTRYPOINT") and "sentrysearch_cloudflare.cfinit" in line:
+                root_starts.append(json.loads(line.removeprefix("ENTRYPOINT ")))
+    worker = repo / "deploy" / "cloudflare" / "worker" / "src"
+    for source in ("api.ts", "worker.ts"):
+        text = (worker / source).read_text()
+        assert 'PYTHON, "-P", "-m", "sentrysearch_cloudflare.cfinit"' in text, source
+    assert (
+        'const RELEASE_PYTHON = ["/usr/local/bin/python3.11", "-I", "-B", "-m"];'
+        in (worker / "jobs.ts").read_text()
+    )
+    assert len(root_starts) == 2
+    for argv in root_starts:
+        interpreter = argv[2 : argv.index("-m")]
+        assert "-P" in interpreter or "-I" in interpreter, argv
