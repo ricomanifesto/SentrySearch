@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
-from release.manifest import CompatibleRelease, Job, Manifest, ReleaseRejected, TaskSpec
+from release.manifest import Job, Manifest, ReleaseRejected, TaskSpec
 
 
 class State(StrEnum):
@@ -189,7 +189,8 @@ def plan_rollback(
     """Describe the manual recovery path for a hold. Nothing here is executed."""
     schemas = migration_schemas(manifest, outcomes)
     rollback = manifest.rollback
-    if not isinstance(rollback, CompatibleRelease):
+    # Any platform's manifest: the rollback's kind, not its class, decides.
+    if rollback.kind != "compatible_release":
         actions = [
             (
                 "set_started_services_desired_zero"

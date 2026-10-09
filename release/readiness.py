@@ -1,8 +1,9 @@
 """Worker readiness gate: a bounded observation of supervisor receipts.
 
-Pure policy and parsing. The controller supplies platform identity (deployment,
-task, revision and digest from ECS) and the fixed log stream of the observed task;
-nothing here trusts a worker-supplied log location or identity. Success is a
+Pure policy and parsing. The controller supplies platform identity (the
+generation, run, revision and digest the platform reports) and the fixed receipt
+source of the observed run, such as its ECS log stream; nothing here trusts a
+worker-supplied log location or identity. Success is a
 bounded observation of 60 seconds of consecutive, fresh, eligible receipts, not
 continuing readiness, report completion or auth/S3 proof. Application receipts
 are not proof against a compromised worker.
@@ -281,12 +282,20 @@ class ReadinessGate:
     """One gate attempt (epoch). Any anomaly restarts the stable window."""
 
     def __init__(
-        self, policy: GatePolicy, *, release_id: str, epoch_start: datetime, task_arn: str
+        self,
+        policy: GatePolicy,
+        *,
+        release_id: str,
+        epoch_start: datetime,
+        task_arn: str | None = None,
+        run: str | None = None,
     ) -> None:
+        """``run`` names the observed run on any platform; ``task_arn`` is its ECS name."""
         self.policy = policy
         self.release_id = release_id
         self.epoch_start = epoch_start
         self.task_arn = task_arn
+        self.run = run if run is not None else task_arn
         self.reason: str | None = None
         self.received = 0
         self._last: WorkerReceipt | None = None
