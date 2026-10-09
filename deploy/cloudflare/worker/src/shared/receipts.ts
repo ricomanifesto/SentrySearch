@@ -88,7 +88,7 @@ export function parseReceipt(body: Uint8Array, releaseId: string): Receipt {
 
 export interface ReceiptView {
   startNonce: string;
-  /** The start has ended: its history must close with a "stopped" receipt per boot. */
+  /** The start has ended: each boot's history must close with its terminal receipt. */
   ended: boolean;
   receipts: Receipt[];
   /** Highest sequence evicted per boot, or 0. */
@@ -98,7 +98,7 @@ export interface ReceiptView {
   duplicatesConflicting: number;
   /** Receipts refused because the start already had MAX_BOOTS boot ids. */
   refusedBoots: number;
-  /** Boots whose last receipt is not "stopped", for an ended start. */
+  /** Boots whose last receipt is not terminal (alive false, phase "stopped"), for an ended start. */
   unterminated: string[];
   complete: boolean;
 }
@@ -206,11 +206,11 @@ export class ReceiptStore {
       conflicts += Number(meta.conflicts);
     }
     const byBoot = new Map<string, number[]>();
-    const lastPhase = new Map<string, string>();
+    const last = new Map<string, Receipt>();
     const receipts = rows.map((row) => JSON.parse(String(row.body)) as Receipt);
     for (const receipt of receipts) {
       byBoot.set(receipt.boot_id, [...(byBoot.get(receipt.boot_id) ?? []), receipt.sequence]);
-      lastPhase.set(receipt.boot_id, receipt.phase); // rows are ordered by sequence within a boot
+      last.set(receipt.boot_id, receipt); // rows are ordered by sequence within a boot
     }
     for (const [boot, sequences] of byBoot) {
       const present = new Set(sequences);
@@ -223,9 +223,12 @@ export class ReceiptStore {
     const refusedBoots = Number(
       this.sql.exec("SELECT refused_boots FROM receipt_starts WHERE start_nonce = ?", startNonce).toArray()[0]?.refused_boots ?? 0,
     );
-    // An ended start whose last receipt is not "stopped" may have lost its tail:
-    // nothing after the highest received sequence can show up as a gap.
-    const unterminated = ended ? [...lastPhase].filter(([, phase]) => phase !== "stopped").map(([boot]) => boot) : [];
+    // An ended start may have lost its tail, which no gap can show. The worker
+    // reports phase "stopped" while still alive, then its terminal receipt
+    // (alive false, carrying the exit's error code) as it exits: only that one
+    // closes a boot's history.
+    const terminal = (receipt: Receipt) => !receipt.alive && receipt.phase === "stopped";
+    const unterminated = ended ? [...last].filter(([, receipt]) => !terminal(receipt)).map(([boot]) => boot) : [];
     return {
       startNonce,
       ended,

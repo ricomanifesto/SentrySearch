@@ -134,6 +134,7 @@ class System:
     read_status: Callable[[], str] = lambda: Path("/proc/self/status").read_text()
     machine: Callable[[], str] = platform.machine
     seccomp_path: Callable[[bytes], str] = lambda program: _inherited_memfd(program)
+    close_filter_files: Callable[[], None] = lambda: _close_filter_files()
     prepare: Callable[..., None] = volumes.prepare
     chdir: Callable[[Path], None] = os.chdir
     execve: Callable[..., NoReturn] = os.execve
@@ -261,11 +262,14 @@ def _interpreter() -> list[str]:
     return [sys.executable, *flags]
 
 
+FILTER_FILE = "cfinit-seccomp"
+
+
 def _inherited_memfd(program: bytes) -> str:
     """Hand setpriv the filter through an inherited memory file; nothing is written to disk."""
     if sys.platform != "linux":
         raise Refused(EXIT_PRIVILEGE, "seccomp requires Linux")
-    descriptor = os.memfd_create("cfinit-seccomp", 0)
+    descriptor = os.memfd_create(FILTER_FILE, 0)
     os.write(descriptor, program)
     os.lseek(descriptor, 0, os.SEEK_SET)
     os.set_inheritable(descriptor, True)
@@ -288,6 +292,17 @@ def _expected_filters(status: str) -> str:
     if not count.isdigit():
         raise Refused(EXIT_PRIVILEGE, "unreadable seccomp state")
     return str(int(count) + 1)
+
+
+def _close_filter_files() -> None:
+    """The filter's memory file reaches the dropped phase through setpriv; the service never gets it."""
+    for name in os.listdir("/proc/self/fd"):
+        try:
+            target = os.readlink(f"/proc/self/fd/{name}")
+        except OSError:
+            continue  # the listing's own descriptor, already closed
+        if target.startswith(f"/memfd:{FILTER_FILE}"):
+            os.close(int(name))
 
 
 def verify_dropped(status: str, uid: int, filters: str) -> None:
@@ -345,6 +360,7 @@ def run(argv: Sequence[str], environ: Mapping[str, str], system: System) -> int:
             )
         else:
             verify_dropped(system.read_status(), profile.uid, filters or "")
+            system.close_filter_files()
             if volumes.MATERIAL_VARIABLE in environ or volumes.DIGEST_VARIABLE in environ:
                 raise Refused(EXIT_CONFIG, "material reached the dropped process")
             env = dict(environ)

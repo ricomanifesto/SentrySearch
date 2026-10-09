@@ -59,8 +59,16 @@ class FakeContainer {
   async inspect() {
     return {};
   }
+  /** Next interception: "fail" throws once, "hang" never settles. */
+  interceptMode: "ok" | "fail" | "hang" = "ok";
   async interceptOutboundHttp(host: string, binding: { props: { startNonce: string } }) {
     await tick(); // a real binding call yields, letting other requests in
+    const mode = this.interceptMode;
+    if (mode === "fail") {
+      this.interceptMode = "ok";
+      throw new Error("binding failed");
+    }
+    if (mode === "hang") return new Promise<void>(() => {});
     this.intercepts.push({ host, props: binding.props });
   }
   /** monitor() settles without the container stopping (its window ended). */
@@ -253,6 +261,35 @@ test("services: old starts and their receipts are forgotten", async () => {
     await tick();
   }
   assert.equal(Number(ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM starts").toArray()[0]!.n), 8);
+});
+
+test("services: a failed start retried in the same millisecond leaves the retry current", async () => {
+  const container = new FakeContainer();
+  const ctx = state("worker-0", container);
+  const service = new WorkerService(ctx as Any, env() as Any);
+  container.interceptMode = "fail";
+  assert.equal((await service.fetch(await signed("POST", "worker/worker-0", "start"))).status, 500);
+  const retry = await json(await service.fetch(await signed("POST", "worker/worker-0", "start")));
+  assert.equal(retry.started, true);
+  const status = await json(await service.fetch(await signed("GET", "worker/worker-0", "status")));
+  assert.deepEqual([status.start.start_nonce, status.start.state], [retry.start_nonce, "running"]);
+  await service.alarm();
+  assert.equal(container.destroys, 0);
+});
+
+test("services: a start whose interceptions never bind is abandoned after a minute", async () => {
+  const container = new FakeContainer();
+  const ctx = state("worker-0", container);
+  const service = new WorkerService(ctx as Any, env() as Any);
+  container.interceptMode = "hang";
+  void service.fetch(await signed("POST", "worker/worker-0", "start"));
+  for (let i = 0; i < 3; i++) await tick();
+  assert.equal((await json(await service.fetch(await signed("POST", "worker/worker-0", "start")))).started, false);
+  now += 61_000;
+  const status = await json(await service.fetch(await signed("GET", "worker/worker-0", "status")));
+  assert.deepEqual([status.start.state, status.start.exit_detail], ["failed", "start did not complete"]);
+  container.interceptMode = "ok";
+  assert.equal((await json(await service.fetch(await signed("POST", "worker/worker-0", "start")))).started, true);
 });
 
 test("jobs: a monitor() that settles while the job runs leaves the deadline enforced", async () => {

@@ -132,7 +132,7 @@ func workerRole() {
 	started := time.Now()
 	var mutex sync.Mutex
 	sequence := 0
-	send := func(ready, draining bool, phase string, errorCode any) {
+	send := func(alive, ready, draining bool, phase string, errorCode any) {
 		mutex.Lock()
 		sequence++
 		receipt := map[string]any{
@@ -140,7 +140,7 @@ func workerRole() {
 			"boot_id": hex.EncodeToString(bootID), "sequence": sequence,
 			"observed_at":    time.Now().UTC().Format("2006-01-02T15:04:05.000000Z"),
 			"uptime_seconds": float64(time.Since(started).Microseconds()) / 1e6,
-			"alive":          true, "ready": ready, "draining": draining, "phase": phase,
+			"alive":          alive, "ready": ready, "draining": draining, "phase": phase,
 			"phase_elapsed_seconds": 0.0, "phase_budget_seconds": 0.0, "error_code": errorCode,
 		}
 		mutex.Unlock()
@@ -159,13 +159,15 @@ func workerRole() {
 	for {
 		status, err := tunnel("runtime.internal")
 		if err == nil && status == http.StatusOK {
-			send(true, false, "idle", nil)
+			send(true, true, false, "idle", nil)
 		} else {
-			send(false, false, "idle", "runtime_unavailable")
+			send(true, false, false, "idle", "runtime_unavailable")
 		}
 		select {
 		case <-terms:
-			send(false, true, "stopped", nil)
+			// As the worker does: "stopped" while alive, then the terminal receipt.
+			send(true, false, true, "stopped", nil)
+			send(false, false, true, "stopped", nil)
 			os.Exit(0)
 		case <-time.After(2 * time.Second):
 		}

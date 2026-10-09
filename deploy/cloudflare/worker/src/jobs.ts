@@ -140,7 +140,10 @@ export class JobRunner extends DurableObject<JobsEnv> {
     }
     const row = this.current()!;
     this.observe(container, startNonce);
-    await this.keepAlive(container);
+    // Locally setInactivityTimeout() resolves only once the container has
+    // booted (seconds under load): arm the alarm now and let it settle behind
+    // the reply; every alarm re-arms it.
+    await this.keepAlive(container, false);
     return { start_nonce: startNonce, deadline_at: row.deadline_at };
   }
 
@@ -171,13 +174,15 @@ export class JobRunner extends DurableObject<JobsEnv> {
     );
   }
 
-  /** Re-arm the inactivity timeout and the next alarm: the earlier of the keepalive and the next deadline step. */
-  private async keepAlive(container: Container): Promise<void> {
+  /** Re-arm the next alarm (the earlier of the keepalive and the next deadline step) and the inactivity timeout. */
+  private async keepAlive(container: Container, wait = true): Promise<void> {
     const row = this.current();
     if (!row) return;
-    await container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS);
     const step = row.state === "signalled" && row.signalled_at !== null ? row.signalled_at + GRACE_MS : row.deadline_at;
     await this.ctx.storage.setAlarm(Math.min(step, Date.now() + KEEPALIVE_MS));
+    const inactivity = container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS);
+    if (wait) await inactivity;
+    else this.ctx.waitUntil(inactivity.catch(() => undefined));
   }
 
   /** Every enforcement step keys on the container itself, never on a recorded exit. */

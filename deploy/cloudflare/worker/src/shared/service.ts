@@ -52,6 +52,8 @@ const NONCE = /^[0-9a-f]{32}$/;
 const NAME = /^[a-z]+-[0-9]{1,3}$/;
 /** Starts kept with their receipts; older ones are forgotten when a new start is claimed. */
 const KEPT_STARTS = 8;
+/** A claimed start whose interceptions never finished binding is abandoned after this. */
+const START_CLAIM_MS = 60_000;
 /** Row states in which the start owns the container; every other state has ended. */
 const LIVE = new Set(["starting", "running", "draining"]);
 
@@ -114,7 +116,7 @@ export abstract class ServiceObject<Env extends ServiceEnv> extends DurableObjec
 
   private current(): StartRow | undefined {
     return this.ctx.storage.sql
-      .exec("SELECT * FROM starts ORDER BY started_at DESC LIMIT 1")
+      .exec("SELECT * FROM starts ORDER BY rowid DESC LIMIT 1")
       .toArray()[0] as StartRow | undefined;
   }
 
@@ -210,15 +212,18 @@ export abstract class ServiceObject<Env extends ServiceEnv> extends DurableObjec
       throw error;
     }
     this.ctx.storage.sql.exec("UPDATE starts SET state = 'running' WHERE start_nonce = ? AND state = 'starting'", startNonce);
-    await container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS);
     this.observe(container, startNonce);
     await this.scheduleAlarm();
+    // Locally setInactivityTimeout() resolves only once the container has
+    // booted (seconds under load); the reply does not wait, and every alarm
+    // re-arms it.
+    this.ctx.waitUntil(container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS).catch(() => undefined));
     return { started: true, start_nonce: startNonce };
   }
 
   private forgetOldStarts(): void {
     const old = this.ctx.storage.sql
-      .exec("SELECT start_nonce FROM starts ORDER BY started_at DESC, rowid DESC LIMIT -1 OFFSET ?", KEPT_STARTS)
+      .exec("SELECT start_nonce FROM starts ORDER BY rowid DESC LIMIT -1 OFFSET ?", KEPT_STARTS)
       .toArray();
     for (const row of old) {
       this.receipts.forget(String(row.start_nonce));
@@ -264,12 +269,16 @@ export abstract class ServiceObject<Env extends ServiceEnv> extends DurableObjec
     );
   }
 
-  /** A live row whose container is gone ended without an observer. */
+  /**
+   * A live row whose container is gone ended without an observer; a claim
+   * whose interceptions never finished binding is abandoned (a late start()
+   * then runs for an ended row and the alarm destroys it).
+   */
   private reconcile(): void {
     const row = this.current();
-    if (row && LIVE.has(row.state) && row.state !== "starting" && !this.ctx.container?.running) {
-      this.finish(row.start_nonce, "exited", "ended while unobserved");
-    }
+    if (!row || !LIVE.has(row.state) || this.ctx.container?.running) return;
+    if (row.state !== "starting") this.finish(row.start_nonce, "exited", "ended while unobserved");
+    else if (Date.now() - row.started_at > START_CLAIM_MS) this.finish(row.start_nonce, "failed", "start did not complete");
   }
 
   private async stop(): Promise<Record<string, unknown>> {

@@ -79,7 +79,7 @@ test("eviction keeps a watermark so evicted history is never reported complete",
   assert.equal(store.view("start-a", false).receipts.length, MAX_ROWS);
 });
 
-test("an ended start is complete only when every boot closed with a stopped receipt", () => {
+test("an ended start is complete only when every boot closed with its terminal receipt", () => {
   const store = new ReceiptStore(memorySql());
   store.record("start-a", receipt(1));
   store.record("start-a", receipt(2));
@@ -89,7 +89,11 @@ test("an ended start is complete only when every boot closed with a stopped rece
   assert.deepEqual(cut.gaps, {});
   assert.deepEqual(cut.unterminated, [BOOT]);
   assert.equal(cut.complete, false);
+  // "stopped" while still alive is not the end: the terminal receipt may be lost.
   store.record("start-a", receipt(3, { phase: "stopped", ready: false, draining: true }));
+  assert.deepEqual(store.view("start-a", true).unterminated, [BOOT]);
+  assert.equal(store.view("start-a", true).complete, false);
+  store.record("start-a", receipt(4, { phase: "stopped", alive: false, ready: false, draining: true, error_code: "worker_exited" }));
   assert.equal(store.view("start-a", true).complete, true);
 });
 

@@ -35,7 +35,8 @@ container, in two phases:
    ambient and bounding capability sets, switch to the profile's user, set
    `no_new_privs` and install a seccomp filter that refuses new user
    namespaces. The filter is generated for the running architecture and handed
-   to `setpriv` through an in-memory file.
+   to `setpriv` through an in-memory file, which the dropped phase closes
+   before executing the service.
 2. `continue` (dropped): refuses unless `/proc/self/status` shows every
    capability set empty, `NoNewPrivs: 1`, exactly one seccomp filter more than
    the root phase saw (passed along as `--filters`; Docker's default profile
@@ -77,8 +78,10 @@ job) owning one container:
   the release, in the exact v1 schema, stores at most 512 rows and 8 boot ids
   per start in Durable Object SQLite with an eviction watermark, and reports
   gaps, conflicting duplicates, refused boots and completeness. A start that
-  has ended is complete only when every boot's last receipt is `stopped`, so a
-  lost tail never reads as complete. The start nonce reaches the container
+  has ended is complete only when every boot's last receipt is its terminal
+  one (`alive` false, phase `stopped`, carrying the exit's error code); the
+  worker reports `stopped` while still alive first, so a lost tail never reads
+  as complete. The start nonce reaches the container
   only inside the interception props, never its environment. Each object keeps
   its last 8 starts and their receipts.
 - **Runtime transport.** `runtime.internal` accepts only the worker's WebSocket
@@ -94,7 +97,9 @@ job) owning one container:
   accepted before. The signed release, session and fence values are carried for
   the release controller's authority protocol.
 - **Lifetime.** A start is claimed in storage before its first `await`, so
-  concurrent signed starts produce one start. A 10-second alarm keeps a
+  concurrent signed starts produce one start; a claim whose interceptions do
+  not bind within a minute is abandoned. The current start is the latest row
+  inserted, never chosen by clock. A 10-second alarm keeps a
   running container's object active, also through the drain window, and
   re-arms the inactivity timeout. Enforcement follows the container, not a
   recorded state: `monitor()` can settle while the container still runs, so a

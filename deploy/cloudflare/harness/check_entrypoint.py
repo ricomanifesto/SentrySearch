@@ -55,6 +55,12 @@ regain = {
     "write_app": attempt(lambda: open("/app/owned", "w").write("x")),
     "unshare_newuser": attempt(unshare_newuser),
 }
+fds = []
+for name in os.listdir("/proc/self/fd"):
+    try:
+        fds.append(os.readlink(f"/proc/self/fd/{name}"))
+    except OSError:
+        pass
 unshare_cli = subprocess.run(["unshare", "--user", "--map-root-user", "true"], capture_output=True, text=True).returncode
 setuid_euid = subprocess.run(["/app/regain", "-c", "import os; print(os.geteuid())"], capture_output=True, text=True).stdout.strip()
 material = {}
@@ -70,6 +76,7 @@ print(json.dumps({
     "child_status": {k: child_fields.get(k) for k in ("CapPrm", "CapEff", "CapBnd", "CapAmb", "NoNewPrivs", "Seccomp", "Seccomp_filters", "Uid")},
     "regain": regain,
     "unshare_cli_exit": unshare_cli,
+    "open_files": fds,
     "setuid_binary_euid": setuid_euid,
     "material": material,
     "material_dir": [oct(stat.S_IMODE(root_info.st_mode)), root_info.st_uid],
@@ -157,6 +164,8 @@ def dropped(report: dict, filters: str) -> list[str]:
         )
     if report["unshare_cli_exit"] == 0:
         problems.append("unshare --user succeeded")
+    if any("cfinit-seccomp" in target for target in report["open_files"]):
+        problems.append("the seccomp filter file reached the service")
     if (
         report["status"].get("Uid") != "10001 10001 10001 10001"
         or report["status"].get("Groups") != ""

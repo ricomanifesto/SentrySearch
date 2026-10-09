@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -45,6 +46,10 @@ class FakeSystem:
         self.executed: tuple | None = None
         self.prepare_error, self.exec_error = prepare_error, exec_error
         self.filters: list[bytes] = []
+        self.closed_filter_files = 0
+
+    def close_filter_files(self) -> None:
+        self.closed_filter_files += 1
 
     def system(self) -> cfinit.System:
         def prepare(*args):
@@ -65,6 +70,7 @@ class FakeSystem:
         return cfinit.System(
             machine=lambda: "x86_64",
             seccomp_path=seccomp_path,
+            close_filter_files=self.close_filter_files,
             geteuid=lambda: self.euid,
             read_status=lambda: self.status,
             prepare=prepare,
@@ -152,6 +158,7 @@ def test_continue_requires_the_kernel_to_report_a_full_drop():
     )
     assert fake.executed == (WORKER[0], list(WORKER), {"DB_HOST": "db", "TMPDIR": "/run/tmp"})
     assert fake.chdirs == [Path("/run/work")]
+    assert fake.closed_filter_files == 1
 
 
 @pytest.mark.parametrize(
@@ -353,3 +360,12 @@ def test_start_expects_one_filter_more_than_it_has(material):
     assert invoke(fake, ["start", "--profile", "search", "--", *API], material) == "executed"
     argv = executed(fake)[1]
     assert argv[argv.index("--filters") + 1] == "unknown"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="memfd and /proc/self/fd are Linux")
+def test_the_filter_file_is_closed_before_the_service_starts():
+    path = cfinit._inherited_memfd(cfinit.namespace_filter("x86_64"))
+    descriptor = int(path.rsplit("/", 1)[1])
+    cfinit._close_filter_files()
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
