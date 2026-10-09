@@ -1,5 +1,6 @@
 # Used only by `docker build -f container/release-tools.Dockerfile .`. Allow only
-# the release-tools programs and SQL.
+# the release-tools programs and SQL, plus the Cloudflare entrypoint package and
+# its materializer, which only the `cloudflare` target copies.
 *
 !release_tools/**
 !deploy/cloudflare/sentrysearch_cloudflare/**

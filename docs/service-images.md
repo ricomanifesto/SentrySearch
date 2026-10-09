@@ -49,9 +49,13 @@ is a separate decision. Use exec-form Python commands, never shell-form probes.
 `container/Dockerfile.dockerignore` admits only `pyproject.toml`, `uv.lock`,
 `.python-version`, `run_api.py`, `src/`, `certs/`, the three explicit service
 entry points from `dev/`, `container/build-requirements.txt`, and curated
-`container/liblzma/` recipe/patch/probe inputs. The latter enter build/test stages;
-the native fixture is extracted from authenticated source there. Neither native
-test tools nor fixtures enter the final service image. The general `tests/`
+`container/liblzma/` recipe/patch/probe inputs, and the Cloudflare entrypoint
+package `deploy/cloudflare/sentrysearch_cloudflare/`. The liblzma inputs enter
+build/test stages; the native fixture is extracted from authenticated source
+there. Neither native test tools nor fixtures enter the final service image. The
+Cloudflare package and util-linux `setpriv` enter only the separate `cloudflare`
+target (`--target cloudflare`, see `deploy/cloudflare/README.md`); the default
+target builds the unchanged service image. The general `tests/`
 tree, frontend, Terraform, and `.env` files remain outside the build context.
 Behind a TLS-intercepting build proxy, pass its
 complete PEM trust bundle as `--secret id=build_ca,src=<bundle>`; it is used only

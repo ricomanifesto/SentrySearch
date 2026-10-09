@@ -66,6 +66,11 @@ python -m dev.prepare_service_volumes --profile search \
   --region us-east-1
 ```
 
+On Cloudflare there is no Secrets Manager source: `--environment-source` reads the
+same JSON body from `CFINIT_MATERIAL` and refuses it unless its SHA-256 equals the
+operator-recorded `CFINIT_MATERIAL_SHA256`. Everything below applies unchanged; the
+container entrypoint that calls it is described in `deploy/cloudflare/README.md`.
+
 The JSON body, including overhead, must be at most 65,536 UTF-8 bytes; a selected
 CA bundle must fit that bound. Duplicate, extra, missing, empty and malformed
 fields fail closed. CA PEMs must parse; runtime certificate and unencrypted key
