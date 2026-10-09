@@ -376,11 +376,18 @@ def _database_url(database: Database, user: str, password: str, ca: str) -> str:
 
 
 class TaskDefinitions:
-    """Each manifest revision's app container, as deploy/aws-platform-fit renders it.
+    """Each manifest revision's app container.
 
-    Release, deadline and budget are the revision's fixed values; secrets resolve
-    to the canary custodian's values. Built per release so retained revisions keep
-    their own identity.
+    Job, bootstrap, reconcile and observer containers get exactly the environment
+    deploy/aws-platform-fit renders for them. Service containers follow it with
+    local differences, listed in docs/release-canary.md: material under
+    ``/run/trust`` and ``/run/tls``, no Runtime probe settings, static local
+    credentials and extra settings for the Search services, a held-open provider
+    stub for the worker,
+    a 30-second API stop timeout, and health taken from a readiness line rather than
+    the task definitions' health commands. Release, deadline and budget are the
+    revision's fixed values; secrets resolve to the canary custodian's values.
+    Built per release so retained revisions keep their own identity.
     """
 
     def __init__(self, env: CanaryEnvironment) -> None:

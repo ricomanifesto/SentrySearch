@@ -17,6 +17,7 @@ involved.
 """
 
 import argparse
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -35,6 +36,10 @@ def main() -> None:
         raise SystemExit("the S3 stand-in must listen on loopback")
     repo = Path(__file__).resolve().parents[1]
     args.artifacts.mkdir(parents=True, exist_ok=True)
+    # The stand-in a run's journals and locks lived in, kept with its evidence.
+    (args.artifacts / "s3-standin.json").write_text(
+        json.dumps({"product": args.s3_standin, "endpoint": args.s3_endpoint}, indent=1) + "\n"
+    )
     # Containers receive only explicit disposable settings; never forward host secrets.
     env = {
         key: value
