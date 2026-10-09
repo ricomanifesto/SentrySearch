@@ -7,8 +7,10 @@
 //	runtime: TLS listener on :8443 that requires the fixture bearer token.
 //	worker:  posts v1 readiness receipts to http://evidence.internal and checks
 //	         the runtime through ws://runtime.internal with verified TLS.
-//	api:     HTTP on :8001; /health, and /probe reports whether the runtime
-//	         relay or an outside address is reachable (both must not be).
+//	api:     HTTP on :8001 under /api, as the Search API: /api/health, and
+//	         /api/probe reports whether the runtime relay or an outside
+//	         address is reachable (both must not be) and what 127.0.0.1
+//	         reverse-resolves to without DNS (H-L4).
 //	job:     "proof" ignores SIGTERM and runs until destroyed (the deadline
 //	         case); other jobs exit 0 after FIXTURE_JOB_SECONDS.
 package main
@@ -81,9 +83,14 @@ func runtimeRole() {
 
 func apiRole() {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprintln(w, "ok") })
-	mux.HandleFunc("/probe", func(w http.ResponseWriter, _ *http.Request) {
-		result := map[string]string{"runtime_relay": "unreachable", "outside": "unreachable"}
+	mux.HandleFunc("/api/health", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprintln(w, "ok") })
+	mux.HandleFunc("/api/probe", func(w http.ResponseWriter, _ *http.Request) {
+		result := map[string]string{"runtime_relay": "unreachable", "outside": "unreachable", "loopback_name": "unresolved"}
+		// The pure-Go resolver answers a reverse lookup from /etc/hosts first, as
+		// the worker's numeric-loopback health listener needs (H-L4).
+		if names, err := net.LookupAddr("127.0.0.1"); err == nil && len(names) > 0 {
+			result["loopback_name"] = names[0]
+		}
 		if _, err := tunnel("runtime.internal"); err == nil {
 			result["runtime_relay"] = "REACHED"
 		}

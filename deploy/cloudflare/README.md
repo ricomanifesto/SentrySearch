@@ -71,8 +71,12 @@ job) owning one container:
   created with props only it sets: its object id, service and start nonce.
   Interception configured after `start()` broke the container's ingress
   locally, so it always comes first. Containers start with
-  `enableInternet: false`, the image's Cloudflare entrypoint and the container
-  settings (`CONTAINER_*` bindings, prefix removed).
+  `enableInternet: false`, the container settings (`CONTAINER_*` bindings,
+  prefix removed) and the complete fixed command, beginning with the
+  privilege-dropping wrapper. The `cloudflare` image targets set no entrypoint
+  or command of their own. `start()` documents `entrypoint` only as the
+  command and arguments to run, and local workerd appends it to an image
+  entrypoint, so with none set the same argv runs under either reading.
 - **Receipts.** The worker posts its readiness receipts to
   `evidence.internal`; the intake accepts only the current start's receipts for
   the release, in the exact v1 schema, stores at most 512 rows and 8 boot ids
@@ -132,6 +136,22 @@ Measured with the pinned Wrangler 4.141.0 and workerd 2026-09-25:
 - A Durable Object reload (`wrangler dev` reloads every object on a source
   change) drops receipts posted during the reload, about 10 seconds locally;
   they show as gaps and the history stays incomplete.
+- Local workerd passes `start({entrypoint})` to Docker as the command, after
+  any image entrypoint. The `cloudflare` targets therefore set none: an image
+  entrypoint made every real container exit 64, because the wrapper received
+  its own argv as the command.
+- Local workerd creates containers with Docker's `on-failure` restart policy
+  and no retry limit. A service that fails once restarts over its own
+  filesystem, and the wrapper then refuses the non-fresh `/run/material` (exit
+  78) on every attempt, which hides the first error. The harness keeps each
+  container's output for that reason.
+- Docker's `HOME=/root` from the root start would follow the service user.
+  libpq treats an unreadable `~/.postgresql/postgresql.crt` as fatal, so the
+  Search wrapper sets `HOME` to the service user's home before dropping
+  privileges (release-tools jobs use `psql` too).
+- Containers reach a database on the host's loopback as
+  `host.docker.internal` (the harness's disposable PostgreSQL); TLS still
+  verifies that name.
 
 - Local `exec()` always runs `/bin/sh -c 'echo $$ > <pidfile>; exec "$@"'`, so
   it cannot run in these distroless images. A platform `exec()` probe is
@@ -157,8 +177,10 @@ repository and runs the five scripts together under `wrangler dev`:
   with `enableInternet: false`; an outside canary bound to the Mac's LAN
   address and the run's `lsof` samples record any escape.
 - **Scenarios.** Signed starts; the worker becoming ready through receipts and
-  a verified TLS request over the runtime relay; API ingress and the API's
-  denied runtime and outside access; refusal of unsigned, expired, replayed,
+  a verified TLS request over the runtime relay; API ingress (the edge and the
+  API object forward `/api/...` paths unchanged, as the Search API serves
+  them), the API's denied runtime and outside access, and what `127.0.0.1`
+  reverse-resolves to inside the container (H-L4); refusal of unsigned, expired, replayed,
   foreign-release, misdirected and foreign-key commands; two minutes idle
   without the container stopping; a Durable Object restart (a source change
   reloads every object) with the same start still running and new receipts
@@ -169,9 +191,30 @@ repository and runs the five scripts together under `wrangler dev`:
 `--images fixture` runs every service from `harness/fixture` (one static
 binary installed at the paths the Durable Objects start), so it proves the
 Worker scripts, not the service images or their privilege drop.
-`check_entrypoint.py` covers the Search entrypoint's drop separately; the
-runtime's is covered by `scripts/cfinit_check.sh` in sentryruntime. Running the
-scenarios on the real `--target cloudflare` images is still to do.
+`--long-job-seconds 960` adds one job past a 16-minute deadline (H-J1): the
+harness stays silent until 30 seconds before it, so only the object's alarms
+keep the container alive meanwhile. `check_entrypoint.py` covers the Search
+entrypoint's drop separately; the runtime's is covered by
+`scripts/cfinit_check.sh` in sentryruntime.
+
+`--images real` runs the api, worker and runtime from locally built
+`--target cloudflare` images. Before Wrangler starts, it sets up a disposable
+PostgreSQL 16 with TLS on the host's loopback (reached from the containers as
+`host.docker.internal`, the one egress a local container keeps) and migrates it
+with the default images as `dev/check_service_images.py` does. The material
+reaches the containers only as `CFINIT_MATERIAL` with its digest. The run
+checks:
+
+- the worker becomes ready through the tunnel;
+- the API answers `/api/ready` through the edge;
+- every service process has no capabilities, `no_new_privs` and filter-mode
+  seccomp, read from `/proc` in each container's PID namespace;
+- each service drains on a signed stop.
+
+Wrangler always builds `linux/amd64`, and amd64 emulation on an arm64 Mac
+refuses the entrypoints' seccomp filter. `--native-platform linux/arm64`
+therefore makes the shim build the image map natively: such a run proves the
+real images on arm64, not on amd64.
 
 ## Validation
 

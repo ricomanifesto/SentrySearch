@@ -22,8 +22,8 @@ export class ApiService extends ServiceObject<ServiceEnv> {
   protected async serve(request: Request, url: URL): Promise<Response> {
     const container = this.ctx.container;
     if (!url.pathname.startsWith("/api/") || !container?.running) return new Response(null, { status: 404 });
-    const path = url.pathname.slice("/api".length) + url.search;
-    return container.getTcpPort(this.spec.port).fetch(new Request(`http://container${path}`, request));
+    // The Search API serves its routes under /api (/api/health, /api/ready, ...).
+    return container.getTcpPort(this.spec.port).fetch(new Request(`http://container${url.pathname}${url.search}`, request));
   }
 }
 
