@@ -1,0 +1,417 @@
+{
+  "note": "The object authority rules (DESIGN \u00a76.3, \u00a713). deploy/cloudflare/worker/test/lifecycle.test.ts runs them against the objects and tests/test_cloudflare_object_rules.py against FakeDOControl; both must pass.",
+  "cases": [
+    {
+      "name": "a fresh object adopts the first fence",
+      "object": "worker",
+      "setup": [],
+      "command": {
+        "method": "GET",
+        "action": "status",
+        "body": null,
+        "release": "same",
+        "session": "s-a",
+        "fence": "1",
+        "expires_in": 60
+      },
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "a lower fence after a higher one is superseded",
+      "object": "worker",
+      "setup": [
+        {
+          "method": "GET",
+          "action": "status",
+          "body": null,
+          "release": "same",
+          "session": "s-b",
+          "fence": "2",
+          "expires_in": 60
+        }
+      ],
+      "command": {
+        "method": "GET",
+        "action": "status",
+        "body": null,
+        "release": "same",
+        "session": "s-a",
+        "fence": "1",
+        "expires_in": 60
+      },
+      "expect": {
+        "status": 409,
+        "code": "superseded"
+      }
+    },
+    {
+      "name": "fences are integers, not text",
+      "object": "worker",
+      "setup": [
+        {
+          "method": "GET",
+          "action": "status",
+          "body": null,
+          "release": "same",
+          "session": "s-a",
+          "fence": "9",
+          "expires_in": 60
+        }
+      ],
+      "command": {
+        "method": "GET",
+        "action": "status",
+        "body": null,
+        "release": "same",
+        "session": "s-c",
+        "fence": "10",
+        "expires_in": 60
+      },
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "an equal fence from another session is superseded",
+      "object": "worker",
+      "setup": [
+        {
+          "method": "GET",
+          "action": "status",
+          "body": null,
+          "release": "same",
+          "session": "s-b",
+          "fence": "2",
+          "expires_in": 60
+        }
+      ],
+      "command": {
+        "method": "GET",
+        "action": "status",
+        "body": null,
+        "release": "same",
+        "session": "s-z",
+        "fence": "2",
+        "expires_in": 60
+      },
+      "expect": {
+        "status": 409,
+        "code": "superseded"
+      }
+    },
+    {
+      "name": "a malformed fence is refused",
+      "object": "worker",
+      "setup": [],
+      "command": {
+        "method": "GET",
+        "action": "status",
+        "body": null,
+        "release": "same",
+        "session": "s-a",
+        "fence": "01",
+        "expires_in": 60
+      },
+      "expect": {
+        "status": 400,
+        "code": "invalid_request"
+      }
+    },
+    {
+      "name": "another release may read status",
+      "object": "worker",
+      "setup": [],
+      "command": {
+        "method": "GET",
+        "action": "status",
+        "body": null,
+        "release": "other",
+        "session": "s-a",
+        "fence": "1",
+        "expires_in": 60
+      },
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "another release may not start",
+      "object": "worker",
+      "setup": [],
+      "command": {
+        "method": "POST",
+        "action": "start",
+        "body": "$START",
+        "release": "other",
+        "session": "s-a",
+        "fence": "1",
+        "expires_in": 60
+      },
+      "expect": {
+        "status": 409,
+        "code": "another_release"
+      }
+    },
+    {
+      "name": "another release's stop for another start changes nothing",
+      "object": "worker",
+      "setup": [
+        {
+          "method": "POST",
+          "action": "start",
+          "body": "$START",
+          "release": "same",
+          "session": "s-a",
+          "fence": "1",
+          "expires_in": 60
+        }
+      ],
+      "command": {
+        "method": "POST",
+        "action": "stop",
+        "body": {
+          "start_nonce": "ffffffffffffffffffffffffffffffff"
+        },
+        "release": "other",
+        "session": "s-a",
+        "fence": "1",
+        "expires_in": 60
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "stopping": false
+        }
+      }
+    },
+    {
+      "name": "another release may stop the live start it names",
+      "object": "worker",
+      "setup": [
+        {
+          "method": "POST",
+          "action": "start",
+          "body": "$START",
+          "release": "same",
+          "session": "s-a",
+          "fence": "1",
+          "expires_in": 60
+        }
+      ],
+      "command": {
+        "method": "POST",
+        "action": "stop",
+        "body": "$STOP_CURRENT",
+        "release": "other",
+        "session": "s-a",
+        "fence": "1",
+        "expires_in": 60
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "stopping": true
+        }
+      }
+    },
+    {
+      "name": "a stop for another start changes nothing",
+      "object": "worker",
+      "setup": [
+        {
+          "method": "POST",
+          "action": "start",
+          "body": "$START",
+          "release": "same",
+          "session": "s-a",
+          "fence": "1",
+          "expires_in": 60
+        }
+      ],
+      "command": {
+        "method": "POST",
+        "action": "stop",
+        "body": {
+          "start_nonce": "ffffffffffffffffffffffffffffffff"
+        },
+        "release": "same",
+        "session": "s-a",
+        "fence": "1",
+        "expires_in": 60
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "stopping": false
+        }
+      }
+    },
+    {
+      "name": "a command id is accepted once",
+      "object": "worker",
+      "setup": [
+        {
+          "method": "GET",
+          "action": "status",
+          "body": null,
+          "release": "same",
+          "session": "s-a",
+          "fence": "1",
+          "expires_in": 60,
+          "command_id": "same-id"
+        }
+      ],
+      "command": {
+        "method": "GET",
+        "action": "status",
+        "body": null,
+        "release": "same",
+        "session": "s-a",
+        "fence": "1",
+        "expires_in": 60,
+        "command_id": "same-id"
+      },
+      "expect": {
+        "status": 409,
+        "code": "replayed"
+      }
+    },
+    {
+      "name": "a start naming another version is drift",
+      "object": "worker",
+      "setup": [],
+      "command": {
+        "method": "POST",
+        "action": "start",
+        "body": "$START_OTHER_VERSION",
+        "release": "same",
+        "session": "s-a",
+        "fence": "1",
+        "expires_in": 60
+      },
+      "expect": {
+        "status": 409,
+        "code": "version_mismatch"
+      }
+    },
+    {
+      "name": "an expired command is refused",
+      "object": "worker",
+      "setup": [],
+      "command": {
+        "method": "GET",
+        "action": "status",
+        "body": null,
+        "release": "same",
+        "session": "s-a",
+        "fence": "1",
+        "expires_in": 0
+      },
+      "expect": {
+        "status": 401,
+        "code": "expired"
+      }
+    },
+    {
+      "name": "migrate is not wired",
+      "object": "jobs",
+      "setup": [],
+      "command": {
+        "method": "POST",
+        "action": "run",
+        "body": "$RUN_MIGRATE",
+        "release": "same",
+        "session": "s-a",
+        "fence": "1",
+        "expires_in": 60
+      },
+      "expect": {
+        "status": 400,
+        "code": "invalid_request"
+      }
+    },
+    {
+      "name": "only the tools image runs",
+      "object": "jobs",
+      "setup": [],
+      "command": {
+        "method": "POST",
+        "action": "run",
+        "body": "$RUN_OTHER_IMAGE",
+        "release": "same",
+        "session": "s-a",
+        "fence": "1",
+        "expires_in": 60
+      },
+      "expect": {
+        "status": 400,
+        "code": "invalid_request"
+      }
+    },
+    {
+      "name": "a job object runs once",
+      "object": "jobs",
+      "setup": [
+        {
+          "method": "POST",
+          "action": "run",
+          "body": "$RUN",
+          "release": "same",
+          "session": "s-a",
+          "fence": "1",
+          "expires_in": 60
+        }
+      ],
+      "command": {
+        "method": "POST",
+        "action": "run",
+        "body": "$RUN",
+        "release": "same",
+        "session": "s-a",
+        "fence": "1",
+        "expires_in": 60
+      },
+      "expect": {
+        "status": 409,
+        "code": "already_run"
+      }
+    },
+    {
+      "name": "another release may not run a job",
+      "object": "jobs",
+      "setup": [],
+      "command": {
+        "method": "POST",
+        "action": "run",
+        "body": "$RUN",
+        "release": "other",
+        "session": "s-a",
+        "fence": "1",
+        "expires_in": 60
+      },
+      "expect": {
+        "status": 409,
+        "code": "another_release"
+      }
+    },
+    {
+      "name": "another release may read a job's status",
+      "object": "jobs",
+      "setup": [],
+      "command": {
+        "method": "GET",
+        "action": "status",
+        "body": null,
+        "release": "other",
+        "session": "s-a",
+        "fence": "1",
+        "expires_in": 60
+      },
+      "expect": {
+        "status": 200
+      }
+    }
+  ]
+}

@@ -149,6 +149,9 @@ def rig(*, rollback: str = "empty_hold", **approval) -> Rig:
     store = FakeStore(trace)
     versions = FakeVersions(clock, document, trace)
     control = FakeDOControl(clock, versions, document, _public_key(), trace)
+    # Models the migration images' receipt producers, which do not exist yet
+    # (the real JobRunner refuses migrate; see the no-producer cases below).
+    control.wire_migrations = True
     return Rig(
         document=document,
         clock=clock,

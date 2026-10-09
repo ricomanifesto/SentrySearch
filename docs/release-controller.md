@@ -45,8 +45,10 @@ gives it hooks that do nothing on ECS:
     journaled (`command_expires_at`) has expired, plus a 30 s clock allowance.
 - **Command intent fields** (`command_fields`), written on every command
   intent.
-- **An activation step** before the first job, for platforms whose release code
-  is made current separately. Only an exact prior state may be moved forward.
+- **Staged activation**, for platforms whose release code is made current
+  separately: stage `jobs` before the first job and stage `services` before
+  the first service start. A hold after any activation plans
+  `restore_prior_platform_versions` first. Only an exact prior state may be moved forward.
   Each reply is screened for drift, and recognition comes from a fresh
   observation.
 - **Drift checks:**

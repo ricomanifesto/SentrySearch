@@ -190,7 +190,7 @@ class CloudflarePlatform:
         body = reply.body
         if 200 <= reply.status < 300 and body is not None:
             return body
-        code = body.get("code") if body is not None else None
+        code = reply.code
         if reply.status == 409 and code == "superseded":
             raise SessionSuperseded()
         if reply.status in (400, 401, 403, 404, 409, 413) and isinstance(code, str):

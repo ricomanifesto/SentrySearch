@@ -325,6 +325,9 @@ class ReleaseController:
                 return False
             if self.journal.document.get("session_id") != self.session_id:
                 raise ReleaseHalted("session_conflict")
+            # A successor finishes the release only after the handover completes.
+            self._bind()
+            self._await_quiet()
             self._release_environment_lock()
             return False
         if self.journal.document.get("session_id") != self.session_id:
@@ -562,6 +565,8 @@ class ReleaseController:
                 self._observe(job.id, "launched_multiple", resolves=names.launch,
                               **{names.runs: list(runs)})  # fmt: skip
                 raise _Hold("launch_task_count")
+            # A fresh drift read, however slow, comes before the deadline check.
+            self._hold_on_launch_drift(job)
             # An eventually consistent empty listing is not proof that nothing launched.
             now = self.clock.now()
             if (
@@ -570,7 +575,6 @@ class ReleaseController:
                 or attempt == IDENTICAL_RETRIES
             ):
                 raise _Hold("launch_outcome_unknown")
-            self._hold_on_launch_drift(job)
             retry = self._intent(
                 names.launch,
                 job.id,

@@ -557,3 +557,66 @@ test("refusals carry machine-readable codes and status names the authority proto
   assert.equal((await json(await runner.fetch(await signed("POST", `jobs/${name}`, "run", body)))).code, "already_run");
   assert.equal((await json(await runner.fetch(await signed("GET", `jobs/${name}`, "status")))).control_protocol, "sentry.authority.v1");
 });
+
+// The shared object rule table (also run against the Python FakeDOControl) ------
+
+// @ts-expect-error node:fs has no types in this package.
+import { readFileSync } from "node:fs";
+
+interface RuleCommand {
+  method: string;
+  action: string;
+  body: unknown;
+  release: "same" | "other";
+  session: string;
+  fence: string;
+  command_id?: string;
+  expires_in: number;
+}
+
+const rules = JSON.parse(
+  readFileSync(new URL("../test/fixtures/object-rules.json", (import.meta as unknown as { url: string }).url), "utf8"),
+) as { cases: { name: string; object: "worker" | "jobs"; setup: RuleCommand[]; command: RuleCommand; expect: { status: number; code?: string; body?: Record<string, unknown> } }[] };
+
+for (const rule of rules.cases) {
+  test(`rule: ${rule.name}`, async () => {
+    const jobName = `job-${RELEASE}-runtime-grant`;
+    const container = new FakeContainer();
+    const target = rule.object === "worker" ? "worker/worker-0" : `jobs/${jobName}`;
+    const object: { fetch(request: Request): Promise<Response> } =
+      rule.object === "worker"
+        ? new WorkerService(state("worker-0", container) as Any, env() as Any)
+        : new JobRunner(state(jobName, container) as Any, env() as Any);
+    let current = "";
+    const run = { job_id: "runtime-grant", phase: "grant", database: "runtime", image: "release_tools", deadline_seconds: 60 };
+    const body = (value: unknown): string => {
+      const resolved =
+        value === "$START" ? { release_id: RELEASE, version_id: VERSION }
+        : value === "$START_OTHER_VERSION" ? { release_id: RELEASE, version_id: "other" }
+        : value === "$STOP_CURRENT" ? { start_nonce: current }
+        : value === "$RUN" ? run
+        : value === "$RUN_MIGRATE" ? { ...run, phase: "migrate" }
+        : value === "$RUN_OTHER_IMAGE" ? { ...run, image: "runtime" }
+        : value;
+      return resolved === null ? "" : JSON.stringify(resolved);
+    };
+    const send = async (command: RuleCommand) => {
+      const request = await signed(command.method, target, command.action, body(command.body), {
+        releaseId: command.release === "same" ? RELEASE : OTHER_RELEASE,
+        session: command.session,
+        fence: command.fence,
+        expiresAt: Math.floor(now / 1000) + command.expires_in,
+        ...(command.command_id ? { commandId: command.command_id } : {}),
+      });
+      const response = await object.fetch(request);
+      const reply = (await response.json()) as Record<string, unknown>;
+      if (typeof reply.start_nonce === "string") current = reply.start_nonce;
+      return { status: response.status, reply };
+    };
+    for (const step of rule.setup) await send(step);
+    const { status, reply } = await send(rule.command);
+    assert.equal(status, rule.expect.status, JSON.stringify(reply));
+    if (rule.expect.code) assert.equal(reply.code, rule.expect.code);
+    for (const [key, value] of Object.entries(rule.expect.body ?? {})) assert.deepEqual(reply[key], value, key);
+  });
+}

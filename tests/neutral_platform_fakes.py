@@ -60,6 +60,9 @@ class Knobs:
     activate_replies: list = field(default_factory=lambda: ["active"])
     activation_drift_code: str | None = None
     launch_drift_code: str | None = None
+    launch_drift_slow_after: int | None = None  # calls before reads turn slow
+    launch_drift_slow_seconds: float = 0.0
+    lose_first_launch: bool = False
     drift_hook_calls: list = field(default_factory=list)
     # Stops, binding, command expiry.
     stop_raises: BaseException | None = None
@@ -119,6 +122,9 @@ class ProbePlatform(EcsPlatform):
 
     def launch(self, job, request, intent):
         self._record("launch", intent)
+        if self.knobs.lose_first_launch:
+            self.knobs.lose_first_launch = False
+            raise AmbiguousResponse("launch request lost before applying")
         return super().launch(job, request, intent)
 
     def send_stop(self, request, intent):
@@ -143,6 +149,10 @@ class ProbePlatform(EcsPlatform):
         return self.knobs.activation_drift_code
 
     def launch_drift(self, job):
+        calls = [c for c in self.knobs.drift_hook_calls if c[0] == "launch"]
+        slow_after = self.knobs.launch_drift_slow_after
+        if slow_after is not None and len(calls) >= slow_after:
+            self.clock.advance(seconds=self.knobs.launch_drift_slow_seconds)
         self.knobs.drift_hook_calls.append(("launch", job.id, self.clock.now()))
         return self.knobs.launch_drift_code
 

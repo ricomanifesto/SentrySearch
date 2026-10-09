@@ -638,3 +638,42 @@ def test_an_outstanding_stop_is_dispatched_on_its_own_name_after_the_quiet_perio
     stops = [s for s in platform.timeline if s.op == "send_stop"]
     assert stops and stops[0].intent["instance"]
     assert all(s.at >= platform.bound[-1].quiet_until for s in platform.timeline)
+
+
+def test_trap_3_no_launch_retry_after_its_deadline_following_a_slow_drift_read():
+    """CF05-R14: the fresh launch-drift read before an identical retry is slow."""
+    r = rig()
+    knobs = Knobs(lose_first_launch=True, launch_drift_slow_after=1, launch_drift_slow_seconds=1000)
+    controller, platform = probe_controller(r, knobs=knobs)
+    outcome = controller.run()
+    assert (outcome.state, outcome.reason) == ("hold", "launch_outcome_unknown")
+    launches = [s for s in platform.timeline if s.op == "launch"]
+    assert len(launches) == 1
+    assert all(s.at < moment(s.intent["deadline_at"]) for s in launches)
+    assert len(events(r, "intent", action="run_job")) == 1
+
+
+@pytest.mark.parametrize("when", ["before", "after"])
+def test_a_successor_finishes_a_held_paused_release_only_after_the_quiet_period(when):
+    """CF05-R15: finalization by a recovered session is a decision like any other."""
+    r = rig()
+    original = r.store.delete
+
+    def crash_delete(key, *, if_match):
+        if when == "after":
+            original(key, if_match=if_match)
+        raise SimulatedCrash("lock release")
+
+    r.store.delete = crash_delete
+    controller, _ = probe_controller(r)
+    with pytest.raises(SimulatedCrash):
+        controller.run()
+    r.store.delete = original
+    successor, platform = probe_controller(r, "session-b")
+    successor.recover(authorization(r, "session-a"))
+    assert successor.run().state == "held_paused"
+    quiet = platform.bound[-1].quiet_until
+    assert quiet is not None
+    [released] = events(r, "observation", subject="environment", result="lock_released")
+    assert moment(released["at"]) >= quiet - timedelta(seconds=1)
+    assert LOCK not in r.store.objects

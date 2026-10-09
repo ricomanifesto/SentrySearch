@@ -71,8 +71,8 @@ def release(scenario: str) -> dict:
     versions = FakeVersions(clock, document)
     control = FakeDOControl(clock, versions, document, public_key())
     receipts = FakeReceipts(control, document)
-    if scenario == "migrations_unwired":
-        control.wire_migrations = False
+    # Only the no-producer scenario runs the JobRunner as it is: migrate refused.
+    control.wire_migrations = scenario != "migrations_unwired"
     if scenario == "no_observers":
         receipts.missing_checks.update({"runtime-protected-readiness", "api-operational"})
     client = ControlClient(

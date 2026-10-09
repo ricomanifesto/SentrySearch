@@ -152,9 +152,18 @@ class ControlReply:
 
     @property
     def error(self) -> str | None:
+        """The refusal message, for people only."""
         if self.body is None:
             return None
         value = self.body.get("error")
+        return value if isinstance(value, str) else None
+
+    @property
+    def code(self) -> str | None:
+        """The object's machine-readable refusal code; decisions key on this."""
+        if self.body is None:
+            return None
+        value = self.body.get("code")
         return value if isinstance(value, str) else None
 
 

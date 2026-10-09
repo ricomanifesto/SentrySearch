@@ -463,8 +463,9 @@ class FakeDOControl:
         self.receipt_stall: tuple[int, float] | None = None
         self.receipt_flags: dict[str, object] = {}
         self.before_read: _Callable[[str, str], None] | None = None
-        # Tests supply migration receipts; the real JobRunner refuses migrate.
-        self.wire_migrations = True
+        # Off, as jobs.ts: the JobRunner refuses migrate. A test that needs a
+        # migration to run models the missing receipt producers by turning it on.
+        self.wire_migrations = False
         self.image_override: dict[tuple[str, str], str] = {}
 
     # Test helpers -------------------------------------------------------------
@@ -869,8 +870,9 @@ class FakeDOControl:
         expected_name = f"job-{command.release_id}-{body['job_id']}"
         if item.name != expected_name:
             return 400, {"error": "job does not match its object", "code": "invalid_request"}
-        if not self.wire_migrations and body["phase"] == "migrate":
-            # As the real JobRunner: migration images have no receipt producer.
+        wired = body["phase"] in ("grant", "proof") and body["image"] == "release_tools"
+        if not wired and not (self.wire_migrations and body["phase"] == "migrate"):
+            # As jobs.ts: only grant and proof with the tools image are wired.
             return 400, {"error": "job is not wired on this platform", "code": "invalid_request"}
         now = self.clock.now()
         row = {
