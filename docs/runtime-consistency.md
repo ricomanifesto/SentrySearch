@@ -176,6 +176,11 @@ SENTRY_WORKER_READINESS {"kind":"sentry.worker-readiness.v1","release_id":"…",
   on Linux and 512 on macOS, so another writer could split a rare large receipt;
   the observer then sees an invalid line or a gap.
   Shutdown writes a best-effort stopped receipt and waits at most one second.
+- On Cloudflare, `SENTRYSEARCH_RECEIPT_URL` (only `http://evidence.internal/<path>`,
+  and only together with a release id) also posts each receipt to the Durable
+  Object's intake after the stdout write, on the same writer thread, with a
+  two-second deadline for the whole post. A failed post leaves a gap and never
+  delays the supervisor or shutdown. See `deploy/cloudflare/README.md`.
 
 Receipts support a bounded release observation. They are not proof against a
 compromised worker, nor report-completion, auth or S3 proof. They share the app

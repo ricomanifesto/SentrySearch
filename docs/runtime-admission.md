@@ -79,6 +79,13 @@ Network/TLS failures and server errors remain unavailable/retryable under existi
 worker phase bounds. Errors do not echo request URLs, bearer values, trust paths,
 or raw transport exception chains.
 
+On Cloudflare the worker reaches the runtime only through the Durable Object
+relay: `SENTRYRUNTIME_TUNNEL_URL` (only `ws://runtime.internal/<path>`) carries
+this same verified TLS session and bearer token inside a WebSocket. It requires
+`SENTRYRUNTIME_URL` with `SENTRYRUNTIME_CA_FILE`; the configured authority is
+still the one verified, no proxy is consulted, and the relay never sees
+plaintext. See `deploy/cloudflare/README.md`.
+
 Runtime unavailability after API admission leaves the durable intent pending;
 the API does not run a backup inline job. Recovery retries the same report/run
 identity. A certificate or token configuration change requires replacing all
