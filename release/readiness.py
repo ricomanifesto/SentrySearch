@@ -290,7 +290,12 @@ class ReadinessGate:
         task_arn: str | None = None,
         run: str | None = None,
     ) -> None:
-        """``run`` names the observed run on any platform; ``task_arn`` is its ECS name."""
+        """``run`` names the observed run on any platform; ``task_arn`` is its ECS name.
+
+        Exactly one of them is given.
+        """
+        if (task_arn is None) == (run is None):
+            raise TypeError("pass exactly one of task_arn or run")
         self.policy = policy
         self.release_id = release_id
         self.epoch_start = epoch_start

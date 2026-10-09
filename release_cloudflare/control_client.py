@@ -10,10 +10,15 @@ id's novelty before it acts.
 
 The client sends one request per call through an injected transport: no retry,
 no redirect, no proxy, no credential lookup. It refuses to sign without a bound
-session and re-checks the command's last valid moment immediately before
-transmitting, after signing, so a slow caller cannot send late (CommandNotSent).
-A transport failure after transmission may or may not have been delivered
-(TransportAmbiguous); reconciliation is the caller's.
+session. The signed expiry is exactly the caller's ``expires_at`` (for a
+command, the ``command_expires_at`` its intent journaled, in whole seconds,
+never rounded up), so a successor's quiet period bounds every signed copy. The
+client re-checks ``min(expires_at, send_before)`` immediately before
+transmitting, after signing, so a slow caller cannot send late or past an
+operation deadline (CommandNotSent). A transport failure after transmission may
+or may not have been delivered (TransportAmbiguous); reconciliation is the
+caller's. The transport must not duplicate a request: a first send refused by
+the object is then definitive.
 """
 
 from __future__ import annotations
@@ -193,9 +198,14 @@ class ControlClient:
         action: str,
         body: Mapping[str, Any] | None,
         command_id: str,
-        not_after: datetime,
+        expires_at: datetime,
+        send_before: datetime | None = None,
     ) -> ControlReply:
-        """Sign and send one command valid until ``not_after`` (at most 300 s ahead)."""
+        """Sign one command expiring exactly at ``expires_at`` and send it in time.
+
+        ``expires_at`` must be a whole second at most 300 s ahead. Nothing is
+        transmitted at or after ``min(expires_at, send_before)``.
+        """
         if self._session is None or self._fence is None:
             raise CommandNotSent("session_not_bound")
         if method not in METHODS or service not in SERVICES:
@@ -207,11 +217,14 @@ class ControlClient:
         payload = body_bytes(body)
         if len(payload) > MAX_BODY_BYTES:
             raise ValueError("control body too large")
+        if expires_at.microsecond or expires_at.utcoffset() is None:
+            raise ValueError("expiry must be an aware whole second")
+        last = expires_at if send_before is None else min(expires_at, send_before)
         now = self.clock.now()
-        expires_at = int(not_after.timestamp())
-        if expires_at <= int(now.timestamp()):
+        expiry = int(expires_at.timestamp())
+        if now >= last:
             raise CommandNotSent("command_window_passed")
-        if expires_at - now.timestamp() > MAX_LIFETIME_SECONDS:
+        if expiry - now.timestamp() > MAX_LIFETIME_SECONDS:
             raise ValueError("command lifetime exceeds the object's limit")
         command = ControlCommand(
             method=method,
@@ -222,7 +235,7 @@ class ControlClient:
             session=self._session,
             fence=str(self._fence),
             command_id=command_id,
-            expires_at=expires_at,
+            expires_at=expiry,
         )
         signature = self.signer.sign(canonical_bytes(command))
         if len(signature) != 64:
@@ -239,7 +252,7 @@ class ControlClient:
             headers["content-type"] = "application/json"
         request = ControlRequest(method, f"/control/{service}/{name}/{action}", headers, payload)
         # Last check after any slow signing or caller work: never transmit late.
-        if self.clock.now() >= not_after:
+        if self.clock.now() >= last:
             raise CommandNotSent("command_window_passed")
         status, raw = self.transport.send(request, timeout=self.timeout)
         return ControlReply(status, _reply(raw))

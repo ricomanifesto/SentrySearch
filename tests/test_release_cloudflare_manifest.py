@@ -519,3 +519,15 @@ def test_approval_is_a_strict_external_document():
     assert rejected(encode(document), loader=load_approval).code == "invalid_field"
     document = approval_document(loaded.sha256, region="us-east-1")
     assert rejected(encode(document), loader=load_approval).code == "unknown_field"
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["environment.bootstrap_control_protocol", "rollback.control_protocol"],
+)
+def test_prior_code_must_implement_the_authority_protocol(path):
+    """CF-04 objects refuse a next release's reads; quiescing them would hold."""
+    assert rejected(mutate(path, "sentry.control.v1", rollback="compatible_release")).code == (
+        "invalid_field"
+    )
+    assert rejected(mutate(path, _DELETE, rollback="compatible_release")).code == "missing_field"

@@ -14,6 +14,7 @@ import { base64ToBytes } from "../src/shared/bytes";
 interface Vector {
   command: ControlCommand;
   body: string;
+  expiresIso: string;
   canonical: string;
   signature: string;
 }
@@ -49,5 +50,12 @@ test("every Python-signed vector verifies, and only for its own target, action a
     assert.deepEqual(await verifyControl(request(), body, command.target, command.action, key, fixture.now), command);
     await assert.rejects(verifyControl(request(), body, `${command.target}x`, command.action, key, fixture.now));
     await assert.rejects(verifyControl(request(), new TextEncoder().encode(`${vector.body} `), command.target, command.action, key, fixture.now));
+  }
+});
+
+test("each signed expiry is exactly its journaled ISO command expiry, in whole seconds", () => {
+  for (const vector of fixture.vectors) {
+    assert.match(vector.expiresIso, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    assert.equal(Date.parse(vector.expiresIso) / 1000, vector.command.expiresAt);
   }
 });

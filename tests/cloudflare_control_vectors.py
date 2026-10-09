@@ -10,6 +10,7 @@ label; it authorizes nothing.
 from __future__ import annotations
 
 import base64
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -74,6 +75,10 @@ def build() -> dict:
                     "expiresAt": command.expires_at,
                 },
                 "body": payload.decode("utf-8"),
+                # The journaled command_expires_at this expiry is signed from.
+                "expiresIso": datetime.fromtimestamp(command.expires_at, timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                ),
                 "canonical": base64.b64encode(canonical).decode("ascii"),
                 "signature": base64.b64encode(key.sign(canonical)).decode("ascii"),
             }

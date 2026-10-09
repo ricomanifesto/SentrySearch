@@ -15,7 +15,16 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { boundedBody } from "./bytes";
-import { Authority, ControlRefused, importPublicKey, ReplayGuard, verifyControl, type ControlCommand } from "./control";
+import {
+  AUTHORITY_PROTOCOL,
+  Authority,
+  ControlRefused,
+  importPublicKey,
+  ReplayGuard,
+  stillValid,
+  verifyControl,
+  type ControlCommand,
+} from "./control";
 import { MAX_PAGE, parseReceipt, ReceiptRejected, ReceiptStore } from "./receipts";
 
 export type ServiceName = "api" | "worker" | "runtime";
@@ -162,7 +171,7 @@ export abstract class ServiceObject<Env extends ServiceEnv> extends DurableObjec
       if (url.pathname.startsWith("/control/")) return await this.control(request, url.pathname.slice("/control/".length));
       return await this.serve(request, url);
     } catch (error) {
-      if (error instanceof ControlRefused) return Response.json({ error: error.message }, { status: error.status });
+      if (error instanceof ControlRefused) return Response.json({ error: error.message, code: error.code }, { status: error.status });
       if (error instanceof RangeError) return Response.json({ error: "request too large" }, { status: 413 });
       return Response.json({ error: "internal" }, { status: 500 });
     }
@@ -181,12 +190,13 @@ export abstract class ServiceObject<Env extends ServiceEnv> extends DurableObjec
     const body = await boundedBody(request, 16 * 1024);
     const now = Math.floor(Date.now() / 1000);
     const command = await verifyControl(request, body, `${this.spec.service}/${name}`, action, await this.key(), now);
+    const verifiedAt = stillValid(command);
     const route = `${request.method} ${action}`;
     // From here to the effect's claim nothing awaits: authority, replay and
     // the claim are one atomic step against every other request.
     if (command.releaseId === this.env.RELEASE_ID) this.authority.admit(command, this.env.RELEASE_ID);
-    else if (!CROSS_RELEASE.has(route)) throw new ControlRefused(409, "command is for another release");
-    this.replay.accept(command, now);
+    else if (!CROSS_RELEASE.has(route)) throw new ControlRefused(409, "command is for another release", "another_release");
+    this.replay.accept(command, verifiedAt);
     switch (route) {
       case "POST start":
         return Response.json(await this.start(command, jsonBody(body)));
@@ -221,7 +231,7 @@ export abstract class ServiceObject<Env extends ServiceEnv> extends DurableObjec
   private async start(command: ControlCommand, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     // The controller names the version it deployed; another version here is drift.
     if (Object.keys(body).length !== 2 || body.release_id !== this.env.RELEASE_ID || body.version_id !== this.versionId()) {
-      throw new ControlRefused(409, "start does not match this version");
+      throw new ControlRefused(409, "start does not match this version", "version_mismatch");
     }
     const container = this.ctx.container;
     if (!container) throw new Error("no container binding");
@@ -372,6 +382,7 @@ export abstract class ServiceObject<Env extends ServiceEnv> extends DurableObjec
     const running = container?.running ?? false;
     return {
       service: this.spec.service,
+      control_protocol: AUTHORITY_PROTOCOL,
       object_id: this.ctx.id.toString(),
       release_id: this.env.RELEASE_ID,
       version_id: this.versionId(),

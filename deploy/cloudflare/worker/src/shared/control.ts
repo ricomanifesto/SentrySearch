@@ -12,6 +12,13 @@
 import { base64ToBytes, sha256Hex } from "./bytes";
 
 export const CONTROL_VERSION = "sentry.control.v1";
+/**
+ * The authority rules this code enforces (fence ordering, the cross-release
+ * read/stop allowlist, nonce-bound stops, dedup by command id). Status reports
+ * it so a release can require it of the objects it quiesces; later versions
+ * must keep these rules backward compatible.
+ */
+export const AUTHORITY_PROTOCOL = "sentry.authority.v1";
 export const MAX_LIFETIME_SECONDS = 300;
 export const MAX_BODY_BYTES = 16 * 1024;
 const FIELD = /^[A-Za-z0-9._:\/-]{1,128}$/;
@@ -36,12 +43,39 @@ export interface ControlCommand {
   expiresAt: number;
 }
 
+/** Machine-readable refusal codes; the message is for people only. */
+export type RefusalCode =
+  | "invalid_request"
+  | "unauthenticated"
+  | "expired"
+  | "wrong_target"
+  | "not_found"
+  | "too_large"
+  | "superseded"
+  | "replayed"
+  | "another_release"
+  | "already_run"
+  | "version_mismatch";
+
+const DEFAULT_CODES: Record<number, RefusalCode> = {
+  400: "invalid_request",
+  401: "unauthenticated",
+  403: "wrong_target",
+  404: "not_found",
+  413: "too_large",
+};
+
 export class ControlRefused extends Error {
+  readonly code: RefusalCode;
   constructor(
     readonly status: number,
     reason: string,
+    code?: RefusalCode,
   ) {
     super(reason);
+    const fallback = DEFAULT_CODES[status];
+    if (!code && !fallback) throw new Error(`refusal ${status} needs an explicit code`);
+    this.code = code ?? fallback!;
   }
 }
 
@@ -117,7 +151,7 @@ export async function verifyControl(
     throw new ControlRefused(401, "signature does not verify");
   }
   // Checked after the signature, so an unsigned caller learns nothing about timing windows.
-  if (command.expiresAt <= nowSeconds) throw new ControlRefused(401, "command expired");
+  if (command.expiresAt <= nowSeconds) throw new ControlRefused(401, "command expired", "expired");
   if (command.expiresAt - nowSeconds > MAX_LIFETIME_SECONDS) throw new ControlRefused(401, "command lifetime too long");
   return command;
 }
@@ -147,7 +181,7 @@ export class ReplayGuard {
         nowSeconds,
       )
       .toArray();
-    if (inserted.length !== 1) throw new ControlRefused(409, "command id already accepted");
+    if (inserted.length !== 1) throw new ControlRefused(409, "command id already accepted", "replayed");
   }
 }
 
@@ -180,7 +214,7 @@ export class Authority {
 
   /** Throws `ControlRefused(409, "superseded")` for an older or conflicting session. */
   admit(command: ControlCommand, releaseId: string): void {
-    if (command.releaseId !== releaseId) throw new ControlRefused(409, "command is for another release");
+    if (command.releaseId !== releaseId) throw new ControlRefused(409, "command is for another release", "another_release");
     if (!FENCE.test(command.fence) || Number(command.fence) > MAX_FENCE) throw new ControlRefused(400, "invalid fence");
     const fence = Number(command.fence);
     const row = this.sql.exec("SELECT release_id, fence, session FROM control_authority WHERE singleton = 1").toArray()[0];
@@ -194,11 +228,22 @@ export class Authority {
       return;
     }
     if (fence === Number(row.fence) && command.session === row.session) return;
-    throw new ControlRefused(409, "superseded");
+    throw new ControlRefused(409, "superseded", "superseded");
   }
 
   current(): { releaseId: string; fence: number; session: string } | null {
     const row = this.sql.exec("SELECT release_id, fence, session FROM control_authority WHERE singleton = 1").toArray()[0];
     return row ? { releaseId: String(row.release_id), fence: Number(row.fence), session: String(row.session) } : null;
   }
+}
+
+/**
+ * Re-read the clock after the awaits of verification: a command that expired
+ * while it was being verified never acts. Returns the fresh time for the
+ * replay guard.
+ */
+export function stillValid(command: ControlCommand): number {
+  const now = Math.floor(Date.now() / 1000);
+  if (command.expiresAt <= now) throw new ControlRefused(401, "command expired", "expired");
+  return now;
 }

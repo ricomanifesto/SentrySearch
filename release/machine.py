@@ -184,9 +184,27 @@ def migration_schemas(manifest: Manifest, outcomes: Mapping[str, str]) -> dict[s
 
 
 def plan_rollback(
+    manifest: Manifest,
+    outcomes: Mapping[str, str],
+    *,
+    services_touched: bool,
+    activated: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Describe the manual recovery path for a hold. Nothing here is executed.
+
+    ``activated`` names platform code a release may have moved forward (never on
+    ECS): restoring the prior versions comes first in the plan.
+    """
+    plan = _plan_rollback(manifest, outcomes, services_touched=services_touched)
+    if activated:
+        plan["actions"] = ["restore_prior_platform_versions", *plan["actions"]]
+        plan["activated"] = list(activated)
+    return plan
+
+
+def _plan_rollback(
     manifest: Manifest, outcomes: Mapping[str, str], *, services_touched: bool
 ) -> dict[str, Any]:
-    """Describe the manual recovery path for a hold. Nothing here is executed."""
     schemas = migration_schemas(manifest, outcomes)
     rollback = manifest.rollback
     # Any platform's manifest: the rollback's kind, not its class, decides.

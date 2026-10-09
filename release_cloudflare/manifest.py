@@ -90,6 +90,11 @@ RECEIPT_CONTROL_FIELDS = frozenset(
     }
 )
 WRANGLER_FLOOR = (4, 0, 0)
+# The object authority rules a release requires of the code it quiesces and of
+# the code it may roll back to: same-release fence ordering, cross-release reads
+# and nonce-bound stops, dedup by command id. Code without them (CF-04) refuses a
+# next release's reads, so quiescing it would hold.
+AUTHORITY_PROTOCOL = "sentry.authority.v1"
 
 Hex32 = _pattern(r"[0-9a-f]{32}")
 ScriptName = _pattern(r"[a-z0-9][a-z0-9-]{0,62}")
@@ -136,8 +141,10 @@ class Environment(Strict):
     workers: Workers
     namespaces: Namespaces
     # The versions the one-time bootstrap deploy left current: an empty-hold
-    # release may move forward only from exactly these.
+    # release may move forward only from exactly these, which must implement
+    # the authority protocol.
     bootstrap_versions: Versions
+    bootstrap_control_protocol: Literal["sentry.authority.v1"]
 
 
 class Application(Strict):
@@ -228,6 +235,7 @@ class CompatibleRelease(Strict):
     kind: Literal["compatible_release"]
     release_id: Uuid
     versions: Versions
+    control_protocol: Literal["sentry.authority.v1"]
     images: PriorImages
     trust_sha256: Sha256
     compatible_schemas: CompatibleSchemas

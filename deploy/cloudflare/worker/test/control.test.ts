@@ -2,7 +2,7 @@
 import { test } from "node:test";
 // @ts-expect-error node:assert has no types in this package.
 import assert from "node:assert/strict";
-import { Authority, canonicalBytes, ControlRefused, ReplayGuard, verifyControl, type ControlCommand } from "../src/shared/control";
+import { Authority, canonicalBytes, ControlRefused, ReplayGuard, stillValid, verifyControl, type ControlCommand } from "../src/shared/control";
 import { sha256Hex } from "../src/shared/bytes";
 import { memorySql } from "./sqlite";
 
@@ -145,4 +145,16 @@ test("fences are integers, never strings or ETags, and another release's authori
   // A newer Worker version (another release) starts afresh at any fence.
   authority.admit(command("session-n", "1", OTHER_RELEASE), OTHER_RELEASE);
   assert.deepEqual(authority.current(), { releaseId: OTHER_RELEASE, fence: 1, session: "session-n" });
+});
+
+test("a command that expired while it was verified is refused before it acts", () => {
+  const realNow = Date.now;
+  try {
+    Date.now = () => NOW * 1000;
+    assert.equal(stillValid(command("session-a", "1")), NOW);
+    Date.now = () => (NOW + 60) * 1000;
+    assert.equal(refusedWith(() => stillValid(command("session-a", "1"))), 401);
+  } finally {
+    Date.now = realNow;
+  }
 });

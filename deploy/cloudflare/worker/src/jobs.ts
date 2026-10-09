@@ -16,7 +16,7 @@
 
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { boundedBody } from "./shared/bytes";
-import { Authority, ControlRefused, importPublicKey, ReplayGuard, verifyControl } from "./shared/control";
+import { AUTHORITY_PROTOCOL, Authority, ControlRefused, importPublicKey, ReplayGuard, stillValid, verifyControl } from "./shared/control";
 
 interface JobsEnv {
   CONTROL_PUBLIC_KEY: string;
@@ -106,18 +106,19 @@ export class JobRunner extends DurableObject<JobsEnv> {
       const now = Math.floor(Date.now() / 1000);
       this.keyPromise ??= importPublicKey(this.env.CONTROL_PUBLIC_KEY);
       const command = await verifyControl(request, body, `jobs/${name}`, action, await this.keyPromise, now);
+      const verifiedAt = stillValid(command);
       const route = `${request.method} ${action}`;
       // Authority, replay and the run's claim happen without an await between them.
       if (command.releaseId === this.env.RELEASE_ID) this.authority.admit(command, this.env.RELEASE_ID);
-      else if (!CROSS_RELEASE.has(route)) throw new ControlRefused(409, "command is for another release");
-      this.replay.accept(command, now);
+      else if (!CROSS_RELEASE.has(route)) throw new ControlRefused(409, "command is for another release", "another_release");
+      this.replay.accept(command, verifiedAt);
       if (route === "POST run") return Response.json(await this.run(name, command.commandId, command.expiresAt, body));
       if (route === "GET status") return Response.json(this.status());
       if (route === "POST stop") return Response.json(await this.stop(body));
       if (route === "POST receipt") return Response.json(this.receipt(body));
       throw new ControlRefused(404, "unknown action");
     } catch (error) {
-      if (error instanceof ControlRefused) return Response.json({ error: error.message }, { status: error.status });
+      if (error instanceof ControlRefused) return Response.json({ error: error.message, code: error.code }, { status: error.status });
       if (error instanceof RangeError) return Response.json({ error: "request too large" }, { status: 413 });
       return Response.json({ error: "internal" }, { status: 500 });
     }
@@ -149,7 +150,7 @@ export class JobRunner extends DurableObject<JobsEnv> {
     if (!entry || imageKey !== "release_tools") throw new ControlRefused(400, "job is not wired on this platform");
     const container = this.ctx.container;
     if (!container) throw new Error("no container binding");
-    if (container.running || this.current()) throw new ControlRefused(409, "this job object has already run");
+    if (container.running || this.current()) throw new ControlRefused(409, "this job object has already run", "already_run");
     const image = container.images["release-tools"];
     if (!image) throw new Error("image is not in this version's images map");
     const startNonce = crypto.randomUUID().replaceAll("-", "");
@@ -353,6 +354,7 @@ export class JobRunner extends DurableObject<JobsEnv> {
     if (before && !this.ctx.container?.running) this.finish(before.start_nonce, "ended while unobserved");
     const row = this.current();
     const identity = {
+      control_protocol: AUTHORITY_PROTOCOL,
       object_id: this.ctx.id.toString(),
       release_id: this.env.RELEASE_ID,
       version_id: this.versionId(),

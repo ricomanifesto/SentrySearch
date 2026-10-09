@@ -94,6 +94,7 @@ def manifest_document(*, rollback: str = "empty_hold") -> dict:
             "workers": {worker: f"sentry-staging-{worker}" for worker in WORKERS},
             "namespaces": {worker: hex32(f"{worker}-namespace") for worker in CONTAINER_WORKERS},
             "bootstrap_versions": versions("bootstrap"),
+            "bootstrap_control_protocol": "sentry.authority.v1",
         },
         "operator": "fixture-operator",
         "window": {
@@ -171,6 +172,7 @@ def manifest_document(*, rollback: str = "empty_hold") -> dict:
             "kind": "compatible_release",
             "release_id": PRIOR_RELEASE_ID,
             "versions": versions("prior"),
+            "control_protocol": "sentry.authority.v1",
             "images": {
                 name: {
                     "repository": f"{REGISTRY}/sentry-staging-{name}",

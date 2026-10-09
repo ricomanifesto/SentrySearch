@@ -535,3 +535,25 @@ test("jobs: a stop SIGTERMs only the named start and never makes it applied", as
   assert.deepEqual([final.state, final.sql_outcome], ["exited", "unknown"]);
   assert.match(final.exit_detail, /^deadline; /);
 });
+
+test("refusals carry machine-readable codes and status names the authority protocol", async () => {
+  const container = new FakeContainer();
+  const service = new WorkerService(state("worker-0", container) as Any, env() as Any);
+  const code = async (request: Request) => (await json(await service.fetch(request))).code;
+  assert.equal(await code(await signed("POST", "worker/worker-0", "start", JSON.stringify({ release_id: RELEASE, version_id: "x" }))), "version_mismatch");
+  await service.fetch(await signed("GET", "worker/worker-0", "status", "", { session: "session-b", fence: "2" }));
+  assert.equal(await code(await signed("GET", "worker/worker-0", "status", "", { session: "session-a", fence: "1" })), "superseded");
+  assert.equal(await code(await signed("POST", "worker/worker-0", "start", START_BODY, { releaseId: OTHER_RELEASE })), "another_release");
+  const once = await signed("GET", "worker/worker-0", "status", "", { session: "session-b", fence: "2", commandId: "same-id" });
+  const twice = await signed("GET", "worker/worker-0", "status", "", { session: "session-b", fence: "2", commandId: "same-id" });
+  assert.equal((await service.fetch(once)).status, 200);
+  assert.equal(await code(twice), "replayed");
+  const status = await json(await service.fetch(await signed("GET", "worker/worker-0", "status", "", { session: "session-b", fence: "2" })));
+  assert.equal(status.control_protocol, "sentry.authority.v1");
+  const name = `job-${RELEASE}-proof`;
+  const runner = new JobRunner(state(name, new FakeContainer()) as Any, env() as Any);
+  const body = JSON.stringify({ job_id: "proof", phase: "proof", database: "runtime", image: "release_tools", deadline_seconds: 60 });
+  assert.equal((await runner.fetch(await signed("POST", `jobs/${name}`, "run", body))).status, 200);
+  assert.equal((await json(await runner.fetch(await signed("POST", `jobs/${name}`, "run", body)))).code, "already_run");
+  assert.equal((await json(await runner.fetch(await signed("GET", `jobs/${name}`, "status")))).control_protocol, "sentry.authority.v1");
+});

@@ -133,7 +133,6 @@ class ServiceView:
 
     wants_running: bool
     active: bool
-    generations: tuple[str, ...]
     raw: Mapping[str, Any] = field(default_factory=dict, compare=False)
 
 
@@ -148,6 +147,8 @@ class Launch:
     runs: tuple[str, ...]
     failed: int = 0
     unexpected: bool = False
+    # A reply that is neither a definitive failure nor exactly one run.
+    incomplete: bool = False
 
 
 @dataclass(frozen=True)
@@ -177,6 +178,9 @@ class ReleasePlatform(Protocol):
 
     names: JournalNames
     count_drift: str
+    # The SHA-256 of the loaded manifest the platform was built from; the
+    # controller refuses a platform built from another manifest.
+    manifest_sha256: str
     # Intent fields the request builders read; carried into identical retries.
     request_fields: tuple[str, ...]
 
@@ -190,6 +194,8 @@ class ReleasePlatform(Protocol):
     def services(self) -> dict[str, ServiceView]: ...
 
     def prior_matches(self, key: str, view: ServiceView) -> bool: ...
+
+    def prior_generations(self, key: str, view: ServiceView) -> list[str]: ...
 
     def scale_fields(self, key: str, view: ServiceView) -> dict[str, Any]: ...
 
@@ -223,8 +229,13 @@ class ReleasePlatform(Protocol):
 
     def service_snapshot(self, key: str, generation: str) -> tuple[str, str, list[str]]: ...
 
-    # Activation of platform code before the first job (none on ECS).
-    def activations(self) -> tuple[str, ...]: ...
+    def activation_drift(self, subject: str) -> str | None: ...
+
+    def launch_drift(self, job: Any) -> str | None: ...
+
+    # Activation of platform code: stage "jobs" before the first job, stage
+    # "services" before the first service start (none on ECS).
+    def activations(self, stage: str) -> tuple[str, ...]: ...
 
     def activation_request(self, subject: str) -> dict[str, Any]: ...
 

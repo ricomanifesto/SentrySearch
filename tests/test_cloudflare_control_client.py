@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 import base64
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -67,7 +67,7 @@ def send(made, clock, *, seconds=60, **changes):
         "action": "start",
         "body": {"release_id": RELEASE},
         "command_id": "start-worker-" + RELEASE,
-        "not_after": clock.now() + timedelta(seconds=seconds),
+        "expires_at": clock.now() + timedelta(seconds=seconds),
         **changes,
     }
     return made.send(**arguments)
@@ -216,3 +216,33 @@ def test_the_client_module_has_no_network_or_credential_access_of_its_own():
     assert imported <= {"__future__", "base64", "collections", "dataclasses", "datetime",
                         "hashlib", "json", "re", "typing", "cryptography"}  # fmt: skip
     assert "getenv" not in source and "open(" not in source
+
+
+def test_the_signed_expiry_is_exactly_the_journaled_command_expiry():
+    """The intent's command_expires_at (ISO, whole seconds) is the signed expiry."""
+    transport = Transport()
+    made, clock = client(transport)
+    journaled = "2026-10-07T12:02:00Z"
+    send(made, clock, expires_at=datetime.fromisoformat(journaled))
+    [(request, _)] = transport.sent
+    assert request.headers["x-sentry-expires-at"] == str(
+        int(datetime(2026, 10, 7, 12, 2, tzinfo=timezone.utc).timestamp())
+    )
+    for bad in (clock.now() + timedelta(seconds=60, microseconds=1), datetime(2026, 10, 7, 12, 2)):
+        with pytest.raises(ValueError):
+            send(made, clock, expires_at=bad)
+
+
+def test_nothing_is_sent_at_or_after_the_operation_deadline():
+    transport = Transport()
+    made, clock = client(transport)
+    with pytest.raises(CommandNotSent):
+        send(made, clock, send_before=clock.now())
+    clock_two = FakeClock()
+    slow = Transport()
+    made_two, _ = client(slow, SlowSigner(clock_two, 20), clock_two)
+    with pytest.raises(CommandNotSent):
+        send(made_two, clock_two, send_before=clock_two.now() + timedelta(seconds=10))
+    assert transport.sent == [] and slow.sent == []
+    send(made, clock, send_before=clock.now() + timedelta(seconds=30))
+    assert len(transport.sent) == 1

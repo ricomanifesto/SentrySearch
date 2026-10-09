@@ -70,8 +70,12 @@ READINESS_POLICY = GatePolicy()
 # A recovered session sends nothing until every command an earlier session
 # journaled has expired at every platform clock within this allowance.
 MAX_CLOCK_SKEW = timedelta(seconds=30)
+# The longest command lifetime any platform object accepts; with the skew it
+# bounds how far past a recovery the quiet period may reach.
+MAX_COMMAND_LIFETIME = timedelta(seconds=300)
 ACTIVE = "active"
 PRIOR = "prior"
+_UNSET: Any = object()
 
 
 def _iso(moment: datetime) -> str:
@@ -126,18 +130,23 @@ class ReleaseController:
         clock: Clock,
         tokens: Callable[[], str],
         session_id: str,
-        ecs: EcsPort | None = None,
-        evidence: EvidencePort | None = None,
-        logs: LogPort | None = None,
+        ecs: EcsPort = _UNSET,
+        evidence: EvidencePort = _UNSET,
+        logs: LogPort = _UNSET,
         platform: ReleasePlatform | None = None,
     ) -> None:
         aws = (ecs, evidence, logs)
         if platform is None:
-            if any(port is None for port in aws):
+            # As before the extraction, the three AWS ports are required keywords.
+            if any(port is _UNSET for port in aws):
                 raise TypeError("pass ecs, evidence and logs, or a platform")
-            platform = EcsPlatform(loaded.manifest, ecs, evidence, logs)  # type: ignore[arg-type]
-        elif any(port is not None for port in aws):
+            platform = EcsPlatform(loaded, ecs, evidence, logs)
+        elif any(port is not _UNSET for port in aws):
             raise TypeError("pass ecs, evidence and logs, or a platform, not both")
+        elif getattr(platform, "manifest_sha256", None) != loaded.sha256:
+            # Requests are built from the platform's manifest, approval binds this one.
+            raise ValueError("the platform was built from another manifest")
+        ecs, evidence, logs = (None if port is _UNSET else port for port in aws)
         self.loaded = loaded
         self.manifest = loaded.manifest
         self.approval = approval
@@ -173,6 +182,10 @@ class ReleaseController:
         if not self._open(may_create=approval_error is None):
             return self._outcome()
         self._bind()
+        # Handover completes at quiet_until: until then this session neither
+        # sends nor journals a decision, whatever the approval says. The wait is
+        # bounded by the longest command lifetime plus the skew allowance.
+        self._await_quiet()
         steps = {
             State.PREPARED: self._lock_environment,
             State.LOCKED: self._quiesce,
@@ -185,7 +198,6 @@ class ReleaseController:
         try:
             if approval_error is not None:
                 raise _Hold(approval_error)
-            self._await_quiet()
             self._reconcile_outstanding()
             while self.state not in TERMINAL_STATES:
                 steps[self.state]()
@@ -345,26 +357,39 @@ class ReleaseController:
         ]
         quiet = None
         if recovered:
-            boundary = recovered[-1]["sequence"]
-            expiries = [
-                _time(event["command_expires_at"])
-                for event in self.journal.events
-                if event["sequence"] < boundary
-                and event["kind"] == "intent"
-                and "command_expires_at" in event
-            ]
+            last = recovered[-1]
+            try:
+                expiries = [
+                    _time(event["command_expires_at"])
+                    for event in self.journal.events
+                    if event["sequence"] < last["sequence"]
+                    and event["kind"] == "intent"
+                    and "command_expires_at" in event
+                ]
+                limit = _time(last["at"]) + MAX_COMMAND_LIFETIME + MAX_CLOCK_SKEW
+            except (KeyError, TypeError, ValueError):
+                raise ReleaseHalted("journal_integrity") from None
             if expiries:
                 quiet = max(expiries) + MAX_CLOCK_SKEW
+                # No earlier command can outlive its signed lifetime: a later
+                # expiry is not one this controller wrote.
+                if quiet > limit:
+                    raise ReleaseHalted("journal_integrity")
         self._quiet_until = quiet
-        self.platform.bind(
-            SessionAuthority(self.release_id, self.session_id, 1 + len(recovered), quiet)
-        )
+        authority = SessionAuthority(self.release_id, self.session_id, 1 + len(recovered), quiet)
+        try:
+            self.platform.bind(authority)
+        except (ReleaseHalted, SessionSuperseded):
+            raise
+        except Exception:
+            # Without authority nothing may be sent; nothing is journaled either.
+            raise ReleaseHalted("authority_unavailable") from None
 
     def _await_quiet(self) -> None:
+        """Wait out every earlier session's commands; no guard, so no decision, in between."""
         if self._quiet_until is None:
             return
         while self.clock.now() < self._quiet_until:
-            self._guard()
             self.clock.sleep(self.poll)
 
     def _append(self, event: dict[str, Any], **header: Any) -> dict[str, Any]:
@@ -505,12 +530,26 @@ class ReleaseController:
             else:
                 self._stop_after_deadline(self.jobs[intent["subject"]], intent[names.run])
 
+    @staticmethod
+    def _rebuilt(intent: dict[str, Any], build: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        """The request rebuilt from its intent; it must hash to the recorded value."""
+        try:
+            request = build()
+        except (KeyError, TypeError, ValueError):
+            raise ReleaseHalted("journal_integrity") from None
+        if canonical_sha256(request) != intent["request_sha256"]:
+            raise ReleaseHalted("journal_integrity")
+        return request
+
+    def _hold_on_launch_drift(self, job: Job) -> None:
+        drift = self.platform.launch_drift(job)
+        if drift is not None:
+            raise _Hold(drift)
+
     def _reconcile_launch(self, job: Job, intent: dict[str, Any]) -> None:
         """Find the run launched under this token, or retry the identical request."""
         names = self.names
-        request = self.platform.launch_request(job, intent["token"])
-        if canonical_sha256(request) != intent["request_sha256"]:
-            raise ReleaseHalted("journal_integrity")
+        request = self._rebuilt(intent, lambda: self.platform.launch_request(job, intent["token"]))
         for attempt in range(IDENTICAL_RETRIES + 1):
             runs = self.platform.runs_for(job, intent["token"])
             if len(runs) == 1:
@@ -531,6 +570,7 @@ class ReleaseController:
                 or attempt == IDENTICAL_RETRIES
             ):
                 raise _Hold("launch_outcome_unknown")
+            self._hold_on_launch_drift(job)
             retry = self._intent(
                 names.launch,
                 job.id,
@@ -557,12 +597,8 @@ class ReleaseController:
         """
         names = self.names
         key, desired = intent["subject"], intent["desired_count"]
-        if desired == 0:
-            request = self.platform.scale_request(key, intent)
-        else:
-            request = self.platform.deploy_request(key, intent)
-        if canonical_sha256(request) != intent["request_sha256"]:
-            raise ReleaseHalted("journal_integrity")
+        build = self.platform.scale_request if desired == 0 else self.platform.deploy_request
+        request = self._rebuilt(intent, lambda: build(key, intent))
         prior = intent.get(names.prior, [])
         carried = {name: intent[name] for name in self.platform.request_fields if name in intent}
         for attempt in range(IDENTICAL_RETRIES + 1):
@@ -581,10 +617,11 @@ class ReleaseController:
                                   **{names.generation: generation}, reconciled=True)  # fmt: skip
                     return
                 self.clock.sleep(self.poll)
+            if desired == 1:
+                # A fresh observation, however slow, comes before the deadline check.
+                self._hold_on_drift(None)
             if self.clock.now() >= _time(intent["deadline_at"]) or attempt == IDENTICAL_RETRIES:
                 raise _Hold("service_update_unconfirmed")
-            if desired == 1:
-                self._hold_on_drift(None)
             retry = self._intent(
                 intent["action"],
                 key,
@@ -647,26 +684,34 @@ class ReleaseController:
     # Activation ------------------------------------------------------------------
 
     def _migrate(self) -> None:
-        self._activate()
+        self._activate("jobs")
         self._run_jobs({"migrate"}, State.MIGRATED)
 
-    def _activate(self) -> None:
-        """Make the platform's release code current before the first job (none on ECS).
+    def _activation_state(self, subject: str) -> str:
+        """A fresh observation of one activation subject, screened for drift."""
+        state = self.platform.activation_state(subject)
+        if state not in (ACTIVE, PRIOR):
+            raise _Hold(state if isinstance(state, str) and state else "activation_state_invalid")
+        drift = self.platform.activation_drift(subject)
+        if drift is not None:
+            raise _Hold(drift)
+        return state
 
-        Only an exact prior state may be moved forward; any other state is drift
-        and holds. A reply is screened for drift, never discarded; recognition
-        always comes from a fresh observation.
+    def _activate(self, stage: str) -> None:
+        """Make the platform's code for ``stage`` current (none on ECS).
+
+        ``jobs`` runs before the first job, ``services`` before the first
+        service start. Only an exact prior state may be moved forward; any other
+        state or drift holds. A reply is screened, never discarded; recognition
+        always comes from a fresh observation, with its drift check.
         """
         names = self.names
-        for subject in self.platform.activations():
+        for subject in self.platform.activations(stage):
             if self._last(subject, "activated") is not None:
                 continue
-            state = self.platform.activation_state(subject)
-            if state == ACTIVE:
+            if self._activation_state(subject) == ACTIVE:
                 self._observe(subject, "activated")
                 continue
-            if state != PRIOR:
-                raise _Hold(state)
             request = self.platform.activation_request(subject)
             now = self.clock.now()
             deadline = min(now + timedelta(seconds=self.manifest.window.service_start_seconds),
@@ -677,33 +722,28 @@ class ReleaseController:
             except AmbiguousResponse:
                 reply = ACTIVE  # unknown: the observations below decide
             if reply != ACTIVE:
-                raise _Hold(reply)
+                raise _Hold(
+                    reply if isinstance(reply, str) and reply else "activation_reply_invalid"
+                )
             self._reconcile_activation(intent)
 
     def _reconcile_activation(self, intent: dict[str, Any]) -> None:
         names = self.names
         subject = intent["subject"]
-        request = self.platform.activation_request(subject)
-        if canonical_sha256(request) != intent["request_sha256"]:
-            raise ReleaseHalted("journal_integrity")
+        request = self._rebuilt(intent, lambda: self.platform.activation_request(subject))
         for attempt in range(IDENTICAL_RETRIES + 1):
             for _ in range(VISIBILITY_POLLS):
-                state = self.platform.activation_state(subject)
-                if state == ACTIVE:
+                if self._activation_state(subject) == ACTIVE:
                     self._observe(subject, "activated", resolves=names.activate, reconciled=True)
                     return
-                if state != PRIOR:
-                    raise _Hold(state)
                 self.clock.sleep(self.poll)
-            if self.clock.now() >= _time(intent["deadline_at"]) or attempt == IDENTICAL_RETRIES:
-                raise _Hold("activation_unconfirmed")
-            # A fresh observation decides the resend, after the polls' sleep.
-            state = self.platform.activation_state(subject)
-            if state == ACTIVE:
+            # A fresh observation, however slow, decides the resend and comes
+            # before the deadline check.
+            if self._activation_state(subject) == ACTIVE:
                 self._observe(subject, "activated", resolves=names.activate, reconciled=True)
                 return
-            if state != PRIOR:
-                raise _Hold(state)
+            if self.clock.now() >= _time(intent["deadline_at"]) or attempt == IDENTICAL_RETRIES:
+                raise _Hold("activation_unconfirmed")
             retry = self._intent(names.activate, subject, request,
                                  deadline_at=intent["deadline_at"], retry_of=intent["sequence"])  # fmt: skip
             try:
@@ -711,7 +751,9 @@ class ReleaseController:
             except AmbiguousResponse:
                 continue
             if reply != ACTIVE:
-                raise _Hold(reply)
+                raise _Hold(
+                    reply if isinstance(reply, str) and reply else "activation_reply_invalid"
+                )
 
     # Jobs ----------------------------------------------------------------------
 
@@ -728,6 +770,7 @@ class ReleaseController:
         token = self.tokens()
         if not TOKEN.fullmatch(token):
             raise ReleaseHalted("invalid_launch_token")
+        self._hold_on_launch_drift(job)
         request = self.platform.launch_request(job, token)
         now = self.clock.now()
         deadline = min(now + timedelta(seconds=job.deadline_seconds), self._window_deadline())
@@ -753,7 +796,7 @@ class ReleaseController:
             self._observe(job.id, "launch_failed", resolves=names.launch,
                           failure_count=launch.failed)  # fmt: skip
             raise _Hold("launch_failed")
-        if launch.failed or not launch.runs:
+        if launch.incomplete or launch.failed or not launch.runs:
             raise _Hold("launch_response_incomplete")
         runs = list(launch.runs)
         if len(runs) != 1:
@@ -861,6 +904,11 @@ class ReleaseController:
             self.platform.send_stop(request, intent)
         except AmbiguousResponse:
             pass
+        except PlatformHold as refusal:
+            # A refused stop proves nothing about the run: keep confirming, and
+            # the SQL outcome stays unknown either way.
+            self._observe(job.id, "stop_refused", **{names.run: run}, reason=refusal.code,
+                          sql_outcome="unknown")  # fmt: skip
         give_up = (
             self.clock.now() + timedelta(seconds=job.stop_grace_seconds) + STOP_CONFIRMATION_MARGIN
         )
@@ -883,6 +931,7 @@ class ReleaseController:
         return None if event is None else event[self.names.generation]
 
     def _start_services(self) -> None:
+        self._activate("services")
         for key in SERVICE_KEYS:  # Runtime first, API paused, worker last.
             if self._last(key, "service_ready") is not None:
                 continue
@@ -894,7 +943,7 @@ class ReleaseController:
         names = self.names
         views = self.platform.services()
         view = views[key]
-        prior = list(view.generations)
+        prior = list(self.platform.prior_generations(key, view))
         self._hold_on_drift(views)
         fields = self.platform.deploy_fields(key, view)
         request = self.platform.deploy_request(key, fields)
@@ -984,7 +1033,9 @@ class ReleaseController:
         deadline = _time(_iso(limit))
         self._observe(check_id, "readiness_observing", **{names.run: run},
                       epoch_at=_iso(epoch), deadline_at=_iso(deadline))  # fmt: skip
-        gate = ReadinessGate(policy, release_id=self.release_id, epoch_start=epoch, run=run)
+        # The gate receives the identity under the platform's own name.
+        identity = {"task_arn" if names.run == "task_arn" else "run": run}
+        gate = ReadinessGate(policy, release_id=self.release_id, epoch_start=epoch, **identity)
         start = epoch - timedelta(seconds=policy.max_future_skew_seconds)
         token: str | None = None
         latest = epoch
@@ -1010,6 +1061,8 @@ class ReleaseController:
                 raise _Hold("worker_readiness_not_proven")
             try:
                 read = reader.read(token=token, start=start, end=now, policy=policy)
+            except SessionSuperseded:
+                raise
             except Exception:
                 # Denied, missing or malformed reads prove nothing for this poll.
                 # Visibility was lost until the read returned, however long it took.
@@ -1119,7 +1172,17 @@ class ReleaseController:
             and event.get("desired_count") == 1
             for event in self.journal.events
         )
-        plan = plan_rollback(self.manifest, self._job_outcomes(), services_touched=touched)
+        # Subjects whose platform code may have been moved forward (none on ECS).
+        activated = sorted(
+            {
+                event["subject"]
+                for event in self.journal.events
+                if (event["kind"] == "intent" and event["action"] == self.names.activate)
+                or (event["kind"] == "observation" and event["result"] == "activated")
+            }
+        )
+        plan = plan_rollback(self.manifest, self._job_outcomes(), services_touched=touched,
+                             activated=tuple(activated))  # fmt: skip
         self._transition(State.HOLD, reason=code, last_proven=self.last_proven, rollback=plan)
 
     def _outcome(self) -> Outcome:
@@ -1169,9 +1232,11 @@ class EcsPlatform:
     request_fields: tuple[str, ...] = ()
 
     def __init__(
-        self, manifest: Manifest, ecs: EcsPort, evidence: EvidencePort, logs: LogPort
+        self, loaded: LoadedManifest, ecs: EcsPort, evidence: EvidencePort, logs: LogPort
     ) -> None:
+        manifest: Manifest = loaded.manifest
         self.manifest = manifest
+        self.manifest_sha256 = loaded.sha256
         self.ecs = ecs
         self.evidence = evidence
         self.logs = logs
@@ -1216,10 +1281,13 @@ class EcsPlatform:
                     or service.get("runningCount")
                     or service.get("pendingCount")
                 ),
-                generations=tuple(str(item.get("id")) for item in service.get("deployments") or []),
                 raw=service,
             )
         return views
+
+    def prior_generations(self, key: str, view: ServiceView) -> list[str]:
+        # Read only when a deployment is about to be made, as before the extraction.
+        return [str(item.get("id")) for item in view.raw.get("deployments") or []]
 
     def prior_matches(self, key: str, view: ServiceView) -> bool:
         rollback = self.manifest.rollback
@@ -1284,6 +1352,12 @@ class EcsPlatform:
     def drift(self, views: Mapping[str, ServiceView] | None) -> str | None:
         return None
 
+    def activation_drift(self, subject: str) -> str | None:
+        return None
+
+    def launch_drift(self, job: Job) -> str | None:
+        return None
+
     def response_drift(self, key: str, response: Any) -> str | None:
         return None
 
@@ -1303,7 +1377,7 @@ class EcsPlatform:
 
     # Activation: none on ECS (task definitions are registered by Terraform).
 
-    def activations(self) -> tuple[str, ...]:
+    def activations(self, stage: str) -> tuple[str, ...]:
         return ()
 
     def activation_request(self, subject: str) -> dict[str, Any]:
@@ -1345,10 +1419,12 @@ class EcsPlatform:
         response = self.ecs.run_task(request)
         tasks = response.get("tasks") or []
         failures = response.get("failures") or []
-        if failures:
-            # Classified before any task is read, as before the extraction: with
-            # tasks present the response is incomplete and no task is recorded.
-            return Launch(runs=("unread",) * len(tasks), failed=len(failures))
+        # Classified in exactly the order and with exactly the reads the
+        # controller used before the extraction.
+        if failures and not tasks:
+            return Launch(runs=(), failed=len(failures))
+        if failures or not tasks:
+            return Launch(runs=(), incomplete=True)
         arns = tuple(str(task.get("taskArn")) for task in tasks)
         unexpected = len(tasks) == 1 and (
             tasks[0].get("taskDefinitionArn") != job.task.task_definition
