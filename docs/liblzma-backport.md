@@ -13,9 +13,14 @@ Do not copy or extend this temporary package-maintenance path for other librarie
 [GHSA-5qpq-xqfv-j9pg](https://github.com/tukaani-project/xz/security/advisories/GHSA-5qpq-xqfv-j9pg)
 concerns decoder state after allocation failure and repeated initialization.
 The upstream advisory is HIGH even when a scanner labels it UNKNOWN.
-The last official-package check on October 6, 2026 found
+The official-package check on October 6, 2026 found
 `xz-utils=5.8.1-1+deb13u1` in Trixie and no replacement in Trixie security,
-updates, or proposed-updates. Recheck the
+updates, or proposed-updates. On October 8, 2026 the signed Trixie indexes list
+`5.8.1-1+deb13u2` in `trixie-security` (DSA-6549-1; arm64 `liblzma5` SHA-256
+`88f3aa499dc30edf01b9209ab40f11e37edfbecef971f84f4721de1874ed4827`), and Trivy's
+database of that day marks the advisory fixed there. The replacement gates below
+are now open: the patch-content review of gate 1 and gates 2–6 have not been done,
+so the image still ships this backport. Recheck the
 [Debian tracker](https://security-tracker.debian.org/tracker/TEMP-1147318-639065)
 and authenticated package indexes before updating this recipe.
 

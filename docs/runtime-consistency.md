@@ -204,8 +204,8 @@ headroom and memory, the awslogs driver's memory
 and delivery on Fargate (including whether the buffer counts against task
 memory), CloudWatch ingestion latency, and ARM64. Docker 29.8.2 accepted the two
 options with its `local` driver; that shows option syntax only, not awslogs or ECS
-behavior. Runtime and API keep their existing log configuration until their own
-output is measured.
+behavior. Runtime and API buffers are sized from their own measured output; see
+[log buffers](service-images.md#log-buffers).
 
 ## Local proof
 

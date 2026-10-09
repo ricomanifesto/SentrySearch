@@ -285,9 +285,9 @@ an approved apply.
 Not implemented here: secret containers (created by the credential owner),
 VPC flow logs (retention approval), producers for the unwired alerts, DNS
 Firewall, the live bootstrap administrator path, published and scanned images
-carrying the observers and migration release jobs, measured log buffers for
-Runtime and API (the worker's is [set](../../docs/runtime-consistency.md#readiness-receipts)),
-and any attachment of launcher policies. Notification delivery and budget
+carrying the observers and migration release jobs, the Runtime and API log
+buffers' behavior on Fargate (their sizes come from a
+[local measurement](../../docs/service-images.md#log-buffers)), and any attachment of launcher policies. Notification delivery and budget
 enforcement are not proven by mocks. Release journals, lockfile versions and the proposed 90-day
 evidence retention have no lifecycle rule: evidence is kept until a reviewed
 retention decision.

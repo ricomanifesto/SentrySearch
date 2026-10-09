@@ -215,11 +215,17 @@ run "local_runs_emit_no_receipts" {
     error_message = "Without a release identity the worker emits no readiness receipts and keeps the unscoped local prefix."
   }
   assert {
-    condition = alltrue([for name in ["runtime", "api"] :
-      !can(output.task_contracts[name][1].logConfiguration.options.mode) &&
-      !can(output.task_contracts[name][1].logConfiguration.options["max-buffer-size"])
-    ])
-    error_message = "Runtime and API log modes are unchanged until their own output is measured."
+    condition = alltrue([for name in ["runtime", "api"] : alltrue([for container in output.task_contracts[name] : container.logConfiguration == {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = var.log_groups[name]
+        awslogs-region        = var.region
+        awslogs-stream-prefix = name
+        mode                  = "non-blocking"
+        max-buffer-size       = "8m"
+      }
+    }])])
+    error_message = "Runtime and API logging is explicitly non-blocking with the 8 MiB buffer sized from their measured peak output."
   }
 }
 

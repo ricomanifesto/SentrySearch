@@ -469,6 +469,10 @@ def test_image_contract_ships_only_root_owned_release_files():
         "app/dev/migrate_storage.py",
         "app/dev/prepare_service_volumes.py",
         "app/dev/check_worker_readiness.py",
+        # The shared receipt contract the migration release job writes with.
+        "app/release_tools/__init__.py",
+        "app/release_tools/contract.py",
+        "app/release_tools/receipt.py",
     }
     shipped = {name for name in members if name.startswith("app/") and "/.venv/" not in name}
     assert shipped == expected

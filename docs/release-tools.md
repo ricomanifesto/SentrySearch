@@ -278,8 +278,25 @@ no controller (its transaction rolled back, then an idempotent rerun), stop
 signals, a server query ending within seconds of its client's death (and running
 on without the check interval), the statement limit, exact-session
 reconciliation (including another role's session), roles able to act as a login,
-an RDS-like administrator, no shipped bytecode and redacted output. Pass
-`--build-ca-file` behind a
+an RDS-like administrator, no shipped bytecode and redacted output.
+
+The same suite runs both migrators' release-job modes in their own images, with
+the environment `deploy/aws-platform-fit` gives them: Runtime's
+`/app/migrate -release-job` and Search's `python -m dev.migrate_storage
+--release-job`. Each writes one `sentry.release-migration.v1` receipt naming the
+schema the proof observed. Too little time for a statement refuses before the
+task identity is read: exit 4 with no receipt and no connection. SIGTERM while
+blocked on the version table exits 143 with `sql_outcome: unknown`, after the one
+session was the expected owner on the expected database over TLS, and leaves no
+session.
+
+`tests/release_observers_images.py` runs the observers against the real Runtime
+and API containers on the service suite's network, under private names with a
+dedicated probe credential and the metadata endpoint on its own link-local
+network. Each passing receipt names the peer it actually connected to: the
+observed container's address. A wrong CA (`tls_untrusted`), a token the Runtime
+does not hold (`healthz_failed`) and an API name with two answers
+(`target_ambiguous`) each fail with a receipt. Pass `--build-ca-file` behind a
 TLS-intercepting proxy.
 
 October 7, 2026 ARM64 acceptance ran all **22 container cases** successfully.
@@ -317,13 +334,12 @@ controller holds when an observed task reports one.
   with RDS authentication, `client_connection_check_interval` and statement
   logging.
 - S3 cross-prefix denial (needs the storage-proof task and real IAM).
-- An image containing the observers, the shared receipt kinds and the contract
-  module: the October 7 acceptance image predates them, so its build, container
-  tests and scans do not cover them. The migration release jobs are tested
-  natively against PostgreSQL 16, not yet inside rebuilt Runtime and Search
-  images. Observer task definitions and the observe log group are not wired.
+- Observers and migration release jobs on ECS: the AWS-05 local images run them
+  in containers, and their task definitions are mock-tested Terraform. Fargate
+  networking, service discovery, task metadata and IAM are not exercised.
 - A task that never reaches its container (pending, image pull, init) is outside
   the in-image guard; the controller's deadline StopTask and the attended operator
   cover it. The 0.25 vCPU / 512 MiB allocation is unmeasured.
 - The log and evidence adapters' behavior against real CloudWatch Logs (they are
-  stub-tested only), measured log buffering, and any approval or risk decision.
+  stub-tested only), log buffering on Fargate (sizes come from a local
+  measurement), and any approval or risk decision.

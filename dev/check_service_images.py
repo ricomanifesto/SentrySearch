@@ -79,6 +79,7 @@ def main() -> None:
             "tests/service_images.py",
             "tests/platform_fit.py",
             "tests/liblzma_backport.py",
+            "tests/service_log_volume.py",
             "-v",
         ],
         cwd=repo,

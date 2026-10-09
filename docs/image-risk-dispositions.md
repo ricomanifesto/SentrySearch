@@ -5,6 +5,39 @@ publication or deployment. Applies to Linux ARM64 local image
 `sha256:1acd566a7fd4921aa8305604144d3159467be1d214e69b6ca6a0e80a384df4c0`, built from implementation
 `6bd05df31bcaed85535aee6727a024e4a206c74f`. A local image ID is not a registry digest.
 
+## Rebinding at the AWS-05 images (October 8, 2026)
+
+The dispositions below now also cover the AWS-05 local ARM64 images, built from
+`aws-04` (`8413f19b6c932f8775cf9ff1490255c641143912`). AWS-05 changed no image
+input. Trivy 0.75.0, with the database the accepted scans used (updated
+`2026-10-07T07:38:55Z`), reports the same matches as the reviewed and accepted
+images, by package, installed version, advisory, severity and fixed version. The
+CycloneDX SBOMs list the same components.
+
+| Image | Local index | Raw matches | SBOM components |
+| --- | --- | --- | --- |
+| Search | `sha256:162ba7e17715f6d90e0487e3e2915301df6c2fc8a80d4cc9bfa66fa2ba2fc997` | 49: C0/H7/M27/L14/U1, unchanged | 82, unchanged |
+| Release-tools | `sha256:993b82ff07b991943ae0508675b3a89e1c502867be0e48bfec59bf4b58e3485e` | 54: C0/H1/M23/L30/U0, unchanged | 29, unchanged |
+| Runtime | `sha256:343db5c919463eaa49fcc1abc2bdee6ae6c90b508dd654a86f76f6b102548145` | zero | 23; only `golang.org/x/text` v0.40.0 → v0.41.0 (GO-2026-6629) |
+
+The Search image's new inputs are application files only: the migration release
+job and three shared release-receipt modules. Every disposition below therefore
+carries over unchanged as an assessment of that image. None is accepted, and the
+27 retained service and 54 tools matches stay non-additive.
+
+A rescan of the same archives with the database updated `2026-10-08T19:05:21Z`
+changes two entries, which join this ledger for the release decision:
+
+- Search, 50 matches (C0/H7/M27/L14/U2): `liblzma5 5.8.1-1+deb13u1+sentry1` now
+  matches DSA-6549-1, and TEMP-1147318-639065 now names `5.8.1-1+deb13u2` as its
+  fix. The official package is in `trixie-security`, so the backport's
+  [replacement gates](liblzma-backport.md#replace-with-the-official-debian-package)
+  are open; its disposition (F) stands until that reviewed change.
+- Release-tools, 55 matches (C0/H1/M24/L30/U0): CVE-2026-107161 (MEDIUM) in
+  `libsasl2-2 2.1.28+dfsg1-9`, with no fixed version. It has no disposition yet.
+
+Runtime still reports zero.
+
 ## Result and scope
 
 The retained Trivy 0.75.0 report (database updated `2026-10-06T19:11:49Z`)

@@ -47,8 +47,10 @@ this composition when either base pin changes; an upstream Python version upgrad
 is a separate decision. Use exec-form Python commands, never shell-form probes.
 
 `container/Dockerfile.dockerignore` admits only `pyproject.toml`, `uv.lock`,
-`.python-version`, `run_api.py`, `src/`, `certs/`, the three explicit service
-entry points from `dev/`, `container/build-requirements.txt`, and curated
+`.python-version`, `run_api.py`, `src/`, `certs/`, the four explicit service
+entry points from `dev/`, the three shared release-receipt modules from
+`release_tools/` (`__init__.py`, `contract.py`, `receipt.py`, for the migration
+release job), `container/build-requirements.txt`, and curated
 `container/liblzma/` recipe/patch/probe inputs. The latter enter build/test stages;
 the native fixture is extracted from authenticated source there. Neither native
 test tools nor fixtures enter the final service image. The general `tests/`
@@ -184,8 +186,8 @@ uv run python dev/check_service_images.py --runtime-repo ../sentryruntime
 
 The command builds this image, the SentryRuntime image, and the separate
 `liblzma-test-tools` target, then pins their immutable local image IDs. It runs
-`tests/service_images.py`, `tests/platform_fit.py`, and
-`tests/liblzma_backport.py`. The cross-service tests use containers on an internal
+`tests/service_images.py`, `tests/platform_fit.py`,
+`tests/liblzma_backport.py` and the [log-buffer measurement](#log-buffers). The cross-service tests use containers on an internal
 Docker network with no outbound route. They generate disposable credentials and
 separate CAs for PostgreSQL and the runtime, use verified TLS for both product and
 runtime databases and verified HTTPS with scoped tokens to the runtime, and replace the
@@ -193,7 +195,8 @@ model provider with a local stub that accepts connections and never responds.
 
 The suites check:
 
-- the image contents match tracked `src/`, `certs/`, and the release entry points;
+- the image contents match tracked `src/`, `certs/`, the release entry points and
+  the three shared release-receipt modules;
   application files are root-owned; the image has no default command, baked
   configuration, or `.env` file; and the process tree runs as UID 10001 under
   `tini`;
@@ -226,6 +229,35 @@ It does not prove a registry, a target platform's probes or grace periods,
 resource limits, real provider or S3 behavior, certificate rotation, real
 credentials, network policy, or production data migration. Those remain gated
 by the deployment, canary, and rollback stages.
+
+### Log buffers
+
+`tests/service_log_volume.py` (run by `dev/check_service_images.py`) measures each
+service's peak output. On the internal network, one load container drives the
+Runtime or the API as fast as it answers for 60 s, with eight threads making the
+requests a release and its probes make:
+
+- Runtime: authenticated `/healthz` and `/readyz`, an unauthenticated `/readyz`
+  and a client that refuses the certificate;
+- API: `/`, `/api/ready`, a refused protected route and an unknown path, with
+  staging's paused execution mode.
+
+The bytes each container writes to stdout and stderr in the window give its
+peak rate. Staging sets explicit `non-blocking` awslogs delivery with a
+`max-buffer-size` that holds at least five minutes of that peak. The test fails
+if a fresh measurement no longer fits, or if Terraform's values differ.
+
+Measured on 2026-10-08 (ARM64 Docker Desktop, AWS-05 images):
+
+| Service | Requests/s | Bytes/s | Bytes/request | Longest line | `max-buffer-size` | Holds at peak |
+| --- | --- | --- | --- | --- | --- | --- |
+| Runtime | 542 | 13,823 | 25.5 | 101 | `8m` | about 10 min |
+| API | 232 | 15,250 | 65.7 | 80 | `8m` | about 9 min |
+
+The Runtime writes nothing per successful request; its lines are the refused
+TLS handshakes. The API writes one access line per request. This is a local
+method, not a Fargate guarantee: the driver's memory, CloudWatch latency and real
+traffic are unmeasured, and overflow drops lines rather than blocking.
 
 ### Image release gate
 

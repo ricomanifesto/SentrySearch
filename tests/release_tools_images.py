@@ -1156,3 +1156,182 @@ def test_receipts_are_unique_per_task_stream(stack, released):
     assert len(arns) == len(released)
     for run in released.values():
         assert sum(line.startswith(receipt.RECEIPT_MARKER) for line in run.stdout.splitlines()) == 1
+
+
+# --- migration release jobs in their own images --------------------------------
+
+VERSION_TABLES = {
+    "runtime": ("sentryruntime", "public.goose_db_version"),
+    "product": ("sentrysearch", "public.sentrysearch_schema_migrations"),
+}
+
+
+def migration_environment(
+    stack: Stack, database: str, name: str, **overrides: str
+) -> dict[str, str]:
+    """The migration release job's settings exactly as deploy/aws-platform-fit sets them."""
+    dbname, _ = VERSION_TABLES[database]
+    owner = "runtime_owner" if database == "runtime" else "search_owner"
+    values = {
+        "RELEASE_ID": stack.release_id,
+        "RELEASE_JOB_ID": f"{database}-migrate",
+        "RELEASE_NOT_AFTER": stamp(datetime.now(UTC) + timedelta(minutes=10)),
+        "RELEASE_JOB_BUDGET_SECONDS": "600",
+        "RELEASE_EXPECT_DATABASE": dbname,
+        "RELEASE_EXPECT_PRINCIPAL": owner,
+        "ECS_CONTAINER_METADATA_URI_V4": f"http://{METADATA_IP}/v4/{name}",
+    }
+    if database == "runtime":
+        values["SENTRYRUNTIME_MIGRATIONS_DIRECTORY"] = "/app/db/migrations"
+        values["DATABASE_URL"] = (
+            f"postgres://{owner}:{stack.secrets[owner]}@postgres:5432/{dbname}"
+            "?sslmode=verify-full&sslrootcert=/run/material/postgres-ca.pem"
+        )
+    else:
+        values.update(
+            ENVIRONMENT="staging", DB_HOST="postgres", DB_PORT="5432", DB_NAME=dbname,
+            DB_USER=owner, DB_PASSWORD=stack.secrets[owner], DB_SSLMODE="verify-full",
+            DB_SSLROOTCERT="/run/material/postgres-ca.pem", DB_DEBUG="false",
+            PYTHON_DOTENV_DISABLED="1",
+        )  # fmt: skip
+    values.update(overrides)
+    return values
+
+
+def start_migration(stack: Stack, database: str, **overrides: str) -> str:
+    """Run the real migrator's release-job mode in its own image, as the owner uid."""
+    name = stack.name(f"{database}-migrate-job")
+    env_file = stack.root / f"{name}.env"
+    env = migration_environment(stack, database, name, **overrides)
+    env_file.write_text("".join(f"{key}={value}\n" for key, value in env.items()))
+    env_file.chmod(0o600)
+    uid = RUNTIME_UID if database == "runtime" else PRODUCT_UID
+    command = (
+        [RUNTIME_IMAGE, "/app/migrate", "-release-job"]
+        if database == "runtime"
+        else [SEARCH_IMAGE, "python", "-m", "dev.migrate_storage", "--release-job"]
+    )
+    docker(
+        "run", "-d", "--name", name, "--network", stack.network, "--read-only",
+        "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", f"{uid}:{uid}",
+        "--stop-timeout", "30", "--mount",
+        f"type=volume,source={stack.material[database]},target=/run/material,readonly,volume-nocopy",
+        "--env-file", str(env_file), *command,
+    )  # fmt: skip
+    return name
+
+
+def migration_receipt(run: JobRun) -> dict:
+    document = receipt.parse_receipt(run.stdout.splitlines(), "migration")
+    assert document is not None, (run.code, run.stdout, run.stderr)
+    return document
+
+
+def connections_tagged(stack: Stack, tag: str) -> int:
+    return sum(f"app={tag} " in line for line in stack.server_log().splitlines())
+
+
+@pytest.mark.parametrize("database", ["runtime", "product"])
+def test_migration_release_job_receipt_names_the_proofs_schema(stack, released, database):
+    started = time.monotonic()
+    name = start_migration(stack, database)
+    run = stack.finish(name, started, timeout=180)
+    assert run.code == 0, (run.stdout, run.stderr)
+    dbname, _ = VERSION_TABLES[database]
+    assert migration_receipt(run) == {
+        "schema": "sentry.release-migration.v1",
+        "release_id": stack.release_id,
+        "job_id": f"{database}-migrate",
+        "task_arn": task_arn(name),
+        "status": "succeeded",
+        "result": {
+            "database": dbname,
+            "principal": "runtime_owner" if database == "runtime" else "search_owner",
+            # The schema the migrator applied is exactly what the proof observed.
+            "schema": released[f"{database}-proof"].receipt["result"]["schema"],
+        },
+    }
+    assert not stack.backend(f"release:{stack.release_id}:{database}-migrate")
+
+
+@pytest.mark.parametrize("database", ["runtime", "product"])
+def test_migration_release_job_without_time_for_a_statement_never_connects(
+    stack, released, database
+):
+    # The deadline is checked before the task identity is read, so there is no
+    # ARN to bind a receipt to: the job refuses with its event only, and the
+    # controller holds on the missing receipt.
+    release_id = str(uuid.uuid4())
+    tag = f"release:{release_id}:{database}-migrate"
+    started = time.monotonic()
+    name = start_migration(
+        stack, database, RELEASE_ID=release_id,
+        RELEASE_NOT_AFTER=stamp(datetime.now(UTC) + timedelta(seconds=6)),
+    )  # fmt: skip
+    run = stack.finish(name, started)
+    assert run.code == 4, (run.stdout, run.stderr)
+    assert run.stdout == ""
+    assert {
+        "event": "job_failed",
+        "reason": "deadline_expired",
+        "sql_outcome": "none",
+        "exit_code": "4",
+        "release_id": release_id,
+        "job_id": f"{database}-migrate",
+    } in run.events
+    assert connections_tagged(stack, tag) == 0
+
+
+def _hold_version_table(stack: Stack, database: str) -> subprocess.Popen[str]:
+    """An open transaction holding the migrator's version table exclusively."""
+    dbname, table = VERSION_TABLES[database]
+    holder = subprocess.Popen(
+        ["docker", "exec", "-i", stack.postgres, "psql", "-X", "-U", "postgres", "-d", dbname,
+         "-v", "ON_ERROR_STOP=1"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )  # fmt: skip
+    assert holder.stdin is not None
+    holder.stdin.write(f"BEGIN; LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE; SELECT 'locked';\n")
+    holder.stdin.flush()
+    wait_for(
+        "version table lock",
+        lambda: stack.sql(
+            dbname,
+            f"SELECT count(*) FROM pg_locks WHERE relation = '{table}'::regclass"
+            " AND mode = 'AccessExclusiveLock' AND granted",
+        )
+        == "1",
+    )
+    return holder
+
+
+@pytest.mark.parametrize("database", ["runtime", "product"])
+def test_migration_release_job_stops_on_sigterm_with_its_verified_session_gone(
+    stack, released, database
+):
+    dbname, _ = VERSION_TABLES[database]
+    owner = "runtime_owner" if database == "runtime" else "search_owner"
+    tag = f"release:{stack.release_id}:{database}-migrate"
+    holder = _hold_version_table(stack, database)
+    started = time.monotonic()
+    name = start_migration(stack, database)
+    try:
+        wait_for("blocked migration", lambda: any(r.endswith("|Lock") for r in stack.backend(tag)))
+        # The one session is the expected owner on the expected database, over TLS.
+        identity = stack.sql(
+            "postgres",
+            "SELECT a.usename || '|' || a.datname || '|' || s.ssl FROM pg_stat_activity a"
+            f" JOIN pg_stat_ssl s USING (pid) WHERE a.application_name = '{tag}'",
+        )
+        stopped = time.monotonic()
+        docker("kill", "--signal", "SIGTERM", name)
+        run = stack.finish(name, started)
+        assert time.monotonic() - stopped < 8
+    finally:
+        _release(holder)
+    assert identity == f"{owner}|{dbname}|true"
+    assert run.code == 143, (run.stdout, run.stderr)
+    document = migration_receipt(run)
+    assert (document["task_arn"], document["status"]) == (task_arn(name), "failed")
+    assert document["result"] == {"reason": "terminated", "sql_outcome": "unknown"}
+    wait_for("terminated migration backend to exit", lambda: not stack.backend(tag), timeout=15)

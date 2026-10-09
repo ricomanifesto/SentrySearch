@@ -1,7 +1,9 @@
 """Build release-tools and both service images, then prove the guarded jobs.
 
 Disposable TLS PostgreSQL and a stand-in ECS metadata endpoint run on an internal
-Docker network. No AWS request, registry push or real credential is involved.
+Docker network: the release-tools jobs, both migrators' release-job modes and the
+observers against the real Runtime and API containers. No AWS request, registry
+push or real credential is involved.
 """
 
 import argparse
@@ -46,10 +48,18 @@ def main() -> None:
             "RELEASE_TOOLS_TEST_IMAGE": tools_image,
             "SENTRYRUNTIME_TEST_IMAGE": runtime_image,
             "SENTRYSEARCH_TEST_IMAGE": search_image,
+            "SENTRYRUNTIME_TEST_REPO": str(args.runtime_repo.resolve()),
         }
     )
     subprocess.run(
-        [sys.executable, "-m", "pytest", "tests/release_tools_images.py", "-v"],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/release_tools_images.py",
+            "tests/release_observers_images.py",
+            "-v",
+        ],
         cwd=repo,
         env=env,
         check=True,

@@ -135,7 +135,11 @@ worker's awslogs configuration sets `mode = non-blocking` and
 `max-buffer-size = 4m` explicitly instead of relying on the account default;
 overflow drops lines, which the observer sees as gaps. Non-blocking delivery on
 Fargate and the buffer's sizing for mixed application output are not measured.
-Runtime and API logging is unchanged. Without `release_id` the worker emits no
+Runtime and API logging is also explicitly `non-blocking`, with
+`max-buffer-size = 8m` each: at least five minutes of each service's locally
+measured peak output ([log buffers](../../docs/service-images.md#log-buffers)).
+Their Fargate delivery and buffer memory are not measured. Without `release_id`
+the worker emits no
 receipts and keeps the `worker` prefix.
 
 ## Version-pinned secret bundles

@@ -71,13 +71,18 @@ locals {
     api     = [{ containerPort = 8001, protocol = "tcp" }]
     worker  = []
   }
-  # Explicit non-blocking delivery, so the account default cannot make worker
-  # output block; overflow drops lines, which the observer sees as sequence gaps.
-  # 4 MiB holds about 18 hours of locally measured receipt output alone; mixed
-  # application log volume, buffer memory and Fargate behavior are unmeasured, so
-  # this is not a sizing for the worker's whole output (docs/runtime-consistency.md).
-  # Runtime and API modes await their own budget.
-  worker_log_options = { mode = "non-blocking", max-buffer-size = "4m" }
+  # Explicit non-blocking delivery for every service, so the account default
+  # cannot make output block; overflow drops lines (for the worker, sequence gaps
+  # the observer sees). Worker: 4 MiB holds about 18 hours of locally measured
+  # receipt output alone (docs/runtime-consistency.md). Runtime and API: each
+  # buffer holds at least five minutes of its locally measured peak output under
+  # synthetic load (tests/service_log_volume.py, docs/service-images.md). Buffer
+  # memory, CloudWatch latency and Fargate delivery are unmeasured.
+  service_log_options = {
+    runtime = { mode = "non-blocking", max-buffer-size = "8m" }
+    api     = { mode = "non-blocking", max-buffer-size = "8m" }
+    worker  = { mode = "non-blocking", max-buffer-size = "4m" }
+  }
   # A release's worker streams are worker/<release-id>/<container>/<task-id>, an
   # immutable prefix per revision: each release writes, and is read, apart.
   stream_prefixes = { for name in keys(local.roles) : name => name == "worker" && var.release_id != null ? "worker/${var.release_id}" : name }
@@ -87,7 +92,7 @@ locals {
       awslogs-group         = var.log_groups[name]
       awslogs-region        = var.region
       awslogs-stream-prefix = local.stream_prefixes[name]
-    }, name == "worker" ? local.worker_log_options : {})
+    }, local.service_log_options[name])
   } }
   task_contracts = { for name, role in local.roles : name => [
     {
