@@ -286,9 +286,9 @@ the environment `deploy/aws-platform-fit` gives them: Runtime's
 --release-job`. Each writes one `sentry.release-migration.v1` receipt naming the
 schema the proof observed. Too little time for a statement refuses before the
 task identity is read: exit 4 with no receipt and no connection. SIGTERM while
-blocked on the version table exits 143 with `sql_outcome: unknown`, after the one
-session was the expected owner on the expected database over TLS, and leaves no
-session.
+blocked on the version table exits 143 with `sql_outcome: unknown`, after
+exactly one tagged session was seen, as the expected owner on the expected
+database over TLS. It leaves no session.
 
 `tests/release_observers_images.py` runs the observers against the real Runtime
 and API containers on the service suite's network, under private names with a

@@ -349,7 +349,9 @@ def wait_for(description: str, predicate, *, timeout: float = 60) -> None:
 
 
 def lock_waiter(stack: Stack, tag: str, *, freeze: bool = False, timeout: int = 60) -> list[str]:
-    """``pid|user|database|ssl`` of the session tagged ``tag`` once it waits on a lock.
+    """``pid|user|database|ssl|sessions`` once a session tagged ``tag`` waits on a lock.
+
+    ``sessions`` counts every session with that tag, waiting or not.
 
     The wait runs inside the server's container: polling from the host costs one
     ``docker exec`` per look, which a loaded host stretches past a job's three-second
@@ -357,7 +359,8 @@ def lock_waiter(stack: Stack, tag: str, *, freeze: bool = False, timeout: int = 
     limit can end its statement.
     """
     query = (
-        "SELECT a.pid || '|' || a.usename || '|' || a.datname || '|' || s.ssl"
+        "SELECT a.pid || '|' || a.usename || '|' || a.datname || '|' || s.ssl || '|' ||"
+        f" (SELECT count(*) FROM pg_stat_activity WHERE application_name = '{tag}')"
         " FROM pg_stat_activity a JOIN pg_stat_ssl s USING (pid)"
         f" WHERE a.application_name = '{tag}' AND a.wait_event_type = 'Lock' LIMIT 1"
     )
@@ -1348,15 +1351,15 @@ def test_migration_release_job_stops_on_sigterm_with_its_verified_session_gone(
     started = time.monotonic()
     name = start_migration(stack, database)
     try:
-        # The one session is the expected owner on the expected database, over TLS.
-        identity = "|".join(lock_waiter(stack, tag)[1:])
+        # One session, the expected owner on the expected database, over TLS.
+        _, *identity, sessions = lock_waiter(stack, tag)
         stopped = time.monotonic()
         docker("kill", "--signal", "SIGTERM", name)
         run = stack.finish(name, started)
         assert time.monotonic() - stopped < 8
     finally:
         _release(holder)
-    assert identity == f"{owner}|{dbname}|true"
+    assert (identity, sessions) == ([owner, dbname, "true"], "1")
     assert run.code == 143, (run.stdout, run.stderr)
     document = migration_receipt(run)
     assert (document["task_arn"], document["status"]) == (task_arn(name), "failed")
