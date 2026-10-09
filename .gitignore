@@ -72,6 +72,7 @@ Thumbs.db
 !/docs/release-tools.md
 !/docs/release-aws-adapters.md
 !/docs/release-cli.md
+!/docs/release-canary.md
 backup_*/
 # Legacy main files (keep API files)
 /main.py

@@ -444,16 +444,17 @@ images, a separate approval.
 ## Not implemented
 
 - Any run against AWS. The [operator CLI](release-cli.md), its isolated clients,
-  preflight and Clock, and the [adapters](release-aws-adapters.md) have run only
-  against in-process fakes. Their AWS behavior (IAM, `GetLogEvents` tokens as
-  `endTime` advances, stopped-task listing, reported overrides, S3 conditional
-  deletes, the STS `Date` header) is unverified.
-- Built and scanned images carrying the migration release jobs and the
-  observers. The producers exist in source (the Runtime `migrate -release-job`,
-  the Search `dev/migrate_storage.py --release-job` and
-  [`release_tools observe-runtime`/`observe-api`](release-tools.md#operational-observers))
-  and are tested natively; their task definitions, log group and launcher
-  policies are mock-tested Terraform.
+  preflight and Clock, and the [adapters](release-aws-adapters.md) have run
+  against in-process fakes, and against real containers in the
+  [integrated canary](release-canary.md). The canary runs first deployments,
+  faults and a rollback run with the real job, observer and service images, the
+  journal and lock in an S3-compatible stand-in. Their AWS behavior (IAM,
+  `GetLogEvents` tokens as `endTime` advances, stopped-task listing, reported
+  overrides, S3's own conditional semantics, the STS `Date` header) is unverified.
+- Published images. The AWS-05 local images carry the migration release jobs and
+  the observers, and their container suites, scans and SBOMs are recorded; no
+  image is in a registry. Their task definitions, log group and launcher policies
+  are mock-tested Terraform.
 - The live bootstrap administrator path: its task definitions and separate
   launcher exist in mocked Terraform, never attached.
 - Teardown, which is a documented operator procedure, not code; a rollback run
