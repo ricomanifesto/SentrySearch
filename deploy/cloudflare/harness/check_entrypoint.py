@@ -35,7 +35,7 @@ import ctypes, json, os, pathlib, stat, subprocess, sys
 fields = {}
 for line in pathlib.Path("/proc/self/status").read_text().splitlines():
     key, _, value = line.partition(":")
-    if key in {"CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb", "NoNewPrivs", "Seccomp", "Uid", "Gid", "Groups"}:
+    if key in {"CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb", "NoNewPrivs", "Seccomp", "Seccomp_filters", "Uid", "Gid", "Groups"}:
         fields[key] = " ".join(value.split())
 libc = ctypes.CDLL(None, use_errno=True)
 def unshare_newuser():
@@ -67,7 +67,7 @@ child = subprocess.run([sys.executable, "-c", "print(open('/proc/self/status').r
 child_fields = {line.split(":")[0]: " ".join(line.split(":", 1)[1].split()) for line in child.splitlines() if ":" in line}
 print(json.dumps({
     "status": fields,
-    "child_status": {k: child_fields.get(k) for k in ("CapPrm", "CapEff", "CapBnd", "CapAmb", "NoNewPrivs", "Seccomp", "Uid")},
+    "child_status": {k: child_fields.get(k) for k in ("CapPrm", "CapEff", "CapBnd", "CapAmb", "NoNewPrivs", "Seccomp", "Seccomp_filters", "Uid")},
     "regain": regain,
     "unshare_cli_exit": unshare_cli,
     "setuid_binary_euid": setuid_euid,
@@ -136,7 +136,7 @@ def run(tag: str, *flags: str, env: dict[str, str], command: list[str]) -> tuple
     return result.returncode, result.stdout, result.stderr
 
 
-def dropped(report: dict) -> list[str]:
+def dropped(report: dict, filters: str) -> list[str]:
     problems = []
     for key in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"):
         if report["status"].get(key) != "0000000000000000":
@@ -148,6 +148,13 @@ def dropped(report: dict) -> list[str]:
         problems.append("no_new_privs not set")
     if report["status"].get("Seccomp") != "2" or report["child_status"].get("Seccomp") != "2":
         problems.append("seccomp filter not installed")
+    if (
+        report["status"].get("Seccomp_filters") != filters
+        or report["child_status"].get("Seccomp_filters") != filters
+    ):
+        problems.append(
+            f"seccomp filters {report['status'].get('Seccomp_filters')}, want {filters}"
+        )
     if report["unshare_cli_exit"] == 0:
         problems.append("unshare --user succeeded")
     if (
@@ -177,14 +184,21 @@ def main() -> int:
         "id": docker("image", "inspect", "--format", "{{.Id}}", tag).stdout.strip(),
     }
     start = [*ENTRY, "start", "--profile", "search", "--", *API]
-    for name, flags in (
-        ("cap_add_all", ["--cap-add", "ALL"]),
-        ("cap_add_sys_admin", ["--cap-add", "SYS_ADMIN"]),
-        ("docker_defaults", []),
+    # Docker's default profile is one filter; with it off, the entrypoint's
+    # filter is the only thing refusing user namespaces to a SYS_ADMIN container.
+    for name, flags, filters in (
+        ("cap_add_all", ["--cap-add", "ALL"], "2"),
+        ("cap_add_sys_admin", ["--cap-add", "SYS_ADMIN"], "2"),
+        (
+            "sys_admin_without_docker_seccomp",
+            ["--cap-add", "SYS_ADMIN", "--security-opt", "seccomp=unconfined"],
+            "1",
+        ),
+        ("docker_defaults", [], "2"),
     ):
         code, out, err = run(tag, *flags, env=good, command=start)
         report = json.loads(out) if code == 0 else {}
-        problems = dropped(report) if report else [f"exit {code}: {err[-300:]}"]
+        problems = dropped(report, filters) if report else [f"exit {code}: {err[-300:]}"]
         if report:
             if report["material"] != {
                 "postgres-ca.pem": ["0o400", 10001, 10001],
@@ -209,7 +223,12 @@ def main() -> int:
             [*ENTRY, "start", "--profile", "search", "--", "/bin/sh"],
             64,
         ),
-        "continue_as_root": ([], {}, [*ENTRY, "continue", "--profile", "search", "--", *API], 77),
+        "continue_as_root": (
+            [],
+            {},
+            [*ENTRY, "continue", "--profile", "search", "--filters", "2", "--", *API],
+            77,
+        ),
     }
     for name, (flags, env, command, expected) in refusals.items():
         code, out, err = run(tag, *flags, env=env, command=command)

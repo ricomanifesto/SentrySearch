@@ -37,7 +37,9 @@ container, in two phases:
    namespaces. The filter is generated for the running architecture and handed
    to `setpriv` through an in-memory file.
 2. `continue` (dropped): refuses unless `/proc/self/status` shows every
-   capability set empty, `NoNewPrivs: 1`, `Seccomp: 2` and exactly the
+   capability set empty, `NoNewPrivs: 1`, exactly one seccomp filter more than
+   the root phase saw (passed along as `--filters`; Docker's default profile
+   is itself a filter, so `Seccomp: 2` alone proves nothing) and exactly the
    profile's identity, then executes the command.
 
 The user namespace filter matters because a process holds a full capability
@@ -115,6 +117,16 @@ job) owning one container:
 ## Local findings that shaped this code
 
 Measured with the pinned Wrangler 4.141.0 and workerd 2026-09-25:
+
+- Under amd64 emulation on Apple silicon (Rosetta here; QEMU user mode refuses
+  too) an emulated process cannot install a seccomp filter: `prctl` fails with
+  `EINVAL`. The `cloudflare` targets built for `linux/amd64` therefore refuse
+  to start when run emulated. They run natively: arm64 locally, amd64 on
+  Cloudflare. `wrangler dev` always builds `linux/amd64`, so the harness on
+  the real images needs a native amd64 host.
+- A Durable Object reload (`wrangler dev` reloads every object on a source
+  change) drops receipts posted during the reload, about 10 seconds locally;
+  they show as gaps and the history stays incomplete.
 
 - Local `exec()` always runs `/bin/sh -c 'echo $$ > <pidfile>; exec "$@"'`, so
   it cannot run in these distroless images. A platform `exec()` probe is

@@ -24,6 +24,7 @@ Gid:\t10001\t10001\t10001\t10001
 Groups:\t
 NoNewPrivs:\t1
 Seccomp:\t2
+Seccomp_filters:\t2
 CapInh:\t0000000000000000
 CapPrm:\t0000000000000000
 CapEff:\t0000000000000000
@@ -134,6 +135,8 @@ def test_start_materializes_as_root_then_drops_through_setpriv(material):
         "continue",
         "--profile",
         "search",
+        "--filters",
+        "3",
         "--",
         *API,
     ]
@@ -143,7 +146,10 @@ def test_start_materializes_as_root_then_drops_through_setpriv(material):
 def test_continue_requires_the_kernel_to_report_a_full_drop():
     fake = FakeSystem()
     environ = {"DB_HOST": "db"}
-    assert invoke(fake, ["continue", "--profile", "search", "--", *WORKER], environ) == "executed"
+    assert (
+        invoke(fake, ["continue", "--profile", "search", "--filters", "2", "--", *WORKER], environ)
+        == "executed"
+    )
     assert fake.executed == (WORKER[0], list(WORKER), {"DB_HOST": "db", "TMPDIR": "/run/tmp"})
     assert fake.chdirs == [Path("/run/work")]
 
@@ -161,19 +167,32 @@ def test_continue_requires_the_kernel_to_report_a_full_drop():
         ("Gid:\t10001\t10001\t10001\t10001", "Gid:\t10001\t10001\t10001\t0"),
         ("Groups:\t", "Groups:\t0"),
         ("Seccomp:\t2", "Seccomp:\t0"),
+        ("Seccomp_filters:\t2", "Seccomp_filters:\t1"),
+        ("Seccomp_filters:\t2", "Seccomp_filters:\t3"),
+        ("Seccomp_filters:\t2\n", ""),
     ],
 )
 def test_continue_refuses_any_remaining_privilege(line, replacement):
     fake = FakeSystem(status=DROPPED_10001.replace(line, replacement))
     assert (
-        invoke(fake, ["continue", "--profile", "search", "--", *API], {}) == cfinit.EXIT_PRIVILEGE
+        invoke(fake, ["continue", "--profile", "search", "--filters", "2", "--", *API], {})
+        == cfinit.EXIT_PRIVILEGE
     )
     assert fake.executed is None and fake.chdirs == []
 
 
 def test_continue_refuses_the_wrong_identity_for_the_profile():
     fake = FakeSystem()
-    argv = ["continue", "--profile", "runtime-release", "--", *cfinit.RELEASE_PYTHON, "grant"]
+    argv = [
+        "continue",
+        "--profile",
+        "runtime-release",
+        "--filters",
+        "2",
+        "--",
+        *cfinit.RELEASE_PYTHON,
+        "grant",
+    ]
     assert invoke(fake, argv, {}) == cfinit.EXIT_PRIVILEGE
 
 
@@ -187,7 +206,11 @@ def test_probe_drops_with_a_minimal_environment_and_no_material():
     assert fake.prepared == []
     fake = FakeSystem()
     assert (
-        invoke(fake, ["continue-probe", "--profile", "search", "--", *PROBE], {"PATH": "/x"})
+        invoke(
+            fake,
+            ["continue-probe", "--profile", "search", "--filters", "2", "--", *PROBE],
+            {"PATH": "/x"},
+        )
         == "executed"
     )
     assert fake.executed == (PROBE[0], list(PROBE), {"PATH": "/x"}) and fake.chdirs == []
@@ -239,7 +262,7 @@ def test_refusals_before_the_drop(material, capsys):
     )
     leaked = FakeSystem()
     assert (
-        invoke(leaked, ["continue", "--profile", "search", "--", *API], material)
+        invoke(leaked, ["continue", "--profile", "search", "--filters", "2", "--", *API], material)
         == cfinit.EXIT_CONFIG
     )
     output = capsys.readouterr()
@@ -248,7 +271,10 @@ def test_refusals_before_the_drop(material, capsys):
 
 def test_exec_failure_is_reported_without_details():
     fake = FakeSystem(exec_error=FileNotFoundError("/app/run_api.py"))
-    assert invoke(fake, ["continue", "--profile", "search", "--", *API], {}) == cfinit.EXIT_EXEC
+    assert (
+        invoke(fake, ["continue", "--profile", "search", "--filters", "2", "--", *API], {})
+        == cfinit.EXIT_EXEC
+    )
 
 
 def run_filter(program: bytes, arch: int, nr: int, flags: int) -> int:
@@ -297,3 +323,33 @@ def test_start_hands_setpriv_the_filter_for_this_machine(material):
     assert fake.filters == [cfinit.namespace_filter("x86_64")]
     with pytest.raises(cfinit.Refused):
         cfinit.namespace_filter("riscv64")
+
+
+def test_continue_requires_the_filter_count_the_root_phase_expected():
+    for argv in (
+        ["continue", "--profile", "search", "--", *API],
+        ["continue", "--profile", "search", "--filters", "-1", "--", *API],
+        ["continue", "--profile", "search", "--filters", "", "--", *API],
+        ["start", "--profile", "search", "--filters", "2", "--", *API],
+    ):
+        fake = FakeSystem()
+        assert invoke(fake, argv, {}) == cfinit.EXIT_USAGE, argv
+        assert fake.executed is None
+    # A kernel without the count: both phases agree it is unknown, filter mode still required.
+    without = DROPPED_10001.replace("Seccomp_filters:\t2\n", "")
+    fake = FakeSystem(status=without)
+    argv = ["continue", "--profile", "search", "--filters", "unknown", "--", *API]
+    assert invoke(fake, argv, {}) == "executed"
+    fake = FakeSystem(status=without.replace("Seccomp:\t2", "Seccomp:\t0"))
+    assert invoke(fake, argv, {}) == cfinit.EXIT_PRIVILEGE
+
+
+def test_start_expects_one_filter_more_than_it_has(material):
+    fake = FakeSystem(status=DROPPED_10001.replace("Seccomp_filters:\t2", "Seccomp_filters:\t0"))
+    assert invoke(fake, ["start", "--profile", "search", "--", *API], material) == "executed"
+    argv = executed(fake)[1]
+    assert argv[argv.index("--filters") + 1] == "1"
+    fake = FakeSystem(status=DROPPED_10001.replace("Seccomp_filters:\t2\n", ""))
+    assert invoke(fake, ["start", "--profile", "search", "--", *API], material) == "executed"
+    argv = executed(fake)[1]
+    assert argv[argv.index("--filters") + 1] == "unknown"

@@ -20,8 +20,9 @@ one, even a fully dropped process regains every capability (scoped to that
 namespace), which a container granted ``SYS_ADMIN`` would otherwise allow.
 
 ``continue`` (after the drop) refuses unless the kernel reports every capability
-set empty, ``NoNewPrivs`` set, a seccomp filter and exactly the profile's
-identity, then executes the command. ``probe`` and ``continue-probe`` do the same for a fixed readiness
+set empty, ``NoNewPrivs`` set, exactly one seccomp filter more than the root
+phase saw (Docker's default profile is a filter too, so filter mode alone proves
+nothing) and exactly the profile's identity, then executes the command. ``probe`` and ``continue-probe`` do the same for a fixed readiness
 probe with a minimal environment and no material: a platform ``exec()`` is a new
 process that does not inherit the main process's drop.
 
@@ -35,6 +36,7 @@ import importlib
 import os
 from pathlib import Path
 import platform
+import re
 import struct
 import sys
 from types import ModuleType
@@ -137,20 +139,36 @@ class System:
     execve: Callable[..., NoReturn] = os.execve
 
 
-def _parse(argv: Sequence[str]) -> tuple[str, str, Profile, tuple[str, ...]]:
-    if len(argv) < 5 or argv[1] != "--profile" or argv[3] != "--":
-        raise Refused(
-            EXIT_USAGE,
-            "usage: cfinit start|continue|probe|continue-probe --profile NAME -- COMMAND",
-        )
-    mode, name, command = argv[0], argv[2], tuple(argv[4:])
+FILTERS = re.compile(r"[0-9]{1,4}|unknown")
+
+
+def _parse(argv: Sequence[str]) -> tuple[str, str, Profile, str | None, tuple[str, ...]]:
+    """``start|probe --profile NAME -- COMMAND`` or, after the drop,
+    ``continue|continue-probe --profile NAME --filters COUNT -- COMMAND``."""
+    usage = Refused(
+        EXIT_USAGE,
+        "usage: cfinit start|probe --profile NAME -- COMMAND "
+        "(continue|continue-probe also take --filters COUNT)",
+    )
+    if len(argv) < 4 or argv[1] != "--profile":
+        raise usage
+    mode, name = argv[0], argv[2]
+    filters = None
+    rest = list(argv[3:])
+    if mode in {"continue", "continue-probe"}:
+        if len(rest) < 3 or rest[0] != "--filters" or not FILTERS.fullmatch(rest[1]):
+            raise usage
+        filters, rest = rest[1], rest[2:]
+    if len(rest) < 2 or rest[0] != "--":
+        raise usage
+    command = tuple(rest[1:])
     profile = PROFILES.get(name)
     if profile is None or mode not in {"start", "continue", "probe", "continue-probe"}:
         raise Refused(EXIT_USAGE, "unknown mode or profile")
     allowed = profile.probes if mode in {"probe", "continue-probe"} else profile.commands
     if command not in allowed:
         raise Refused(EXIT_USAGE, "command is not permitted")
-    return mode, name, profile, command
+    return mode, name, profile, filters, command
 
 
 def _check_settings(environ: Mapping[str, str]) -> None:
@@ -202,6 +220,7 @@ def _setpriv(
     python: Sequence[str],
     mode: str,
     name: str,
+    filters: str,
     command: Sequence[str],
 ) -> list[str]:
     return [
@@ -221,6 +240,8 @@ def _setpriv(
         mode,
         "--profile",
         name,
+        "--filters",
+        filters,
         "--",
         *command,
     ]
@@ -251,12 +272,29 @@ def _inherited_memfd(program: bytes) -> str:
     return f"/proc/self/fd/{descriptor}"
 
 
-def verify_dropped(status: str, uid: int) -> None:
-    """Refuse unless the kernel's view matches a fully dropped service process."""
+def _fields(status: str) -> dict[str, str]:
     fields = {}
     for line in status.splitlines():
         key, _, value = line.partition(":")
         fields[key] = " ".join(value.split())
+    return fields
+
+
+def _expected_filters(status: str) -> str:
+    """setpriv adds exactly one filter to those this process already has."""
+    count = _fields(status).get("Seccomp_filters")
+    if count is None:
+        return "unknown"  # a kernel that does not report the count
+    if not count.isdigit():
+        raise Refused(EXIT_PRIVILEGE, "unreadable seccomp state")
+    return str(int(count) + 1)
+
+
+def verify_dropped(status: str, uid: int, filters: str) -> None:
+    """Refuse unless the kernel's view matches a fully dropped service process."""
+    fields = _fields(status)
+    if fields.get("Seccomp_filters", "unknown") != filters:
+        raise Refused(EXIT_PRIVILEGE, "namespace filter not installed")
     for name in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"):
         if fields.get(name) != "0000000000000000":
             raise Refused(EXIT_PRIVILEGE, f"capability set not empty: {name}")
@@ -273,7 +311,7 @@ def verify_dropped(status: str, uid: int) -> None:
 
 def run(argv: Sequence[str], environ: Mapping[str, str], system: System) -> int:
     try:
-        mode, name, profile, command = _parse(argv)
+        mode, name, profile, filters, command = _parse(argv)
         _check_settings(environ)
         if mode in {"start", "probe"}:
             if system.geteuid() != 0:
@@ -297,10 +335,16 @@ def run(argv: Sequence[str], environ: Mapping[str, str], system: System) -> int:
                 follow = "continue-probe"
             program = namespace_filter(system.machine())
             target = _setpriv(
-                profile.uid, system.seccomp_path(program), _interpreter(), follow, name, command
+                profile.uid,
+                system.seccomp_path(program),
+                _interpreter(),
+                follow,
+                name,
+                _expected_filters(system.read_status()),
+                command,
             )
         else:
-            verify_dropped(system.read_status(), profile.uid)
+            verify_dropped(system.read_status(), profile.uid, filters or "")
             if volumes.MATERIAL_VARIABLE in environ or volumes.DIGEST_VARIABLE in environ:
                 raise Refused(EXIT_CONFIG, "material reached the dropped process")
             env = dict(environ)
