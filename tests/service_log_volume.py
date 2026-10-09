@@ -35,6 +35,10 @@ stack = images.stack
 BUFFERS = {"runtime": "8m", "api": "8m"}
 HOLD_SECONDS = 300
 WINDOW_SECONDS = 60
+# The highest request rates measured (2026-10-08, ARM64 Docker Desktop, eight
+# threads, over the 60 s window). Fresh bytes per request times these must still
+# fit, so a per-request output regression fails even when a busy host answers slower.
+PEAK_REQUESTS_PER_SECOND = {"runtime": 566, "api": 248}
 THREADS = 8
 MAIN_TF = Path(__file__).resolve().parents[1] / "deploy" / "aws-platform-fit" / "main.tf"
 LOAD = (
@@ -97,7 +101,7 @@ def _measure(stack: images.Stack, target: str, container: str, host: str, port: 
         detach=False,
         stdin=stack.secrets["producer"],
     )
-    elapsed = time.monotonic() - started
+    elapsed = time.monotonic() - started  # includes the load container's start-up
     assert load.returncode == 0, load.stderr
     requests = json.loads(load.stdout)["requests"]
     # Let the service flush what the window produced before counting it.
@@ -107,20 +111,21 @@ def _measure(stack: images.Stack, target: str, container: str, host: str, port: 
     window = "".join(now[len(then) :] for then, now in zip(before, after, strict=True))
     lines = window.splitlines()
     stack.assert_no_secrets(window)
+    size = len(window.encode())
+    # The service writes only while the load runs: rate over the load window.
+    rate = size / WINDOW_SECONDS
     return {
         "requests": requests,
-        "seconds": round(elapsed, 1),
-        "bytes": len(window.encode()),
-        "bytes_per_second": round(len(window.encode()) / elapsed, 1),
-        "bytes_per_request": round(len(window.encode()) / max(requests, 1), 1),
+        "requests_per_second": round(requests / WINDOW_SECONDS, 1),
+        "window_seconds": WINDOW_SECONDS,
+        "elapsed_seconds": round(elapsed, 1),
+        "bytes": size,
+        "bytes_per_second": round(rate, 1),
+        "bytes_per_request": round(size / max(requests, 1), 1),
         "lines": len(lines),
         "longest_line": max((len(line.encode()) for line in lines), default=0),
         "buffer": BUFFERS[target],
-        "hold_seconds_at_peak": (
-            round(_mebibytes(BUFFERS[target]) / (len(window.encode()) / elapsed))
-            if window
-            else None
-        ),
+        "hold_seconds_at_peak": round(_mebibytes(BUFFERS[target]) / rate) if rate else None,
     }
 
 
@@ -143,8 +148,12 @@ def test_runtime_and_api_peak_output_fits_their_buffers(stack: images.Stack):
         detach=True,
         options=("--network-alias", "api"),
     )
+    # A loaded host can take minutes to start the API; the window starts after.
     images.wait_for(
-        "API startup", lambda: "Application startup complete" in images.logs(api), container=api
+        "API startup",
+        lambda: "Application startup complete" in images.logs(api),
+        container=api,
+        timeout=180,
     )
     results: dict[str, dict] = {
         "runtime": _measure(stack, "runtime", runtime, "runtime", 8443),
@@ -162,5 +171,9 @@ def test_runtime_and_api_peak_output_fits_their_buffers(stack: images.Stack):
     print(json.dumps(measurements, sort_keys=True))
     for target, result in results.items():
         assert result["requests"] > 0, result
-        # At the measured peak the buffer holds HOLD_SECONDS of output.
-        assert result["bytes_per_second"] * HOLD_SECONDS <= _mebibytes(BUFFERS[target]), result
+        buffer = _mebibytes(BUFFERS[target])
+        # At this run's rate the buffer holds HOLD_SECONDS of output...
+        assert result["bytes_per_second"] * HOLD_SECONDS <= buffer, result
+        # ...and at the recorded peak rate too, whatever this host's load.
+        peak = PEAK_REQUESTS_PER_SECOND[target] * result["bytes_per_request"]
+        assert peak * HOLD_SECONDS <= buffer, result

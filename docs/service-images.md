@@ -242,20 +242,24 @@ requests a release and its probes make:
 - API: `/`, `/api/ready`, a refused protected route and an unknown path, with
   staging's paused execution mode.
 
-The bytes each container writes to stdout and stderr in the window give its
-peak rate. Staging sets explicit `non-blocking` awslogs delivery with a
-`max-buffer-size` that holds at least five minutes of that peak. The test fails
-if a fresh measurement no longer fits, or if Terraform's values differ.
+The bytes each container writes to stdout and stderr during the 60 s window give
+its peak rate. Staging sets explicit `non-blocking` awslogs delivery with a
+`max-buffer-size` that holds at least five minutes of that peak. A fresh
+measurement must fit at its own rate, and also at the recorded peak request rate
+times its fresh bytes per request, so a per-request output regression fails even
+on a busy host. The test also fails if Terraform's values differ.
 
-Measured on 2026-10-08 (ARM64 Docker Desktop, AWS-05 images):
+Measured on 2026-10-08 (ARM64 Docker Desktop, AWS-05 images, rates over the
+window):
 
 | Service | Requests/s | Bytes/s | Bytes/request | Longest line | `max-buffer-size` | Holds at peak |
 | --- | --- | --- | --- | --- | --- | --- |
-| Runtime | 542 | 13,823 | 25.5 | 101 | `8m` | about 10 min |
-| API | 232 | 15,250 | 65.7 | 80 | `8m` | about 9 min |
+| Runtime | 566 | 14,428 | 25.5 | 101 | `8m` | about 9.7 min |
+| API | 248 | 16,284 | 65.7 | 80 | `8m` | about 8.6 min |
 
-The Runtime writes nothing per successful request; its lines are the refused
-TLS handshakes. The API writes one access line per request. This is a local
+A rerun under another workload's load answered fewer requests at the same bytes per
+request. The Runtime writes nothing per successful request; its lines are the
+refused TLS handshakes. The API writes one access line per request. This is a local
 method, not a Fargate guarantee: the driver's memory, CloudWatch latency and real
 traffic are unmeasured, and overflow drops lines rather than blocking.
 

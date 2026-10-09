@@ -20,10 +20,43 @@ CycloneDX SBOMs list the same components.
 | Release-tools | `sha256:993b82ff07b991943ae0508675b3a89e1c502867be0e48bfec59bf4b58e3485e` | 54: C0/H1/M23/L30/U0, unchanged | 29, unchanged |
 | Runtime | `sha256:343db5c919463eaa49fcc1abc2bdee6ae6c90b508dd654a86f76f6b102548145` | zero | 23; only `golang.org/x/text` v0.40.0 → v0.41.0 (GO-2026-6629) |
 
-The Search image's new inputs are application files only: the migration release
-job and three shared release-receipt modules. Every disposition below therefore
-carries over unchanged as an assessment of that image. None is accepted, and the
-27 retained service and 54 tools matches stay non-additive.
+**Input delta against the accepted images.** Each image's build context is the
+files its `.dockerignore` admits, plus the Dockerfile.
+
+- **Search** (`5fc8f58..aws-04`), 10 files, 767 added lines:
+  - `container/Dockerfile` and `container/Dockerfile.dockerignore`: copy the three
+    modules below;
+  - `dev/migrate_storage.py`: the `--release-job` mode;
+  - `dev/prepare_service_volumes.py`: the `runtime-observer` init profile;
+  - `release_tools/__init__.py`, `contract.py` and `receipt.py`;
+  - `src/storage/database.py`, `release_job.py` and `schema.py`: the release job and
+    the shared migration path it reuses.
+- **Release-tools:** `release_tools/` only (8 files: the observers, the shared
+  contract and the receipt kinds).
+- **Runtime** (`bb6e523..aws-03-runtime`): `cmd/migrate/main.go`,
+  `cmd/migrate/releasejob.go`, and `go.mod`/`go.sum` (`golang.org/x/text`).
+
+No package, base image or native library changed: the SBOMs list the same
+components, apart from the Runtime's `x/text`.
+
+**Recheck.** The A and U rationales that rest on source searches were rechecked over
+every added Search line. The rationales cited include CVE-2018-20796,
+CVE-2021-45346, CVE-2026-18374, CVE-2026-6368, CVE-2026-6791 and CVE-2026-19499.
+No added line calls or imports any of:
+
+- ctypes, cffi or sqlite3;
+- wordexp or an iconv/JIS conversion or `ccs=` mode;
+- glob, fnmatch, zlib or `crc32_combine`;
+- strfmon or locale, tsearch or tdelete;
+- resolver or DNS-printing functions, dlopen, or `LD_PRELOAD`;
+- subprocess, lzma, tar, zip or gzip;
+- the `ssl` module, curses, readline or multiprocessing.
+
+The only matches are SQL text and environment-variable names. The new code
+reaches PostgreSQL through the existing psycopg/libpq path. Every disposition below
+therefore carries over unchanged as an assessment of these images. None is
+accepted, and the 27 retained service and 54 tools matches stay non-additive. The
+delta listing and the recheck are saved with the AWS-05 evidence.
 
 A rescan of the same archives with the database updated `2026-10-08T19:05:21Z`
 changes two entries, which join this ledger for the release decision:

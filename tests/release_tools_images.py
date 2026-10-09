@@ -348,6 +348,33 @@ def wait_for(description: str, predicate, *, timeout: float = 60) -> None:
     raise AssertionError(f"timed out waiting for {description}")
 
 
+def lock_waiter(stack: Stack, tag: str, *, freeze: bool = False, timeout: int = 60) -> list[str]:
+    """``pid|user|database|ssl`` of the session tagged ``tag`` once it waits on a lock.
+
+    The wait runs inside the server's container: polling from the host costs one
+    ``docker exec`` per look, which a loaded host stretches past a job's three-second
+    lock limit. With ``freeze`` the backend is stopped there, before any server-side
+    limit can end its statement.
+    """
+    query = (
+        "SELECT a.pid || '|' || a.usename || '|' || a.datname || '|' || s.ssl"
+        " FROM pg_stat_activity a JOIN pg_stat_ssl s USING (pid)"
+        f" WHERE a.application_name = '{tag}' AND a.wait_event_type = 'Lock' LIMIT 1"
+    )
+    act = 'kill -STOP "${row%%|*}"; ' if freeze else ""
+    script = (
+        f"end=$(( $(date +%s) + {timeout} )); "
+        "while [ $(date +%s) -lt $end ]; do "
+        f'row=$(psql -X -U postgres -d postgres -tAc "{query}"); '
+        f'if [ -n "$row" ]; then {act}echo "$row"; exit 0; fi; sleep 0.05; done; exit 1'
+    )
+    return (
+        docker("exec", stack.postgres, "sh", "-c", script, timeout=timeout + 30)
+        .stdout.strip()
+        .split("|")
+    )
+
+
 def _start_postgres(stack: Stack, *, name: str, ssl: bool, ip: str | None, alias: str) -> None:
     stack.containers.append(name)
     server = ["postgres", "-c", "log_connections=on", "-c", "log_disconnections=on"]
@@ -989,9 +1016,7 @@ def test_hung_session_is_stopped_by_the_in_image_deadline_without_a_controller(s
     started = time.monotonic()
     name = stack.start_job("grant", "runtime", RELEASE_NOT_AFTER=stamp(not_after))
     try:
-        wait_for("blocked grant", lambda: any(row.endswith("|Lock") for row in stack.backend(tag)))
-        pid = stack.backend(tag)[0].split("|")[0]
-        docker("exec", stack.postgres, "kill", "-STOP", pid)
+        lock_waiter(stack, tag, freeze=True)
         # Nobody stops the task: the job's own watchdog must end it by the deadline.
         run = stack.finish(name, started)
         assert datetime.now(UTC) <= not_after + timedelta(seconds=2)
@@ -1027,7 +1052,7 @@ def test_stop_signal_terminates_and_reaps_the_client(stack, released):
     started = time.monotonic()
     name = stack.start_job("grant", "runtime")
     try:
-        wait_for("blocked grant", lambda: any(row.endswith("|Lock") for row in stack.backend(tag)))
+        lock_waiter(stack, tag)
         stopped = time.monotonic()
         docker("kill", "--signal", "SIGTERM", name)
         run = stack.finish(name, started)
@@ -1228,6 +1253,11 @@ def migration_receipt(run: JobRun) -> dict:
 
 
 def connections_tagged(stack: Stack, tag: str) -> int:
+    """Server log lines from sessions that started with this application name.
+
+    The server logs the name once start-up has read it, so this counts sessions,
+    not TCP attempts abandoned before start-up.
+    """
     return sum(f"app={tag} " in line for line in stack.server_log().splitlines())
 
 
@@ -1252,6 +1282,8 @@ def test_migration_release_job_receipt_names_the_proofs_schema(stack, released, 
         },
     }
     assert not stack.backend(f"release:{stack.release_id}:{database}-migrate")
+    # The positive control for the refusal case's "no connection" check.
+    assert connections_tagged(stack, f"release:{stack.release_id}:{database}-migrate") >= 1
 
 
 @pytest.mark.parametrize("database", ["runtime", "product"])
@@ -1259,8 +1291,8 @@ def test_migration_release_job_without_time_for_a_statement_never_connects(
     stack, released, database
 ):
     # The deadline is checked before the task identity is read, so there is no
-    # ARN to bind a receipt to: the job refuses with its event only, and the
-    # controller holds on the missing receipt.
+    # ARN to bind a receipt to: the job refuses with its event only. The
+    # controller holds on the nonzero exit (job_container_failed).
     release_id = str(uuid.uuid4())
     tag = f"release:{release_id}:{database}-migrate"
     started = time.monotonic()
@@ -1316,13 +1348,8 @@ def test_migration_release_job_stops_on_sigterm_with_its_verified_session_gone(
     started = time.monotonic()
     name = start_migration(stack, database)
     try:
-        wait_for("blocked migration", lambda: any(r.endswith("|Lock") for r in stack.backend(tag)))
         # The one session is the expected owner on the expected database, over TLS.
-        identity = stack.sql(
-            "postgres",
-            "SELECT a.usename || '|' || a.datname || '|' || s.ssl FROM pg_stat_activity a"
-            f" JOIN pg_stat_ssl s USING (pid) WHERE a.application_name = '{tag}'",
-        )
+        identity = "|".join(lock_waiter(stack, tag)[1:])
         stopped = time.monotonic()
         docker("kill", "--signal", "SIGTERM", name)
         run = stack.finish(name, started)
@@ -1335,3 +1362,32 @@ def test_migration_release_job_stops_on_sigterm_with_its_verified_session_gone(
     assert (document["task_arn"], document["status"]) == (task_arn(name), "failed")
     assert document["result"] == {"reason": "terminated", "sql_outcome": "unknown"}
     wait_for("terminated migration backend to exit", lambda: not stack.backend(tag), timeout=15)
+
+
+@pytest.mark.parametrize("database", ["runtime", "product"])
+def test_migration_release_job_reaching_its_deadline_mid_statement_exits_124(
+    stack, released, database
+):
+    """A hung session: nobody stops the task, and its own deadline ends it.
+
+    The blocked backend is frozen, so no server-side limit can end the statement
+    first; only the job's watchdog can.
+    """
+    tag = f"release:{stack.release_id}:{database}-migrate"
+    holder = _hold_version_table(stack, database)
+    not_after = datetime.now(UTC) + timedelta(seconds=16)
+    started = time.monotonic()
+    name = start_migration(stack, database, RELEASE_NOT_AFTER=stamp(not_after))
+    try:
+        lock_waiter(stack, tag, freeze=True)
+        run = stack.finish(name, started)
+        assert datetime.now(UTC) <= not_after + timedelta(seconds=3)
+    finally:
+        for row in stack.backend(tag):
+            docker("exec", stack.postgres, "kill", "-CONT", row.split("|")[0], check=False)
+        _release(holder)
+    assert run.code == 124, (run.stdout, run.stderr)
+    document = migration_receipt(run)
+    assert (document["task_arn"], document["status"]) == (task_arn(name), "failed")
+    assert document["result"] == {"reason": "deadline_exceeded", "sql_outcome": "unknown"}
+    wait_for("abandoned migration backend to exit", lambda: not stack.backend(tag), timeout=15)
