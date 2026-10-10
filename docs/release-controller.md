@@ -451,9 +451,10 @@ images, a separate approval.
   journal and lock in an S3-compatible stand-in. Their AWS behavior (IAM,
   `GetLogEvents` tokens as `endTime` advances, stopped-task listing, reported
   overrides, S3's own conditional semantics, the STS `Date` header) is unverified.
-- Published images. The AWS-05 local images carry the migration release jobs and
-  the observers, and their container suites, scans and SBOMs are recorded; no
-  image is in a registry. Their task definitions, log group and launcher policies
+- Published images. The local images carry the migration release jobs and the
+  observers, and their container suites, scans and SBOMs are recorded: Search and
+  release-tools from AWS-05, and the Runtime as rebuilt with Go 1.26.9 in AWS-06.
+  No image is in a registry. Their task definitions, log group and launcher policies
   are mock-tested Terraform.
 - The live bootstrap administrator path: its task definitions and separate
   launcher exist in mocked Terraform, never attached.

@@ -25,8 +25,8 @@ Job, bootstrap, reconcile and observer containers get exactly the environment
 harness writes the material their profiles would, as the container suites do; the
 init profiles have their own suites. The
 manifest's expectations come from the images themselves: the release-tools SQL
-digests, the Search schema revision, the Runtime migrations and the AWS-05 image
-bindings (index, platform manifest, provenance, SBOM and scan hashes).
+digests, the Search schema revision, the Runtime migrations and the verified
+image bindings (index, platform manifest, provenance, SBOM and scan hashes).
 
 ## S3 stand-in
 
@@ -58,7 +58,8 @@ bucket-owner checks are not proven by it.
   raw journal chains are validated, and their projections must be identical.
   - **Authority:** each journal's manifest and approval hashes must equal the
     hashes of that run's saved `manifest.json` and `approval.json`. The two runs'
-    documents must be identical apart from their wall times.
+    documents must be identical apart from the release window's times, the
+    approval's own window and its hash of that manifest.
   - **Replaced in the projection:** only these declared nondeterministic fields:
     - wall times;
     - the store's ETags, and the hash chain over them;

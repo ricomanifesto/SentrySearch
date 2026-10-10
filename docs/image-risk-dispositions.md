@@ -71,6 +71,33 @@ changes two entries, which join this ledger for the release decision:
 
 Runtime still reports zero.
 
+### Runtime rebuild with Go 1.26.9 (October 10, 2026)
+
+`govulncheck` began reporting nine standard-library advisories reachable from the
+Runtime code in go1.26.6, all fixed in go1.26.9: GO-2026-6603, 6605, 6607, 6608,
+6610, 6611, 6612, 6613 and 6617 (`net/http`, `net/textproto`, `crypto/tls`). They
+were published after the AWS-05 image was built, and neither database above listed
+them. The Runtime was rebuilt from Runtime
+`c46533b9666740ea4e11881d978a604196d687ef`, whose only change is the toolchain pin
+and the matching `golang:1.26.9-bookworm` builder. The earlier AWS-05 Runtime
+image is retained, not removed or retagged, and is superseded.
+
+| Image | Local index | Raw matches | SBOM components |
+| --- | --- | --- | --- |
+| Runtime (rebuilt) | `sha256:291d4bb328924a3d31addda236937d89f60220005e1856256a3145d28d32785d` | zero | 23; only `stdlib` v1.26.6 → v1.26.9 |
+
+- Source and binary `govulncheck` report no vulnerability for the rebuilt image's
+  three binaries; the superseded image's binaries are flagged.
+- With the database updated `2026-10-10T12:33:35Z`:
+  - the rebuilt Runtime reports zero, where the superseded image now matches 13
+    standard-library CVEs per binary;
+  - Search is unchanged at 50;
+  - release-tools reports 63 (C0/H1/M32/L30/U0). The eight new matches are
+    CVE-2026-107708 and CVE-2026-107778 (MEDIUM, no fixed version) in
+    `libgssapi-krb5-2`, `libk5crypto3`, `libkrb5-3` and `libkrb5support0`
+    `1.21.3-5+deb13u1`. They have no disposition yet and join this ledger for
+    the release decision.
+
 ## Result and scope
 
 The retained Trivy 0.75.0 report (database updated `2026-10-06T19:11:49Z`)

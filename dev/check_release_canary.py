@@ -11,7 +11,7 @@ so its version is pinned and recorded:
 
 then pass ``--s3-endpoint http://127.0.0.1:47902 --s3-standin 'moto 5.2.3'``.
 ``--image-bindings`` names the JSON that binds each image's local index, platform
-manifest and evidence hashes (the AWS-05 build's verified bindings), so the manifest pins
+manifest and evidence hashes (a build's verified bindings), so the manifest pins
 exactly the images that run. No AWS request, registry push or real credential is
 involved.
 """

@@ -6,7 +6,7 @@ ECS and Logs requests are answered by the container-backed fakes in
 internal network, their actual output as log events), and the journal and lock
 live in an S3-compatible stand-in reached by the real store adapter. Manifest
 expectations come from the images themselves: the release-tools SQL digests, the
-Search schema revision and the AWS-05 image bindings.
+Search schema revision and the verified image bindings.
 
 Every environment is disposable: its databases, volumes, network and containers
 carry one prefix and are removed afterwards. No AWS request is made.
@@ -388,7 +388,11 @@ VOLATILE = {"at", "issued_at", "epoch_at", "lock_etag", "prior_sha256", "manifes
             "approval_sha256", "boot_id", "first_sequence", "last_sequence",
             "stable_seconds"}  # fmt: skip
 RELATIVE = ("deadline_at", "token_expires_at")
-DOCUMENT_TIMES = {"not_before", "not_after", "expires_at", "manifest_sha256"}
+# The only fields of a saved manifest and approval that differ between two runs of
+# one release: the release window's wall times, and the approval's own window and
+# its hash of the manifest that carries them.
+MANIFEST_TIMES = (("window", "not_before"), ("window", "expires_at"))
+APPROVAL_TIMES = (("not_before",), ("not_after",), ("manifest_sha256",))
 
 
 def _time(value: str) -> datetime:
@@ -429,18 +433,16 @@ def assert_authority(release: Release, raw: dict) -> None:
     assert [e["approval_sha256"] for e in prepared] == [approval.sha256]
 
 
-def masked_document(path: Path) -> Any:
-    """A saved manifest or approval with only its wall times (and their hash) masked."""
-
-    def walk(value: Any) -> Any:
-        if isinstance(value, dict):
-            return {key: ("<time>" if key in DOCUMENT_TIMES else walk(item))
-                    for key, item in value.items()}  # fmt: skip
-        if isinstance(value, list):
-            return [walk(item) for item in value]
-        return value
-
-    return walk(json.loads(path.read_bytes()))
+def masked_document(path: Path, times: tuple[tuple[str, ...], ...]) -> Any:
+    """A saved manifest or approval with exactly the named wall-time paths masked."""
+    document = json.loads(path.read_bytes())
+    for keys in times:
+        target = document
+        for key in keys[:-1]:
+            target = target[key]
+        assert keys[-1] in target, keys
+        target[keys[-1]] = "<time>"
+    return document
 
 
 def save(release: Release, label: str) -> None:
@@ -565,8 +567,10 @@ def test_two_first_deployments_write_identical_normalized_journals():
                 save(release, f"repeat-{run}")
                 raw = journal(release)
                 assert_authority(release, raw)
-                documents.append([masked_document(release.root / f"{name}.json")
-                                  for name in ("manifest", "approval")])  # fmt: skip
+                documents.append([
+                    masked_document(release.root / "manifest.json", MANIFEST_TIMES),
+                    masked_document(release.root / "approval.json", APPROVAL_TIMES),
+                ])  # fmt: skip
                 projections.append(normalized(raw))
                 forget(release)
             finally:
