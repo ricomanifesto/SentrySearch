@@ -553,3 +553,26 @@ def test_a_check_that_finishes_in_time_is_never_ended_by_the_deadline(metadata, 
     assert code == 0 and receipt is not None and receipt["status"] == "passed"
     time.sleep(0.1)
     assert exits == []
+
+
+def test_time_spent_reading_the_task_identity_is_charged_to_the_check(
+    metadata, monkeypatch, capsys
+):
+    # The watchdog is armed after the identity read, for what is left of the check.
+    start, not_after = soon(2)
+    armed: list[float] = []
+    read_identity = observe.contract.task_identity
+
+    def slow_identity(environ):
+        time.sleep(0.4)
+        return read_identity(environ)
+
+    monkeypatch.setattr(observe.contract, "task_identity", slow_identity)
+    monkeypatch.setattr(observe, "_enforce_deadline",
+                        lambda verdict, seconds, exit: armed.append(seconds))  # fmt: skip
+    env = environment(metadata, serve(Behaviour()), check="api-observe",
+                      host="api.staging.internal", RELEASE_NOT_AFTER=not_after)  # fmt: skip
+    observe.main(["observe-api"], env, now=lambda: start, resolve=answers("127.0.0.1"),
+                 exit=lambda code: None)  # fmt: skip
+    capsys.readouterr()
+    assert len(armed) == 1 and 1.0 < armed[0] <= 1.6, armed

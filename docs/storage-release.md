@@ -50,11 +50,14 @@ stdout it writes one `sentry.release-migration.v1` receipt: on success `database
 the product proof computes); on failure only `reason` and `sql_outcome`. SIGTERM
 exits 143 within the 5-second stop grace, the deadline exits 124, and any
 failure after SQL may have run reports `sql_outcome: unknown`. Both bounds
-belong to a watchdog that is armed before anything else and waits for nothing:
-the running statement's cancellation is only requested, on its own thread,
-because that request needs the same network as the stuck statement and can
-block as long. A cancellation that never returns therefore changes neither
-exit. Tests: `tests/test_release_migration_job.py` (every refusal before a
+belong to a watchdog that is armed before any connection is opened and waits for
+nothing: the running statement's cancellation is only requested, on its own
+thread, because that request needs the same network as the stuck statement and
+can block as long. A cancellation that never returns therefore changes neither
+exit. The one step ahead of the watchdog is the task-identity read from the
+metadata endpoint, which bounds each socket operation (2 s) but not the whole
+read; no database session exists yet, and the controller's own deadline stop is
+what bounds it. Tests: `tests/test_release_migration_job.py` (every refusal before a
 connection; a cancellation that never returns, under a stop and at the
 deadline, in-process and with a real SIGTERM) and the
 explicit native suite `tests/release_migration_native.py`

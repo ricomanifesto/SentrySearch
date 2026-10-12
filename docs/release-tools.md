@@ -154,8 +154,11 @@ that keeps arriving a little at a time never trips one. So a watchdog thread,
 armed before the first lookup and waiting on nothing but the clock, ends the
 process at the deadline with one failed receipt (`deadline_exceeded`, exit 12),
 whatever the check is waiting on. A check that completes is a pass only if its
-last answer arrived before the deadline. The controller's own deadline and stop
-for the observer task are separate and unchanged.
+last answer arrived before the deadline. The task-identity read comes before the
+watchdog: it bounds each socket operation (2 s) but not the whole read, its time
+is charged to the check's deadline once the watchdog is armed, and until then
+the controller's own deadline and stop for the observer task, which are separate
+and unchanged, are the bound.
 
 The observer resolves the private name once, requires exactly one IPv4 address
 and sends every request to that address, recording the peer at connect time. It
