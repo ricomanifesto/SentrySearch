@@ -8,7 +8,9 @@ verified-TLS session tagged ``release:<release>:<job>`` with server-side
 statement, lock, idle and client-check limits, verifies that session, migrates
 inside one transaction with limits re-derived from the deadline, and writes one
 ``sentry.release-migration.v1`` receipt. SIGTERM exits 143, the deadline 124, and
-a failure after SQL may have run reports an unknown SQL outcome. Exit codes and
+a failure after SQL may have run reports an unknown SQL outcome. Both bounds are
+enforced by a watchdog that depends on nothing else finishing: the statement's
+cancellation is requested on its own thread and never awaited. Exit codes and
 log events match the release-tools jobs and the Runtime migration job.
 
 Only the standard-library release contract and receipt modules are shared with
@@ -198,21 +200,33 @@ class ReleaseJob:
     # Stop and deadline --------------------------------------------------------
 
     def _cancel(self) -> None:
+        """Ask the server to cancel the running statement, without waiting for an answer.
+
+        The request opens its own connection to the server and can block for as
+        long as that network does, which is exactly when a statement is stuck.
+        It therefore runs on its own thread: neither the signal handler nor the
+        deadline timer ever waits for it. The watchdog is the bound, not this.
+        """
         connection = self._dbapi
         if connection is not None:
-            try:
-                connection.cancel()
-            except Exception:
-                pass
+            threading.Thread(target=self._send_cancel, args=(connection,), daemon=True).start()
+
+    @staticmethod
+    def _send_cancel(connection: Any) -> None:
+        try:
+            connection.cancel()
+        except Exception:
+            pass
 
     def stop(self, *_args: object) -> None:
-        """SIGTERM/SIGINT: cancel the running statement and exit within the grace."""
+        """SIGTERM/SIGINT: exit within the grace, cancelling the statement if that is quick."""
         if self.terminated.is_set():
             return
         self.terminated.set()
-        self._cancel()
+        # The hard exit is armed before anything that could block.
         threading.Thread(target=self._watchdog, args=(contract.STOP_GRACE_SECONDS,),
                          daemon=True).start()  # fmt: skip
+        self._cancel()
 
     def _watchdog(self, seconds: float) -> None:
         if self.done.wait(seconds):
@@ -224,7 +238,9 @@ class ReleaseJob:
         self.exit(self.fail(JobFailed(reason, self.outcome(), code)))
 
     def _deadline_timer(self) -> None:
-        # At the session end cancel any statement; at the absolute deadline stop waiting.
+        # At the session end cancel any statement; at the absolute deadline stop
+        # waiting. This thread is the deadline's own watchdog: the cancellation
+        # is only requested here, so it cannot hold the deadline back.
         if self.done.wait(max(0.0, (self.session_end - self.now()).total_seconds())):
             return
         self.expired.set()

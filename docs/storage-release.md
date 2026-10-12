@@ -48,9 +48,15 @@ the deadline before migrating and runs the same one-transaction migration. On
 stdout it writes one `sentry.release-migration.v1` receipt: on success `database`,
 `principal` and `schema` (`sentrysearch:<version>:<checksum16>`, the same value
 the product proof computes); on failure only `reason` and `sql_outcome`. SIGTERM
-cancels the statement and exits 143, the deadline exits 124, and any failure
-after SQL may have run reports `sql_outcome: unknown`. Tests:
-`tests/test_release_migration_job.py` (every refusal before a connection) and the
+exits 143 within the 5-second stop grace, the deadline exits 124, and any
+failure after SQL may have run reports `sql_outcome: unknown`. Both bounds
+belong to a watchdog that is armed before anything else and waits for nothing:
+the running statement's cancellation is only requested, on its own thread,
+because that request needs the same network as the stuck statement and can
+block as long. A cancellation that never returns therefore changes neither
+exit. Tests: `tests/test_release_migration_job.py` (every refusal before a
+connection; a cancellation that never returns, under a stop and at the
+deadline, in-process and with a real SIGTERM) and the
 explicit native suite `tests/release_migration_native.py`
 (`SENTRYSEARCH_TEST_PG_BIN` set to PostgreSQL 16 binaries: receipt and rerun,
 refused TLS and password, a blocked statement abandoned at its bound with no

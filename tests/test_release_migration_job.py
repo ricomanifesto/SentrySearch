@@ -8,9 +8,13 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
+import signal
+import subprocess
 import sys
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -310,3 +314,159 @@ def test_every_job_id_a_manifest_accepts_fits_the_producers_session_name():
                 }
             )
             assert len(identity.application_name) <= contract.MAX_APPLICATION_NAME
+
+
+# Stop and deadline when the database cancellation itself never returns ----------------
+
+
+class NeverReturns:
+    """A database connection whose cancellation blocks for as long as the network does."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def cancel(self) -> None:
+        self.entered.set()
+        self.release.wait()
+
+
+def receipts_written(capsys) -> list[dict]:
+    lines = capsys.readouterr().out.splitlines()
+    return [json.loads(line.split(" ", 1)[1]) for line in lines
+            if line.startswith("SENTRY_RELEASE_RECEIPT ")]  # fmt: skip
+
+
+@pytest.mark.parametrize("sql_attempted, sql_outcome", [(False, "none"), (True, "unknown")])
+@pytest.mark.parametrize(
+    "path, code, reason",
+    [("stop", release_job.EXIT_TERMINATED, "terminated"),
+     ("deadline", release_job.EXIT_DEADLINE, "deadline_exceeded")],
+)  # fmt: skip
+def test_a_cancellation_that_never_returns_cannot_delay_the_hard_exit(
+    monkeypatch, capsys, path, code, reason, sql_attempted, sql_outcome
+):
+    # A hung server connection is why the watchdog exists, and the cancellation
+    # request travels the same network. The bound must not wait for it.
+    grace = 0.05
+    monkeypatch.setattr(contract, "STOP_GRACE_SECONDS", grace)
+    exits: list[int] = []
+    exited = threading.Event()
+    started = datetime.now(UTC)
+    # stop: the deadline is far away. deadline: the session ends now, the job 0.2 s later.
+    deadline = started + (timedelta(seconds=60) if path == "stop" else timedelta(seconds=0.2))
+    identity = contract.ReleaseIdentity(RELEASE, "product-migrate", deadline, 60)
+    job = release_job.ReleaseJob(
+        identity, release_job.Expected("product_db", "product_owner"), TASK, deadline,
+        now=lambda: datetime.now(UTC), engine_factory=lambda _: None,
+        exit=lambda value: (exits.append(value), exited.set()),
+    )  # fmt: skip
+    connection = NeverReturns()
+    job._dbapi = connection
+    job.sql_attempted = sql_attempted
+    began = time.monotonic()
+    try:
+        if path == "stop":
+            # A signal handler runs on the main thread: it must not wait either.
+            handler = threading.Thread(target=job.stop, daemon=True)
+            handler.start()
+            handler.join(0.5)
+            assert not handler.is_alive(), "the stop handler waited for the cancellation"
+            bound = grace
+        else:
+            threading.Thread(target=job._deadline_timer, daemon=True).start()
+            bound = 0.2
+        assert exited.wait(bound + 1.0), "no hard exit while the cancellation is blocked"
+        elapsed = time.monotonic() - began
+        assert connection.entered.wait(1.0), "the cancellation was still requested"
+        assert not connection.release.is_set() and exits == [code]
+        assert bound <= elapsed < bound + 1.0, elapsed
+        # One receipt, with the conservative SQL outcome; a later failure on the
+        # job's own thread neither writes a second one nor changes the code.
+        late = job.fail(release_job.JobFailed("sql_error", "unknown", release_job.EXIT_SQL))
+        assert late == code
+        assert receipts_written(capsys) == [
+            {"schema": "sentry.release-migration.v1", "release_id": RELEASE,
+             "job_id": "product-migrate", "task_arn": TASK, "status": "failed",
+             "result": {"reason": reason, "sql_outcome": sql_outcome}}
+        ]  # fmt: skip
+    finally:
+        connection.release.set()
+        job.done.set()
+
+
+BLOCKED_JOB = """
+import os, sys, threading
+sys.path.insert(0, {repo!r})
+from release_tools import contract
+from src.storage import release_job
+
+release_job.CA_FILE = os.environ["DB_SSLROOTCERT"]
+contract.STOP_GRACE_SECONDS = float(os.environ["FIXTURE_GRACE_SECONDS"])
+forever = threading.Event()
+
+
+class Dbapi:
+    def cancel(self):
+        forever.wait()  # the cancellation request never completes
+
+
+class Connection:
+    connection = type("Pool", (), {{"dbapi_connection": Dbapi()}})()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, *_args):
+        print("statement outstanding", file=sys.stderr, flush=True)
+        forever.wait()  # the server never answers
+
+
+class Engine:
+    def connect(self):
+        return Connection()
+
+    def dispose(self):
+        pass
+
+
+raise SystemExit(release_job.main(dict(os.environ), engine_factory=lambda _args: Engine()))
+"""
+
+
+def test_sigterm_ends_the_process_within_the_grace_when_the_cancellation_hangs(
+    metadata, ca, tmp_path
+):
+    """Real signals and a real exit: the statement and its cancellation both hang."""
+    grace = 0.5
+    not_after = (datetime.now(UTC) + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    env = environment(metadata, ca, RELEASE_NOT_AFTER=not_after, FIXTURE_GRACE_SECONDS=str(grace),
+                      PYTHON_DOTENV_DISABLED="1", PATH=os.environ.get("PATH", ""))  # fmt: skip
+    process = subprocess.Popen(
+        [sys.executable, "-B", "-c", BLOCKED_JOB.format(repo=str(REPO))], env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )  # fmt: skip
+    try:
+        assert process.stderr is not None and process.stdout is not None
+        seen = []
+        while "statement outstanding" not in "".join(seen):
+            line = process.stderr.readline()
+            assert line, "the job ended before its statement: " + "".join(seen)
+            seen.append(line)
+        sent = time.monotonic()
+        process.send_signal(signal.SIGTERM)
+        code = process.wait(timeout=grace + 5)
+        elapsed = time.monotonic() - sent
+    finally:
+        process.kill()
+        process.wait()
+    assert code == release_job.EXIT_TERMINATED
+    assert grace <= elapsed < grace + 3, elapsed
+    lines = process.stdout.read().splitlines()
+    assert [json.loads(line.split(" ", 1)[1])["result"] for line in lines] == [
+        # The verification statement had not finished: no migration SQL was sent.
+        {"reason": "terminated", "sql_outcome": "none"}
+    ]
