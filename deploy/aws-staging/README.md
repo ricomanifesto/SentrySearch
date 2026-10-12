@@ -163,9 +163,14 @@ A test applies that whole sequence against one mocked state: first deployment,
 upgrade with the first release retained, then a rollback re-plan.
 
 Every evidence producer now has a definition: migrations in their release-job
-mode, grants, proofs, reconciliation, observers and the worker gate. Their images
-are not yet rebuilt and scanned with these producers, so a release against these
-roots would still hold. Missing, stale or ambiguous receipts hold the release.
+mode, grants, proofs, reconciliation, observers and the worker gate. Local
+Runtime, Search and release-tools images carry these producers; the container
+suites and the [integrated canary](../../docs/release-canary.md) run them, and
+the [image ledger](../../docs/image-risk-dispositions.md) records their scans.
+That is local evidence only. The images are not published to this environment's
+repositories, their retained findings are not accepted, these roots are not
+applied and nothing has run on AWS, so no release can run against these roots
+yet. Missing, stale or ambiguous receipts hold the release.
 
 A rollback run (docs/release-controller.md) restores the retained prior pair.
 The attended scope stays the **current** release's: the operator re-plans

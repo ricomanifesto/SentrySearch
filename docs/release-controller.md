@@ -499,11 +499,12 @@ images, a separate approval.
   journal and lock in an S3-compatible stand-in. Their AWS behavior (IAM,
   `GetLogEvents` tokens as `endTime` advances, stopped-task listing, reported
   overrides, S3's own conditional semantics, the STS `Date` header) is unverified.
-- Published images. The local images carry the migration release jobs and the
-  observers, and their container suites, scans and SBOMs are recorded: Search and
-  release-tools from AWS-05, and the Runtime as rebuilt with Go 1.26.9 in AWS-06.
-  No image is in a registry. Their task definitions, log group and launcher policies
-  are mock-tested Terraform.
+- Published images. Local Runtime, Search and release-tools images carry the
+  migration release jobs and the observers. Their identities, container suites,
+  scans and SBOMs are recorded in the [image ledger](image-risk-dispositions.md),
+  and each is rebuilt and proven again whenever one of its inputs changes. No
+  image is in a registry, and no finding in that ledger is accepted. Their task
+  definitions, log group and launcher policies are mock-tested Terraform.
 - The live bootstrap administrator path: its task definitions and separate
   launcher exist in mocked Terraform, never attached.
 - Teardown, which is a documented operator procedure, not code; a rollback run
@@ -534,9 +535,11 @@ Attaching the policies remains a separate approval. Each worker revision fixes
 its release's `SENTRYSEARCH_RELEASE_ID`, its `worker/<release-id>` stream prefix
 and non-blocking logging. The roots now define the observer task definitions,
 the `/<prefix>/observe` log group and an `-observe` launcher policy for the
-current release's observers only, and the migrations' release-job mode; until
-images carrying those producers are built, a release against these roots would
-hold.
+current release's observers only, and the migrations' release-job mode. Local
+images carry those producers and run them in the container suites and the
+canary. No release can run against these roots yet for other reasons: the
+images are not published, the roots are not applied, and nothing here has been
+accepted for or run on AWS.
 The manifest's environment name must equal the roots' `name_prefix` so the lock
 key matches the release-evidence policy. These roots are not applied, and mocked
 plans do not prove IAM behavior.

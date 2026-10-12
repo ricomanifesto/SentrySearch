@@ -144,7 +144,12 @@ ambiguous.
   controller waits until its deadline. Duplicate or malformed receipts are
   ambiguous.
 - **Producers.** The migration release jobs and the observers write these
-  receipts in source; images carrying them are not built yet.
+  receipts. They are built into the local Runtime, Search and release-tools
+  images, which run them in the container suites and the
+  [integrated canary](release-canary.md); the
+  [image ledger](image-risk-dispositions.md) records those images. That is
+  local evidence only: no image is published to a registry, none has written a
+  receipt on ECS, and CloudWatch delivery of these lines is unproven.
 
 **`S3ObjectStore`** (`ObjectStore`) on the control bucket:
 - **Keys.** It accepts only `releases/<uuid>/journal.json` and

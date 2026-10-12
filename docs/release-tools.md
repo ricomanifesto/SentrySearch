@@ -342,8 +342,8 @@ controller holds when an observed task reports one.
   with RDS authentication, `client_connection_check_interval` and statement
   logging.
 - S3 cross-prefix denial (needs the storage-proof task and real IAM).
-- Observers and migration release jobs on ECS: the AWS-05 local images run them
-  in containers, and their task definitions are mock-tested Terraform. Fargate
+- Observers and migration release jobs on ECS: the local images run them in
+  containers, and their task definitions are mock-tested Terraform. Fargate
   networking, service discovery, task metadata and IAM are not exercised.
 - A task that never reaches its container (pending, image pull, init) is outside
   the in-image guard; the controller's deadline StopTask and the attended operator
