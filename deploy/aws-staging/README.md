@@ -4,7 +4,10 @@ These Terraform roots describe an isolated, attended staging environment for the
 Runtime, Search API and worker services. They are **mock-tested source only**:
 nothing here has been applied, planned against an account, initialized against a
 real backend or used to publish an image. Every test uses `mock_provider "aws"`
-with `command = plan` and fake identifiers. A green run is not IAM evaluation,
+with `command = plan` and fake identifiers. One file,
+`releases/tests/releases_bootstrap_retention.tftest.hcl`, uses `command = apply`
+against that same mocked provider, because a catalog transition needs state
+carried from one run to the next; no test configures a real provider. A green run is not IAM evaluation,
 an account-specific plan, a reachability proof or deployment approval.
 
 ## Roots and ownership

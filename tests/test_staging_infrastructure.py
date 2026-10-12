@@ -278,15 +278,29 @@ def test_security_group_rules_are_only_the_reviewed_pairs():
     ]
 
 
+# The one test file that applies: a catalog transition needs state carried from
+# one run to the next, and only an apply against the mocked provider keeps any.
+MOCKED_APPLIES = {"releases_bootstrap_retention.tftest.hcl"}
+
+
 @pytest.mark.parametrize("directory", [STAGING / root for root in ROOTS] + [TASK_MODULE])
-def test_contract_tests_are_mocked_plans(directory):
+def test_contract_tests_run_only_against_a_mocked_provider(directory):
     tests = sorted((directory / "tests").glob("*.tftest.hcl"))
     assert tests
     for path in tests:
         text = path.read_text()
-        assert text.startswith('mock_provider "aws" {}\n')
-        assert not re.search(r"command\s*=\s*apply", text)
-        assert text.count("\n  command = plan\n") == text.count('\nrun "') > 0
+        code = [line for line in text.splitlines() if line.strip() and not line.startswith("#")]
+        # The provider is mocked before anything else, and never configured for real.
+        assert code[0].startswith('mock_provider "aws" {'), path.name
+        assert not re.search(r'^\s*provider\s+"', text, re.MULTILINE), path.name
+        assert text.count('mock_provider "') == 1, path.name
+        runs = text.count('\nrun "')
+        plans = text.count("\n  command = plan\n")
+        applies = len(re.findall(r"\n  command\s*=\s*apply\n", text))
+        assert plans + applies == runs > 0, path.name
+        assert len(re.findall(r"command\s*=\s*apply", text)) == applies
+        if path.name not in MOCKED_APPLIES:
+            assert code[0] == 'mock_provider "aws" {}' and applies == 0, path.name
 
 
 def test_local_state_plans_and_inputs_are_ignored():
