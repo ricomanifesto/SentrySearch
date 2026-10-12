@@ -21,7 +21,15 @@ fails on any lookup or connection beyond loopback.
 | Journal and lock (S3) | the real store adapter and SDK client | an S3-compatible server on loopback; the client uses path-style addressing |
 
 Job, bootstrap, reconcile and observer containers get exactly the environment
-`deploy/aws-platform-fit` renders for them. Init containers are not run. The
+`deploy/aws-platform-fit` renders for them. A task-definition revision is
+immutable here as in ECS. A forward release registers the whole catalog its plan
+creates, once, under one fixed deadline: its jobs, observers and services, and
+the reconcile revisions the plan defines for every release although a forward
+manifest names none. Registering an existing revision with any other release,
+deadline or budget is refused. A rollback run registers nothing: it may name
+only revisions its prior release already holds, and each keeps the deadline that
+release fixed, however much later the run's own window ends. Init containers are
+not run. The
 harness writes the material their profiles would, as the container suites do; the
 init profiles have their own suites. The
 manifest's expectations come from the images themselves: the release-tools SQL
@@ -103,10 +111,21 @@ bucket-owner checks are not proven by it.
      reconciles and proves both schemas, and redeploys the prior revisions.
      Observers and the worker gate pass, and it ends `held_paused`.
 
-  Only reconcile, proof and observer tasks are launched for the rollback run.
-  Both pairs run the same images; only their task-definition revisions differ.
-  So this proves the handoff, sweep, redeploy and evidence binding, not a binary
-  downgrade or an older pair's observer and receipt compatibility.
+  Only reconcile, proof and observer tasks are launched for the rollback run,
+  each as the prior release's own revision with that release's deadline and
+  release ID in its environment. Both pairs run the same images; only their
+  task-definition revisions differ. So this proves the handoff, sweep, redeploy
+  and evidence binding, not a binary downgrade or an older pair's observer and
+  receipt compatibility.
+- **Rollback after the retained revisions expired:** the same sequence, with the
+  prior release's revisions fixed to a short deadline (`CANARY_RETAINED_MINUTES`,
+  12 by default; it must cover that release's own first deployment). The
+  rollback run starts after that deadline, under its own later window. Its first
+  reconcile task refuses to start work (`deadline_expired`, no receipt) and the
+  run holds `job_container_failed` at `quiesced`: nothing else is launched, no
+  service is deployed and the lock is kept. Restoring the prior pair then needs
+  a new release planned from its images, with new revisions; the old revisions'
+  deadline is never rewritten.
 
 Each case's journal, CLI reports and every task's output are saved under
 `--artifacts`, pass or fail.

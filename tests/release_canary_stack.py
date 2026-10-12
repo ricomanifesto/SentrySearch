@@ -52,6 +52,7 @@ from tests.release_fakes import (
     FakeStore,
     FakeTask,
     evidence_release_id,
+    task_definition,
 )
 
 SUBNET = "169.254.170.0/24"
@@ -375,8 +376,19 @@ def _database_url(database: Database, user: str, password: str, ca: str) -> str:
     )
 
 
+class RevisionConflict(Exception):
+    """A task-definition revision named with anything but what it was registered with."""
+
+
 class TaskDefinitions:
-    """Each manifest revision's app container.
+    """Each registered revision's app container.
+
+    A revision is immutable, as in ECS: its release, deadline and budget are the
+    values it was first registered with. Registering the same ARN again with any
+    other value raises ``RevisionConflict``. A release registers the whole
+    catalog its plan creates, once, including the reconcile revisions a later
+    rollback run launches; a rollback run registers nothing and may name only
+    revisions its prior release already holds (``require_retained``).
 
     Job, bootstrap, reconcile and observer containers get exactly the environment
     deploy/aws-platform-fit renders for them. Service containers follow it with
@@ -387,36 +399,78 @@ class TaskDefinitions:
     a 30-second API stop timeout, and health taken from a readiness line rather than
     the task definitions' health commands. Release, deadline and budget are the
     revision's fixed values; secrets resolve to the canary custodian's values.
-    Built per release so retained revisions keep their own identity.
     """
 
     def __init__(self, env: CanaryEnvironment) -> None:
         self.env = env
         self.specs: dict[str, tuple[str, dict]] = {}
 
-    def register(self, document: dict, *, not_after: datetime, budget_seconds: int = 900) -> None:
-        # Every revision fixes the release whose revisions run: for a rollback run,
-        # the retained prior release's.
-        evidence_id = evidence_release_id(document)
+    @staticmethod
+    def _revisions(document: dict) -> dict[str, tuple[str, dict]]:
+        """What a manifest says about each revision it names, without release or deadline."""
+        found: dict[str, tuple[str, dict]] = {}
         for job in document["jobs"]:
-            self.specs[job["task"]["task_definition"]] = ("job", {
-                "job": job, "release_id": evidence_id, "not_after": not_after,
-                "budget": budget_seconds,
+            found[job["task"]["task_definition"]] = ("job", {
+                "job": {key: job[key] for key in ("id", "phase", "database")},
             })  # fmt: skip
         for check in document["operational_checks"]:
             if "task" in check:
-                self.specs[check["task"]["task_definition"]] = ("observer", {
-                    "check": check, "release_id": evidence_id, "not_after": not_after,
+                found[check["task"]["task_definition"]] = ("observer", {
+                    "check": {key: check[key] for key in ("id", "target", "host", "port")},
                 })  # fmt: skip
         for name, service in document["services"].items():
-            self.specs[service["task_definition"]] = ("service", {
-                "service": name, "release_id": evidence_id,
-            })  # fmt: skip
+            found[service["task_definition"]] = ("service", {"service": name})
+        return found
+
+    def register(self, document: dict, *, not_after: datetime, budget_seconds: int = 900) -> None:
+        """Register the revisions a forward release's plan creates, under its fixed deadline.
+
+        deploy/aws-platform-fit defines reconcile jobs for every release beside
+        its proof jobs. A forward manifest names none, so they are added here,
+        at the proof jobs' revision: a later rollback run finds them retained.
+        """
+        release_id = document["release_id"]
+        revisions = self._revisions(document)
+        for job in document["jobs"]:
+            if job["phase"] == "proof":
+                database = job["database"]
+                number = int(job["task"]["task_definition"].rsplit(":", 1)[1])
+                sibling = task_definition(f"sentry-staging-{database}-reconcile", number)
+                revisions.setdefault(sibling, ("job", {
+                    "job": {"id": f"{database}-reconcile", "phase": "reconcile",
+                            "database": database},
+                }))  # fmt: skip
+        fixed = {"job": {"not_after": not_after, "budget": budget_seconds},
+                 "observer": {"not_after": not_after}, "service": {}}  # fmt: skip
+        entries = {arn: (kind, {**data, "release_id": release_id, **fixed[kind]})
+                   for arn, (kind, data) in revisions.items()}  # fmt: skip
         rollback = document.get("rollback") or {}
         for name, service in (rollback.get("services") or {}).items():
-            self.specs.setdefault(service["task_definition"], ("service", {
+            # The retained prior services, as the prior release registered them.
+            entries[service["task_definition"]] = ("service", {
                 "service": name, "release_id": rollback["release_id"],
-            }))  # fmt: skip
+            })  # fmt: skip
+        conflicts = sorted(arn for arn, entry in entries.items()
+                           if self.specs.get(arn, entry) != entry)  # fmt: skip
+        if conflicts:
+            raise RevisionConflict(f"already registered with other values: {conflicts}")
+        self.specs.update(entries)
+
+    def require_retained(self, document: dict) -> None:
+        """A rollback run names only revisions its prior release already registered.
+
+        Nothing is registered and no deadline is taken from the run: each
+        revision keeps the one its release fixed, however much later the run's
+        own window ends.
+        """
+        release_id = evidence_release_id(document)
+        missing = []
+        for arn, (kind, data) in self._revisions(document).items():
+            held_kind, held = self.specs.get(arn, ("", {}))
+            if held_kind != kind or {**held, **data} != held or held["release_id"] != release_id:
+                missing.append(arn)
+        if missing:
+            raise RevisionConflict(f"not retained revisions of {release_id}: {sorted(missing)}")
 
     def spec(self, definition: str, task_id: str) -> ContainerSpec:
         kind, data = self.specs[definition]

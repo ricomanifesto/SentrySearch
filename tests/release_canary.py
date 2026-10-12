@@ -306,12 +306,17 @@ def canary(request) -> Iterator[tuple[CanaryEnvironment, dict]]:
             env.stop()
 
 
-def new_release(env: CanaryEnvironment, bindings: dict, *, release_id: str | None = None
-                ) -> Release:  # fmt: skip
+def _window_end(document: dict) -> datetime:
+    return datetime.fromisoformat(document["window"]["expires_at"].replace("Z", "+00:00"))
+
+
+def new_release(env: CanaryEnvironment, bindings: dict, *, release_id: str | None = None,
+                revisions_until: datetime | None = None) -> Release:  # fmt: skip
+    """A first deployment. Its revisions' fixed deadline is its window's end unless given."""
     document = canary_document(env, bindings, release_id=release_id or str(uuid.uuid4()))
     definitions = TaskDefinitions(env)
-    not_after = datetime.fromisoformat(document["window"]["expires_at"].replace("Z", "+00:00"))
-    definitions.register(document, not_after=not_after, budget_seconds=BUDGET_SECONDS)
+    definitions.register(document, not_after=revisions_until or _window_end(document),
+                         budget_seconds=BUDGET_SECONDS)  # fmt: skip
     ecs = CanaryEcs(env, definitions)
     ecs.configure(document)
     aws = CanaryAws(ecs, document)
@@ -326,9 +331,18 @@ def new_release(env: CanaryEnvironment, bindings: dict, *, release_id: str | Non
 
 
 def follow(previous: Release, document: dict) -> Release:
-    """A later release in the same environment: the same tasks, services and streams."""
-    not_after = datetime.fromisoformat(document["window"]["expires_at"].replace("Z", "+00:00"))
-    previous.ecs.definitions.register(document, not_after=not_after, budget_seconds=BUDGET_SECONDS)
+    """A later release in the same environment: the same tasks, services and streams.
+
+    A forward release registers its own new revisions under its own deadline. A
+    rollback run registers nothing: it launches the prior release's retained
+    revisions, each with the deadline that release fixed.
+    """
+    definitions = previous.ecs.definitions
+    if document["purpose"]["kind"] == "rollback":
+        definitions.require_retained(document)
+    else:
+        definitions.register(document, not_after=_window_end(document),
+                             budget_seconds=BUDGET_SECONDS)  # fmt: skip
     previous.ecs.learn(document)
     previous.aws.documents.append(document)
     root = previous.env.root / f"release-{document['release_id'][:8]}"
@@ -918,12 +932,8 @@ def rollback_document(prior: dict, failed: dict, *, release_id: str) -> dict:
     return document
 
 
-def test_a_rollback_restores_the_retained_prior_pair_after_a_failed_upgrade(canary):
-    env, bindings = canary
-    prior = new_release(env, bindings)
-    code, report = prior.cli("run", session="canary-session-p")
-    assert_held_paused(prior, code, report)
-
+def failed_upgrade(env: CanaryEnvironment, bindings: dict, prior: Release) -> Release:
+    """An upgrade from the deployed prior release that holds after starting its services."""
     failed = follow(prior, upgrade_document(env, bindings, prior.document,
                                             release_id=str(uuid.uuid4())))  # fmt: skip
     forged = {"schema": "sentry.operational.v1", "release_id": failed.document["release_id"],
@@ -937,7 +947,11 @@ def test_a_rollback_restores_the_retained_prior_pair_after_a_failed_upgrade(cana
     assert_held(failed, code, report, "observation_ambiguous")
     assert "services_started" in transitions(failed), "the failed upgrade deployed its services"
     failed.aws.appended.clear()
+    return failed
 
+
+def run_rollback(prior: Release, failed: Release) -> tuple[Release, int, dict]:
+    """A rollback run over the prior release's retained revisions, under a fenced handoff."""
     rollback = follow(prior, rollback_document(prior.document, failed.document,
                                                release_id=str(uuid.uuid4())))  # fmt: skip
     code, report = rollback.cli(
@@ -945,6 +959,23 @@ def test_a_rollback_restores_the_retained_prior_pair_after_a_failed_upgrade(cana
         "--fence-evidence-sha256", hashlib.sha256(b"failed session fenced").hexdigest(),
         "--authorized-by", "canary-operator", session="canary-session-r",
     )  # fmt: skip
+    return rollback, code, report
+
+
+def launched_by(release: Release) -> list[str]:
+    """The jobs and observers this release's own launch tokens started, in order."""
+    own = f"canary{release.document['release_id'][:8]}"
+    return [str(task.tags.get("sentry:job-id")) for task in release.ecs.tasks.values()
+            if task.started_by.startswith(own)]  # fmt: skip
+
+
+def test_a_rollback_restores_the_retained_prior_pair_after_a_failed_upgrade(canary):
+    env, bindings = canary
+    prior = new_release(env, bindings)
+    code, report = prior.cli("run", session="canary-session-p")
+    assert_held_paused(prior, code, report)
+    failed = failed_upgrade(env, bindings, prior)
+    rollback, code, report = run_rollback(prior, failed)
     assert "error" not in report, report
     assert (code, report["state"]) == (cli.EXIT_OK, "held_paused"), (report, transitions(rollback))
     verify_chain(journal(rollback))
@@ -957,8 +988,60 @@ def test_a_rollback_restores_the_retained_prior_pair_after_a_failed_upgrade(cana
         )
     # The run launches only reconcile, proof and the observers: never a migration,
     # grant or bootstrap.
-    own = f"canary{rollback.document['release_id'][:8]}"
-    mine = sorted(str(task.tags.get("sentry:job-id")) for task in rollback.ecs.tasks.values()
-                  if task.started_by.startswith(own))  # fmt: skip
-    assert mine == sorted(["runtime-reconcile", "product-reconcile", "runtime-proof",
-                           "product-proof", "runtime-observe", "api-observe"])  # fmt: skip
+    assert sorted(launched_by(rollback)) == sorted(
+        ["runtime-reconcile", "product-reconcile", "runtime-proof", "product-proof",
+         "runtime-observe", "api-observe"]
+    )  # fmt: skip
+    # Each ran as the prior release's own revision, under the deadline that release
+    # fixed, not this run's window.
+    deadline = _iso(_window_end(prior.document))
+    for task in rollback.ecs.tasks.values():
+        if task.started_by.startswith(f"canary{rollback.document['release_id'][:8]}"):
+            spec = rollback.ecs.definitions.spec(task.task_definition, task.arn.rsplit("/", 1)[1])
+            assert task.task_definition.endswith(":7")
+            assert spec.environment["RELEASE_NOT_AFTER"] == deadline
+            assert spec.environment["RELEASE_ID"] == prior.document["release_id"]
+
+
+# How long the prior release's revisions stay valid in the expiry case. It must
+# cover that release's own first deployment; a slower host can raise it.
+RETAINED_MINUTES = int(os.environ.get("CANARY_RETAINED_MINUTES", "12"))
+
+
+def test_a_rollback_after_the_retained_revisions_expired_holds_at_its_first_job(canary):
+    # The prior release's reconcile, proof and observer revisions keep the deadline
+    # its plan fixed. A rollback run approved for a later window does not extend
+    # it: its first job refuses to start work, and the run holds. A rollback then
+    # needs a new release planned from the prior pair's images.
+    env, bindings = canary
+    until = datetime.now(UTC).replace(microsecond=0) + timedelta(minutes=RETAINED_MINUTES)
+    prior = new_release(env, bindings, revisions_until=until)
+    code, report = prior.cli("run", session="canary-session-p")
+    assert_held_paused(prior, code, report)
+    assert datetime.now(UTC) < until, "the prior release must deploy inside its own deadline"
+    failed = failed_upgrade(env, bindings, prior)
+    time.sleep(max(0.0, (until - datetime.now(UTC)).total_seconds()) + 2)
+
+    sent_before = len(prior.ecs.mutations)
+    rollback, code, report = run_rollback(prior, failed)
+    assert _window_end(rollback.document) > until, "the run's own window is still open"
+    assert_held(rollback, code, report, "job_container_failed")
+    assert transitions(rollback) == ["prepared", "locked", "quiesced", "hold"]
+    # Only the first reconcile job was launched; it reported its own expiry.
+    assert launched_by(rollback) == ["runtime-reconcile"]
+    [task] = [t for t in rollback.ecs.tasks.values()
+              if t.tags.get("sentry:job-id") == "runtime-reconcile"]  # fmt: skip
+    spec = rollback.ecs.definitions.spec(task.task_definition, task.arn.rsplit("/", 1)[1])
+    assert spec.environment["RELEASE_NOT_AFTER"] == _iso(until)
+    # It stopped before reaching the database, so it wrote no receipt, only why.
+    output = [text for _, text in rollback.ecs.lines(task)]
+    assert not receipt_lines(output), output
+    assert any("deadline_expired" in text for text in output), output
+    # Nothing was proven or started: every service stays at zero on the revision
+    # the failed upgrade left, and the run deployed nothing.
+    assert not [m for m in rollback.ecs.mutations[sent_before:]
+                if m[0] == "update_service" and m[1].get("taskDefinition")]  # fmt: skip
+    for name, arn in rollback.document["environment"]["services"].items():
+        service = rollback.ecs.services[arn]
+        assert service.desired == 0, name
+        assert service.task_definition == failed.document["services"][name]["task_definition"]
