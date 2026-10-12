@@ -430,25 +430,28 @@ is its own manifest and approval with its own release ID; it is never automatic.
   release journaled is accounted for by positive evidence. A launch is one
   token; a retry reuses it.
   - Its tasks are the ones the failed release recorded for it (`launched`,
-    `launched_multiple`, `launched_unexpected`) and the ones ECS lists under the
-    token. Each task ECS describes must carry that token; one not yet stopped
+    `launched_multiple`, `launched_unexpected`), the ones ECS lists under the
+    token, and the ones an earlier sweep found there (see the held rollback
+    below). Each task ECS describes must carry that token; one not yet stopped
     gets a journaled safety stop and bounded confirmation (`sql_outcome:
     unknown`).
-  - A recorded task that ECS no longer describes counts only if the failed
-    release itself recorded seeing it stopped (a job or observer outcome, a
-    confirmed stop, or a cleanup that found it stopped). ECS forgets stopped
-    tasks; that record does not expire.
+  - A task that ECS no longer describes counts only if a journal recorded seeing
+    it stopped: the failed release's own (a job or observer outcome, a confirmed
+    stop, or a cleanup that found it stopped) or a sweep's `stop_confirmed`. ECS
+    forgets stopped tasks; those records do not expire.
   - A launch the provider refused, on record (`launch_failed`), has no task.
   - Everything else is unknown and holds with `failed_release_unreconciled`
     before any reconcile or proof job or service start: a launch whose outcome
     was never learned and for which no task is found, a task that cannot be
     described or does not carry its token, a stop that cannot be confirmed, or a
-    journal whose launch records are unclear. The open items are journaled as
-    `failed_launches_unresolved`, each with the release, job, token and reason.
+    journal whose launch records are unclear. An unclear journal holds before
+    anything is stopped. Otherwise every task that was found is sent its stop
+    first, and the open items are then journaled as `failed_launches_unresolved`,
+    each with the release, job, token and reason (`outcome_unknown`,
+    `task_not_described`, `task_identity_mismatch` or `stop_unconfirmed`).
     An empty listing, however often repeated, is never evidence that an accepted
     launch has no task: the task may not be listed yet and can still connect and
-    write inside its revision's fixed deadline. Tasks that were found are still
-    stopped before the hold.
+    write inside its revision's fixed deadline.
 
   A stop left outstanding by a crash is sent again, identically, and confirmed
   before anything else, but only while the run still holds its own lock;
@@ -456,17 +459,31 @@ is its own manifest and approval with its own release ID; it is never automatic.
   failed journal's hash.
 - **A rollback of a held rollback.** A rollback run records which release it is
   taking over from (`failed_release_named`) before the lock moves, and
-  `failed_release_reconciled` only once the sweep above is complete. A run that
-  held in between still owns the lock, so the next attempt names it as the
-  failed release. That attempt inherits the open reconciliation: it sweeps the
-  held run's own launches and then, from their own journals, the launches of
-  each earlier release whose reconciliation was never recorded as complete
-  (at most four such releases; a longer chain, a cycle or an unreadable journal
-  is `failed_release_unknown`). The earlier journals' hashes are recorded as
-  `predecessors`. An unknown launch therefore stays unknown for every later
-  attempt until its task is found and stopped; the controller offers no other
-  way to clear it, and the operator's own evidence that a request never reached
-  ECS is a separate, unimplemented decision.
+  `failed_release_reconciled` with `evidence: positive` only once the sweep
+  above is complete. A run that held in between still owns the lock, so the next
+  attempt names it as the failed release. That attempt inherits the open
+  reconciliation: it sweeps the held run's own launches and then, from their own
+  journals, the launches of each earlier release whose reconciliation was never
+  recorded as complete, however many held attempts lie in between. A cycle or
+  an unreadable journal is `failed_release_unknown`. The earlier journals'
+  hashes are recorded as `predecessors`.
+  - Only the marked record counts. A `failed_release_reconciled` without
+    `evidence: positive` still names the release to account for, as does the
+    handoff of a run that recorded neither. A run resumed past its handoff
+    without the marked record in its own journal holds with
+    `failed_release_unreconciled`; the next rollback names it and sweeps both.
+  - What the held attempts learned is kept. A task one of them found under a
+    launch token, and a stop it confirmed, are read from its journal by every
+    later attempt, so a launch settled that way stays settled after ECS forgets
+    the task.
+  - **Some holds cannot be cleared by another attempt.** A later rollback
+    settles an unknown launch only by finding its task, or by a record that the
+    task was seen stopped. It cannot when the request never reached ECS, so no
+    task will ever exist, or when the task ended without any journal recording
+    it stopped and ECS no longer describes it (ECS keeps a stopped task for
+    about an hour). Every later attempt then holds the same way. The controller
+    has no override, and settling such a launch on other evidence is a separate,
+    unimplemented decision.
 - **Sequence.** `prepared → locked → quiesced → reconciled → proven →
   services_started → operational_verified → held_paused`: quiesce writers,
   where each service may run the prior revision or its stated failed revision

@@ -2861,6 +2861,7 @@ def test_a_rollback_restores_the_prior_pair_and_finishes_held_paused():
     assert intent["fence_evidence_sha256"] == sha("failed session fenced")
     [reconciled] = rollback_events(r, "observation", result="failed_release_reconciled")
     assert reconciled["failed_journal_sha256"] == canonical_sha256(json.loads(before[0]))
+    assert reconciled["evidence"] == "positive"
     # Every receipt named the retained prior release whose revisions ran.
     for event in rollback_events(r, "observation", result="job_succeeded"):
         task = r.ecs.tasks[event["task_arn"]]
@@ -3031,6 +3032,10 @@ def test_a_failed_task_that_cannot_be_described_or_stopped_holds(monkeypatch):
     outcome = rollback_controller(r, handoff(r)).run()
     assert (outcome.state, outcome.reason) == ("hold", "failed_release_unreconciled")
     assert rollback_events(r, "observation", result="stop_unconfirmed")
+    [unresolved] = rollback_events(r, "observation", result="failed_launches_unresolved")
+    assert [(item["reason"], item["task_arn"]) for item in unresolved["launches"]] == [
+        ("stop_unconfirmed", task.arn)
+    ]
     assert not [c for c in r.calls("update_service")] and not r.calls("run_task")
 
 
@@ -3065,21 +3070,94 @@ def assert_nothing_forward(r: Rig) -> None:
     assert not r.calls("run_task") and not r.calls("update_service")
 
 
-def second_rollback(r: Rig) -> Rig:
-    """A further rollback run in the same environment, naming the first one as failed."""
+def later_rollback(r: Rig, release_id: str, failed_id: str) -> Rig:
+    """A further rollback run in the same environment, naming an earlier run as failed."""
     document = copy.deepcopy(r.document)
-    document["release_id"] = SECOND_ROLLBACK_ID
-    document["purpose"]["failed_release_id"] = ROLLBACK_RELEASE_ID
+    document["release_id"] = release_id
+    document["purpose"]["failed_release_id"] = failed_id
     loaded = load_manifest(encode(document))
-    approval = encode(approval_document(loaded.sha256, release_id=SECOND_ROLLBACK_ID))
+    approval = encode(approval_document(loaded.sha256, release_id=release_id))
     return Rig(document=document, clock=r.clock, trace=r.trace, store=r.store, ecs=r.ecs,
                evidence=FakeEvidence(r.ecs, document), logs=FakeLogs(r.ecs, document),
                tokens=r.tokens, approval_raw=approval)  # fmt: skip
 
 
-def second_events(r: Rig, kind: str, **match) -> list[dict]:
-    events = json.loads(r.store.objects[journal_key(SECOND_ROLLBACK_ID)][0])["events"]
+def second_rollback(r: Rig) -> Rig:
+    """The next rollback run, naming the first one as failed."""
+    return later_rollback(r, SECOND_ROLLBACK_ID, ROLLBACK_RELEASE_ID)
+
+
+def journal_events(r: Rig, release_id: str, kind: str, **match) -> list[dict]:
+    events = json.loads(r.store.objects[journal_key(release_id)][0])["events"]
     return [e for e in events if e["kind"] == kind and all(e.get(k) == v for k, v in match.items())]
+
+
+def second_events(r: Rig, kind: str, **match) -> list[dict]:
+    return journal_events(r, SECOND_ROLLBACK_ID, kind, **match)
+
+
+def run_second_rollback(r: Rig):
+    """Run the next rollback against the first one's lock; its rig and its outcome."""
+    again = second_rollback(r)
+    grant = handoff(again, failed_session_id="session-b")
+    return again, rollback_controller(again, grant, session="session-c").run()
+
+
+def forget(r: Rig, task) -> None:
+    """ECS keeps a stopped task for a while, then neither lists nor describes it."""
+    del r.ecs.tasks[task.arn]
+
+
+def never_seen_stopped(monkeypatch, r: Rig, task) -> None:
+    """Every description of this task says it is still running, whatever was sent."""
+    original = r.ecs._describe
+
+    def describe(item):
+        described = original(item)
+        return {**described, "lastStatus": "RUNNING"} if item.arn == task.arn else described
+
+    monkeypatch.setattr(r.ecs, "_describe", describe)
+
+
+def without_positive_evidence(r: Rig, key: str = ROLLBACK_JOURNAL) -> None:
+    """Rewrite a rollback journal as one that recorded its reconciliation without the mark."""
+    body, etag = r.store.objects[key]
+    document = json.loads(body)
+    kept = [e for e in document["events"] if e.get("result") != "failed_release_named"]
+    for sequence, event in enumerate(kept, start=1):
+        event["sequence"] = sequence
+        event.pop("evidence", None)
+    document["events"] = kept
+    r.store.objects[key] = (encode(rechained(document)), etag)
+
+
+def unmarked_rollback(r: Rig, *records: str, failed_id: str | None = FAILED_RELEASE_ID) -> None:
+    """A held rollback run's journal and lock, with no positive record of its failed release.
+
+    ``records`` picks what still names the release it took over from: its lock
+    ``handoff``, its ``reconciled`` observation, or both.
+    """
+    journal, stamp = Journal(r.store, ROLLBACK_JOURNAL), iso(START)
+    journal.create(
+        {"schema_version": 1, "release_id": ROLLBACK_RELEASE_ID, "environment": "staging",
+         "manifest_sha256": sha("rollback manifest"), "session_id": "session-b"},
+        {"at": stamp, "kind": "transition", "to": "prepared"},
+    )  # fmt: skip
+    environment = {"at": stamp, "kind": "observation", "subject": "environment"}
+    if "handoff" in records:
+        journal.append({"at": stamp, "kind": "intent", "action": "lock_handoff",
+                        "subject": "environment", "request_sha256": sha("handoff"),
+                        "from_release_id": failed_id, "from_session_id": FAILED_SESSION})  # fmt: skip
+        journal.append({**environment, "result": "lock_handed_off", "resolves": "lock_handoff",
+                        "from_release_id": failed_id})  # fmt: skip
+    if "reconciled" in records:
+        named = {} if failed_id is None else {"failed_release_id": failed_id}
+        journal.append({**environment, "result": "failed_release_reconciled", **named,
+                        "failed_session_id": FAILED_SESSION})  # fmt: skip
+        journal.append({"at": stamp, "kind": "transition", "to": "locked"})
+    journal.append({"at": stamp, "kind": "transition", "to": "hold", "reason": "job_failed"})
+    r.store.replace(LOCK, encode({"release_id": ROLLBACK_RELEASE_ID, "session_id": "session-b"}),
+                    if_match=r.lock_etag())  # fmt: skip
 
 
 @pytest.mark.parametrize("task", ["not_yet_listed", "never_launched"])
@@ -3274,6 +3352,282 @@ def test_a_run_that_finished_reconciling_its_predecessor_is_not_reconciled_again
     assert outcome.state == "held_paused", outcome
     [reconciled] = second_events(again, "observation", result="failed_release_reconciled")
     assert "predecessors" not in reconciled
+
+
+@pytest.mark.parametrize("listed_by_then", [False, True])
+@pytest.mark.parametrize(
+    "records", [("handoff", "reconciled"), ("reconciled",), ("handoff",)], ids="+".join
+)
+def test_a_reconciliation_recorded_without_positive_evidence_is_still_open(
+    monkeypatch, records, listed_by_then
+):
+    # Only a record marked as positive evidence says every launch was settled by a
+    # task or a recorded refusal. Any other record of the takeover still names the
+    # release that has to be accounted for.
+    token = "u" * 20 + "pending01"
+    r = rollback_rig()
+    failed_release(r, tokens=(token,))
+    pending = failed_task(r, token)
+    shown = omit_from_listings(monkeypatch, r, pending)
+    unmarked_rollback(r, *records)
+    shown["visible"] = listed_by_then
+    again, outcome = run_second_rollback(r)
+    if not listed_by_then:
+        assert (outcome.state, outcome.reason) == ("hold", "failed_release_unreconciled")
+        [unresolved] = second_events(again, "observation", result="failed_launches_unresolved")
+        assert unresolved["launches"][0]["release_id"] == FAILED_RELEASE_ID
+        assert r.ecs._status(pending) != "STOPPED"
+        assert_nothing_forward(again)
+        return
+    assert outcome.state == "held_paused", outcome
+    assert [call["task"] for call in r.calls("stop_task")][0] == pending.arn
+    [reconciled] = second_events(again, "observation", result="failed_release_reconciled")
+    assert [item["release_id"] for item in reconciled["predecessors"]] == [FAILED_RELEASE_ID]
+    stop = second_events(again, "intent", action="stop_task", subject=f"failed:{token}")
+    forward = second_events(again, "intent", action="run_task")
+    assert stop and forward and stop[-1]["sequence"] < forward[0]["sequence"]
+
+
+def test_an_unmarked_reconciliation_that_names_no_release_holds():
+    r = rollback_rig()
+    failed_release(r)
+    unmarked_rollback(r, "reconciled", failed_id=None)
+    again, outcome = run_second_rollback(r)
+    assert (outcome.state, outcome.reason) == ("hold", "failed_release_unknown")
+    assert_nothing_forward(again)
+
+
+@pytest.mark.parametrize("marked", [False, True])
+def test_a_resumed_rollback_past_its_handoff_needs_its_own_positive_record(marked):
+    # A run already past the handoff is not swept again, so its own journal has to
+    # show that the failed release was accounted for by positive evidence.
+    r = rollback_rig()
+    failed_release(r)
+    r.ecs.crash[("update_service", "before")] = 1
+    with pytest.raises(SimulatedCrash):
+        rollback_controller(r, handoff(r)).run()
+    assert rollback_events(r, "transition")[-1]["to"] == "locked"
+    if marked:
+        assert rollback_controller(r, None).run().state == "held_paused"
+        return
+    without_positive_evidence(r)
+    outcome = rollback_controller(r, None).run()
+    assert (outcome.state, outcome.reason) == ("hold", "failed_release_unreconciled")
+    assert_nothing_forward(r)
+    # The next rollback names this run and accounts for both releases itself.
+    again, outcome = run_second_rollback(r)
+    assert outcome.state == "held_paused", outcome
+    [reconciled] = second_events(again, "observation", result="failed_release_reconciled")
+    assert [item["release_id"] for item in reconciled["predecessors"]] == [FAILED_RELEASE_ID]
+
+
+def test_a_run_holding_a_free_lock_still_names_the_release_it_was_rolling_back():
+    # No handoff is journaled when the failed release had released its lock, so the
+    # run's own naming record is all a later rollback can inherit from.
+    token = "u" * 20 + "pending01"
+    r = rollback_rig()
+    failed_release(r, lock=False, finished=True, tokens=(token,))
+    first = rollback_controller(r, None).run()
+    assert (first.state, first.reason) == ("hold", "failed_release_unreconciled")
+    assert not rollback_events(r, "intent", action="lock_handoff")
+    [named] = rollback_events(r, "observation", result="failed_release_named")
+    assert named["failed_release_id"] == FAILED_RELEASE_ID
+    again, outcome = run_second_rollback(r)
+    assert (outcome.state, outcome.reason) == ("hold", "failed_release_unreconciled")
+    [unresolved] = second_events(again, "observation", result="failed_launches_unresolved")
+    assert unresolved["launches"][0]["release_id"] == FAILED_RELEASE_ID
+    assert_nothing_forward(again)
+
+
+def test_a_chain_of_held_rollbacks_is_followed_back_to_the_first_failure(monkeypatch):
+    # Every held attempt keeps the lock, so the next one names it. However many
+    # there are, the original failure is still the one to account for.
+    token = "u" * 20 + "pending01"
+    r = rollback_rig()
+    failed_release(r, tokens=(token,))
+    pending = failed_task(r, token)
+    shown = omit_from_listings(monkeypatch, r, pending)
+    outcome = rollback_controller(r, handoff(r)).run()
+    attempt, failed_id, session = r, ROLLBACK_RELEASE_ID, "session-b"
+    for number in range(1, 8):
+        assert (outcome.state, outcome.reason) == ("hold", "failed_release_unreconciled")
+        assert r.ecs._status(pending) != "STOPPED"
+        shown["visible"] = number == 7
+        release_id = f"66666666-6666-4666-8666-{number:012d}"
+        attempt = later_rollback(attempt, release_id, failed_id)
+        grant = handoff(attempt, failed_session_id=session)
+        failed_id, session = release_id, f"session-{number}"
+        outcome = rollback_controller(attempt, grant, session=session).run()
+    assert outcome.state == "held_paused", outcome
+    assert r.ecs._status(pending) == "STOPPED"
+    [reconciled] = journal_events(attempt, failed_id, "observation",
+                                  result="failed_release_reconciled")  # fmt: skip
+    assert len(reconciled["predecessors"]) == 7
+    assert reconciled["predecessors"][-1]["release_id"] == FAILED_RELEASE_ID
+
+
+@pytest.mark.parametrize("names", [ROLLBACK_RELEASE_ID, SECOND_ROLLBACK_ID])
+def test_rollback_journals_that_name_each_other_hold(names):
+    # No run can have been taking over from a later one, or from the run now reading it.
+    r = rollback_rig()
+    failed_release(r, tokens=("u" * 20 + "pending01",))
+    first = rollback_controller(r, handoff(r)).run()
+    assert (first.state, first.reason) == ("hold", "failed_release_unreconciled")
+    journal = Journal(r.store, journal_key(FAILED_RELEASE_ID))
+    assert journal.load()
+    journal.append({"at": journal.events[0]["at"], "kind": "observation",
+                    "subject": "environment", "result": "failed_release_named",
+                    "failed_release_id": names})  # fmt: skip
+    again, outcome = run_second_rollback(r)
+    assert (outcome.state, outcome.reason) == ("hold", "failed_release_unknown")
+    assert_nothing_forward(again)
+
+
+def test_a_stop_an_earlier_rollback_confirmed_settles_the_launch_after_ecs_forgets_it(
+    monkeypatch,
+):
+    # The first attempt found and stopped one task, then held on another launch.
+    # Its journal is the lasting record of that stop: ECS forgets a stopped task.
+    found, hidden = "f" * 20 + "running01", "h" * 20 + "pending02"
+    r = rollback_rig()
+    failed_release(r, tokens=(found, hidden))
+    running, late = failed_task(r, found), failed_task(r, hidden)
+    shown = omit_from_listings(monkeypatch, r, late)
+    first = rollback_controller(r, handoff(r)).run()
+    assert (first.state, first.reason) == ("hold", "failed_release_unreconciled")
+    assert r.ecs._status(running) == "STOPPED"
+    assert rollback_events(r, "observation", subject=f"failed:{found}", result="stop_confirmed")
+    forget(r, running)
+    shown["visible"] = True
+    again, outcome = run_second_rollback(r)
+    assert outcome.state == "held_paused", outcome
+    assert r.ecs._status(late) == "STOPPED"
+    assert [call["task"] for call in again.calls("stop_task")].count(late.arn) == 1
+    [swept] = second_events(again, "observation", result="failed_launches_swept")
+    assert (swept["tokens"], swept["stopped"]) == (2, 1)
+
+
+def test_a_resumed_sweep_keeps_the_stops_it_confirmed_before_it_crashed(monkeypatch):
+    first_token, second_token = "a" * 20 + "running01", "b" * 20 + "running02"
+    r = rollback_rig()
+    failed_release(r, tokens=(first_token, second_token))
+    first, second = failed_task(r, first_token), failed_task(r, second_token)
+    original = r.ecs.stop_task
+
+    def crash_on_the_second(cluster, arn, reason):
+        if arn == second.arn:
+            raise SimulatedCrash("sweep stop")
+        return original(cluster, arn, reason)
+
+    monkeypatch.setattr(r.ecs, "stop_task", crash_on_the_second)
+    with pytest.raises(SimulatedCrash):
+        rollback_controller(r, handoff(r)).run()
+    monkeypatch.setattr(r.ecs, "stop_task", original)
+    assert r.ecs._status(first) == "STOPPED"
+    forget(r, first)
+    outcome = rollback_controller(r, None).run()
+    assert outcome.state == "held_paused", outcome
+    assert r.ecs._status(second) == "STOPPED"
+
+
+def test_an_unconfirmed_stop_does_not_end_the_sweep_before_every_found_task_is_stopped(
+    monkeypatch,
+):
+    stuck_token, other_token = "a" * 20 + "running01", "b" * 20 + "running02"
+    r = rollback_rig()
+    failed_release(r, tokens=(stuck_token, other_token))
+    stuck, other = failed_task(r, stuck_token), failed_task(r, other_token)
+    never_seen_stopped(monkeypatch, r, stuck)
+    outcome = rollback_controller(r, handoff(r)).run()
+    assert (outcome.state, outcome.reason) == ("hold", "failed_release_unreconciled")
+    assert [call["task"] for call in r.calls("stop_task")] == [stuck.arn, other.arn]
+    assert r.ecs._status(other) == "STOPPED"
+    [unresolved] = rollback_events(r, "observation", result="failed_launches_unresolved")
+    assert unresolved["launches"] == [
+        {"release_id": FAILED_RELEASE_ID, "subject": "failed-job-0", "token": stuck_token,
+         "reason": "stop_unconfirmed", "task_arn": stuck.arn}
+    ]  # fmt: skip
+    assert_nothing_forward(r)
+
+
+@pytest.mark.parametrize("seen_stopped_later", [True, False])
+def test_a_task_whose_stop_was_never_confirmed_is_settled_only_by_seeing_it_stopped(
+    monkeypatch, seen_stopped_later
+):
+    # A later rollback describes the task the first one could not confirm. If ECS
+    # has forgotten it by then, nothing on record shows that it stopped: it holds.
+    token = "s" * 20 + "running01"
+    r = rollback_rig()
+    failed_release(r, tokens=(token,))
+    task = failed_task(r, token)
+    with monkeypatch.context() as patched:
+        never_seen_stopped(patched, r, task)
+        first = rollback_controller(r, handoff(r)).run()
+    assert (first.state, first.reason) == ("hold", "failed_release_unreconciled")
+    assert r.ecs._status(task) == "STOPPED"
+    if not seen_stopped_later:
+        forget(r, task)
+    again, outcome = run_second_rollback(r)
+    if seen_stopped_later:
+        assert outcome.state == "held_paused", outcome
+        return
+    assert (outcome.state, outcome.reason) == ("hold", "failed_release_unreconciled")
+    [unresolved] = second_events(again, "observation", result="failed_launches_unresolved")
+    assert unresolved["launches"] == [
+        {"release_id": FAILED_RELEASE_ID, "subject": "runtime-migrate", "token": token,
+         "reason": "task_not_described", "task_arn": task.arn}
+    ]  # fmt: skip
+    assert_nothing_forward(again)
+
+
+def test_a_listed_task_the_failed_release_never_recorded_is_stopped_with_the_recorded_one():
+    token = "m" * 20 + "multiple1"
+    r = rollback_rig()
+    recorded_task, unrecorded = failed_task(r, token), failed_task(r, token)
+    failed_release(r, tokens=(token,), learned={token: [launched(recorded_task.arn)]})
+    outcome = rollback_controller(r, handoff(r)).run()
+    assert outcome.state == "held_paused", outcome
+    assert (r.ecs._status(recorded_task), r.ecs._status(unrecorded)) == ("STOPPED", "STOPPED")
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        # A resolution this controller does not know settles nothing.
+        {"result": "launch_pending", "resolves": "run_task"},
+        # A task record that is missing, empty or not text is not a task record.
+        {"result": "launched", "resolves": "run_task"},
+        {"result": "launched_multiple", "resolves": "run_task", "task_arns": []},
+        {"result": "launched_multiple", "resolves": "run_task", "task_arns": "arn"},
+        {"result": "launched_unexpected", "resolves": "run_task", "task_arns": [None]},
+        {"result": "launched_multiple", "resolves": "run_task", "task_arns": ["", "arn:two"]},
+    ],
+    ids=lambda record: f"{record['result']}:{record.get('task_arns', 'absent')}",
+)
+def test_a_launch_record_the_controller_cannot_read_exactly_holds_before_any_stop(record):
+    token = "x" * 20 + "unclear01"
+    r = rollback_rig()
+    failed_release(r, tokens=(token,), learned={token: [record]})
+    task = failed_task(r, token)
+    outcome = rollback_controller(r, handoff(r)).run()
+    assert (outcome.state, outcome.reason) == ("hold", "failed_release_unreconciled")
+    assert not r.calls("stop_task") and r.ecs._status(task) != "STOPPED"
+    assert_nothing_forward(r)
+
+
+def test_one_launch_token_journaled_under_two_subjects_holds():
+    token = "y" * 20 + "twosubj01"
+    r = rollback_rig()
+    failed_release(r, tokens=(token,))
+    journal = Journal(r.store, journal_key(FAILED_RELEASE_ID))
+    assert journal.load()
+    journal.append({"at": journal.events[0]["at"], "kind": "intent", "action": "run_task",
+                    "subject": "product-migrate", "request_sha256": sha(token),
+                    "token": token})  # fmt: skip
+    task = failed_task(r, token)
+    outcome = rollback_controller(r, handoff(r)).run()
+    assert (outcome.state, outcome.reason) == ("hold", "failed_release_unreconciled")
+    assert not r.calls("stop_task") and r.ecs._status(task) != "STOPPED"
 
 
 @pytest.mark.parametrize(

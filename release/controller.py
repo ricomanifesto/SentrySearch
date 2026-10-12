@@ -69,9 +69,10 @@ RECORDED_STOPS = frozenset(
     {"job_succeeded", "job_failed", "operational_passed", "operational_failed",
      "stop_confirmed", "cleanup_stopped"}
 )  # fmt: skip
-# A rollback of a held rollback inherits what that run left unreconciled. Longer
-# chains than this are not followed: the run holds for the operator instead.
-MAX_UNRECONCILED_PREDECESSORS = 4
+# Recorded on ``failed_release_reconciled`` only when every launch of the failed
+# release was settled by a task or by a recorded refusal. A record without it
+# claims less than that, and the release it names is still to be accounted for.
+POSITIVE_EVIDENCE = "positive"
 READINESS_POLICY = GatePolicy()
 
 
@@ -166,7 +167,8 @@ def _failed_launches(events: list[dict[str, Any]]) -> list[_FailedLaunch] | None
                 if result == "launched":
                     arns = [event.get("task_arn")]
                 elif result in ("launched_multiple", "launched_unexpected"):
-                    arns = event.get("task_arns")
+                    # Both record the tasks that were seen: never an empty list.
+                    arns = event.get("task_arns") or None
                 elif result == "launch_failed":
                     arns = []
                 else:
@@ -185,18 +187,59 @@ def _failed_launches(events: list[dict[str, Any]]) -> list[_FailedLaunch] | None
     return list(launches.values())
 
 
+def _reconciled_by_positive_evidence(event: dict[str, Any]) -> bool:
+    return (
+        event["kind"] == "observation"
+        and event.get("subject") == "environment"
+        and event.get("result") == "failed_release_reconciled"
+        and event.get("evidence") == POSITIVE_EVIDENCE
+    )
+
+
 def _unreconciled_predecessor(events: list[dict[str, Any]]) -> Any:
-    """The release a rollback run was taking over from, unless it finished reconciling it."""
+    """The release a rollback run was taking over from, unless it finished reconciling it.
+
+    Only a reconciliation recorded with positive evidence finishes it. Any other
+    record of the takeover names the release still to be accounted for: the
+    run's own naming record first, else its handoff or an unmarked
+    reconciliation. An unmarked reconciliation that names nothing returns an ID
+    no journal has, so the reader holds.
+    """
     named = None
     for event in events:
+        if _reconciled_by_positive_evidence(event):
+            return None
         if event["kind"] == "observation" and event.get("subject") == "environment":
-            if event.get("result") == "failed_release_reconciled":
-                return None
             if event.get("result") == "failed_release_named":
                 named = event.get("failed_release_id")
+            elif event.get("result") == "failed_release_reconciled" and named is None:
+                named = event.get("failed_release_id") or ""
         elif event["kind"] == "intent" and event.get("action") == "lock_handoff":
             named = event.get("from_release_id") if named is None else named
     return named
+
+
+def _recorded_sweeps(journals: list[list[dict[str, Any]]]) -> dict[str, _FailedLaunch]:
+    """What rollback runs journaled about a failed launch's tasks, by launch token.
+
+    A sweep journals a stop intent for a task it found under the token, and a
+    confirmation only after describing that task as stopped. ECS forgets a
+    stopped task; these records of it do not expire.
+    """
+    sweeps: dict[str, _FailedLaunch] = {}
+    for events in journals:
+        for event in events:
+            subject, arn = event.get("subject"), event.get("task_arn")
+            if not isinstance(subject, str) or not subject.startswith("failed:"):
+                continue
+            if not isinstance(arn, str) or not arn:
+                continue
+            token = subject.split(":", 1)[1]
+            sweep = sweeps.setdefault(token, _FailedLaunch(subject, token))
+            sweep.task_arns.add(arn)
+            if event["kind"] == "observation" and event.get("result") == "stop_confirmed":
+                sweep.stopped.add(arn)
+    return sweeps
 
 
 @dataclass(frozen=True)
@@ -305,6 +348,11 @@ class ReleaseController:
             self._require_clock_after_journal()
             if approval_error is not None:
                 raise _Hold(approval_error)
+            if self.rollback_run and self.state != State.PREPARED:
+                # Past the handoff the failed release is not swept again, so this
+                # journal must itself show it was accounted for by positive evidence.
+                if not any(_reconciled_by_positive_evidence(e) for e in self.journal.events):
+                    raise _Hold("failed_release_unreconciled")
             self._reconcile_outstanding()
             while self.state not in TERMINAL_STATES:
                 steps[self.state]()
@@ -730,9 +778,10 @@ class ReleaseController:
         retry names it as the failed release and inherits that open reconciliation.
         """
         chain = [failed]
-        seen = {failed.document["release_id"]}
+        # No run can have been taking over from a later one, or from this one.
+        seen = {self.release_id, failed.document["release_id"]}
         while (earlier := _unreconciled_predecessor(chain[-1].events)) is not None:
-            if earlier in seen or len(chain) > MAX_UNRECONCILED_PREDECESSORS:
+            if not isinstance(earlier, str) or earlier in seen:
                 raise _Hold("failed_release_unknown")
             chain.append(self._failed_journal(earlier))
             seen.add(earlier)
@@ -775,14 +824,17 @@ class ReleaseController:
             else:
                 raise _Hold("environment_locked")
         chain = self._unreconciled_chain(failed)
+        # This run's earlier attempt and every run in the chain swept the same
+        # launches: what they found and saw stopped is on record in their journals.
+        sweeps = _recorded_sweeps([self.journal.events, *(journal.events for journal in chain)])
         launches = stopped = 0
         unresolved: list[dict[str, Any]] = []
         for journal in chain:
-            counted = self._sweep_failed_launches(journal, unresolved)
+            counted = self._sweep_failed_launches(journal, sweeps, unresolved)
             launches, stopped = launches + counted[0], stopped + counted[1]
         if unresolved:
-            # Whatever could be found was stopped. The rest is unknown, and unknown
-            # holds: no schema is reconciled or proven and no service starts.
+            # Whatever could be found was sent a stop. The rest is unknown, and
+            # unknown holds: no schema is reconciled or proven and no service starts.
             self._observe("environment", "failed_launches_unresolved", launches=unresolved)
             raise _Hold("failed_release_unreconciled")
         self._observe("environment", "failed_launches_swept", tokens=launches, stopped=stopped)
@@ -792,6 +844,7 @@ class ReleaseController:
         self._observe("environment", "failed_release_reconciled", failed_release_id=failed_id,
                       failed_session_id=failed_session,
                       failed_journal_sha256=canonical_sha256(failed.document),
+                      evidence=POSITIVE_EVIDENCE,
                       **({"predecessors": earlier} if earlier else {}))  # fmt: skip
 
     def _hand_off_lock(self, failed_id: str, failed_session: str, etag: str) -> None:
@@ -859,21 +912,27 @@ class ReleaseController:
         raise _Hold("handoff_conflict")
 
     def _sweep_failed_launches(
-        self, failed: Journal, unresolved: list[dict[str, Any]]
+        self,
+        failed: Journal,
+        sweeps: dict[str, _FailedLaunch],
+        unresolved: list[dict[str, Any]],
     ) -> tuple[int, int]:
         """Account for every launch one failed release journaled, by positive evidence only.
 
-        Each launch is settled by a task: one the release recorded, or one ECS
-        lists under the launch token. A task ECS describes must carry that token
-        and is stopped unless already stopped. A recorded task ECS no longer
-        describes counts only if the release itself recorded seeing it stopped.
-        A launch the provider refused, on record, has no task.
+        Each launch is settled by a task: one the release recorded, one ECS lists
+        under the launch token, or one an earlier sweep found there (``sweeps``).
+        A task ECS describes must carry that token and is stopped unless already
+        stopped. A task ECS no longer describes counts only if the release, or a
+        sweep, recorded seeing it stopped. A launch the provider refused, on
+        record, has no task.
 
         Everything else is appended to ``unresolved``, above all a launch whose
         outcome was never learned and for which no task is found. That request
         may have been accepted with its task not listed yet, and such a task can
         still connect and write later. An empty listing, however often repeated,
-        is not evidence that it does not exist. Returns the launches and stops.
+        is not evidence that it does not exist. A stop that cannot be confirmed
+        is unresolved too, and the sweep goes on to the remaining tasks before
+        the run holds. Returns the launches and the confirmed stops.
         """
         release_id = failed.document["release_id"]
         launches = _failed_launches(failed.events)
@@ -883,26 +942,30 @@ class ReleaseController:
         for launch in sorted(launches, key=lambda item: item.token):
             open_item = {"release_id": release_id, "subject": launch.subject,
                          "token": launch.token}  # fmt: skip
+            swept = sweeps.get(launch.token, launch)
             listed = self.ecs.list_tasks(self.cluster, started_by=launch.token)
-            arns = sorted(launch.task_arns.union(listed))
+            arns = sorted(launch.task_arns.union(swept.task_arns, listed))
             if not arns and not launch.resolved:
                 unresolved.append({**open_item, "reason": "outcome_unknown"})
             for arn in arns:
                 task = self._describe_task(arn)
                 if task is None:
-                    if arn not in launch.stopped:
+                    if arn not in launch.stopped and arn not in swept.stopped:
                         unresolved.append({**open_item, "reason": "task_not_described",
                                            "task_arn": arn})  # fmt: skip
                 elif task.get("startedBy") != launch.token:
                     unresolved.append({**open_item, "reason": "task_identity_mismatch",
                                        "task_arn": arn})  # fmt: skip
                 elif task.get("lastStatus") != "STOPPED":
-                    self._stop_failed_task(arn, launch.token)
-                    stopped += 1
+                    if self._stop_failed_task(arn, launch.token):
+                        stopped += 1
+                    else:
+                        unresolved.append({**open_item, "reason": "stop_unconfirmed",
+                                           "task_arn": arn})  # fmt: skip
         return len(launches), stopped
 
-    def _stop_failed_task(self, arn: str, token: str) -> None:
-        """A journaled safety stop of the failed release's own task, then confirmation."""
+    def _stop_failed_task(self, arn: str, token: str) -> bool:
+        """A journaled safety stop of the failed release's own task; whether it was seen stopped."""
         subject = f"failed:{token}"
         request = {"cluster": self.cluster, "task": arn, "reason": "rollback of failed release"}
         self._intent("stop_task", subject, request, guard=False, task_arn=arn)
@@ -910,20 +973,20 @@ class ReleaseController:
             self.ecs.stop_task(self.cluster, arn, request["reason"])
         except AmbiguousResponse:
             pass
-        self._confirm_failed_stop(subject, arn)
+        return self._confirm_failed_stop(subject, arn)
 
-    def _confirm_failed_stop(self, subject: str, arn: str) -> None:
+    def _confirm_failed_stop(self, subject: str, arn: str) -> bool:
         give_up = self._now() + FAILED_TASK_STOP_GRACE + STOP_CONFIRMATION_MARGIN
         while True:
             task = self._describe_task(arn)
             if task is not None and task.get("lastStatus") == "STOPPED":
                 self._observe(subject, "stop_confirmed", resolves="stop_task", task_arn=arn,
                               sql_outcome="unknown")  # fmt: skip
-                return
+                return True
             if self._now() >= give_up:
                 self._observe(subject, "stop_unconfirmed", resolves="stop_task", task_arn=arn,
                               sql_outcome="unknown")  # fmt: skip
-                raise _Hold("failed_release_unreconciled")
+                return False
             self._sleep(self.poll)
 
     # Reconciliation ------------------------------------------------------------
@@ -944,6 +1007,7 @@ class ReleaseController:
                 # sent and the intent stays outstanding.
                 if not self._lock_is_ours():
                     raise _Hold("lock_not_held")
+                # Confirmed or not, the sweep that follows rules on this task again.
                 self._stop_failed_task(intent["task_arn"], intent["subject"].split(":", 1)[1])
             else:
                 item = self.launchables[intent["subject"]]
