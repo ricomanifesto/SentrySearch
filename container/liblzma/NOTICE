@@ -1,10 +1,11 @@
-The three .patch files are unmodified upstream XZ Utils commits by Lasse Collin:
-https://github.com/tukaani-project/xz
-The standalone decoder_reinit_test.c is adapted from upstream test_alone_decoder.c
-(commit ff834f25ae4f9b3e6270d41b4c843b8b1183346c), with attribution in its header.
-These liblzma changes and tests are licensed under 0BSD. The complete Debian
-source package retains its upstream and distribution license files; the final
-image preserves /usr/share/doc/liblzma5/copyright.
+The standalone decoder_reinit_test.c is adapted from upstream XZ Utils
+test_alone_decoder.c by Lasse Collin
+(https://github.com/tukaani-project/xz, commit
+ff834f25ae4f9b3e6270d41b4c843b8b1183346c), with attribution in its header.
+It is licensed under 0BSD and is a test tool only: it never enters the service
+image. liblzma itself is the unmodified official Debian package, whose upstream
+and distribution license files the final image preserves at
+/usr/share/doc/liblzma5/copyright.
 
 Permission to use, copy, modify, and/or distribute this
 software for any purpose with or without fee is hereby granted.

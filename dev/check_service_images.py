@@ -78,7 +78,7 @@ def main() -> None:
             "pytest",
             "tests/service_images.py",
             "tests/platform_fit.py",
-            "tests/liblzma_backport.py",
+            "tests/liblzma_package.py",
             "tests/service_log_volume.py",
             "-v",
         ],

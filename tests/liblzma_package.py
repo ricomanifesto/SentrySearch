@@ -1,12 +1,14 @@
-"""Explicit, offline final-image checks for the liblzma backport.
+"""Explicit, offline final-image checks for liblzma.
 
 Run through dev/check_service_images.py, not default test discovery. Both image
 references must already exist locally. POSIX /tmp is used only to stage the
 test-tools image's /probe directory for a readonly mount into each candidate.
 No fixtures or test binaries are required in the release image itself.
 
-The allocation-failure cases cover alone and auto's alone-format dispatch;
-they do not claim direct lzip/MicroLZMA coverage or sanitizer instrumentation.
+The image carries Debian's official fixed liblzma5. The allocation-failure
+cases run the upstream regression's scenario against the library the image
+really loads; they cover alone and auto's alone-format dispatch and do not
+claim direct lzip/MicroLZMA coverage or sanitizer instrumentation.
 """
 
 from __future__ import annotations
@@ -216,32 +218,26 @@ def test_python_lzma_compatibility(search_image: str, case: str):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_release_keeps_honest_backport_metadata(search_image: str):
-    expected = json.loads(
+def test_release_carries_the_official_package_with_its_ordinary_provenance(search_image: str):
+    pinned = json.loads(
         (Path(__file__).resolve().parents[1] / "container/liblzma/manifest.json").read_text()
     )
     script = """
+import gzip
 import hashlib
 import json
 from pathlib import Path
 import platform
-import re
 import sys
 import _lzma
 
 root = Path('/var/lib/dpkg/status.d')
 status = (root / 'liblzma5').read_text()
-expected = json.loads(sys.argv[1])
+pinned = json.loads(sys.argv[1])
 architecture = {'aarch64': 'arm64', 'x86_64': 'amd64'}[platform.machine()]
-assert '\\nVersion: ' + expected['patched_version'] + '\\n' in '\\n' + status
+assert '\\nVersion: ' + pinned['version'] + '\\n' in '\\n' + status
 assert '\\nArchitecture: ' + architecture + '\\n' in '\\n' + status
 assert '\\nSource: xz-utils\\n' in '\\n' + status
-manifest = json.loads(Path('/usr/share/sentrysearch/liblzma-backport.json').read_text())
-assert set(manifest) == set(expected) | {'architecture', 'package_sha256', 'library_sha256'}
-assert {key: manifest[key] for key in expected} == expected
-assert manifest['architecture'] == architecture
-assert re.fullmatch('[0-9a-f]{64}', manifest['package_sha256'])
-assert re.fullmatch('[0-9a-f]{64}', manifest['library_sha256'])
 checked = []
 for line in (root / 'liblzma5.md5sums').read_text().splitlines():
     digest, relative = line.split(maxsplit=1)
@@ -253,12 +249,19 @@ library = Path('/usr/lib/aarch64-linux-gnu/liblzma.so.5').resolve()
 if architecture == 'amd64':
     library = Path('/usr/lib/x86_64-linux-gnu/liblzma.so.5').resolve()
 assert library in checked
-assert hashlib.sha256(library.read_bytes()).hexdigest() == manifest['library_sha256']
 assert Path('/usr/share/doc/liblzma5/copyright') in checked
+# Debian's own record of what this build fixes: both advisories, by name.
+changelog = Path('/usr/share/doc/liblzma5/changelog.Debian.gz')
+assert changelog in checked
+text = gzip.decompress(changelog.read_bytes()).decode()
+assert text.startswith('xz-utils (' + pinned['version'] + ') ' + pinned['suite'] + ';'), text[:80]
+for advisory in pinned['advisories']:
+    assert advisory in text, advisory
 assert str(library) in Path('/proc/self/maps').read_text()
 assert not Path('/probe').exists(), 'Test fixtures must not ship in the release image'
+assert not Path('/usr/share/sentrysearch/liblzma-backport.json').exists()
 assert _lzma.__file__.startswith('/usr/local/lib/python3.11/')
-print('Package provenance, checksums and normal Python linkage verified')
+print('Official package version, checksums, changelog and normal Python linkage verified')
 """
-    result = in_candidate(search_image, "python", "-c", script, json.dumps(expected))
+    result = in_candidate(search_image, "python", "-c", script, json.dumps(pinned))
     assert result.returncode == 0, result.stdout + result.stderr

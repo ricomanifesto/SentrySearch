@@ -7,7 +7,7 @@ Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 Check-Valid-Until: no
 
 Types: deb deb-src
-URIs: https://snapshot.debian.org/archive/debian-security/20261006T205323Z/
+URIs: https://snapshot.debian.org/archive/debian-security/20261007T211543Z/
 Suites: trixie-security
 Components: main
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg

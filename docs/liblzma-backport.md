@@ -1,183 +1,115 @@
-# Temporary liblzma security backport
+# liblzma: the official Debian fix (formerly a local backport)
 
-Owner: **SentrySearch maintainers**. This is a local package build, not an
-official Debian release, a scanner exception, or deployment approval.
+Owner: **SentrySearch maintainers**. The service image carries Debian's own
+fixed `liblzma5`. This file keeps its earlier name so existing links resolve;
+the local backport it used to describe is gone.
 
-`TODO(liblzma-backport)`: remove the local package recipe and its backport-only
-assertions after an authenticated official Trixie package fixes the advisory and
-passes the replacement gates below. Retain the behavioral regression tests.
-Do not copy or extend this temporary package-maintenance path for other libraries.
-
-## Why this exists
+## What the image carries
 
 [GHSA-5qpq-xqfv-j9pg](https://github.com/tukaani-project/xz/security/advisories/GHSA-5qpq-xqfv-j9pg)
 concerns decoder state after allocation failure and repeated initialization.
-The upstream advisory is HIGH even when a scanner labels it UNKNOWN.
-The official-package check on October 6, 2026 found
-`xz-utils=5.8.1-1+deb13u1` in Trixie and no replacement in Trixie security,
-updates, or proposed-updates. On October 8, 2026 the signed Trixie indexes list
-`5.8.1-1+deb13u2` in `trixie-security` (DSA-6549-1; arm64 `liblzma5` SHA-256
-`88f3aa499dc30edf01b9209ab40f11e37edfbecef971f84f4721de1874ed4827`), and Trivy's
-database of that day marks the advisory fixed there. The replacement gates below
-are now open: the patch-content review of gate 1 and gates 2–6 have not been done,
-so the image still ships this backport. Recheck the
-[Debian tracker](https://security-tracker.debian.org/tracker/TEMP-1147318-639065)
-and authenticated package indexes before updating this recipe.
+The upstream advisory is HIGH even when a scanner labels it UNKNOWN. Debian
+fixed it in `xz-utils 5.8.1-1+deb13u2`, published to `trixie-security` as
+DSA-6549-1 ([tracker](https://security-tracker.debian.org/tracker/TEMP-1147318-639065)).
 
-The bounded patch set retains Debian's existing patches and adds these exact
-upstream commits:
+The digest-pinned Python 3.11 Trixie donor image still carries
+`liblzma5 5.8.1-1+deb13u1`. The build installs the official
+`5.8.1-1+deb13u2` package over it and copies that package's files, checksums
+and license into the final image, as it does for every other native-library
+package. The library is unmodified: no local patch, version suffix or
+provenance file. Python's `lzma` module is unchanged and loads it.
 
-| Purpose | Commit |
+This replaces the local build of `5.8.1-1+deb13u1+sentry1` that the image
+carried from October 6 to October 12, 2026, while no official fix existed.
+
+## What was checked before replacing the backport
+
+| Check | Result |
 | --- | --- |
-| Safe reinitialization after decoder allocation failure | [fe4d763d566a38ad61d4c5022520c25578a3a464](https://github.com/tukaani-project/xz/commit/fe4d763d566a38ad61d4c5022520c25578a3a464) |
-| Cleanup after filter-chain initialization failure | [e5e63d50eac1b4357a5a7a0abd3c5f99a5c47881](https://github.com/tukaani-project/xz/commit/e5e63d50eac1b4357a5a7a0abd3c5f99a5c47881) |
-| Upstream regression test | [ff834f25ae4f9b3e6270d41b4c843b8b1183346c](https://github.com/tukaani-project/xz/commit/ff834f25ae4f9b3e6270d41b4c843b8b1183346c) |
+| Official source | `5.8.1-1+deb13u2` is in the signed `trixie-security` index of the dated snapshot below, first archived there on 2026-10-07. Proposed-updates was not used. |
+| Patch content, not the version string | The package's `debian/patches` carry upstream commits [fe4d763](https://github.com/tukaani-project/xz/commit/fe4d763d566a38ad61d4c5022520c25578a3a464) and [e5e63d5](https://github.com/tukaani-project/xz/commit/e5e63d50eac1b4357a5a7a0abd3c5f99a5c47881) as cherry-picks. Their changed lines are identical to the two fixes the local backport applied. Debian adds two more upstream changes: [c3b290c](https://github.com/tukaani-project/xz/commit/c3b290c3dc536d16884a6c695618eb08fdbc700a) (the same reinitialization safety for another coder; upstream says it fixes no reachable bug) and a mutex around the threaded decoder's progress counter. |
+| Changelog | The package's Debian changelog names GHSA-5qpq-xqfv-j9pg for `+deb13u2` and CVE-2026-34743 for `+deb13u1`. The image test reads the shipped changelog and requires both. |
+| Native-library revisions | Only `liblzma5` changes. The donor's `libc6`, `libssl3t64`, `libgcc-s1`, `libstdc++6`, `zlib1g` and `libzstd1` must still equal the distroless base's, as before. `liblzma5` depends only on `libc6`. |
+| Behavior | The allocation-failure regression and the Python compatibility cases run against the library the final image loads. |
 
-The recipe does not upgrade the upstream library version or remove Python's
-`lzma` module. The honest local Debian version is
-`5.8.1-1+deb13u1+sentry1`. A scanner may still associate that version with the
-advisory; changing package metadata to manufacture a clean scan is not allowed.
-
-## Pinned build and provenance
+## Pinned inputs
 
 `container/Dockerfile` and `container/liblzma/manifest.json` are the source of
-truth. The build uses the digest-pinned official Python 3.11 Trixie donor,
-Debian snapshot `20261006T203214Z` for `trixie`/`trixie-updates`, and security
-snapshot `20261006T205323Z` for `trixie-security`.
+truth.
 
-APT verifies Debian archive signatures. `recipe.py indexes` additionally requires
-the exact three reviewed `InRelease` hashes, before dependency installation.
-`Check-Valid-Until: no` applies only to the historical snapshot sources; signature,
-TLS, and content-hash checks remain enabled. No live-repository fallback is used.
-
-`recipe.py prepare` verifies the original `.dsc`, original archive, detached
-signature file, Debian archive, and each checked-in patch by SHA-256. Patches
-apply with zero fuzz and become a recorded Debian source patch. The detached
-upstream signature is preserved and hash-checked; this is **not** a claim that
-the recipe independently verifies its author's signature. Debian archive
-authentication is the verified source-distribution trust chain.
-
-The builder installs architecture-dependent build requirements and runs
-`dpkg-buildpackage -B -us -uc -j2` without network. This retains Debian packaging,
-ABI/hardening checks, and normal/static/xzdec tests while omitting documentation-only
-build dependencies. The changelog time and `SOURCE_DATE_EPOCH` are fixed. Build
-records are exported unsigned; no signing key or signing claim is involved.
+- **Snapshots.** `container/liblzma/debian.sources` replaces the donor's package
+  sources with dated Debian snapshots only: `debian` `20261006T203214Z`
+  (`trixie`, `trixie-updates`) and `debian-security` `20261007T211543Z`
+  (`trixie-security`). There is no fallback to a live repository.
+- **Authentication.** APT verifies the Debian archive signatures on those
+  indexes and the hash of every download against them. `Check-Valid-Until: no`
+  applies only because historical snapshots expire by design; signature, TLS
+  and hash checks stay on.
+- **Exact bytes.** `container/liblzma/verify.py` then requires what the
+  manifest records: the three `InRelease` files' SHA-256, the SHA-256 of the
+  downloaded `liblzma5` and `liblzma-dev` packages for the build architecture,
+  and, for the test tools, the four source files. Any difference fails the
+  build. The manifest records the arm64 and amd64 package hashes from the
+  signed index; only arm64 has been built and tested.
+- **Donor guard.** The build requires the donor to carry exactly
+  `5.8.1-1+deb13u1` before installing, and exactly `5.8.1-1+deb13u2` after. A
+  donor that changes means this update is reviewed again. It can never replace
+  a newer official package with this one.
 
 | Stage | Output / boundary |
 | --- | --- |
-| `liblzma-source` | Authenticated source and build dependencies; source/patch validation |
-| `liblzma-build` | Compiled package, source/build records, and native test tool |
-| `liblzma-package` | Export-only package/evidence files; not a runnable service |
-| `liblzma-test-tools` | Export-only `/probe` executable and small upstream fixture |
-| `runtime-files` → `service` | Installs the local package before copying its runtime files, checksums, license and provenance into the final image |
+| `liblzma-official` | The verified official packages under fixed names; nothing built |
+| `liblzma-test-build` | The native probe compiled against the official development package, and one fixture extracted from the authenticated upstream source |
+| `liblzma-test-tools` | Export-only `/probe` executable and fixture |
+| `runtime-files` → `service` | Installs the official package over the donor's, then copies its runtime files, checksums, license and changelog into the final image |
 
-The donor's original `liblzma5` version must equal `5.8.1-1+deb13u1`, or the
-build fails rather than overwriting a newer official package. The service image
-keeps `/usr/share/sentrysearch/liblzma-backport.json` with input IDs, architecture,
-package SHA-256 and shared-library SHA-256. Test executables, fixtures, source,
-compilers and package-management tools do not enter that image.
+Remove the `liblzma-official` stage and its install step once the donor image
+itself carries `5.8.1-1+deb13u2` or later; the test tools then build against
+the donor's own development package.
 
-## Repeatable local checks
-
-Run from the repository root with Docker/BuildKit, `uv`, and a compatible
-SentryRuntime checkout. These commands are verification procedures, not recorded
-results for a newly built image. Existing local evaluation evidence is ARM64;
-an `amd64` pin or architecture-aware code is not executed AMD64 proof.
+## Tests
 
 ```bash
-uv run python -m pytest tests/test_liblzma_recipe.py tests/test_service_image_runner.py -v
+uv run python -m pytest tests/test_liblzma_pin.py tests/test_service_image_runner.py -v
 DOCKER_DEFAULT_PLATFORM=linux/arm64 uv run python dev/check_service_images.py --runtime-repo ../sentryruntime
 ```
 
-The service runner builds both services and `liblzma-test-tools`, resolves their
-immutable local image IDs, and runs `tests/service_images.py`,
-`tests/platform_fit.py`, and `tests/liblzma_backport.py`. For a TLS-intercepting
-build proxy, add `--build-ca-file /path/to/complete-ca-bundle.pem` to the runner;
-never disable TLS verification. The optional trust bundle is a build secret,
-not a runtime image file.
+`tests/test_liblzma_pin.py` runs offline: the verifier accepts only the
+recorded bytes, the build names one version from the pinned snapshots only, and
+nothing of the local backport remains.
 
-The native regression uses a controlled allocator that rejects allocations of
-at least 1 MiB: decode a small dictionary, reject an 8 MiB dictionary with
-`LZMA_MEM_ERROR`, then reuse the stream and decode successfully. Separate `alone`
-and `auto` cases require identical recovered output, observed injected rejection,
-balanced allocations/frees, and zero remaining allocations. The container is
-network-disabled, read-only, non-root, capability-free, memory/PID-bounded, and
-has core dumps disabled. A container OOM is rejected as invalid evidence.
-The probe is mounted read-only for the test, not shipped in the service.
+The service runner builds both services and `liblzma-test-tools`, resolves
+their immutable local image IDs, and runs `tests/service_images.py`,
+`tests/platform_fit.py` and `tests/liblzma_package.py`. For a TLS-intercepting
+build proxy, add `--build-ca-file /path/to/complete-ca-bundle.pem`; never
+disable TLS verification. The trust bundle is a build secret, not an image
+file.
 
-Python checks cover raw/XZ/alone round trips, concatenated streams, seek/close,
-incremental decoding, invalid/truncated input, memory limits, and explicit
-decoder reinitialization. These are wrapper compatibility checks, not injected
-Python allocation-failure tests. The native suite does not claim direct lzip or
-MicroLZMA coverage, sanitizer coverage, or exhaustive allocation-failure coverage.
-Metadata assertions separately verify the local version, package checksums,
-license, provenance, and actual Python linkage to the installed shared library.
+`tests/liblzma_package.py` has ten cases against the final image:
 
-### Export the package, exact source and build records
+- **Two native allocation-failure cases** (`alone` and `auto`). A controlled
+  allocator rejects allocations of at least 1 MiB: decode a small dictionary,
+  reject an 8 MiB dictionary with `LZMA_MEM_ERROR`, then reuse the stream and
+  decode successfully. Each requires identical recovered output, an observed
+  injected rejection, balanced allocations and frees, and none left. The
+  container is network-disabled, read-only, non-root, capability-free, memory
+  and PID bounded, with core dumps off; a container OOM is rejected as invalid
+  evidence. The probe is mounted read-only for the test and never shipped.
+- **Seven Python cases:** raw, XZ and alone round trips, concatenated streams,
+  seek and close, incremental decoding, invalid and truncated input, memory
+  limits, and explicit decoder reinitialization. These check the wrapper, not
+  injected allocation failure.
+- **One package case:** the installed version is the pinned one, every file in
+  the package's checksum list is present and matches, the license and the
+  changelog naming both advisories are shipped, Python has loaded exactly that
+  library, and neither test tools nor the old backport's provenance file are
+  in the image.
 
-The export target contains `liblzma5.deb`, original and patched source records
-(`.dsc`, archives and original `.asc`), `.buildinfo`, `.changes`,
-`build-packages.txt`, and `liblzma-backport.json`. Keep these together; the small
-runtime provenance record is not a substitute for complete corresponding source.
-This is not a complete Debian binary-upload set: `.changes` also names utility,
-development and debug packages that are not exported, and names the versioned
-library package while this target exports it as `liblzma5.deb`.
+The native cases do not claim direct lzip or MicroLZMA coverage, sanitizer
+coverage or exhaustive allocation-failure coverage. Existing evidence is
+ARM64; the recorded amd64 hashes are not AMD64 proof.
 
-```bash
-liblzma_evidence_dir=$(mktemp -d)
-docker buildx build --platform linux/arm64 --file container/Dockerfile \
-  --target liblzma-package --no-cache-filter liblzma-build \
-  --output "type=local,dest=${liblzma_evidence_dir}/first" .
-docker buildx build --platform linux/arm64 --file container/Dockerfile \
-  --target liblzma-package --no-cache-filter liblzma-build \
-  --output "type=local,dest=${liblzma_evidence_dir}/second" .
-cmp "${liblzma_evidence_dir}/first/liblzma5.deb" \
-    "${liblzma_evidence_dir}/second/liblzma5.deb"
-shasum -a 256 "${liblzma_evidence_dir}/first/liblzma5.deb" \
-              "${liblzma_evidence_dir}/second/liblzma5.deb"
-```
-
-For build egress that requires the extra CA, add
-`--secret id=build_ca,src=/path/to/complete-ca-bundle.pem` to each build.
-`--no-cache-filter liblzma-build` forces two fresh compilations from the pinned
-source/dependency stage; it does not force two independent downloads of that
-stage. Require matching package bytes, retain both inventories/build records,
-and investigate any mismatch. `.buildinfo` wall-clock fields may differ.
-This package comparison does not assert reproducible whole-image digests.
-Retain the export directory explicitly with the release evidence before cleaning
-up temporary files.
-
-## Replace with the official Debian package
-
-`TODO(liblzma-backport)`: SentrySearch maintainers must perform this removal as
-one reviewed change after all of these gates pass:
-
-1. Verify a fixed package is available from an authenticated official Trixie
-   stable/security/updates source. Check its actual patch/source content and
-   advisory disposition, not merely a higher version string. Proposed-updates
-   availability alone is not an accepted stable replacement.
-2. Select reviewed donor/base pins with compatible native-library revisions.
-   The current donor-version guard should fail until deliberately removed or
-   replaced; never bypass it to keep applying this older local fork.
-3. Re-run the native allocator regression and Python compatibility suite against
-   the official candidate's real loaded library, plus the complete service and
-   platform-fit suites. Rebuild and test every intended release architecture;
-   ARM64 results cannot stand in for AMD64.
-4. Remove the local source/patch/manifest recipe, snapshot-only build inputs,
-   local-package installation/provenance copy, backport-only package stages,
-   `tests/test_liblzma_recipe.py`, and local-version/manifest-only assertions.
-   Keep ordinary package provenance/checksum/license assertions.
-5. **Retain** the allocator and Python behavioral tests. Move the minimal native
-   probe and fixture preparation into an ordinary test-only build stage that
-   uses authenticated official development inputs. Update the service runner's
-   tool target and target-name-specific unit test; do not leave tests depending
-   on the deleted backport stages or ship their tools in the release image.
-6. Export fresh source/provenance as required, create a new SBOM and scan the exact
-   candidate image, and review all remaining advisories without suppressions.
-   Update these documents and remove every `TODO(liblzma-backport)` marker only
-   when the temporary path has actually gone.
-
-Passing this regression resolves a bounded decoder behavior, not the independent
-release decision for all image findings. See [image security](image-security.md)
-for that gate. No command here publishes an image, deploys a service, changes
-production, or grants a vulnerability waiver.
+Passing these resolves one bounded decoder behavior. It is not the release
+decision for the image's other findings; see [image security](image-security.md).
+No command here publishes an image, deploys a service, changes production or
+grants a vulnerability waiver.

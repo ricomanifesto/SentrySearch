@@ -29,11 +29,11 @@ when changing either binary. Update a pin deliberately and rerun the proof below
 Image digests are not bit-for-bit
 reproducible across builds.
 
-The temporary [liblzma backport](liblzma-backport.md) additionally pins Debian
-snapshot release hashes, source archives and upstream patches. It produces the
-honestly named local package `5.8.1-1+deb13u1+sentry1`, retains provenance and
-licenses, and has an explicit official-package replacement gate. Its test tools
-and source exports are separate build targets, not runtime files.
+The build also installs Debian's official fixed
+[`liblzma5`](liblzma-backport.md) over the donor image's, from dated Debian
+snapshots whose release files and package hashes are pinned. The package is
+unmodified and keeps its ordinary checksums, license and changelog. Its test
+tools are a separate build target, not runtime files.
 
 The runtime contains no shell, package manager or administrative/build commands.
 It keeps the existing Python interpreter/stdlib, locked application environment,
@@ -51,7 +51,7 @@ is a separate decision. Use exec-form Python commands, never shell-form probes.
 entry points from `dev/`, the three shared release-receipt modules from
 `release_tools/` (`__init__.py`, `contract.py`, `receipt.py`, for the migration
 release job), `container/build-requirements.txt`, and curated
-`container/liblzma/` recipe/patch/probe inputs. The latter enter build/test stages;
+`container/liblzma/` pin, verifier and probe inputs. The latter enter build/test stages;
 the native fixture is extracted from authenticated source there. Neither native
 test tools nor fixtures enter the final service image. The general `tests/`
 tree, frontend, Terraform, and `.env` files remain outside the build context.
@@ -187,7 +187,7 @@ uv run python dev/check_service_images.py --runtime-repo ../sentryruntime
 The command builds this image, the SentryRuntime image, and the separate
 `liblzma-test-tools` target, then pins their immutable local image IDs. It runs
 `tests/service_images.py`, `tests/platform_fit.py`,
-`tests/liblzma_backport.py` and the [log-buffer measurement](#log-buffers). The cross-service tests use containers on an internal
+`tests/liblzma_package.py` and the [log-buffer measurement](#log-buffers). The cross-service tests use containers on an internal
 Docker network with no outbound route. They generate disposable credentials and
 separate CAs for PostgreSQL and the runtime, use verified TLS for both product and
 runtime databases and verified HTTPS with scoped tokens to the runtime, and replace the
@@ -205,8 +205,9 @@ The suites check:
   for actually loaded system libraries; a metadata-masking negative control
   proves the provenance assertion detects missing inventory;
 - controlled native liblzma allocation-failure/reinitialization and Python
-  compatibility in separate network-disabled, capped containers, plus honest
-  local-package metadata; see [the backport procedure and coverage limits](liblzma-backport.md);
+  compatibility in separate network-disabled, capped containers, plus the
+  official package's version, checksums and changelog; see
+  [the pinned package and coverage limits](liblzma-backport.md);
 - the release job succeeds with the schema-owner role, is idempotent, and is
   rejected for the application role; the application role passes the read-only
   check after grants and cannot create tables;

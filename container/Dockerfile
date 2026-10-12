@@ -25,44 +25,49 @@ ADD --checksum=sha256:eae1d3aa50c48fb23b8cbdf4e369d0910dfc538566bfd09df89a774aa8
 FROM init-${TARGETARCH} AS init
 FROM ${RUNTIME_IMAGE} AS runtime-base
 
-# TODO(liblzma-backport): remove the local package stages after an authenticated
-# fixed Trixie package passes docs/liblzma-backport.md replacement gates.
-FROM ${PYTHON_IMAGE} AS liblzma-source
-WORKDIR /work
-COPY container/liblzma /inputs
+# The donor image carries liblzma5 5.8.1-1+deb13u1. Debian's fix for
+# GHSA-5qpq-xqfv-j9pg, 5.8.1-1+deb13u2 from trixie-security (DSA-6549-1), is
+# installed over it from dated Debian snapshots. APT authenticates the snapshot
+# indexes and each download; container/liblzma/verify.py also requires the
+# exact reviewed Release files and package bytes (container/liblzma/manifest.json).
+# Remove these stages once the donor image itself carries this version or later.
+FROM ${PYTHON_IMAGE} AS liblzma-official
+COPY container/liblzma/manifest.json container/liblzma/verify.py /inputs/
 COPY container/liblzma/debian.sources /etc/apt/sources.list.d/debian.sources
-# Historical dated snapshots retain signature verification. Verify their exact
-# Release hashes too, then authenticate and hash-pin the original Debian source.
+WORKDIR /packages
 RUN --mount=type=secret,id=build_ca,required=false \
     if [ -s /run/secrets/build_ca ]; then \
         export SSL_CERT_FILE=/run/secrets/build_ca; \
         printf 'Acquire::https::CaInfo "/run/secrets/build_ca";\n' > /tmp/apt-ca.conf; \
         export APT_CONFIG=/tmp/apt-ca.conf; \
     fi && \
-    apt-get update --error-on=any && python /inputs/recipe.py indexes && \
-    apt-get install -y --no-install-recommends dpkg-dev && \
-    apt-get build-dep -y --arch-only --no-install-recommends xz-utils=5.8.1-1+deb13u1 && \
-    apt-get source --download-only xz-utils=5.8.1-1+deb13u1 && \
-    python /inputs/recipe.py prepare && rm -f /tmp/apt-ca.conf
+    apt-get update --error-on=any && python /inputs/verify.py indexes && \
+    apt-get download liblzma5=5.8.1-1+deb13u2 liblzma-dev=5.8.1-1+deb13u2 && \
+    python /inputs/verify.py packages /packages && rm -f /tmp/apt-ca.conf
 
-FROM liblzma-source AS liblzma-build
-# Fixed changelog time plus SOURCE_DATE_EPOCH stabilizes package timestamps.
-ENV SOURCE_DATE_EPOCH=1791331140
-WORKDIR /work/xz
-RUN --network=none dpkg-buildpackage -B -us -uc -j2 && \
-    python /inputs/recipe.py export
-RUN --network=none mkdir -p /probe && \
+# Test tools only: the allocation-failure probe, built against the official
+# development package, and one small fixture from the authenticated source.
+FROM liblzma-official AS liblzma-test-build
+COPY container/liblzma/decoder_reinit_test.c /inputs/
+WORKDIR /work
+RUN --mount=type=secret,id=build_ca,required=false \
+    if [ -s /run/secrets/build_ca ]; then \
+        export SSL_CERT_FILE=/run/secrets/build_ca; \
+        printf 'Acquire::https::CaInfo "/run/secrets/build_ca";\n' > /tmp/apt-ca.conf; \
+        export APT_CONFIG=/tmp/apt-ca.conf; \
+    fi && \
+    apt-get install -y --no-install-recommends gcc libc6-dev && \
+    apt-get source --download-only xz-utils=5.8.1-1+deb13u2 && \
+    python /inputs/verify.py sources /work && rm -f /tmp/apt-ca.conf
+RUN --network=none dpkg -i /packages/liblzma5.deb /packages/liblzma-dev.deb && mkdir -p /probe && \
     cc -std=c11 -Wall -Wextra -Werror -O2 -fstack-protector-strong \
         -D_FORTIFY_SOURCE=2 -Wl,-z,relro,-z,now \
-        -I/work/xz/src/liblzma/api /inputs/decoder_reinit_test.c \
-        -Wl,-l:liblzma.so.5 -o /probe/decoder_reinit_test && \
-    cp /work/xz/tests/files/good-unknown_size-with_eopm.lzma /probe/
+        /inputs/decoder_reinit_test.c -Wl,-l:liblzma.so.5 -o /probe/decoder_reinit_test && \
+    python /inputs/verify.py fixture /work /probe
 
-# Exportable evidence and test tools never enter the service image.
-FROM scratch AS liblzma-package
-COPY --from=liblzma-build /out/ /
+# Test tools never enter the service image.
 FROM scratch AS liblzma-test-tools
-COPY --from=liblzma-build /probe/ /probe/
+COPY --from=liblzma-test-build /probe/ /probe/
 
 FROM ${PYTHON_IMAGE} AS build
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never \
@@ -83,12 +88,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     rm -f /app/.venv/.lock && chmod -R go-w /app/.venv
 
 FROM ${PYTHON_IMAGE} AS runtime-files
-COPY --from=liblzma-build /out/liblzma5.deb /tmp/liblzma5.deb
-# Fail on donor drift: do not replace a future official fix with this older fork.
+COPY --from=liblzma-official /packages/liblzma5.deb /tmp/liblzma5.deb
+# Fail on donor drift: a changed donor means this update is reviewed again, and
+# it must never replace a newer official package with this one.
 RUN --network=none test "$(dpkg-query -W -f='${Version}' liblzma5)" = '5.8.1-1+deb13u1' && \
     dpkg --path-include='/usr/share/doc/liblzma5/*' -i /tmp/liblzma5.deb && \
+    test "$(dpkg-query -W -f='${Version}' liblzma5)" = '5.8.1-1+deb13u2' && \
     rm /tmp/liblzma5.deb
-COPY --from=liblzma-build /out/liblzma-backport.json /runtime-extra/usr/share/sentrysearch/liblzma-backport.json
 COPY --from=runtime-base /var/lib/dpkg/status.d /tmp/base-status
 # These exact revisions were reviewed together. Fail rather than overlay libc or
 # silently mix different native TLS/loader versions when either pin changes.
