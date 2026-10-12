@@ -161,10 +161,13 @@ def image(name: str, label: str = "candidate") -> dict:
 
 
 def manifest_document(*, rollback: str = "empty_hold") -> dict:
+    """A forward run in the current format (schema 2), without bootstrap."""
     db = {"database": "runtime_db", "principal": "runtime_owner"}
     product = {"database": "product_db", "principal": "product_owner"}
     document = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "purpose": {"kind": "forward"},
+        "operator_role": OPERATOR_ROLE,
         "release_id": RELEASE_ID,
         "milestone": "operational-paused",
         "environment": {
@@ -289,21 +292,16 @@ def bootstrap_job(database: str) -> dict:
 
 
 def forward_document(*, bootstrap: bool = True) -> dict:
-    """Schema 2 forward run; with bootstrap, both databases are bootstrapped first."""
+    """A forward run; with bootstrap, both databases are bootstrapped first."""
     document = manifest_document()
-    document["schema_version"] = 2
-    document["purpose"] = {"kind": "forward"}
-    document["operator_role"] = OPERATOR_ROLE
     if bootstrap:
         document["jobs"] = [bootstrap_job("runtime"), bootstrap_job("product"), *document["jobs"]]
     return document
 
 
 def rollback_run_document() -> dict:
-    """Schema 2 rollback run restoring the retained prior pair after a failed release."""
+    """A rollback run restoring the retained prior pair after a failed release."""
     document = manifest_document(rollback="compatible_release")
-    document["schema_version"] = 2
-    document["operator_role"] = OPERATOR_ROLE
     document["release_id"] = ROLLBACK_RELEASE_ID
     prior = document["rollback"]
     schemas = {name: values[0] for name, values in prior["compatible_schemas"].items()}

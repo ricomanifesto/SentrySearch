@@ -4,11 +4,15 @@ Pure parsing and validation: no clock, file system, SDK or network access. One
 manifest is one immutable candidate identified by the SHA-256 of its canonical
 JSON. Approval is a separate receipt bound to that hash, never a manifest field.
 
-Schema 2 states its execution purpose explicitly: ``forward`` (migrate, grant
-and prove, optionally after a first-deployment bootstrap) or ``rollback``
-(restore the retained prior pair after a failed release; reconcile and prove
-only). Direction is never inferred from the fallback ``rollback`` plan. Schema 1
-manifests keep their meaning: a forward run without bootstrap.
+Schema 2 is the current, executable format, defined here. It states its
+execution purpose explicitly: ``forward`` (migrate, grant and prove, optionally
+after a first-deployment bootstrap) or ``rollback`` (restore the retained prior
+pair after a failed release; reconcile and prove only). Direction is never
+inferred from the fallback ``rollback`` plan.
+
+Schema 1 is the earlier accepted format, frozen in ``release.manifest_v1``. A
+schema-1 manifest still loads here with the hash it was approved under and can
+be matched to its approval, but it is historical: ``executable`` refuses it.
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ import hashlib
 import json
 import re
 from types import MappingProxyType
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import (
     AfterValidator,
@@ -33,6 +37,9 @@ from pydantic import (
 )
 
 from release.readiness import WORKER_CONTAINER, WORKER_READINESS_CHECK, WORKER_RECEIPT_KIND
+
+if TYPE_CHECKING:
+    from release.manifest_v1 import Manifest as ManifestV1
 
 SCHEMA_VERSIONS = (1, 2)
 MILESTONE = "operational-paused"
@@ -351,7 +358,7 @@ class RollbackRun(Strict):
 
 
 class Manifest(Strict):
-    schema_version: Literal[1, 2]
+    schema_version: Literal[2]
     release_id: Uuid
     milestone: Literal["operational-paused"]
     environment: Environment
@@ -366,10 +373,10 @@ class Manifest(Strict):
     jobs: tuple[Job, ...] = Field(min_length=1, max_length=12)
     operational_checks: tuple[OperationalCheck, ...] = Field(min_length=1, max_length=16)
     rollback: Annotated[EmptyHold | CompatibleRelease, Field(discriminator="kind")]
-    # Required from schema 2, absent in schema 1 (which always means forward).
+    # Both are required (_check_manifest); an explicit null is as missing as none.
     purpose: Annotated[ForwardRun | RollbackRun, Field(discriminator="kind")] | None = None
-    # Schema 2: the IAM role the named operator's session must have assumed. The
-    # preflight binds the caller to it; schema 1 names no role and cannot be run.
+    # The IAM role the named operator's session must have assumed; the preflight
+    # binds the caller to it.
     operator_role: str | None = None
 
     @property
@@ -407,7 +414,13 @@ class Approval(Strict):
 
 @dataclass(frozen=True)
 class LoadedManifest:
-    manifest: Manifest
+    """A validated manifest and the canonical hash its approval is bound to.
+
+    The manifest is the current format, or a schema-1 manifest in its own frozen
+    model. Anything that executes takes it through ``executable``.
+    """
+
+    manifest: Manifest | ManifestV1
     sha256: str
 
 
@@ -477,9 +490,29 @@ def _validated(model: type[Strict], document: dict[str, Any]) -> Any:
 
 def load_manifest(raw: bytes) -> LoadedManifest:
     document = _document(raw)
+    version = document.get("schema_version")
+    if not isinstance(version, (dict, list)) and version == 1:
+        # Deferred import: the frozen schema-1 module builds on this one. Its own
+        # rules decide validity, down to which spellings of 1 it ever accepted;
+        # the hash is the same canonical hash as ever.
+        from release import manifest_v1
+
+        return LoadedManifest(manifest_v1.validate(document), canonical_sha256(document))
     manifest = _validated(Manifest, document)
     _check_manifest(manifest)
     return LoadedManifest(manifest, canonical_sha256(document))
+
+
+def executable(loaded: LoadedManifest) -> Manifest:
+    """The manifest in the current format, which is the only one ever executed.
+
+    A schema-1 manifest names no operator role and its operational checks are
+    not observer tasks. It is not converted: that would run something other
+    than the bytes that were approved.
+    """
+    if not isinstance(loaded.manifest, Manifest):
+        raise ReleaseRejected("manifest_schema_not_executable", "schema_version")
+    return loaded.manifest
 
 
 def load_approval(raw: bytes) -> LoadedApproval:
@@ -517,11 +550,8 @@ def verify_approval(loaded: LoadedManifest, receipt: LoadedApproval, now: dateti
 
 
 def _check_manifest(manifest: Manifest) -> None:
-    # Schema 1 has neither field at all, not even an explicit null.
     for field in ("purpose", "operator_role"):
-        if manifest.schema_version == 1 and field in manifest.model_fields_set:
-            raise ReleaseRejected("unknown_field", field)
-        if manifest.schema_version == 2 and getattr(manifest, field) is None:
+        if getattr(manifest, field) is None:
             raise ReleaseRejected("missing_field", field)
     window = manifest.window
     if not window.not_before < window.expires_at <= window.not_before + MAX_VALIDITY:
@@ -658,10 +688,8 @@ def _check_jobs(manifest: Manifest) -> None:
     plan = tuple((job.phase, job.database) for job in jobs)
     if manifest.execution == "rollback":
         allowed = {ROLLBACK_ORDER}
-    elif manifest.schema_version == 2:
-        allowed = {JOB_ORDER, BOOTSTRAP_ORDER}
     else:
-        allowed = {JOB_ORDER}
+        allowed = {JOB_ORDER, BOOTSTRAP_ORDER}
     if any(phase == "bootstrap" for phase, _ in plan) and not isinstance(
         manifest.rollback, EmptyHold
     ):

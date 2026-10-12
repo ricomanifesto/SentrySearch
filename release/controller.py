@@ -41,6 +41,7 @@ from release.manifest import (
     ReleaseRejected,
     RollbackRun,
     canonical_sha256,
+    executable,
     verify_approval,
 )
 from release.ports import AmbiguousResponse, Clock, ClockUntrusted, EcsPort, EvidencePort, LogPort
@@ -223,7 +224,11 @@ class ReleaseController:
         handoff: FailedReleaseHandoff | None = None,
     ) -> None:
         self.loaded = loaded
-        self.manifest = loaded.manifest
+        try:
+            self.manifest = executable(loaded)
+        except ReleaseRejected as error:
+            # A schema-1 manifest is read and matched to its approval, never run.
+            raise ReleaseHalted(error.code) from None
         self.approval = approval
         self.store = store
         self.ecs = ecs

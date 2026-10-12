@@ -41,14 +41,20 @@ role the operator's session must have assumed. A schema-1 manifest names no role
 and is refused (`operator_role_unapproved`) before the credentials file is read.
 There is no command-line role: the approved manifest is the only source.
 
+`validate` still reads a schema-1 manifest. It is checked by the rules it was
+accepted under, keeps the hash it was approved with, and is matched to its
+approval; the report says `"schema_version": 1` and `"executable": false`.
+Nothing converts it to schema 2.
+
 The control bucket is derived as the bootstrap root names it,
 `<environment.name>-<account_id>-control`, so the manifest's environment name
 must equal the roots' `name_prefix`.
 
 ## Execution purpose
 
-Schema 2 manifests state `purpose.kind` explicitly; schema 1 manifests are
-forward runs. A forward run may bootstrap both databases first (only with an
+Manifests state `purpose.kind` explicitly. (A schema-1 manifest has no purpose
+and always meant a forward run; it is not executed.) A forward run may bootstrap
+both databases first (only with an
 `empty_hold` fallback). A forward upgrade whose fallback is `compatible_release`
 still migrates: the fallback names what to restore after a failure, not what to
 run. A `rollback` purpose (prior pair only, both actual schemas compatible,

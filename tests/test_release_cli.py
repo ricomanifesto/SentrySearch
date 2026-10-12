@@ -57,6 +57,7 @@ from tests.release_fakes import (
     FAILED_RELEASE_ID,
     ROLLBACK_RELEASE_ID,
     approval_document,
+    iso,
     encode,
     forward_document,
     manifest_document,
@@ -239,6 +240,7 @@ def test_validate_is_local_with_no_clients_credentials_or_clock(tmp_path):
     report = json.loads(out.getvalue())
     assert code == cli.EXIT_OK, report
     assert report["result"] == "valid" and report["execution"] == "forward"
+    assert (report["schema_version"], report["executable"]) == (2, True)
     assert report["manifest_sha256"] == load_manifest(encode(r.document)).sha256
     assert r.aws.bridge.calls == []
 
@@ -451,14 +453,46 @@ def test_preflight_errors_are_refusals_without_provider_text(tmp_path):
     assert "fixture error" not in json.dumps(report)
 
 
-def test_a_schema_one_manifest_names_no_approved_role_and_is_refused_unread(tmp_path):
-    document = manifest_document()
-    document["environment"]["name"] = ENVIRONMENT
-    r = cli_rig(tmp_path, document=document)
+def accepted_schema_one(r: CliRig) -> str:
+    """Replace the rig's inputs with the accepted schema-1 manifest and its approval."""
+    raw = (Path(__file__).parent / "fixtures" / "release-manifest-schema-1.json").read_bytes()
+    loaded = load_manifest(raw)
+    window = loaded.manifest.window
+    Path(r.manifest_path).write_bytes(raw)
+    Path(r.approval_path).write_bytes(
+        encode(approval_document(loaded.sha256, not_before=iso(window.not_before),
+                                 not_after=iso(window.expires_at)))
+    )  # fmt: skip
+    return loaded.sha256
+
+
+@pytest.mark.parametrize("command", ["run", "status", "recover", "cleanup"])
+def test_a_schema_one_manifest_names_no_approved_role_and_is_refused_unread(tmp_path, command):
+    r = cli_rig(tmp_path)
+    accepted_schema_one(r)
     os.chmod(r.credentials_path, 0o600)  # would be refused if it were read
-    code, report = r.main(*r.args("run"))
+    extra = []
+    if command in ("recover", "cleanup"):
+        extra = ["--prior-session", "cli-session-a", "--lock-etag", '"etag"',
+                 "--fence-evidence-sha256", "0" * 64, "--authorized-by", OPERATOR]  # fmt: skip
+    code, report = r.main(*r.args(command, approval=command != "status"), *extra)
     assert_refused_before_release(r, code, report, "operator_role_unapproved")
     assert r.built == []
+
+
+def test_validate_reads_an_accepted_schema_one_manifest_and_says_it_cannot_run(tmp_path):
+    r = cli_rig(tmp_path)
+    sha256 = accepted_schema_one(r)
+    out = io.StringIO()
+    code = cli.main(
+        ["validate", "--manifest", r.manifest_path, "--approval", r.approval_path], out=out
+    )
+    report = json.loads(out.getvalue())
+    assert code == cli.EXIT_OK, report
+    assert sha256 == "e724f3244e78d6e26ee40db7b36ab99d1e5725a3f335c100fdc2227b6788ee19"
+    assert (report["result"], report["manifest_sha256"]) == ("valid", sha256)
+    assert (report["schema_version"], report["executable"]) == (1, False)
+    assert report["execution"] == "forward" and report["jobs"][0] == "runtime-migrate"
 
 
 def test_no_command_line_role_can_replace_the_approved_one(tmp_path):

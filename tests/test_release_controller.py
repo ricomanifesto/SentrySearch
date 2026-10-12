@@ -6,6 +6,7 @@ import copy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
+from pathlib import Path
 import sys
 
 import pytest
@@ -2710,6 +2711,19 @@ def document_rig(document: dict, *, running_prior: bool = False, **approval) -> 
     loaded = load_manifest(encode(document))
     r.approval_raw = encode({**approval_document(loaded.sha256), **approval})
     return r
+
+
+def test_a_schema_one_manifest_is_refused_before_anything_is_read_or_written():
+    r = rig()
+    fixture = Path(__file__).parent / "fixtures" / "release-manifest-schema-1.json"
+    with pytest.raises(ReleaseHalted) as halted:
+        ReleaseController(
+            load_manifest(fixture.read_bytes()), load_approval(r.approval_raw), store=r.store,
+            ecs=r.ecs, evidence=r.evidence, logs=r.logs, clock=r.clock, tokens=r.tokens,
+            session_id="session-a",
+        )  # fmt: skip
+    assert halted.value.code == "manifest_schema_not_executable"
+    assert r.store.objects == {} and r.ecs.mutations == [] and len(r.trace) == 0
 
 
 def launched_job_ids(r: Rig) -> list[str]:

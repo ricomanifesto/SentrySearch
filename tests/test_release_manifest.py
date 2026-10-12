@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 
+from release import manifest_v1
 from release.manifest import (
     MIGRATION_RECEIPT_SCHEMA,
     OPERATIONAL_RECEIPT_SCHEMA,
@@ -15,9 +18,11 @@ from release.manifest import (
     CompatibleRelease,
     ReleaseRejected,
     canonical_sha256,
+    executable,
     load_approval,
     load_manifest,
     verify_approval,
+    verify_approval_binding,
 )
 from release.readiness import WORKER_READINESS_CHECK, WORKER_RECEIPT_KIND
 from tests.release_fakes import (
@@ -28,6 +33,7 @@ from tests.release_fakes import (
     REGION,
     START,
     approval_document,
+    bootstrap_job,
     encode,
     forward_document,
     iso,
@@ -136,11 +142,11 @@ def test_ambiguous_json_is_rejected_before_hashing(raw, code):
         ("risk.decided_by", _DELETE, "missing_field", "risk.decided_by"),
         ("milestone", "synthetic-admission", "invalid_field", "milestone"),
         ("schema_version", 3, "invalid_field", "schema_version"),
-        # Schema 2 states its purpose; schema 1 cannot.
-        ("schema_version", 2, "missing_field", "purpose"),
-        ("purpose", {"kind": "forward"}, "unknown_field", "purpose"),
-        ("purpose", None, "unknown_field", "purpose"),  # not even an explicit null
-        ("operator_role", None, "unknown_field", "operator_role"),
+        # The current format states its purpose and its approved operator role.
+        ("purpose", _DELETE, "missing_field", "purpose"),
+        ("purpose", None, "missing_field", "purpose"),
+        ("operator_role", _DELETE, "missing_field", "operator_role"),
+        ("operator_role", None, "missing_field", "operator_role"),
         ("network.assign_public_ip", "ENABLED", "invalid_field", "network.assign_public_ip"),
         ("rollback", {"kind": "previous"}, "invalid_field", "rollback"),
         ("rollback", {"kind": "empty_hold", "release_id": "x"}, "unknown_field", "rollback"),
@@ -555,9 +561,102 @@ def job_named(document: dict, job_id: str) -> dict:
     return next(job for job in document["jobs"] if job["id"] == job_id)
 
 
-def test_schema_one_keeps_its_meaning_a_forward_run_even_with_a_compatible_fallback():
+FIXTURES = Path(__file__).parent / "fixtures"
+# The schema-1 manifests exactly as accepted: each file is the canonical encoding,
+# so its own SHA-256 is the hash that manifest was approved under.
+ACCEPTED_SCHEMA_ONE = {
+    "release-manifest-schema-1.json":
+        "e724f3244e78d6e26ee40db7b36ab99d1e5725a3f335c100fdc2227b6788ee19",
+    "release-manifest-schema-1-upgrade.json":
+        "b0cbb88e0bf42a0876b2da539940800b4af6ac34993e6e352056250716676a4a",
+}  # fmt: skip
+
+
+def accepted_schema_one(name: str = "release-manifest-schema-1.json") -> bytes:
+    return (FIXTURES / name).read_bytes()
+
+
+@pytest.mark.parametrize("name, sha256", ACCEPTED_SCHEMA_ONE.items())
+def test_an_accepted_schema_one_manifest_loads_under_the_hash_it_was_approved_with(name, sha256):
+    raw = accepted_schema_one(name)
+    assert hashlib.sha256(raw).hexdigest() == sha256
+    loaded = load_manifest(raw)
+    assert loaded.sha256 == sha256
+    manifest = loaded.manifest
+    assert isinstance(manifest, manifest_v1.Manifest) and manifest.schema_version == 1
+    # Its own checks and migration envelopes, as approved; nothing is upgraded.
+    assert [(check.id, check.receipt_schema) for check in manifest.operational_checks] == [
+        ("worker-readiness", "sentry.worker-readiness.v1"),
+        ("runtime-protected-readiness", "sentry.release.runtime-ready.v1"),
+        ("api-operational", "sentry.release.api-ready.v1"),
+    ]
+    assert manifest.jobs[0].receipt_schema == "sentry.release.migrate.v1"
+    assert [job.phase for job in manifest.jobs][:2] == ["migrate", "migrate"]
+    # Another encoding of the same document is the same manifest.
+    assert load_manifest(json.dumps(json.loads(raw), indent=2).encode()).sha256 == sha256
+
+
+def test_an_accepted_schema_one_manifest_still_matches_its_approval_offline():
+    loaded = load_manifest(accepted_schema_one())
+    window = loaded.manifest.window
+    receipt = approval_document(loaded.sha256, not_before=iso(window.not_before),
+                                not_after=iso(window.expires_at))  # fmt: skip
+    approval = load_approval(encode(receipt))
+    verify_approval_binding(loaded, approval)
+    verify_approval(loaded, approval, window.not_before + timedelta(minutes=1))
+    for change, code in [
+        ({"manifest_sha256": canonical_sha256(manifest_document())},
+         "approval_manifest_mismatch"),
+        ({"release_id": PRIOR_RELEASE_ID}, "approval_scope_mismatch"),
+    ]:  # fmt: skip
+        with pytest.raises(ReleaseRejected) as error:
+            verify_approval_binding(loaded, load_approval(encode({**receipt, **change})))
+        assert error.value.code == code
+
+
+@pytest.mark.parametrize(
+    "change, code, detail",
+    [
+        (lambda d: d.update(purpose={"kind": "forward"}), "unknown_field", "purpose"),
+        (lambda d: d.update(purpose=None), "unknown_field", "purpose"),  # not even a null
+        (lambda d: d.update(operator_role=OPERATOR_ROLE), "unknown_field", "operator_role"),
+        (lambda d: d["operational_checks"].append(observer_check("runtime-observe", "runtime")),
+         "unknown_field", "operational_checks.3"),
+        (lambda d: d["jobs"].insert(0, bootstrap_job("runtime")), "invalid_field", "jobs.0"),
+        (lambda d: d["operational_checks"].pop(0), "worker_readiness_check_invalid",
+         "operational_checks"),
+        (lambda d: d["jobs"][0]["task"].update(task_role=None), "invalid_field", "jobs.0.task"),
+    ],
+)  # fmt: skip
+def test_schema_one_accepts_nothing_a_later_schema_added(change, code, detail):
+    document = json.loads(accepted_schema_one())
+    change(document)
+    error = rejected(encode(document))
+    assert error.code == code and error.detail.startswith(detail), (error.code, error.detail)
+
+
+def test_the_current_format_cannot_be_presented_as_schema_one():
+    document = manifest_document()
+    document["schema_version"] = 1
+    assert rejected(encode(document)).code == "unknown_field"
+    del document["purpose"], document["operator_role"]
+    error = rejected(encode(document))
+    assert error.code == "unknown_field" and error.detail.startswith("operational_checks")
+
+
+def test_a_schema_one_manifest_is_historical_and_never_executable():
+    with pytest.raises(ReleaseRejected) as error:
+        executable(load_manifest(accepted_schema_one()))
+    assert (error.value.code, error.value.detail) == (
+        "manifest_schema_not_executable", "schema_version"
+    )  # fmt: skip
+    current = load_manifest(encode(manifest_document()))
+    assert executable(current) is current.manifest and current.manifest.schema_version == 2
+
+
+def test_a_forward_run_keeps_its_migrations_even_with_a_compatible_fallback():
     for rollback in ("empty_hold", "compatible_release"):
-        manifest = load_manifest(encode(manifest_document(rollback=rollback))).manifest
+        manifest = executable(load_manifest(encode(manifest_document(rollback=rollback))))
         assert manifest.execution == "forward"
         # The fallback plan never suppresses the candidate's migrations.
         assert [job.phase for job in manifest.jobs][:2] == ["migrate", "migrate"]
@@ -605,11 +704,10 @@ def test_bootstrap_is_only_for_a_first_deployment():
     [
         lambda d: d["jobs"].pop(0),  # one database only
         lambda d: d["jobs"].insert(3, d["jobs"].pop(0)),  # after a migration
-        lambda d: (d.update(schema_version=1), d.pop("purpose"), d.pop("operator_role")),
     ],
-    ids=["one-database", "out-of-order", "schema-one"],
+    ids=["one-database", "out-of-order"],
 )
-def test_bootstrap_runs_first_for_both_databases_and_only_in_schema_two(change):
+def test_bootstrap_runs_first_for_both_databases(change):
     assert rejected(edited(forward_document(), change)).code == "job_plan_invalid"
 
 

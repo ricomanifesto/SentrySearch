@@ -12,15 +12,31 @@ environment exists or that a release has run.
 
 ## Inputs
 
-**Manifest (schema 1 or 2).** One immutable candidate, identified by the SHA-256
-of its canonical JSON (sorted keys, compact separators). Parsing rejects duplicate
-keys, non-integer numbers, unknown fields and any key containing `override`.
-Schema 2 adds a required, explicit execution `purpose` and the approved
-`operator_role` (an IAM role in the manifest account that the operator's session
-must have assumed; the [CLI](release-cli.md) binds the caller to it). Schema 1
-has neither key, not even as null, and is always a forward run, so no approved
-schema-1 manifest or journal changes meaning; the CLI does not run it.
-Required content:
+**Manifest (schema 2; schema 1 is read-only history).** One immutable candidate,
+identified by the SHA-256 of its canonical JSON (sorted keys, compact
+separators). Parsing rejects duplicate keys, non-integer numbers, unknown fields
+and any key containing `override`.
+
+- **Schema 2** is the format described below and the only one executed. It
+  requires an explicit execution `purpose` and the approved `operator_role` (an
+  IAM role in the manifest account that the operator's session must have
+  assumed; the [CLI](release-cli.md) binds the caller to it).
+- **Schema 1** is the earlier accepted format, kept exactly as it was accepted
+  in `release/manifest_v1.py`: its own models, constants and rules, which newer
+  rules never touch. A schema-1 manifest that was valid then loads now with the
+  same hash, and matches its approval offline. It has no `purpose` or
+  `operator_role` key (not even as null), its operational checks are plain
+  receipt names and not observer tasks, and its migration jobs use their
+  original receipt schemas. It always meant a forward run. It is never
+  converted and never executed: the controller halts with
+  `manifest_schema_not_executable`, and the CLI refuses it with
+  `operator_role_unapproved` before reading any credentials. Running an old
+  release again needs a new schema-2 manifest and a new approval.
+  `tests/fixtures/release-manifest-schema-1.json` and its `-upgrade` variant
+  are accepted manifests in canonical encoding; each file's own SHA-256 is the
+  hash it was approved under.
+
+Required content (schema 2):
 
 - release UUID, environment name, 12-digit account, region, cluster and the three
   service ARNs; milestone fixed to `operational-paused`; named operator;

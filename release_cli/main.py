@@ -45,6 +45,7 @@ from release.manifest import (
     LoadedManifest,
     Manifest,
     ReleaseRejected,
+    executable,
     load_approval,
     load_manifest,
     verify_approval_binding,
@@ -211,7 +212,7 @@ def _controller(
     session_id: str,
     handoff: FailedReleaseHandoff | None = None,
 ) -> ReleaseController:
-    manifest = loaded.manifest
+    manifest = executable(loaded)
     region = manifest.environment.region
     logs = CloudWatchLogs(source.client("logs"), region=region)
     return ReleaseController(
@@ -267,7 +268,7 @@ def _outcome(command: str, session_id: str, outcome: Outcome) -> tuple[int, dict
 
 
 def _status(loaded: LoadedManifest, source: ClientSource) -> dict[str, Any]:
-    manifest = loaded.manifest
+    manifest = executable(loaded)
     store = ReadOnlyStore(_store(source, manifest))
     journal = Journal(store, journal_key(manifest.release_id))
     summary: dict[str, Any] = {"command": "status", "release_id": manifest.release_id}
@@ -361,7 +362,11 @@ def _dispatch(
             "command": "validate",
             "result": "valid",
             "release_id": manifest.release_id,
-            "execution": manifest.execution,
+            "schema_version": manifest.schema_version,
+            # Only the current format runs; schema 1 is read and matched offline.
+            "executable": isinstance(manifest, Manifest),
+            # Schema 1 predates the explicit purpose and always meant a forward run.
+            "execution": manifest.execution if isinstance(manifest, Manifest) else "forward",
             "manifest_sha256": loaded.sha256,
             "approval_sha256": approval.sha256,
             "environment": manifest.environment.name,
@@ -373,9 +378,13 @@ def _dispatch(
             "jobs": [job.id for job in manifest.jobs],
         }
     approval = None if args.command == "status" else _approval(args.approval, loaded)
-    handoff = _handoff(args, loaded.manifest) if args.command in ("run", "recover") else None
+    manifest = loaded.manifest
+    if not isinstance(manifest, Manifest):
+        # A schema-1 manifest names no operator role: nothing is read or built.
+        raise Refused("operator_role_unapproved")
+    handoff = _handoff(args, manifest) if args.command in ("run", "recover") else None
     clock = clock_factory()
-    source = _operator_clients(args, loaded.manifest, clock, clients, environ)
+    source = _operator_clients(args, manifest, clock, clients, environ)
     if not clock.reference_bound:
         raise Refused("clock_reference_unbound")
     if args.command == "status":
