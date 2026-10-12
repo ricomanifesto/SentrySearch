@@ -28,7 +28,7 @@ from release.controller import (
     ReleaseHalted,
 )
 from release.journal import PreconditionFailed
-from release.manifest import canonical_sha256, load_approval, load_manifest
+from release.manifest import canonical_sha256, load_approval, executable, load_manifest
 from release.ports import AmbiguousResponse
 from release_aws.ecs import EcsAdapter
 from release_aws.errors import AwsRequestRejected, require_client
@@ -467,7 +467,7 @@ def test_reads_outside_the_reader_contract_send_nothing(start, end, limit, token
 # Job receipts ---------------------------------------------------------------------
 
 
-MANIFEST = load_manifest(encode(manifest_document())).manifest
+MANIFEST = executable(load_manifest(encode(manifest_document())))
 JOBS = {job.id: job for job in MANIFEST.jobs}
 RECEIPT = {"schema": "sentry.release-tools.job.v1", "release_id": RELEASE_ID,
            "job_id": "runtime-grant", "task_arn": TASK, "status": "succeeded",
@@ -782,7 +782,7 @@ def adapted(r: Rig, aws: FakeAws, session: str = "session-a") -> ReleaseControll
         load_approval(r.approval_raw),
         store=S3ObjectStore(aws.client("s3"), region=REGION, bucket=BUCKET, expected_owner=ACCOUNT),
         ecs=EcsAdapter(aws.client("ecs"), region=REGION, cluster_arn=CLUSTER),
-        evidence=LogEvidence(logs, loaded.manifest),
+        evidence=LogEvidence(logs, executable(loaded)),
         logs=logs,
         clock=r.clock,
         tokens=r.tokens,

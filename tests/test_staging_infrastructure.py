@@ -347,7 +347,7 @@ def test_launcher_policy_covers_every_controller_ecs_call():
 
 def test_job_receipts_are_read_from_the_streams_terraform_configures():
     """The evidence adapter derives each job's stream; Terraform must write exactly there."""
-    from release.manifest import load_manifest
+    from release.manifest import executable, load_manifest
     from release_aws.evidence import job_stream
     from tests.release_fakes import encode, manifest_document
 
@@ -371,7 +371,7 @@ def test_job_receipts_are_read_from_the_streams_terraform_configures():
     # Both write to the naming module's /<prefix>/<database>-release group.
     for database in ("runtime", "product"):
         assert f'log_group = module.names.log_groups["{database}-release"]' in releases
-    manifest = load_manifest(encode(manifest_document())).manifest
+    manifest = executable(load_manifest(encode(manifest_document())))
     task = "arn:aws:ecs:us-east-1:111122223333:task/c/" + "b" * 32
     streams = {job.id: job_stream("sentry-staging", job, task) for job in manifest.jobs}
     assert streams == {
@@ -391,7 +391,7 @@ def test_job_receipts_are_read_from_the_streams_terraform_configures():
     # Bootstrap jobs log as <database>-bootstrap from their "bootstrap" container.
     from tests.release_fakes import forward_document
 
-    first = load_manifest(encode(forward_document())).manifest
+    first = executable(load_manifest(encode(forward_document())))
     assert {
         job.id: job_stream("sentry-staging", job, task)
         for job in first.jobs
@@ -457,7 +457,7 @@ def test_readiness_observer_reads_the_worker_stream_terraform_configures():
 
 def test_observer_receipts_are_read_from_the_stream_terraform_configures():
     """Each observer's check id is its Terraform key, stream prefix and RELEASE_CHECK_ID."""
-    from release.manifest import ObserverCheck, load_manifest
+    from release.manifest import ObserverCheck, executable, load_manifest
     from release_aws.evidence import observer_stream
     from tests.release_fakes import encode, manifest_document
 
@@ -472,7 +472,7 @@ def test_observer_receipts_are_read_from_the_stream_terraform_configures():
     assert 'log-stream:${key}/observer/*"' in observe
     assert 'name                   = "observer"' in observe
     assert 'log_group      = module.names.log_groups["observe"]' in releases
-    manifest = load_manifest(encode(manifest_document())).manifest
+    manifest = executable(load_manifest(encode(manifest_document())))
     task = "arn:aws:ecs:us-east-1:111122223333:task/c/" + "c" * 32
     streams = {
         check.id: observer_stream("sentry-staging", check, task)

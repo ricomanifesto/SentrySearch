@@ -296,11 +296,11 @@ def test_time_spent_after_the_preflight_still_refuses_before_connecting(
 
 def test_every_job_id_a_manifest_accepts_fits_the_producers_session_name():
     """Manifest ids and the migrators' application_name cap must agree (both twins: 63)."""
-    from release.manifest import ObserverCheck, load_manifest
+    from release.manifest import ObserverCheck, executable, load_manifest
     from tests.release_fakes import encode, forward_document, manifest_document
 
     for document in (manifest_document(), forward_document()):
-        manifest = load_manifest(encode(document)).manifest
+        manifest = executable(load_manifest(encode(document)))
         subjects = [job.id for job in manifest.jobs] + [
             check.id for check in manifest.operational_checks if isinstance(check, ObserverCheck)
         ]
@@ -352,14 +352,18 @@ def test_a_cancellation_that_never_returns_cannot_delay_the_hard_exit(
     monkeypatch.setattr(contract, "STOP_GRACE_SECONDS", grace)
     exits: list[int] = []
     exited = threading.Event()
+
+    def exit(value: int) -> None:
+        exits.append(value)
+        exited.set()
+
     started = datetime.now(UTC)
     # stop: the deadline is far away. deadline: the session ends now, the job 0.2 s later.
     deadline = started + (timedelta(seconds=60) if path == "stop" else timedelta(seconds=0.2))
     identity = contract.ReleaseIdentity(RELEASE, "product-migrate", deadline, 60)
     job = release_job.ReleaseJob(
         identity, release_job.Expected("product_db", "product_owner"), TASK, deadline,
-        now=lambda: datetime.now(UTC), engine_factory=lambda _: None,
-        exit=lambda value: (exits.append(value), exited.set()),
+        now=lambda: datetime.now(UTC), engine_factory=lambda _: None, exit=exit,
     )  # fmt: skip
     connection = NeverReturns()
     job._dbapi = connection

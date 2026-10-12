@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from release.machine import evaluate_job
-from release.manifest import MIGRATION_RECEIPT_SCHEMA, load_manifest
+from release.manifest import MIGRATION_RECEIPT_SCHEMA, executable, load_manifest
 from release_tools import receipt
 from release_tools.receipt import ReceiptAmbiguous, parse_receipt, receipt_line
 from tests.release_fakes import encode, manifest_document
@@ -57,7 +57,7 @@ def test_the_controller_accepts_the_go_producers_success_receipt_exactly():
     document = manifest_document()
     document["release_id"] = RELEASE
     loaded = load_manifest(encode(document))
-    job = loaded.manifest.jobs[0]
+    job = executable(loaded).jobs[0]
     parsed = parse_receipt([golden("migration-receipt-succeeded.golden")], "migration")
     assert parsed is not None
     digests = {name: image["arm64_digest"] for name, image in document["images"].items()}

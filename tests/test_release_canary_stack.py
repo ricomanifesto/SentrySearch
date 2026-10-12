@@ -9,11 +9,12 @@ from __future__ import annotations
 import copy
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 from tests.release_canary import rollback_document
-from tests.release_canary_stack import RevisionConflict, TaskDefinitions
+from tests.release_canary_stack import CanaryEnvironment, RevisionConflict, TaskDefinitions
 from tests.release_fakes import forward_document, manifest_document, task_definition
 
 PRIOR_UNTIL = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
@@ -52,7 +53,7 @@ def catalog() -> tuple[TaskDefinitions, dict, dict]:
     # Only an observer's container is ever materialized here; nothing runs it.
     env = SimpleNamespace(material={"runtime-observer": "unused-volume"},
                           images=SimpleNamespace(tools="unused-image"))  # fmt: skip
-    definitions = TaskDefinitions(env)
+    definitions = TaskDefinitions(cast(CanaryEnvironment, env))
     prior = forward_document()
     prior["window"]["expires_at"] = "2026-10-10T12:00:00Z"
     definitions.register(prior, not_after=PRIOR_UNTIL)

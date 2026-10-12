@@ -18,11 +18,11 @@ from release.machine import (
     task_runtime_issue,
     token_expires_at,
 )
-from release.manifest import ReleaseRejected, load_manifest
+from release.manifest import ReleaseRejected, executable, load_manifest
 from tests.release_fakes import TERRAFORM_SERVICE_SETTINGS, START, encode, manifest_document
 
 DOCUMENT = manifest_document()
-MANIFEST = load_manifest(encode(DOCUMENT)).manifest
+MANIFEST = executable(load_manifest(encode(DOCUMENT)))
 SPEC = MANIFEST.services.api
 DIGESTS = {name: DOCUMENT["images"][name]["arm64_digest"] for name in DOCUMENT["images"]}
 

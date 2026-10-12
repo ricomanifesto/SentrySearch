@@ -789,7 +789,7 @@ def test_receipt_schema_and_result_keys_match_the_manifest_contract():
 
 def test_tool_receipt_is_accepted_by_the_controller_only_when_exact(fake_psql, metadata, capsys):
     from release.machine import evaluate_job
-    from release.manifest import load_manifest
+    from release.manifest import executable, load_manifest
     from tests.release_fakes import encode, manifest_document
 
     reply, _ = fake_psql
@@ -803,7 +803,7 @@ def test_tool_receipt_is_accepted_by_the_controller_only_when_exact(fake_psql, m
     document["jobs"][0]["expect"].update(database="sentryruntime", principal="runtime_owner")
     document["jobs"][4]["expect"].update(database="sentryruntime", principal="runtime_app")
     document["release_id"] = RELEASE_ID
-    manifest = load_manifest(encode(document)).manifest
+    manifest = executable(load_manifest(encode(document)))
     task = {
         "taskArn": TASK_ARN,
         "taskDefinitionArn": job["task"]["task_definition"],

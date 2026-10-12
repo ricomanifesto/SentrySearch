@@ -19,7 +19,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 KIT = REPO / "deploy" / "aws-staging" / "inspect" / "aws-07a-inspect.sh"
-BASH = "/bin/bash" if Path("/bin/bash").exists() else shutil.which("bash")
+BASH = "/bin/bash" if Path("/bin/bash").exists() else shutil.which("bash") or "bash"
 ACCOUNT = "111122223333"
 
 # The stand-in records its arguments and the credential-bearing environment it

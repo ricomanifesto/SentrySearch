@@ -477,7 +477,7 @@ def test_service_and_owner_secret_bundles_stay_disjoint():
 
 def test_compatible_rollback_needs_a_distinct_complete_prior_release():
     document = manifest_document(rollback="compatible_release")
-    assert load_manifest(encode(document)).manifest.rollback.kind == "compatible_release"
+    assert executable(load_manifest(encode(document))).rollback.kind == "compatible_release"
     same = copy.deepcopy(document)
     same["rollback"]["release_id"] = same["release_id"]
     assert rejected(encode(same)).code == "rollback_not_prior_release"
@@ -663,19 +663,21 @@ def test_a_forward_run_keeps_its_migrations_even_with_a_compatible_fallback():
 
 
 def test_schema_two_states_forward_purpose_and_may_bootstrap_first():
-    manifest = load_manifest(encode(forward_document())).manifest
+    manifest = executable(load_manifest(encode(forward_document())))
     assert manifest.execution == "forward"
     assert [(job.phase, job.database) for job in manifest.jobs[:3]] == [
         ("bootstrap", "runtime"), ("bootstrap", "product"), ("migrate", "runtime")
     ]  # fmt: skip
-    assert load_manifest(encode(forward_document(bootstrap=False))).manifest.execution == "forward"
+    assert (
+        executable(load_manifest(encode(forward_document(bootstrap=False)))).execution == "forward"
+    )
 
 
 def test_a_forward_upgrade_with_a_compatible_fallback_still_migrates():
     document = manifest_document(rollback="compatible_release")
     document["schema_version"], document["purpose"] = 2, {"kind": "forward"}
     document["operator_role"] = OPERATOR_ROLE
-    manifest = load_manifest(encode(document)).manifest
+    manifest = executable(load_manifest(encode(document)))
     assert manifest.execution == "forward"
     assert {job.phase for job in manifest.jobs} == {"migrate", "grant", "proof"}
 
@@ -807,7 +809,7 @@ def test_owner_jobs_including_reconcile_never_reuse_a_service_bundle():
 
 
 def test_a_rollback_run_reconciles_and_proves_only_over_the_prior_pair():
-    manifest = load_manifest(encode(rollback_run_document())).manifest
+    manifest = executable(load_manifest(encode(rollback_run_document())))
     assert manifest.execution == "rollback"
     assert [job.phase for job in manifest.jobs] == ["reconcile", "reconcile", "proof", "proof"]
     assert isinstance(manifest.rollback, CompatibleRelease)
