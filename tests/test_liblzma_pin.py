@@ -174,6 +174,15 @@ def test_the_build_checks_every_download_before_anything_uses_it():
     assert "COPY --from=liblzma-official /packages/liblzma5.deb /tmp/liblzma5.deb" in dockerfile
 
 
+def test_the_document_keeps_the_sections_existing_links_point_at():
+    # The file kept its name when the backport went, and these two sections kept
+    # theirs, so links into them still resolve.
+    document = (ROOT / "docs" / "liblzma-backport.md").read_text().splitlines()
+    sections = [line[3:] for line in document if line.startswith("## ")]
+    for kept in ("Pinned build and provenance", "Replace with the official Debian package"):
+        assert sections.count(kept) == 1, kept
+
+
 def test_nothing_of_the_local_backport_remains():
     assert sorted(path.name for path in INPUTS.iterdir() if path.name != "__pycache__") == [
         "NOTICE", "debian.sources", "decoder_reinit_test.c", "manifest.json", "verify.py",

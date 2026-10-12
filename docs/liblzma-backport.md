@@ -22,7 +22,10 @@ provenance file. Python's `lzma` module is unchanged and loads it.
 This replaces the local build of `5.8.1-1+deb13u1+sentry1` that the image
 carried from October 6 to October 12, 2026, while no official fix existed.
 
-## What was checked before replacing the backport
+## Replace with the official Debian package
+
+Done on October 12, 2026. This section used to list the conditions for the
+replacement; it now records what was checked before making it.
 
 | Check | Result |
 | --- | --- |
@@ -32,10 +35,10 @@ carried from October 6 to October 12, 2026, while no official fix existed.
 | Native-library revisions | Only `liblzma5` changes. The donor's `libc6`, `libssl3t64`, `libgcc-s1`, `libstdc++6`, `zlib1g` and `libzstd1` must still equal the distroless base's, as before. `liblzma5` depends only on `libc6`. |
 | Behavior | The allocation-failure regression and the Python compatibility cases run against the library the final image loads. |
 
-## Pinned inputs
+## Pinned build and provenance
 
 `container/Dockerfile` and `container/liblzma/manifest.json` are the source of
-truth.
+truth for what the build fetches and where it comes from.
 
 - **Snapshots.** `container/liblzma/debian.sources` replaces the donor's package
   sources with dated Debian snapshots only: `debian` `20261006T203214Z`
