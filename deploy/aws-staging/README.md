@@ -298,6 +298,15 @@ recipient-gated notifications and budget, and the operator trust policy
 (rejecting wildcard or account-root principals, short external ids and unbounded
 sessions).
 
+## Account inspection
+
+[`inspect/`](inspect/README.md) holds the only step that touches an account
+before an apply: a read-only script the account's owner runs with a profile they
+authenticated, and an offline assembler that turns its bundle and the chosen
+environment values into each root's account inputs, a manifest skeleton, a
+refreshed price table and the inspection checklist. Neither has run against an
+AWS account.
+
 ## Not proven or not built
 
 Mocks do not evaluate IAM, endpoint or bucket policies, condition keys (including
