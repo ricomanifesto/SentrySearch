@@ -12,6 +12,7 @@ import json
 import socket
 import ssl
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -395,3 +396,163 @@ def test_an_unexpected_error_is_a_failed_observation_never_a_traceback(
                              answers("127.0.0.1"))  # fmt: skip
     assert code == observe.EXIT_OBSERVATION and receipt is not None
     assert receipt["result"] == {"reason": "observation_error"}
+
+
+# The whole check has one deadline, whatever it is waiting on ---------------------------
+
+
+def test_a_final_answer_that_arrives_after_the_deadline_is_not_a_pass(metadata, capsys):
+    # The last reply made slow progress: no socket timeout fired, the total did.
+    start = datetime.now(UTC)
+    moment = [start]
+    behaviour = Behaviour()
+    port = serve(behaviour)
+    env = environment(metadata, port, check="api-observe", host="api.staging.internal")
+    original = observe.Observer._get
+
+    def slow_last_answer(self, connection, path, headers=None):
+        answer = original(self, connection, path, headers)
+        if path == "/api/reports":
+            moment[0] = self.deadline + timedelta(seconds=1)
+        return answer
+
+    observe.Observer._get, restore = slow_last_answer, original
+    try:
+        code = observe.main(["observe-api"], env, now=lambda: moment[0],
+                            resolve=answers("127.0.0.1"))  # fmt: skip
+    finally:
+        observe.Observer._get = restore
+    out = capsys.readouterr().out.splitlines()
+    receipt = parse_receipt(out, "operational")
+    assert code == observe.EXIT_OBSERVATION and len(out) == 1
+    assert receipt is not None and receipt["status"] == "failed"
+    assert receipt["result"] == {"reason": "deadline_exceeded"}
+    assert behaviour.requests == ["/", "/api/ready", "/api/reports"]
+
+
+def test_the_runtime_checks_last_denial_cannot_pass_after_the_deadline(material, metadata):
+    start = datetime.now(UTC)
+    moment = [start]
+    port = serve(Behaviour(), cert=material)
+    deadline = start + timedelta(seconds=60)
+    observer = observe.Observer("runtime", HOST, port, deadline, lambda: moment[0],
+                                answers("127.0.0.1"))  # fmt: skip
+    observer.resolve_once()
+    original = observe.Observer._get
+
+    def slow_refusal(self, connection, path, headers=None):
+        try:
+            return original(self, connection, path, headers)
+        except observe.CheckFailed as failure:
+            if failure.reason == "tls_untrusted":
+                # The public trust store's refusal, the last step, came too late.
+                moment[0] = deadline + timedelta(seconds=1)
+            raise
+
+    observe.Observer._get, restore = slow_refusal, original
+    try:
+        trusted = ssl.create_default_context(cadata=material.ca.read_text())
+        with pytest.raises(observe.CheckFailed) as failed:
+            observer.runtime(trusted, TOKEN)
+    finally:
+        observe.Observer._get = restore
+    assert failed.value.reason == "deadline_exceeded"
+
+
+def soon(seconds: int) -> dict[str, str]:
+    """A fixed clock and a deadline ``seconds`` away: the 5 s stop grace is taken off."""
+    start = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
+    not_after = (start + timedelta(seconds=seconds + 5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {"start": start, "not_after": not_after}  # type: ignore[dict-item]
+
+
+def run_until_ended(command: str, env: dict[str, str], resolve, start: datetime
+                    ) -> tuple[list[int], float, threading.Thread]:  # fmt: skip
+    """Run the observer on its own thread and wait for its hard exit."""
+    exits: list[int] = []
+    ended = threading.Event()
+
+    def exit(code: int) -> None:
+        exits.append(code)
+        ended.set()
+
+    began = time.monotonic()
+    worker = threading.Thread(
+        target=lambda: observe.main([command], env, now=lambda: start, resolve=resolve, exit=exit),
+        daemon=True,
+    )
+    worker.start()
+    assert ended.wait(4), "the check did not end at its deadline"
+    return exits, time.monotonic() - began, worker
+
+
+def test_name_resolution_that_never_answers_ends_the_check_at_its_deadline(metadata, capsys):
+    clock = soon(1)
+    entered, release = threading.Event(), threading.Event()
+
+    def blocked(host: str, port: int) -> list:
+        entered.set()
+        release.wait()
+        raise OSError("resolution abandoned")
+
+    env = environment(metadata, 8001, check="api-observe", host="api.staging.internal",
+                      RELEASE_NOT_AFTER=clock["not_after"])  # fmt: skip
+    try:
+        exits, elapsed, worker = run_until_ended("observe-api", env, blocked, clock["start"])
+        assert entered.is_set() and worker.is_alive(), "resolution was still blocked"
+        assert exits == [observe.EXIT_OBSERVATION] and 1.0 <= elapsed < 2.5, (exits, elapsed)
+    finally:
+        release.set()
+    worker.join(2)
+    out = capsys.readouterr().out.splitlines()
+    receipt = parse_receipt(out, "operational")
+    # One receipt: the late resolution failure after the exit writes no second one.
+    assert len(out) == 1 and receipt is not None
+    assert (receipt["status"], receipt["result"]) == ("failed", {"reason": "deadline_exceeded"})
+
+
+def test_a_reply_that_keeps_trickling_ends_the_check_at_its_deadline(metadata, capsys):
+    # Each read gets a byte well inside the 5 s socket timeout, so no single
+    # operation ever times out; the reply would take minutes in total.
+    clock = soon(1)
+    stop = threading.Event()
+    server = socket.create_server(("127.0.0.1", 0))
+
+    def trickle() -> None:
+        connection, _ = server.accept()
+        with connection:
+            connection.recv(4096)
+            connection.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\n\r\n")
+            while not stop.wait(0.05):
+                try:
+                    connection.sendall(b" ")
+                except OSError:
+                    return
+
+    threading.Thread(target=trickle, daemon=True).start()
+    env = environment(metadata, server.getsockname()[1], check="api-observe",
+                      host="api.staging.internal", RELEASE_NOT_AFTER=clock["not_after"])  # fmt: skip
+    try:
+        exits, elapsed, worker = run_until_ended("observe-api", env, answers("127.0.0.1"),
+                                                 clock["start"])  # fmt: skip
+        assert worker.is_alive(), "the reply was still arriving"
+        assert exits == [observe.EXIT_OBSERVATION] and 1.0 <= elapsed < 2.5, (exits, elapsed)
+    finally:
+        stop.set()
+        server.close()
+    worker.join(7)
+    out = capsys.readouterr().out.splitlines()
+    receipt = parse_receipt(out, "operational")
+    assert len(out) == 1 and receipt is not None
+    assert (receipt["status"], receipt["result"]) == ("failed", {"reason": "deadline_exceeded"})
+
+
+def test_a_check_that_finishes_in_time_is_never_ended_by_the_deadline(metadata, capsys):
+    exits: list[int] = []
+    port = serve(Behaviour())
+    env = environment(metadata, port, check="api-observe", host="api.staging.internal")
+    code = observe.main(["observe-api"], env, resolve=answers("127.0.0.1"), exit=exits.append)
+    receipt = parse_receipt(capsys.readouterr().out.splitlines(), "operational")
+    assert code == 0 and receipt is not None and receipt["status"] == "passed"
+    time.sleep(0.1)
+    assert exits == []

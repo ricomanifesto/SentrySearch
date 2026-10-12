@@ -19,6 +19,13 @@ The receipt is the ``operational`` kind: ``check_id``, this task's ARN and a
 result naming the target, host, peer, port, TLS mode, checks and denials. Nothing
 is retried; any unexpected answer fails the check. Response bodies, tokens and
 certificates are never printed.
+
+The whole check has one deadline, five seconds before the task's own. Name
+resolution takes no timeout, and a reply that keeps arriving a little at a time
+never trips a socket timeout, so nothing inside the check can bound its total
+time. A watchdog thread does: at the deadline it writes the failed receipt and
+ends the process, whatever the check is waiting on. A check that finishes is a
+pass only if it finished before that deadline.
 """
 
 import http.client
@@ -27,6 +34,8 @@ import os
 import socket
 import ssl
 import stat
+import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -119,6 +128,12 @@ class Observer:
             raise CheckFailed("deadline_exceeded")
         return min(REQUEST_TIMEOUT_SECONDS, remaining)
 
+    def _in_time(self, outcome: dict[str, str]) -> dict[str, str]:
+        """The outcome, only if the last answer arrived before the deadline."""
+        if self.now() >= self.deadline:
+            raise CheckFailed("deadline_exceeded")
+        return outcome
+
     def resolve_once(self) -> None:
         try:
             infos = self.resolve(self.host, self.port)
@@ -183,7 +198,9 @@ class Observer:
                 raise
         else:
             raise CheckFailed("wrong_ca_accepted")
-        return {"tls": "verified", "checks": "healthz,readyz", "denials": "no_token,wrong_ca"}
+        return self._in_time(
+            {"tls": "verified", "checks": "healthz,readyz", "denials": "no_token,wrong_ca"}
+        )
 
     def api(self) -> dict[str, str]:
         for path, wanted in (("/", "operational"), ("/api/ready", "ready")):
@@ -196,15 +213,50 @@ class Observer:
                               "/api/reports")  # fmt: skip
         if status not in API_DENIALS:
             raise CheckFailed("unauthenticated_accepted")
-        return {
-            "tls": "none",
-            "checks": "liveness,api_ready",
-            "denials": f"unauthenticated:{status}",
-        }
+        return self._in_time(
+            {"tls": "none", "checks": "liveness,api_ready", "denials": f"unauthenticated:{status}"}
+        )
 
     def result(self, outcome: dict[str, str]) -> dict[str, str]:
         return {"target": self.target, "host": self.host, "peer": self.peer,
                 "port": str(self.port), **outcome}  # fmt: skip
+
+
+class _Verdict:
+    """The check's one receipt: whoever records first decides it and the exit code."""
+
+    def __init__(self, identity: contract.ReleaseIdentity, task_arn: str) -> None:
+        self.identity = identity
+        self.task_arn = task_arn
+        self.done = threading.Event()
+        self._lock = threading.Lock()
+        self._code: int | None = None
+
+    def record(self, status: str, result: dict[str, str], code: int) -> int:
+        identity = self.identity
+        with self._lock:
+            if self._code is None:
+                self._code = code
+                receipt.emit("operational", release_id=identity.release_id,
+                             subject=identity.subject, task_arn=self.task_arn, status=status,
+                             result=result)  # fmt: skip
+                common = {"release_id": identity.release_id, "check_id": identity.subject}
+                if status == "passed":
+                    receipt.log("job_succeeded", **common)
+                else:
+                    receipt.log("job_failed", reason=result["reason"], exit_code=code, **common)
+            self.done.set()
+            return self._code
+
+
+def _enforce_deadline(verdict: _Verdict, seconds: float, exit: Callable[[int], None]) -> None:
+    """End the whole check ``seconds`` from now unless it has finished.
+
+    It waits on nothing but the clock, so blocked name resolution, a connection
+    that never completes and a reply that never ends are all the same to it.
+    """
+    if not verdict.done.wait(max(0.0, seconds)):
+        exit(verdict.record("failed", {"reason": "deadline_exceeded"}, EXIT_OBSERVATION))
 
 
 def _target(environ: dict[str, str]) -> tuple[str, int]:
@@ -225,11 +277,13 @@ def _target(environ: dict[str, str]) -> tuple[str, int]:
 
 def main(argv: list[str], environ: dict[str, str], *,
          now: Callable[[], datetime] = lambda: datetime.now(UTC),
-         resolve: Callable[[str, int], list] = socket.getaddrinfo) -> int:  # fmt: skip
+         resolve: Callable[[str, int], list] = socket.getaddrinfo,
+         exit: Callable[[int], None] = os._exit) -> int:  # fmt: skip
     if len(argv) != 1 or argv[0] not in COMMANDS:
         receipt.log("job_failed", reason="command_invalid", exit_code=EXIT_CONFIG)
         return EXIT_CONFIG
     target = COMMANDS[argv[0]]
+    began = time.monotonic()
     started = now()
     try:
         identity = contract.load_identity(
@@ -252,6 +306,12 @@ def main(argv: list[str], environ: dict[str, str], *,
                     exit_code=EXIT_TASK_IDENTITY, **common)  # fmt: skip
         return EXIT_TASK_IDENTITY
     receipt.log("job_started", kind=argv[0], target=target, **common)
+    verdict = _Verdict(identity, task_arn)
+    # Armed before the first lookup or connection, for the time left of the
+    # whole check, measured on the monotonic clock from when it started.
+    remaining = (deadline - started).total_seconds() - (time.monotonic() - began)
+    threading.Thread(target=_enforce_deadline, args=(verdict, remaining, exit),
+                     daemon=True).start()  # fmt: skip
     observer = Observer(target, host, port, deadline, now, resolve)
     try:
         if target == "runtime":
@@ -271,11 +331,5 @@ def main(argv: list[str], environ: dict[str, str], *,
     except Exception as error:
         # Anything else that went wrong is a failed observation, never a traceback.
         failure = error if isinstance(error, CheckFailed) else CheckFailed("observation_error")
-        receipt.emit("operational", release_id=identity.release_id, subject=identity.subject,
-                     task_arn=task_arn, status="failed", result={"reason": failure.reason})  # fmt: skip
-        receipt.log("job_failed", reason=failure.reason, exit_code=failure.code, **common)
-        return failure.code
-    receipt.emit("operational", release_id=identity.release_id, subject=identity.subject,
-                 task_arn=task_arn, status="passed", result=observer.result(outcome))  # fmt: skip
-    receipt.log("job_succeeded", **common)
-    return EXIT_OK
+        return verdict.record("failed", {"reason": failure.reason}, failure.code)
+    return verdict.record("passed", observer.result(outcome), EXIT_OK)

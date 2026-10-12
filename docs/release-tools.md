@@ -147,8 +147,15 @@ from the task definition: `RELEASE_ID`, `RELEASE_CHECK_ID` (`runtime-observe` or
 `api-observe`, which the manifest pins), `RELEASE_NOT_AFTER`,
 `RELEASE_CHECK_BUDGET_SECONDS`, `RELEASE_TARGET_HOST` (a DNS name, never an
 address) and `RELEASE_TARGET_PORT`; the task identity comes from the metadata
-endpoint as for jobs. The check ends 5 seconds before its deadline and each
-request is bounded to 5 seconds.
+endpoint as for jobs. The whole check has one deadline, 5 seconds before the
+task's own, and each socket operation is bounded to 5 seconds. Those socket
+bounds cannot bound the check: name resolution takes no timeout, and a reply
+that keeps arriving a little at a time never trips one. So a watchdog thread,
+armed before the first lookup and waiting on nothing but the clock, ends the
+process at the deadline with one failed receipt (`deadline_exceeded`, exit 12),
+whatever the check is waiting on. A check that completes is a pass only if its
+last answer arrived before the deadline. The controller's own deadline and stop
+for the observer task are separate and unchanged.
 
 The observer resolves the private name once, requires exactly one IPv4 address
 and sends every request to that address, recording the peer at connect time. It
@@ -170,7 +177,8 @@ answered: the controller compares the peer with the recorded service task's
 network interface and holds on any difference. Tests:
 `tests/test_release_observe.py` runs both observers against local TLS and HTTP
 servers (wrong CA, wrong name, missing denials, two DNS answers, a changed peer,
-oversized bodies, the deadline).
+oversized bodies, the deadline, a last answer that arrives after it, name
+resolution that never answers and a reply that never ends).
 
 ## SQL programs
 
