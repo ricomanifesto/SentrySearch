@@ -9,7 +9,7 @@ through ports; this module contains no SDK, credential or network code.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import json
 import re
@@ -62,6 +62,15 @@ STOP_CONFIRMATION_MARGIN = timedelta(seconds=30)
 FAILED_TASK_STOP_GRACE = timedelta(seconds=120)
 # Observations that resolve a launch intent without a usable task.
 REFUSED_LAUNCHES = ("launch_failed", "launched_multiple", "launched_unexpected")
+# Observations a release journals for a task it launched only after seeing that
+# task stopped. ECS forgets a stopped task; this record of it does not expire.
+RECORDED_STOPS = frozenset(
+    {"job_succeeded", "job_failed", "operational_passed", "operational_failed",
+     "stop_confirmed", "cleanup_stopped"}
+)  # fmt: skip
+# A rollback of a held rollback inherits what that run left unreconciled. Longer
+# chains than this are not followed: the run holds for the operator instead.
+MAX_UNRECONCILED_PREDECESSORS = 4
 READINESS_POLICY = GatePolicy()
 
 
@@ -117,6 +126,76 @@ class FailedReleaseHandoff:
     lock_etag: str
     fence_evidence_sha256: str
     authorized_by: str
+
+
+@dataclass
+class _FailedLaunch:
+    """What a failed release's journal records about one launch token of its own."""
+
+    subject: str
+    token: str
+    # The release learned the outcome: the tasks below, or a refusal with none.
+    resolved: bool = False
+    task_arns: set[str] = field(default_factory=set)
+    # Tasks the release itself recorded as stopped.
+    stopped: set[str] = field(default_factory=set)
+
+
+def _failed_launches(events: list[dict[str, Any]]) -> list[_FailedLaunch] | None:
+    """Every launch a release journaled and what it learned; ``None`` if the record is unclear.
+
+    A retry reuses its launch's token, so all intents of one token are one launch.
+    """
+    launches: dict[str, _FailedLaunch] = {}
+    latest: dict[str, _FailedLaunch] = {}
+    for event in events:
+        subject = event.get("subject")
+        if event["kind"] == "intent" and event.get("action") == "run_task":
+            token = event.get("token")
+            if not isinstance(subject, str) or not isinstance(token, str) or not token:
+                return None
+            launch = launches.setdefault(token, _FailedLaunch(subject, token))
+            if launch.subject != subject:
+                return None
+            latest[subject] = launch
+        elif event["kind"] == "observation" and isinstance(subject, str):
+            launch = latest.get(subject)
+            result = event.get("result")
+            if event.get("resolves") == "run_task":
+                if result == "launched":
+                    arns = [event.get("task_arn")]
+                elif result in ("launched_multiple", "launched_unexpected"):
+                    arns = event.get("task_arns")
+                elif result == "launch_failed":
+                    arns = []
+                else:
+                    return None
+                if launch is None or not isinstance(arns, list):
+                    return None
+                recorded = [arn for arn in arns if isinstance(arn, str) and arn]
+                if len(recorded) != len(arns):
+                    return None
+                launch.resolved = True
+                launch.task_arns.update(recorded)
+            elif launch is not None and result in RECORDED_STOPS:
+                arn = event.get("task_arn")
+                if isinstance(arn, str):
+                    launch.stopped.add(arn)
+    return list(launches.values())
+
+
+def _unreconciled_predecessor(events: list[dict[str, Any]]) -> Any:
+    """The release a rollback run was taking over from, unless it finished reconciling it."""
+    named = None
+    for event in events:
+        if event["kind"] == "observation" and event.get("subject") == "environment":
+            if event.get("result") == "failed_release_reconciled":
+                return None
+            if event.get("result") == "failed_release_named":
+                named = event.get("failed_release_id")
+        elif event["kind"] == "intent" and event.get("action") == "lock_handoff":
+            named = event.get("from_release_id") if named is None else named
+    return named
 
 
 @dataclass(frozen=True)
@@ -615,21 +694,44 @@ class ReleaseController:
 
     # Rollback: failed-release handoff ---------------------------------------------
 
-    def _failed_journal(self) -> Journal:
-        """The failed release's own journal, which must name it and this environment."""
-        purpose = self.manifest.purpose
-        assert isinstance(purpose, RollbackRun)
-        failed = Journal(self.store, journal_key(purpose.failed_release_id))
+    def _failed_journal(self, release_id: Any = None) -> Journal:
+        """A failed release's own journal, which must name it and this environment.
+
+        Without an ID, the release this rollback run's manifest names as failed.
+        """
+        if release_id is None:
+            purpose = self.manifest.purpose
+            assert isinstance(purpose, RollbackRun)
+            release_id = purpose.failed_release_id
+        if not isinstance(release_id, str) or not release_id:
+            raise _Hold("failed_release_unknown")
+        failed = Journal(self.store, journal_key(release_id))
         if not failed.load():
             raise _Hold("failed_release_unknown")
         document = failed.document
         if (
-            document.get("release_id") != purpose.failed_release_id
+            document.get("release_id") != release_id
             or document.get("environment") != self.manifest.environment.name
             or not isinstance(document.get("session_id"), str)
         ):
             raise _Hold("failed_release_unknown")
         return failed
+
+    def _unreconciled_chain(self, failed: Journal) -> list[Journal]:
+        """The failed release, then each earlier one whose reconciliation it left unfinished.
+
+        A rollback run that stopped before recording ``failed_release_reconciled``
+        never accounted for its own failed release. It still holds the lock, so a
+        retry names it as the failed release and inherits that open reconciliation.
+        """
+        chain = [failed]
+        seen = {failed.document["release_id"]}
+        while (earlier := _unreconciled_predecessor(chain[-1].events)) is not None:
+            if earlier in seen or len(chain) > MAX_UNRECONCILED_PREDECESSORS:
+                raise _Hold("failed_release_unknown")
+            chain.append(self._failed_journal(earlier))
+            seen.add(earlier)
+        return chain
 
     def _take_over_from_failed_release(self) -> None:
         """Take the environment from the failed release, never by stealing its lock.
@@ -639,12 +741,17 @@ class ReleaseController:
         under a handoff that names the failed journal's session and the evidence
         that it was fenced. A lock held by anyone else, or a missing lock while
         the failed release had not finished, holds. Every launch token the failed
-        release journaled is then listed and any task still running is stopped
+        release journaled is then reconciled, with any task still running stopped,
         before anything else happens.
         """
         failed = self._failed_journal()
         failed_id = failed.document["release_id"]
         failed_session = failed.document["session_id"]
+        if self._last("environment", "failed_release_named") is None:
+            # Recorded before the lock moves: whoever takes over from this run
+            # learns from its journal which release it had still to reconcile.
+            self._observe("environment", "failed_release_named", failed_release_id=failed_id,
+                          failed_session_id=failed_session)  # fmt: skip
         record = self._lock_record()
         if record is None:
             # Only a release that finished and released its lock leaves none behind.
@@ -662,10 +769,25 @@ class ReleaseController:
                 self._hand_off_lock(failed_id, failed_session, etag)
             else:
                 raise _Hold("environment_locked")
-        self._sweep_failed_launches(failed)
+        chain = self._unreconciled_chain(failed)
+        launches = stopped = 0
+        unresolved: list[dict[str, Any]] = []
+        for journal in chain:
+            counted = self._sweep_failed_launches(journal, unresolved)
+            launches, stopped = launches + counted[0], stopped + counted[1]
+        if unresolved:
+            # Whatever could be found was stopped. The rest is unknown, and unknown
+            # holds: no schema is reconciled or proven and no service starts.
+            self._observe("environment", "failed_launches_unresolved", launches=unresolved)
+            raise _Hold("failed_release_unreconciled")
+        self._observe("environment", "failed_launches_swept", tokens=launches, stopped=stopped)
+        earlier = [{"release_id": journal.document["release_id"],
+                    "journal_sha256": canonical_sha256(journal.document)}
+                   for journal in chain[1:]]  # fmt: skip
         self._observe("environment", "failed_release_reconciled", failed_release_id=failed_id,
                       failed_session_id=failed_session,
-                      failed_journal_sha256=canonical_sha256(failed.document))  # fmt: skip
+                      failed_journal_sha256=canonical_sha256(failed.document),
+                      **({"predecessors": earlier} if earlier else {}))  # fmt: skip
 
     def _hand_off_lock(self, failed_id: str, failed_session: str, etag: str) -> None:
         handoff = self.handoff
@@ -731,25 +853,48 @@ class ReleaseController:
         self._observe("environment", "handoff_conflict", resolves="lock_handoff")
         raise _Hold("handoff_conflict")
 
-    def _sweep_failed_launches(self, failed: Journal) -> None:
-        """Stop whatever still runs under any launch token the failed release journaled.
+    def _sweep_failed_launches(
+        self, failed: Journal, unresolved: list[dict[str, Any]]
+    ) -> tuple[int, int]:
+        """Account for every launch one failed release journaled, by positive evidence only.
 
-        A launch whose outcome was never learned may still be running; an empty
-        listing is not proof of absence, so a token is only cleared when ECS lists
-        no running task for it, and any listed task is described and stopped.
+        Each launch is settled by a task: one the release recorded, or one ECS
+        lists under the launch token. A task ECS describes must carry that token
+        and is stopped unless already stopped. A recorded task ECS no longer
+        describes counts only if the release itself recorded seeing it stopped.
+        A launch the provider refused, on record, has no task.
+
+        Everything else is appended to ``unresolved``, above all a launch whose
+        outcome was never learned and for which no task is found. That request
+        may have been accepted with its task not listed yet, and such a task can
+        still connect and write later. An empty listing, however often repeated,
+        is not evidence that it does not exist. Returns the launches and stops.
         """
-        tokens = sorted({e["token"] for e in failed.events
-                         if e["kind"] == "intent" and e["action"] == "run_task"})  # fmt: skip
+        release_id = failed.document["release_id"]
+        launches = _failed_launches(failed.events)
+        if launches is None:
+            raise _Hold("failed_release_unreconciled")
         stopped = 0
-        for token in tokens:
-            for arn in self.ecs.list_tasks(self.cluster, started_by=token):
+        for launch in sorted(launches, key=lambda item: item.token):
+            open_item = {"release_id": release_id, "subject": launch.subject,
+                         "token": launch.token}  # fmt: skip
+            listed = self.ecs.list_tasks(self.cluster, started_by=launch.token)
+            arns = sorted(launch.task_arns.union(listed))
+            if not arns and not launch.resolved:
+                unresolved.append({**open_item, "reason": "outcome_unknown"})
+            for arn in arns:
                 task = self._describe_task(arn)
-                if task is None or task.get("startedBy") != token:
-                    raise _Hold("failed_release_unreconciled")
-                if task.get("lastStatus") != "STOPPED":
-                    self._stop_failed_task(arn, token)
+                if task is None:
+                    if arn not in launch.stopped:
+                        unresolved.append({**open_item, "reason": "task_not_described",
+                                           "task_arn": arn})  # fmt: skip
+                elif task.get("startedBy") != launch.token:
+                    unresolved.append({**open_item, "reason": "task_identity_mismatch",
+                                       "task_arn": arn})  # fmt: skip
+                elif task.get("lastStatus") != "STOPPED":
+                    self._stop_failed_task(arn, launch.token)
                     stopped += 1
-        self._observe("environment", "failed_launches_swept", tokens=len(tokens), stopped=stopped)
+        return len(launches), stopped
 
     def _stop_failed_task(self, arn: str, token: str) -> None:
         """A journaled safety stop of the failed release's own task, then confirmation."""
