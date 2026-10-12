@@ -250,16 +250,21 @@ measurement must fit at its own rate, and also at the recorded peak request rate
 times its fresh bytes per request, so a per-request output regression fails even
 on a busy host. The test also fails if Terraform's values differ.
 
-Measured on 2026-10-08 (ARM64 Docker Desktop, AWS-05 images, rates over the
+Measured on 2026-10-12 (ARM64 Docker Desktop on a quiet host, rates over the
 window):
 
 | Service | Requests/s | Bytes/s | Bytes/request | Longest line | `max-buffer-size` | Holds at peak |
 | --- | --- | --- | --- | --- | --- | --- |
-| Runtime | 566 | 14,428 | 25.5 | 101 | `8m` | about 9.7 min |
-| API | 248 | 16,284 | 65.7 | 80 | `8m` | about 8.6 min |
+| Runtime | 869 | 22,163 | 25.5 | 101 | `16m` | about 12.6 min |
+| API | 545 | 35,859 | 65.7 | 80 | `16m` | about 7.8 min |
 
-A rerun under another workload's load answered fewer requests at the same bytes per
-request. The Runtime writes nothing per successful request; its lines are the
+How many requests a service answers in the window depends on the host as much as
+on the service; the bytes per request do not. An earlier measurement, on
+2026-10-08 with another workload loading the host, answered 566 and 248 requests
+a second at the same bytes per request, and the 8 MiB buffers sized from it
+would hold the API's peak above for under four minutes. A host that answers
+faster still fails the test at its own rate, which is the signal to measure
+again and size up. The Runtime writes nothing per successful request; its lines are the
 refused TLS handshakes. The API writes one access line per request. This is a local
 method, not a Fargate guarantee: the driver's memory, CloudWatch latency and real
 traffic are unmeasured, and overflow drops lines rather than blocking.

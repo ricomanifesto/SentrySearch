@@ -79,8 +79,8 @@ locals {
   # synthetic load (tests/service_log_volume.py, docs/service-images.md). Buffer
   # memory, CloudWatch latency and Fargate delivery are unmeasured.
   service_log_options = {
-    runtime = { mode = "non-blocking", max-buffer-size = "8m" }
-    api     = { mode = "non-blocking", max-buffer-size = "8m" }
+    runtime = { mode = "non-blocking", max-buffer-size = "16m" }
+    api     = { mode = "non-blocking", max-buffer-size = "16m" }
     worker  = { mode = "non-blocking", max-buffer-size = "4m" }
   }
   # A release's worker streams are worker/<release-id>/<container>/<task-id>, an

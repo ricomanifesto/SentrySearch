@@ -32,13 +32,15 @@ from tests import service_images as images
 stack = images.stack
 
 # Kept equal to deploy/aws-platform-fit's service log options (checked below).
-BUFFERS = {"runtime": "8m", "api": "8m"}
+BUFFERS = {"runtime": "16m", "api": "16m"}
 HOLD_SECONDS = 300
 WINDOW_SECONDS = 60
-# The highest request rates measured (2026-10-08, ARM64 Docker Desktop, eight
-# threads, over the 60 s window). Fresh bytes per request times these must still
-# fit, so a per-request output regression fails even when a busy host answers slower.
-PEAK_REQUESTS_PER_SECOND = {"runtime": 566, "api": 248}
+# The highest request rates measured (2026-10-12, ARM64 Docker Desktop on a quiet
+# host, eight threads, over the 60 s window). Fresh bytes per request times these
+# must still fit, so a per-request output regression fails even when a busy host
+# answers slower. A host that answers faster fails at its own rate instead: then
+# record its rates here and size the buffers again.
+PEAK_REQUESTS_PER_SECOND = {"runtime": 870, "api": 546}
 THREADS = 8
 MAIN_TF = Path(__file__).resolve().parents[1] / "deploy" / "aws-platform-fit" / "main.tf"
 LOAD = (

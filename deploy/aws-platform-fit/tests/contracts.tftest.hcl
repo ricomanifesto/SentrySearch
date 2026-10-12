@@ -222,10 +222,10 @@ run "local_runs_emit_no_receipts" {
         awslogs-region        = var.region
         awslogs-stream-prefix = name
         mode                  = "non-blocking"
-        max-buffer-size       = "8m"
+        max-buffer-size       = "16m"
       }
     }])])
-    error_message = "Runtime and API logging is explicitly non-blocking with the 8 MiB buffer sized from their measured peak output."
+    error_message = "Runtime and API logging is explicitly non-blocking with the 16 MiB buffer sized from their measured peak output."
   }
 }
 
