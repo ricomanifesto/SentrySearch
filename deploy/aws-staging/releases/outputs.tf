@@ -8,6 +8,28 @@ output "releases" {
     tools_bindings       = release.release_tools_bindings
     observer_bindings    = release.observer_bindings
     bootstrap_bindings   = release.bootstrap_bindings
+    # One digest over every container contract and policy document this release
+    # registered. A retained release must show the same digest in every plan.
+    definitions_sha256 = sha256(jsonencode({
+      contracts = {
+        services  = release.task_contracts
+        jobs      = release.release_task_contracts
+        tools     = release.tools_task_contracts
+        observers = release.observer_task_contracts
+        bootstrap = release.bootstrap_task_contracts
+      }
+      policies = {
+        task                = release.task_policies
+        execution           = release.execution_policies
+        release_task        = release.release_task_policies
+        release_execution   = release.release_execution_policies
+        tools_execution     = release.tools_execution_policies
+        observer_task       = release.observer_task_policy
+        observer_execution  = release.observer_execution_policies
+        bootstrap_task      = release.bootstrap_task_policies
+        bootstrap_execution = release.bootstrap_execution_policies
+      }
+    }))
   } }
 }
 

@@ -77,7 +77,12 @@ bundles per release). See [release tools](../../docs/release-tools.md).
 A retained release is immutable. Revisions use `skip_destroy`; roles, inline
 policies and revisions use `prevent_destroy`; and each inline policy's name binds
 a hash of its content. Any change that would replace a retained release's role,
-grant or revision, or remove a release, therefore fails the plan. New images or
+grant or revision, or remove a release, therefore fails the plan. The `releases`
+output also gives each release a `definitions_sha256` over every container
+contract and policy document it registered, so two plans can be compared: a
+retained release shows the same digest in both. The mocked tests rely on that
+digest, because a mocked provider updates a changed definition in place and
+cannot show the replacement a real plan would refuse. New images or
 secret versions are a new release key. To retire a release after its rollback
 window closes and nothing references it, an operator explicitly removes that key
 from state (`terraform state rm 'module.release["<key>"]'`) and from the inputs,

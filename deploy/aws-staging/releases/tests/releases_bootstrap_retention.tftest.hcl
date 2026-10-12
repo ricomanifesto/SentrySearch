@@ -2,9 +2,10 @@
 # state: deployed alone with its bootstrap definitions, then retained as the
 # rollback release beside a new current release, then made current again for a
 # rollback run. Its bootstrap roles, policies and revisions are prevent_destroy,
-# so any step that removed or replaced one would fail its run. The mocked
-# provider gives each created object a random ARN, so a replaced revision would
-# also show as a changed ARN.
+# so a step that removed one would fail its run. A mocked provider updates a
+# changed definition in place and keeps its ARN, so it cannot show a
+# replacement; the runs compare the release's definitions_sha256 instead, which
+# covers every container contract and policy document it registered.
 mock_provider "aws" {
   # Applying a task definition validates its role ARNs; every mocked role gets
   # a well-formed one. Roles are told apart by their names.
@@ -200,6 +201,10 @@ run "a_rollback_replan_makes_the_first_release_current_without_bootstrap_authori
       alltrue([for arn in values(module.release["r11111111"].launch_scopes.bootstrap.task_definitions) : !strcontains(jsonencode(output.release_launcher_policies), arn)]) &&
     alltrue([for policy in values(aws_iam_policy.release_launcher) : !strcontains(policy.policy, "boot")]))
     error_message = "A rollback run launches the prior release's reconcile, proof and observer revisions only: making the first release current again beside another renders no bootstrap launcher."
+  }
+  assert {
+    condition     = jsonencode(output.releases["r11111111"]) == jsonencode(run.first_deployment_registers_bootstrap_and_its_separate_launcher.releases["r11111111"])
+    error_message = "Made current again, the first release is exactly what was first deployed: the same revisions, roles, bindings and definitions digest."
   }
   assert {
     # The attended jobs scope is the now-current first release's database jobs.
