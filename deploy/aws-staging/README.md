@@ -134,11 +134,33 @@ character limit at the longest allowed names. RunTask overrides cannot be fully
 constrained by IAM: this is a trusted launcher whose controller rejects overrides,
 not a command sandbox.
 
-Bootstrap jobs (a first deployment only: one current release and no rollback)
-launch through `release-launcher-bootstrap`, a separate unattached policy outside
-the attended set: `RunTask` on the two bootstrap revisions, `PassRole` for their
-roles and `GetLogEvents` on their receipt streams. Nothing in this run attaches
-it; the live administrator path is a separate approval.
+Bootstrap jobs launch through `release-launcher-bootstrap`, a separate
+unattached policy outside the attended set: `RunTask` on the two bootstrap
+revisions, `PassRole` for their roles and `GetLogEvents` on their receipt
+streams. Nothing in this run attaches it; the live administrator path is a
+separate approval.
+
+Bootstrap definitions and bootstrap launch authority are separate things:
+
+- **Definitions** (the two bootstrap revisions, their four roles and inline
+  policies) belong to the environment's first release, the only one that may
+  carry a `bootstrap` input. They are immutable and `prevent_destroy` like the
+  rest of that release, so it keeps the input unchanged when it becomes the
+  retained rollback release at the first upgrade, and when it is made
+  `current` again for a rollback run. Dropping the input from a retained
+  release fails the plan, as removing any other part of it does. They go when
+  that release is retired, by the explicit procedure above.
+- **Launch authority** is the `release-launcher-bootstrap` policy alone. It is
+  rendered only for a first deployment: one current release and nothing
+  retained beside it. The first upgrade's plan removes the policy (detach it
+  first; the first-deployment sequence already does). From then on no policy
+  in this root names a bootstrap revision, role or stream, whichever slot the
+  first release is in. The controller refuses bootstrap jobs in anything but a
+  first deployment as well (`bootstrap_requires_empty_hold`), and a rollback
+  run never launches one.
+
+A test applies that whole sequence against one mocked state: first deployment,
+upgrade with the first release retained, then a rollback re-plan.
 
 Every evidence producer now has a definition: migrations in their release-job
 mode, grants, proofs, reconciliation, observers and the worker gate. Their images

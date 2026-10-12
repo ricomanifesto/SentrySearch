@@ -82,9 +82,11 @@ variable "releases" {
       budget_seconds = number
       runtime_bundle = object({ arn = string, version_id = string })
     }))
-    # First deployment only: each instance's RDS-managed administrator secret,
-    # the owner and service passwords bootstrap sets, and the bootstrap job's own
-    # CA bundle. Launched only through the separate, unattached bootstrap launcher.
+    # The environment's first release only: each instance's RDS-managed
+    # administrator secret, the owner and service passwords bootstrap sets, and
+    # the bootstrap job's own CA bundle. They stay with that release for as long
+    # as it is retained. Launched only in a first deployment, through the
+    # separate, unattached bootstrap launcher.
     bootstrap = optional(object({
       sql_sha256 = string
       runtime = object({
@@ -166,12 +168,14 @@ variable "releases" {
     error_message = "Pin each release's Runtime grant source to a full commit and the SHA-256 of db/roles/service.sql."
   }
   validation {
-    # Bootstrap creates the databases and logins from nothing: only a first
-    # deployment (one current release, an empty-hold fallback) may carry it.
-    condition = alltrue([for release in values(var.releases) :
-      release.bootstrap == null || (release.slot == "current" && length(var.releases) == 1)
-    ])
-    error_message = "Bootstrap is for a first deployment only: one current release and no rollback release."
+    # Bootstrap creates the databases and logins from nothing, so only the
+    # environment's first release has bootstrap definitions. Like the rest of a
+    # release they are immutable: that release keeps them when it becomes the
+    # retained rollback release, and when it is made current again for a
+    # rollback run. Keeping them authorizes nothing; main.tf renders the
+    # bootstrap launcher for a first deployment only.
+    condition     = length([for release in values(var.releases) : release if release.bootstrap != null]) <= 1
+    error_message = "Only the environment's first release has bootstrap definitions: at most one retained release may carry them."
   }
   validation {
     condition = alltrue([for release in values(var.releases) : release.bootstrap == null ? true : alltrue([for name in ["runtime", "product"] :

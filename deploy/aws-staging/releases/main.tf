@@ -139,8 +139,13 @@ locals {
   }
   attended_launcher_policies = merge(local.release_launcher_policies, local.observer_launcher_policy)
   # Bootstrap is a separate administrator path: its launcher is never part of
-  # the attended set and nothing in this run attaches it.
-  bootstrap_launcher_policy = length(local.current.launch_scopes.bootstrap.task_definitions) == 0 ? null : {
+  # the attended set and nothing in this run attaches it. It exists for a first
+  # deployment only: one current release with nothing retained beside it. The
+  # first release keeps its bootstrap definitions while it is retained, but
+  # once a second release exists no policy here can launch them, pass their
+  # roles or read their streams, whichever slot the first release is in.
+  first_deployment = length(var.releases) == 1
+  bootstrap_launcher_policy = !local.first_deployment || length(local.current.launch_scopes.bootstrap.task_definitions) == 0 ? null : {
     Version = "2012-10-17"
     Statement = [
       { Sid = "RunFirstDeploymentBootstrap", Effect = "Allow", Action = ["ecs:RunTask"], Resource = sort(values(local.current.launch_scopes.bootstrap.task_definitions)), Condition = local.in_cluster },

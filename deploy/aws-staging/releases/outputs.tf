@@ -31,7 +31,7 @@ output "release_launcher_policies" {
 }
 
 output "release_launcher_bootstrap_policy" {
-  description = "The separate first-deployment bootstrap launcher, outside the attended set; null without bootstrap jobs."
+  description = "The separate first-deployment bootstrap launcher, outside the attended set; null without bootstrap jobs and null once a second release is retained."
   value       = local.bootstrap_launcher_policy
 }
 
