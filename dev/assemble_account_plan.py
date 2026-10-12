@@ -17,8 +17,10 @@ and a ``decisions.json`` of the environment values someone chose, and writes:
     python -m dev.assemble_account_plan assemble --bundle <dir> --decisions decisions.json --out <dir>
 
 A bundle whose files do not match its manifest is unusable and nothing is
-written from it. ``draft`` proposes the values the inspection can suggest; the
-rest stay null for a person to fill in. Nothing here decides anything.
+written from it. ``--manifest-sha256`` takes the hash the kit printed when it
+finished; with it, a manifest edited afterwards is refused. ``draft`` proposes
+the values the inspection can suggest; the rest stay null for a person to fill
+in. Nothing here decides anything.
 """
 
 from __future__ import annotations
@@ -34,16 +36,31 @@ from typing import Any
 
 ROOTS = ("bootstrap", "foundation", "releases", "services")
 KIT = "aws-07a-inspect"
-READS = (
-    "01-sts-caller-identity", "02-ec2-availability-zones", "03-rds-postgres-16-versions",
-    "04-rds-orderable-t4g-micro", "05-quotas-fargate", "06-quotas-vpc-endpoints",
-    "07-ec2-vpcs", "08-ecr-repositories", "09-logs-log-groups", "10-secretsmanager-secrets",
-    "11-ecs-clusters", "12-iam-operator-role", "13-budgets",
-)  # fmt: skip
-PRICES = (
-    "14-price-vpc-endpoints", "15-price-rds-instance", "16-price-rds-storage",
-    "17-price-fargate", "18-price-secrets-manager",
-)  # fmt: skip
+KIT_SCRIPT = Path(__file__).resolve().parents[1] / "deploy/aws-staging/inspect/aws-07a-inspect.sh"
+# Each answer the kit saves and the read that produces it. An answer recorded
+# under any other command is not that answer.
+OPERATIONS = {
+    "01-sts-caller-identity": "sts get-caller-identity",
+    "02-ec2-availability-zones": "ec2 describe-availability-zones",
+    "03-rds-postgres-16-versions": "rds describe-db-engine-versions",
+    "04-rds-orderable-t4g-micro": "rds describe-orderable-db-instance-options",
+    "05-quotas-fargate": "service-quotas list-service-quotas",
+    "06-quotas-vpc-endpoints": "service-quotas list-service-quotas",
+    "07-ec2-vpcs": "ec2 describe-vpcs",
+    "08-ecr-repositories": "ecr describe-repositories",
+    "09-logs-log-groups": "logs describe-log-groups",
+    "10-secretsmanager-secrets": "secretsmanager list-secrets",
+    "11-ecs-clusters": "ecs list-clusters",
+    "12-iam-operator-role": "iam get-role",
+    "13-budgets": "budgets describe-budgets",
+    "14-price-vpc-endpoints": "pricing get-products",
+    "15-price-rds-instance": "pricing get-products",
+    "16-price-rds-storage": "pricing get-products",
+    "17-price-fargate": "pricing get-products",
+    "18-price-secrets-manager": "pricing get-products",
+}
+READS = tuple(name for name in OPERATIONS if "-price-" not in name)
+PRICES = tuple(name for name in OPERATIONS if "-price-" in name)
 HOURS = 730
 # What the plan runs: three services (Runtime 0.25 vCPU/0.5 GiB, API 0.25/1,
 # worker 0.5/2) and one 0.25 vCPU job or observer at a time.
@@ -84,9 +101,14 @@ def canonical(document: Any) -> bytes:
 
 
 class Bundle:
-    """A verified bundle: every file is the one its manifest hashed."""
+    """A verified bundle: every file is the one its manifest hashed.
 
-    def __init__(self, root: Path) -> None:
+    The manifest itself is only as good as its own hash. ``printed`` is the hash
+    the kit printed when it finished; without it nothing shows that the manifest
+    was not rewritten afterwards, and the plan says so.
+    """
+
+    def __init__(self, root: Path, printed: str | None = None) -> None:
         self.root = root
         try:
             raw = (root / "manifest.json").read_bytes()
@@ -97,6 +119,9 @@ class Bundle:
             raise Unusable("manifest.json was not written by the inspection kit")
         self.manifest = manifest
         self.manifest_sha256 = sha256(raw)
+        if printed is not None and printed != self.manifest_sha256:
+            raise Unusable("manifest.json is not the one whose SHA-256 the kit printed")
+        self.manifest_confirmed = printed is not None
         self.commands: dict[str, dict[str, Any]] = {}
         listed = {"manifest.json"}
         entries = manifest.get("commands")
@@ -106,6 +131,12 @@ class Bundle:
             name = entry.get("name") if isinstance(entry, dict) else None
             if not isinstance(name, str) or name in self.commands:
                 raise Unusable("the manifest's command list is malformed")
+            if name not in OPERATIONS:
+                raise Unusable(f"{name} is not a command of the inspection kit")
+            text = entry.get("command")
+            read = f"aws {OPERATIONS[name]}"
+            if not isinstance(text, str) or not (text == read or text.startswith(read + " ")):
+                raise Unusable(f"{name} was not recorded as `{read}`")
             for stream in ("stdout", "stderr"):
                 self._verify(entry, stream)
                 listed.add(entry[stream])
@@ -154,13 +185,21 @@ class Bundle:
         entry = self.commands.get(name)
         return "" if entry is None else (self.root / entry["stderr"]).read_text()
 
+    def kit_matches(self) -> bool | None:
+        """Whether the kit that wrote the bundle is this checkout's; None if that is unreadable."""
+        try:
+            reviewed = sha256(KIT_SCRIPT.read_bytes())
+        except OSError:
+            return None
+        return self.manifest.get("kit_sha256") == reviewed
+
 
 # Decisions ---------------------------------------------------------------------------
 
 DECISION_KEYS = {
-    "account_id", "region", "name_prefix", "availability_zones", "vpc_cidr",
-    "private_dns_namespace", "postgres_engine_version", "operator", "operator_trust",
-    "notifications", "lifetime_days", "basis",
+    "account_id", "account_confirmed_by", "region", "name_prefix", "availability_zones",
+    "vpc_cidr", "private_dns_namespace", "postgres_engine_version", "operator",
+    "operator_trust", "notifications", "lifetime_days", "basis",
 }  # fmt: skip
 NAMESPACE = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+")
 PRIVATE = [ipaddress.ip_network(net) for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
@@ -181,6 +220,11 @@ def check_decisions(decisions: Any) -> dict[str, Any]:
     prefix = decisions.get("name_prefix")
     _require(isinstance(account, str) and re.fullmatch(r"[0-9]{12}", account) is not None,
              "account_id is a 12-digit string")  # fmt: skip
+    confirmed = decisions.get("account_confirmed_by")
+    _require(confirmed is None or (isinstance(confirmed, str)
+                                   and re.fullmatch(r"[A-Za-z0-9 .,@+=_-]{2,64}", confirmed)
+                                   is not None),
+             "account_confirmed_by is who confirmed the account, or null")  # fmt: skip
     _require(isinstance(region, str) and re.fullmatch(r"[a-z]{2}-[a-z]+-[0-9]", region) is not None,
              "region is a commercial region")  # fmt: skip
     _require(isinstance(prefix, str) and len(prefix) <= 28
@@ -272,16 +316,21 @@ def gp3_versions(bundle: Bundle) -> list[str] | None:
 
 
 def existing_vpcs(bundle: Bundle) -> list[ipaddress.IPv4Network] | None:
+    """Every IPv4 range of every VPC: the primary one and each one associated later."""
     rows = bundle.answer("07-ec2-vpcs")
     if not isinstance(rows, list):
         return None
-    networks = []
+    networks = set()
     for row in rows:
-        try:
-            networks.append(ipaddress.ip_network(row[1], strict=False))
-        except (TypeError, ValueError, IndexError):
+        if not isinstance(row, list) or len(row) != 4 or not isinstance(row[3], (list, type(None))):
             return None
-    return [network for network in networks if isinstance(network, ipaddress.IPv4Network)]
+        try:
+            for block in (row[1], *(row[3] or [])):
+                networks.add(ipaddress.ip_network(block, strict=False))
+        except (TypeError, ValueError):
+            return None
+    return sorted((network for network in networks
+                   if isinstance(network, ipaddress.IPv4Network)), key=str)  # fmt: skip
 
 
 def _quota(rows: Any, words: tuple[str, ...]) -> float | None:
@@ -313,8 +362,31 @@ def checklist(
 ) -> list[dict[str, Any]]:
     """The inspection's checks, each met, unmet or unknown with what was seen."""
     prefix = decisions["name_prefix"]
-    items = [_item("identity", "The identity is the intended account", "met",
-                   f"account {bundle.account_id}", READS[0])]  # fmt: skip
+    text = "The bundle was written by this checkout's inspection kit"
+    kit = bundle.kit_matches()
+    recorded = f"the manifest records kit {bundle.manifest.get('kit_sha256')}"
+    if kit is None:
+        items = [_item("kit", text, "unknown", "this checkout's kit could not be read")]
+    else:
+        items = [_item("kit", text, "met" if kit else "unmet",
+                       recorded + ("" if kit else ", which is not this checkout's"))]  # fmt: skip
+    text = "The manifest is the one the kit printed"
+    if bundle.manifest_confirmed:
+        items.append(_item("manifest", text, "met", f"SHA-256 {bundle.manifest_sha256}"))
+    else:
+        items.append(_item("manifest", text, "unknown",
+                           "the SHA-256 the kit printed was not given to compare"))  # fmt: skip
+    # The inspected account always equals the one in the decisions. Whether it is
+    # the intended one is a person's statement, never something the bundle shows.
+    confirmed = decisions.get("account_confirmed_by")
+    text = "The identity is the intended account"
+    if confirmed is None:
+        items.append(_item("identity", text, "unknown",
+                           f"account {bundle.account_id} was inspected; nobody has confirmed it",
+                           READS[0]))  # fmt: skip
+    else:
+        items.append(_item("identity", text, "met",
+                           f"account {bundle.account_id}, confirmed by {confirmed}", READS[0]))  # fmt: skip
 
     zones = _strings(bundle.answer("02-ec2-availability-zones"))
     chosen = decisions["availability_zones"]
@@ -373,7 +445,8 @@ def checklist(
         clash = sorted(str(network) for network in vpcs if network.overlaps(planned))
         items.append(_item("vpc_range", text, "unmet" if clash else "met",
                            f"planned {planned}; " + (f"overlaps {clash}" if clash else
-                                                     f"{len(vpcs)} existing, none overlapping"),
+                                                     f"{len(vpcs)} existing ranges, none "
+                                                     "overlapping"),
                            "07-ec2-vpcs"))  # fmt: skip
 
     # The kit looked for its own prefix: another prefix was not inspected.
@@ -517,6 +590,7 @@ def draft(bundle: Bundle) -> dict[str, Any]:
             and not any(net.overlaps(ipaddress.ip_network(cidr)) for net in vpcs)]  # fmt: skip
     return {
         "account_id": bundle.account_id,
+        "account_confirmed_by": None,
         "region": bundle.region,
         "name_prefix": bundle.name_prefix,
         "availability_zones": zones[:2] if len(zones) >= 2 else None,
@@ -528,7 +602,9 @@ def draft(bundle: Bundle) -> dict[str, Any]:
         "notifications": None,
         "lifetime_days": 7,
         "basis": {
-            "account_id": "the inspected account", "region": "the inspected region",
+            "account_id": "the inspected account",
+            "account_confirmed_by": "whoever confirms this is the intended account",
+            "region": "the inspected region",
             "name_prefix": "proposal default", "availability_zones": "first two available",
             "vpc_cidr": "first candidate overlapping no existing VPC",
             "private_dns_namespace": "proposal default",
@@ -717,16 +793,20 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("verify", "draft", "assemble"):
         command = commands.add_parser(name)
         command.add_argument("--bundle", type=Path, required=True)
+        command.add_argument("--manifest-sha256", help="the hash the kit printed at the end")
         if name != "verify":
             command.add_argument("--out", type=Path, required=True)
         if name == "assemble":
             command.add_argument("--decisions", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        bundle = Bundle(args.bundle)
+        bundle = Bundle(args.bundle, args.manifest_sha256)
         if args.command == "verify":
+            kit = {True: "this checkout's", False: "NOT this checkout's", None: "unreadable here"}
             print(f"bundle verified: {len(bundle.commands)} commands, account {bundle.account_id}, "
-                  f"region {bundle.region}, manifest {bundle.manifest_sha256}")  # fmt: skip
+                  f"region {bundle.region}, manifest {bundle.manifest_sha256}"
+                  f"{'' if bundle.manifest_confirmed else ' (not compared with the kit output)'}, "
+                  f"kit {kit[bundle.kit_matches()]}")  # fmt: skip
         elif args.command == "draft":
             if args.out.exists():
                 raise Unusable(f"refusing to overwrite {args.out}")

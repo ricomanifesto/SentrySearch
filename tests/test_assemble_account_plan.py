@@ -22,6 +22,7 @@ from release.manifest import ReleaseRejected, load_manifest
 
 ACCOUNT, REGION, PREFIX = "111122223333", "us-east-1", "sentry-staging"
 REPO = Path(__file__).resolve().parents[1]
+KIT_SHA256 = hashlib.sha256(plan.KIT_SCRIPT.read_bytes()).hexdigest()
 
 
 @pytest.fixture(autouse=True)
@@ -56,7 +57,8 @@ def answers() -> dict[str, object]:
                               ["Fargate Spot vCPU resource count", 6.0]],
         "06-quotas-vpc-endpoints": [["Interface VPC endpoints per VPC", 50.0],
                                     ["Gateway VPC endpoints per Region", 20.0]],
-        "07-ec2-vpcs": [["vpc-0default", "172.31.0.0/16", True], ["vpc-0other", "10.64.0.0/16", False]],
+        "07-ec2-vpcs": [["vpc-0default", "172.31.0.0/16", True, ["172.31.0.0/16"]],
+                        ["vpc-0other", "10.64.0.0/16", False, ["10.64.0.0/16"]]],
         "08-ecr-repositories": [],
         "09-logs-log-groups": [],
         "10-secretsmanager-secrets": [],
@@ -82,7 +84,8 @@ def answers() -> dict[str, object]:
 
 def write_bundle(root: Path, found: dict[str, object] | None = None, *,
                  failures: dict[str, tuple[int, str]] | None = None,
-                 skipped: tuple[str, ...] = (), region: str = REGION) -> Path:  # fmt: skip
+                 skipped: tuple[str, ...] = (), region: str = REGION,
+                 kit_sha256: str = KIT_SHA256) -> Path:  # fmt: skip
     """A bundle as the kit writes it: one answer and one error file per command."""
     found = answers() if found is None else found
     failures = {"12-iam-operator-role": (254, "An error occurred (NoSuchEntity) when calling "
@@ -97,22 +100,34 @@ def write_bundle(root: Path, found: dict[str, object] | None = None, *,
         (root / f"{name}.json").write_text(text)
         (root / f"{name}.stderr.txt").write_text(error)
         commands.append({
-            "name": name, "command": f"aws {name}", "region": region, "exit_code": code,
+            "name": name, "command": f"aws {plan.OPERATIONS[name]} --query Answer",
+            "region": region, "exit_code": code,
             "stdout": f"{name}.json", "stdout_sha256": hashlib.sha256(text.encode()).hexdigest(),
             "stderr": f"{name}.stderr.txt",
             "stderr_sha256": hashlib.sha256(error.encode()).hexdigest(),
         })  # fmt: skip
     (root / "manifest.json").write_text(json.dumps({
-        "kit": "aws-07a-inspect", "kit_sha256": "0" * 64, "started_at": "2026-10-12T15:00:00Z",
+        "kit": "aws-07a-inspect", "kit_sha256": kit_sha256, "started_at": "2026-10-12T15:00:00Z",
         "finished_at": "2026-10-12T15:01:00Z", "region": region, "name_prefix": PREFIX,
         "account_id": ACCOUNT, "skipped": list(skipped), "commands": commands,
     }, indent=2))  # fmt: skip
     return root
 
 
+def printed(root: Path) -> str:
+    """The manifest hash the kit prints when it finishes."""
+    return hashlib.sha256((root / "manifest.json").read_bytes()).hexdigest()
+
+
+def confirmed(root: Path) -> plan.Bundle:
+    """The bundle, read together with the manifest hash the kit printed."""
+    return plan.Bundle(root, printed(root))
+
+
 def decisions(**changes: object) -> dict[str, object]:
     chosen: dict[str, object] = {
-        "account_id": ACCOUNT, "region": REGION, "name_prefix": PREFIX,
+        "account_id": ACCOUNT, "account_confirmed_by": "fixture-owner", "region": REGION,
+        "name_prefix": PREFIX,
         "availability_zones": ["us-east-1a", "us-east-1b"], "vpc_cidr": "10.96.0.0/20",
         "private_dns_namespace": "sentry-staging.internal", "postgres_engine_version": "16.10",
         "operator": "fixture-operator",
@@ -182,6 +197,26 @@ def edited_manifest(root: Path, change) -> None:
         (lambda m: m.update(account_id="999999999999"), "different accounts"),
         (lambda m: m["commands"][2].update(stdout="../outside.json"), "does not name a file"),
         (lambda m: m["commands"].append(dict(m["commands"][3])), "malformed"),
+        # An answer is only the answer of the read the kit runs under that name.
+        (
+            lambda m: m["commands"].append({**m["commands"][3], "name": "19-ecs-services"}),
+            "not a command of the inspection kit",
+        ),
+        (
+            lambda m: m["commands"][7].update(command="aws ecr delete-repository --force"),
+            "was not recorded as `aws ecr describe-repositories`",
+        ),
+        (
+            lambda m: m["commands"][10].update(command="aws ecs list-clusters-and-more"),
+            "was not recorded as",
+        ),
+        (
+            lambda m: m["commands"][4].update(
+                command="echo aws service-quotas list-service-quotas"
+            ),
+            "was not recorded as",
+        ),
+        (lambda m: m["commands"][1].pop("command"), "was not recorded as"),
     ],
 )
 def test_a_manifest_that_is_incomplete_or_inconsistent_is_unusable(tmp_path, change, message):
@@ -202,6 +237,37 @@ def test_a_bundle_missing_a_required_read_is_unusable_but_skipped_prices_are_not
     assert plan.Bundle(skipped).answer("17-price-fargate") is None
 
 
+def test_a_manifest_changed_after_the_kit_printed_its_hash_is_refused(tmp_path, capsys):
+    # An answer and its manifest hash edited together still verify against each
+    # other. Only the hash the kit printed when it finished can show the edit.
+    root = write_bundle(tmp_path / "bundle")
+    original = printed(root)
+    assert plan.Bundle(root, original).manifest_confirmed
+    assert not plan.Bundle(root).manifest_confirmed
+    (root / "08-ecr-repositories.json").write_text("[]\n\n")
+    edited_manifest(root, lambda m: m["commands"][7].update(
+        stdout_sha256=hashlib.sha256(b"[]\n\n").hexdigest()))  # fmt: skip
+    assert plan.Bundle(root).answer("08-ecr-repositories") == []
+    with pytest.raises(plan.Unusable, match="not the one whose SHA-256 the kit printed"):
+        plan.Bundle(root, original)
+    for command in (["verify"], ["draft", "--out", str(tmp_path / "d.json")]):
+        assert plan.main([*command, "--bundle", str(root), "--manifest-sha256", original]) == 2
+    assert not (tmp_path / "d.json").exists()
+    capsys.readouterr()
+    assert plan.main(["verify", "--bundle", str(root)]) == 0
+    assert "not compared with the kit output" in capsys.readouterr().out
+
+
+def test_the_assembler_and_the_kit_name_the_same_reads():
+    listed = subprocess.run(["/bin/bash", str(plan.KIT_SCRIPT), "--list"], capture_output=True,
+                            text=True, check=True, env={"PATH": "/usr/bin:/bin"})  # fmt: skip
+    kit = {}
+    for line in listed.stdout.splitlines():
+        name, command = line.split("\t")
+        kit[name] = " ".join(command.split()[1:3])
+    assert kit == plan.OPERATIONS
+
+
 # Draft -------------------------------------------------------------------------------
 
 
@@ -211,8 +277,8 @@ def test_a_draft_proposes_what_the_inspection_can_and_leaves_the_rest_to_a_perso
     drafted = json.loads((tmp_path / "d.json").read_text())
     basis = drafted.pop("basis")
     assert drafted == {
-        "account_id": ACCOUNT, "region": REGION, "name_prefix": PREFIX,
-        "availability_zones": ["us-east-1a", "us-east-1b"],
+        "account_id": ACCOUNT, "account_confirmed_by": None, "region": REGION,
+        "name_prefix": PREFIX, "availability_zones": ["us-east-1a", "us-east-1b"],
         # 10.64.0.0/20 would overlap the account's 10.64.0.0/16.
         "vpc_cidr": "10.96.0.0/20",
         "private_dns_namespace": "sentry-staging.internal",
@@ -220,9 +286,14 @@ def test_a_draft_proposes_what_the_inspection_can_and_leaves_the_rest_to_a_perso
         "operator": None, "operator_trust": None, "notifications": None, "lifetime_days": 7,
     }  # fmt: skip
     assert set(basis) == set(drafted)
-    # Completed with the operator alone, the draft is usable as it stands.
+    # The draft is usable as it stands, but it confirms nothing: whether this is
+    # the intended account, and whether the manifest is the kit's, stay unknown.
     result = plan.assemble(plan.Bundle(root), {**drafted, "basis": basis})
-    assert set(statuses(result).values()) == {"met"}
+    unknown = {key for key, status in statuses(result).items() if status == "unknown"}
+    assert unknown == {"identity", "manifest"}
+    assert set(statuses(result).values()) == {"met", "unknown"}
+    [identity] = [item for item in result["checklist"] if item["id"] == "identity"]
+    assert "nobody has confirmed it" in identity["evidence"]
     assert plan.main(["draft", "--bundle", str(root), "--out", str(tmp_path / "d.json")]) == 2
 
 
@@ -233,8 +304,8 @@ def test_a_clean_account_yields_each_roots_known_inputs_and_an_all_met_checklist
     root = write_bundle(tmp_path / "bundle")
     (tmp_path / "decisions.json").write_text(json.dumps(decisions()))
     out = tmp_path / "out"
-    assert plan.main(["assemble", "--bundle", str(root), "--decisions",
-                      str(tmp_path / "decisions.json"), "--out", str(out)]) == 0  # fmt: skip
+    assert plan.main(["assemble", "--bundle", str(root), "--manifest-sha256", printed(root),
+                      "--decisions", str(tmp_path / "decisions.json"), "--out", str(out)]) == 0  # fmt: skip
     common = {"account_id": ACCOUNT, "region": REGION, "name_prefix": PREFIX}
     inputs = {name: json.loads((out / name / "account.auto.tfvars.json").read_text())
               for name in plan.ROOTS}  # fmt: skip
@@ -254,9 +325,12 @@ def test_a_clean_account_yields_each_roots_known_inputs_and_an_all_met_checklist
     }  # fmt: skip
     record = json.loads((out / "account-plan.json").read_text())
     assert statuses(record) == dict.fromkeys(
-        ["identity", "zones", "postgres", "fargate_quota", "endpoint_quota", "vpc_range",
-         "repositories", "log_groups", "secrets", "cluster", "operator_role", "prices"], "met"
+        ["kit", "manifest", "identity", "zones", "postgres", "fargate_quota", "endpoint_quota",
+         "vpc_range", "repositories", "log_groups", "secrets", "cluster", "operator_role",
+         "prices"], "met"
     )  # fmt: skip
+    [identity] = [item for item in record["checklist"] if item["id"] == "identity"]
+    assert identity["evidence"] == f"account {ACCOUNT}, confirmed by fixture-owner"
     assert record["pending_inputs"]["bootstrap"] == {} == record["pending_inputs"]["foundation"]
     assert set(record["pending_inputs"]["releases"]) == {"releases", "observer_security_group_ids"}
     assert set(record["pending_inputs"]["services"]) == {
@@ -336,17 +410,65 @@ def test_a_changed_rate_revises_the_estimate_and_a_missing_one_is_unknown(tmp_pa
          "endpoint_quota", "unmet"),
         ("06-quotas-vpc-endpoints", [["Interface VPC endpoints per VPC", 50.0]],
          "endpoint_quota", "unknown"),
-        ("07-ec2-vpcs", [["vpc-0clash", "10.96.8.0/22", False]], "vpc_range", "unmet"),
-        ("07-ec2-vpcs", [["vpc-0odd", "not-a-range", False]], "vpc_range", "unknown"),
+        ("07-ec2-vpcs", [["vpc-0clash", "10.96.8.0/22", False, ["10.96.8.0/22"]]], "vpc_range",
+         "unmet"),
+        # A range associated with a VPC later counts like its first one.
+        ("07-ec2-vpcs", [["vpc-0second", "10.200.0.0/16", False,
+                          ["10.200.0.0/16", "10.96.0.0/24"]]], "vpc_range", "unmet"),
+        ("07-ec2-vpcs", [["vpc-0odd", "not-a-range", False, None]], "vpc_range", "unknown"),
+        ("07-ec2-vpcs", [["vpc-0odd", "10.200.0.0/16", False, ["not-a-range"]]], "vpc_range",
+         "unknown"),
+        # Without the associated ranges the answer cannot rule an overlap out.
+        ("07-ec2-vpcs", [["vpc-0short", "10.200.0.0/16", False]], "vpc_range", "unknown"),
+        ("07-ec2-vpcs", [["vpc-0text", "10.200.0.0/16", False, "10.96.0.0/24"]], "vpc_range",
+         "unknown"),
     ],
 )  # fmt: skip
 def test_each_check_reports_what_the_account_showed(tmp_path, name, value, item, status):
     found = answers()
     found[name] = value
-    result = plan.assemble(plan.Bundle(write_bundle(tmp_path / "bundle", found)), decisions())
+    result = plan.assemble(confirmed(write_bundle(tmp_path / "bundle", found)), decisions())
     seen = statuses(result)
     assert seen[item] == status
     assert [key for key, state in seen.items() if state != "met"] == [item]
+
+
+def test_a_vpc_with_no_associated_ranges_listed_still_counts_its_first_range(tmp_path):
+    found = answers()
+    found["07-ec2-vpcs"] = [["vpc-0first", "10.96.0.0/16", False, None]]
+    result = plan.assemble(confirmed(write_bundle(tmp_path / "bundle", found)), decisions())
+    assert statuses(result)["vpc_range"] == "unmet"
+
+
+def test_a_bundle_from_another_kit_than_this_checkouts_is_not_met(tmp_path, monkeypatch):
+    root = write_bundle(tmp_path / "bundle", kit_sha256="0" * 64)
+    result = plan.assemble(confirmed(root), decisions())
+    [kit] = [item for item in result["checklist"] if item["id"] == "kit"]
+    assert kit["status"] == "unmet" and "0" * 64 in kit["evidence"]
+    assert [key for key, state in statuses(result).items() if state != "met"] == ["kit"]
+    monkeypatch.setattr(plan, "KIT_SCRIPT", tmp_path / "no-such-kit.sh")
+    assert statuses(plan.assemble(confirmed(root), decisions()))["kit"] == "unknown"
+
+
+def test_a_failed_read_that_still_printed_an_answer_is_unknown(tmp_path):
+    # The CLI can fail after printing: what it printed is not the account's answer.
+    root = write_bundle(tmp_path / "bundle")
+    (root / "08-ecr-repositories.json").write_text("[]\n")
+    edited_manifest(root, lambda m: m["commands"][7].update(
+        exit_code=255, stdout_sha256=hashlib.sha256(b"[]\n").hexdigest()))  # fmt: skip
+    seen = statuses(plan.assemble(confirmed(root), decisions()))
+    assert seen["repositories"] == "unknown"
+    assert [key for key, state in seen.items() if state != "met"] == ["repositories"]
+
+
+def test_an_account_nobody_confirmed_is_not_the_intended_one_yet(tmp_path):
+    root = write_bundle(tmp_path / "bundle")
+    result = plan.assemble(confirmed(root), decisions(account_confirmed_by=None))
+    assert [key for key, state in statuses(result).items() if state != "met"] == ["identity"]
+    assert statuses(result)["identity"] == "unknown"
+    without = decisions()
+    del without["account_confirmed_by"]
+    assert statuses(plan.assemble(confirmed(root), without))["identity"] == "unknown"
 
 
 @pytest.mark.parametrize(
@@ -368,9 +490,9 @@ def test_only_iams_own_not_found_means_no_operator_role(tmp_path, failure, statu
 def test_a_failed_read_is_unknown_never_met(tmp_path):
     failures = {name: (255, "AccessDenied") for name in plan.READS[1:11]}
     root = write_bundle(tmp_path / "bundle", failures=failures)
-    seen = statuses(plan.assemble(plan.Bundle(root), decisions()))
+    seen = statuses(plan.assemble(confirmed(root), decisions()))
     assert {key for key, state in seen.items() if state == "met"} == {
-        "identity", "operator_role", "prices"
+        "kit", "manifest", "identity", "operator_role", "prices"
     }  # fmt: skip
     assert "unmet" not in seen.values()
 
@@ -389,6 +511,8 @@ def test_another_prefix_than_the_one_inspected_is_unknown(tmp_path):
         ({"region": "us-west-2", "availability_zones": ["us-west-2a", "us-west-2b"]},
          "another region"),
         ({"account_id": "12345"}, "12-digit"),
+        ({"account_confirmed_by": ""}, "account_confirmed_by"),
+        ({"account_confirmed_by": True}, "account_confirmed_by"),
         ({"name_prefix": "staging"}, "name_prefix"),
         ({"availability_zones": ["us-east-1a", "us-east-1a"]}, "two distinct zones"),
         ({"availability_zones": ["us-west-2a", "us-west-2b"]}, "two distinct zones"),

@@ -22,15 +22,19 @@ KIT = REPO / "deploy" / "aws-staging" / "inspect" / "aws-07a-inspect.sh"
 BASH = "/bin/bash" if Path("/bin/bash").exists() else shutil.which("bash") or "bash"
 ACCOUNT = "111122223333"
 
-# The stand-in records its arguments and the credential-bearing environment it
-# was given, answers the identity call, and fails the operator-role lookup the
-# way IAM does for a role that does not exist.
+# The stand-in records its arguments and the whole environment it was given,
+# answers the identity call, and fails the operator-role lookup the way IAM does
+# for a role that does not exist. Its settings are written into it, because the
+# kit passes the CLI nothing from the caller's environment.
 STAND_IN = """#!/bin/sh
+KIT_TEST_LOG='@LOG@'
+KIT_TEST_ACCOUNT='@ACCOUNT@'
+KIT_TEST_NO_IDENTITY='@NO_IDENTITY@'
 {
   printf 'ARGS'
   for argument in "$@"; do printf '\\t%s' "$argument"; done
   printf '\\n'
-  env | grep -E '^AWS_' | sort | sed 's/^/ENV\\t/'
+  env | grep -v '^_=' | sort | sed 's/^/ENV\\t/'
 } >> "$KIT_TEST_LOG"
 case " $* " in
   *" sts get-caller-identity "*)
@@ -57,7 +61,8 @@ READS = [
      "Quotas[].[QuotaName,Value]"],
     ["service-quotas", "list-service-quotas", "--service-code", "vpc", "--query",
      "Quotas[?contains(QuotaName, `endpoint`)].[QuotaName,Value]"],
-    ["ec2", "describe-vpcs", "--query", "Vpcs[].[VpcId,CidrBlock,IsDefault]"],
+    ["ec2", "describe-vpcs", "--query",
+     "Vpcs[].[VpcId,CidrBlock,IsDefault,CidrBlockAssociationSet[].CidrBlock]"],
     ["ecr", "describe-repositories", "--query",
      "repositories[?starts_with(repositoryName, `sentry-staging/`)].repositoryName"],
     ["logs", "describe-log-groups", "--log-group-name-prefix", "/sentry-staging/", "--query",
@@ -86,21 +91,16 @@ GLOBAL = ["--output", "json", "--no-cli-pager", "--cli-connect-timeout", "10",
           "--cli-read-timeout", "60"]  # fmt: skip
 
 
-def run(tmp_path: Path, *arguments: str, kit: Path = KIT, **environment: str):
+def run(tmp_path: Path, *arguments: str, kit: Path = KIT, no_identity: bool = False,
+        **environment: str):  # fmt: skip
     tools = tmp_path / "bin"
     tools.mkdir(exist_ok=True)
     stand_in = tools / "aws"
-    stand_in.write_text(STAND_IN)
-    stand_in.chmod(stand_in.stat().st_mode | stat.S_IXUSR)
     log = tmp_path / "aws.log"
-    env = {
-        "PATH": f"{tools}:/usr/bin:/bin",
-        "HOME": str(tmp_path / "home"),
-        "KIT_TEST_LOG": str(log),
-        "KIT_TEST_ACCOUNT": ACCOUNT,
-        "KIT_TEST_NO_IDENTITY": "",
-        **environment,
-    }
+    stand_in.write_text(STAND_IN.replace("@LOG@", str(log)).replace("@ACCOUNT@", ACCOUNT)
+                        .replace("@NO_IDENTITY@", "1" if no_identity else ""))  # fmt: skip
+    stand_in.chmod(stand_in.stat().st_mode | stat.S_IXUSR)
+    env = {"PATH": f"{tools}:/usr/bin:/bin", "HOME": str(tmp_path / "home"), **environment}
     result = subprocess.run([BASH, str(kit), *arguments], env=env, text=True,
                             capture_output=True, timeout=60)  # fmt: skip
     lines = log.read_text().splitlines() if log.exists() else []
@@ -117,16 +117,27 @@ def test_it_sends_exactly_the_reviewed_reads_identity_first(tmp_path):
     out = tmp_path / "bundle"
     result, calls, inherited = run(
         tmp_path, "--profile", "staging-inspect", "--region", "us-east-1", "--out", str(out),
-        # Ambient credentials and settings must not reach the CLI.
+        # Nothing ambient may reach the CLI: no credential, profile, region,
+        # endpoint, config-file location, CA bundle or proxy.
         AWS_ACCESS_KEY_ID="AKIAAMBIENT", AWS_SECRET_ACCESS_KEY="ambient", AWS_SESSION_TOKEN="t",
         AWS_PROFILE="default", AWS_DEFAULT_REGION="eu-west-1", AWS_ENDPOINT_URL="http://x",
-        AWS_CA_BUNDLE="/tmp/ca",
+        AWS_CA_BUNDLE="/tmp/ca", AWS_ENDPOINT_URL_STS="http://127.0.0.1:9",
+        AWS_CONFIG_FILE="/tmp/config", AWS_SHARED_CREDENTIALS_FILE="/tmp/credentials",
+        AWS_WEB_IDENTITY_TOKEN_FILE="/tmp/token", AWS_ROLE_ARN="arn:aws:iam::1:role/x",
+        AWS_CONTAINER_CREDENTIALS_FULL_URI="http://127.0.0.1:9/", AWS_DATA_PATH="/tmp/models",
+        AWS_CLI_AUTO_PROMPT="on", HTTPS_PROXY="http://127.0.0.1:9", https_proxy="http://x",
+        NO_PROXY="*", PYTHONPATH="/tmp/modules", LANG="en_US.UTF-8",
     )  # fmt: skip
     assert result.returncode == 0, result.stderr
     assert calls == [sent("us-east-1", command) for command in READS + PRICES]
     assert calls[0][-2:] == ["sts", "get-caller-identity"]
-    assert inherited == ["AWS_PAGER="]
+    # PWD and SHLVL are set by the stand-in's own shell, not passed to it.
+    names = {item.split("=")[0] for item in inherited} - {"PWD", "SHLVL"}
+    assert names == {"AWS_PAGER", "HOME", "LANG", "PATH"}
+    assert "AWS_PAGER=" in inherited and f"HOME={tmp_path / 'home'}" in inherited
     assert "Nothing in the account was created, changed or deleted." in result.stdout
+    printed = hashlib.sha256((out / "manifest.json").read_bytes()).hexdigest()
+    assert f"Manifest SHA-256: {printed}" in result.stdout.splitlines()
 
     manifest = json.loads((out / "manifest.json").read_text())
     assert (manifest["kit"], manifest["region"], manifest["account_id"]) == (
@@ -198,9 +209,17 @@ def mutated(tmp_path: Path, line: str) -> Path:
         ("price 19-price pricing describe-create-products", "mutating verb 'create'"),
         ("inspect 19-endpoint ecs list-clusters --endpoint-url http://127.0.0.1", "argument"),
         ("inspect 19-file iam get-role --cli-input-json file:///tmp/x", "argument"),
-        ("inspect 19-url s3api get-object --bucket b --key k https://example.invalid/x", "URL"),
+        ("inspect 19-url ecs list-clusters --query https://example.invalid/x", "URL"),
         ("inspect 19-profile ecs list-clusters --profile other", "argument --profile"),
         ("inspect 19-debug sts get-caller-identity --debug", "argument --debug"),
+        # The same options joined to their values, and one nobody reviewed.
+        ("inspect 19-profile ecs list-clusters --profile=other", "argument --profile"),
+        ("inspect 19-region ecs list-clusters --region=eu-west-1", "argument --region"),
+        ("inspect 19-endpoint ecs list-clusters --endpoint-url=127.0.0.1:9", "argument --endpoint"),
+        ("inspect 19-debug sts get-caller-identity --debug=true", "argument --debug"),
+        ("inspect 19-query ecs list-clusters --query=clusterArns", "argument --query"),
+        ("inspect 19-unlisted ecs list-clusters --max-items 5", "argument --max-items"),
+        ("inspect 19-short ecs list-clusters -x", "argument -x"),
     ],
 )
 def test_any_command_that_is_not_a_plain_read_refuses_before_anything_runs(tmp_path, line, reason):
@@ -227,7 +246,7 @@ def test_the_identity_check_must_stay_first(tmp_path):
 def test_without_an_identity_nothing_else_is_asked(tmp_path):
     out = tmp_path / "bundle"
     result, calls, _ = run(tmp_path, "--profile", "p", "--region", "us-east-1", "--out", str(out),
-                           KIT_TEST_NO_IDENTITY="1")  # fmt: skip
+                           no_identity=True)  # fmt: skip
     assert result.returncode == 2 and "identity could not be read" in result.stderr
     assert [call[-2:] for call in calls] == [["sts", "get-caller-identity"]]
     manifest = json.loads((out / "manifest.json").read_text())
@@ -242,6 +261,9 @@ def test_without_an_identity_nothing_else_is_asked(tmp_path):
         (["--profile", "p"], "--region is required"),
         (["--profile", "p", "--region", "us-east-1; rm -rf /"], "--region is required"),
         (["--profile", "p q", "--region", "us-east-1"], "not a profile name"),
+        (["--profile", "--no-verify-ssl", "--region", "us-east-1"], "not a profile name"),
+        (["--profile", "-p", "--region", "us-east-1"], "not a profile name"),
+        (["--profile", "p", "--region", "us-east-1", "--out", "--force"], "not a directory name"),
         (["--profile", "p", "--region", "us-east-1", "--apply"], "unknown argument"),
     ],
 )

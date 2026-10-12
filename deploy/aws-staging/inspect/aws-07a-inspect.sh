@@ -54,7 +54,8 @@ commands() {
     --query 'Quotas[].[QuotaName,Value]'
   inspect 06-quotas-vpc-endpoints service-quotas list-service-quotas --service-code vpc \
     --query 'Quotas[?contains(QuotaName, `endpoint`)].[QuotaName,Value]'
-  inspect 07-ec2-vpcs ec2 describe-vpcs --query 'Vpcs[].[VpcId,CidrBlock,IsDefault]'
+  inspect 07-ec2-vpcs ec2 describe-vpcs \
+    --query 'Vpcs[].[VpcId,CidrBlock,IsDefault,CidrBlockAssociationSet[].CidrBlock]'
   inspect 08-ecr-repositories ecr describe-repositories \
     --query "repositories[?starts_with(repositoryName, \`${NAME_PREFIX}/\`)].repositoryName"
   inspect 09-logs-log-groups logs describe-log-groups \
@@ -90,9 +91,11 @@ authorize revoke import send publish invoke execute reboot restore apply cancel 
 accept reject replace reset rotate assume copy move upload sync change grant deny \
 allocate release failover promote rollback migrate schedule submit upgrade downgrade"
 
-# Arguments that could redirect a request, read a local file or weaken TLS.
-FORBIDDEN_ARGUMENTS="--endpoint-url --no-verify-ssl --no-sign-request --cli-input-json \
---cli-input-yaml --generate-cli-skeleton --profile --region --debug --ca-bundle"
+# The only options a listed command may carry, each spelled exactly like this.
+# Anything else that starts with a dash is refused, so no option can redirect a
+# request, read a local file, weaken TLS or change the profile or region.
+ALLOWED_OPTIONS="--filters --query --engine --db-instance-class --service-code \
+--log-group-name-prefix --role-name --account-id"
 
 command_text() {
   local text="aws" argument
@@ -115,12 +118,15 @@ require_read_only() {
     esac
   done
   for argument in "$@"; do
-    case " $FORBIDDEN_ARGUMENTS " in
-      *" $argument "*) die "refusing: argument $argument in: $service $operation" ;;
-    esac
     case "$argument" in
       *file://* | *fileb://* | *http://* | *https://*)
         die "refusing: a file or URL argument in: $service $operation"
+        ;;
+      -*)
+        case " $ALLOWED_OPTIONS " in
+          *" $argument "*) ;;
+          *) die "refusing: argument ${argument%%=*} in: $service $operation" ;;
+        esac
         ;;
     esac
   done
@@ -176,10 +182,11 @@ if ((LIST)); then
 fi
 
 [[ -n $PROFILE ]] || die "--profile is required: name the profile you authenticated"
-[[ $PROFILE =~ ^[A-Za-z0-9_.@+=,-]+$ ]] || die "not a profile name: $PROFILE"
+[[ $PROFILE =~ ^[A-Za-z0-9_][A-Za-z0-9_.@+=,-]*$ ]] || die "not a profile name: $PROFILE"
 [[ $REGION =~ ^[a-z]{2}-[a-z]+-[0-9]$ ]] || die "--region is required: a commercial region such as us-east-1"
 command -v aws >/dev/null 2>&1 || die "the AWS CLI is not on PATH"
 OUT=${OUT:-"$HOME/Documents/Codex/$(date -u +%Y-%m-%d)/aws-07a-inspection"}
+[[ $OUT != -* ]] || die "not a directory name: $OUT"
 if [[ -e $OUT ]] && [[ -n $(ls -A "$OUT" 2>/dev/null) ]]; then
   die "refusing to write into a directory that is not empty: $OUT"
 fi
@@ -187,6 +194,13 @@ mkdir -p "$OUT"
 LOCATION=$(price_location "$REGION")
 
 # --- Pass two: run them, in order, with only the named profile ---------------
+# The CLI gets a new environment holding only what it needs to find the profile
+# and write text. No inherited AWS_* setting, credential, endpoint, config-file
+# location, CA bundle or proxy reaches it.
+CLI_ENV=("HOME=$HOME" "PATH=$PATH" "AWS_PAGER=")
+for variable in USER LOGNAME LANG LC_ALL LC_CTYPE TMPDIR TZ; do
+  if [[ -n ${!variable-} ]]; then CLI_ENV+=("$variable=${!variable}"); fi
+done
 ENTRIES=()
 SKIPPED=()
 execute() {
@@ -194,9 +208,7 @@ execute() {
   shift 2
   local out="$OUT/$name.json" err="$OUT/$name.stderr.txt"
   # Only the named profile supplies credentials: nothing inherited can replace it.
-  env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
-    -u AWS_PROFILE -u AWS_DEFAULT_PROFILE -u AWS_REGION -u AWS_DEFAULT_REGION \
-    -u AWS_ENDPOINT_URL -u AWS_CA_BUNDLE AWS_PAGER="" \
+  env -i "${CLI_ENV[@]}" \
     aws --profile "$PROFILE" --region "$region" --output json --no-cli-pager \
     --cli-connect-timeout 10 --cli-read-timeout 60 "$@" >"$out" 2>"$err" || code=$?
   ENTRIES+=("    {\"name\": $(json_string "$name"), \"command\": $(json_string "$(command_text "$@")"), \"region\": $(json_string "$region"), \"exit_code\": $code, \"stdout\": $(json_string "$name.json"), \"stdout_sha256\": \"$(sha256 "$out")\", \"stderr\": $(json_string "$name.stderr.txt"), \"stderr_sha256\": \"$(sha256 "$err")\"}")
@@ -264,4 +276,5 @@ commands
 write_manifest
 printf 'Done: %s commands, account %s, region %s.\n' "${#ENTRIES[@]}" "$ACCOUNT" "$REGION"
 printf 'Bundle: %s (manifest.json lists every command, exit code and SHA-256)\n' "$OUT"
+printf 'Manifest SHA-256: %s\n' "$(sha256 "$OUT/manifest.json")"
 printf 'Nothing in the account was created, changed or deleted.\n'
