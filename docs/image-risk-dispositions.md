@@ -63,9 +63,9 @@ changes two entries, which join this ledger for the release decision:
 
 - Search, 50 matches (C0/H7/M27/L14/U2): `liblzma5 5.8.1-1+deb13u1+sentry1` now
   matches DSA-6549-1, and TEMP-1147318-639065 now names `5.8.1-1+deb13u2` as its
-  fix. The official package is in `trixie-security`, so the backport's
-  [replacement gates](liblzma-backport.md#replace-with-the-official-debian-package)
-  are open; its disposition (F) stands until that reviewed change.
+  fix. The official package was by then in `trixie-security`, so the backport
+  was due for replacement. That [replacement](liblzma-backport.md) is recorded
+  in the next section.
 - Release-tools, 55 matches (C0/H1/M24/L30/U0): CVE-2026-107161 (MEDIUM) in
   `libsasl2-2 2.1.28+dfsg1-9`, with no fixed version. It has no disposition yet.
 
@@ -98,6 +98,49 @@ image is retained, not removed or retagged, and is superseded.
     `1.21.3-5+deb13u1`. They have no disposition yet and join this ledger for
     the release decision.
 
+### Search and release-tools rebuilt with the official liblzma (October 12, 2026)
+
+Both images were rebuilt from `945106e9b9296c610e22590db4c73d0e9047a243`. The
+Runtime image is unchanged. These are local ARM64 identities, not registry
+digests, and none is accepted or published.
+
+| Image | Local index | Database `2026-10-07T07:38:55Z` | Database `2026-10-12T13:18:23Z` | SBOM components |
+| --- | --- | --- | --- | --- |
+| Search | `sha256:5cfa136c70748bad8f6c3539921ca0a6d140154ff42930948243c85e28279f06` | 49: C0/H7/M27/L14/U1 | 48: C0/H7/M27/L14/U0 | 82; only `liblzma5` `5.8.1-1+deb13u1+sentry1` → `5.8.1-1+deb13u2` |
+| Release-tools | `sha256:0de498432f802daec067b82fdcfd68f60cdac9279eff472a14746570d514d197` | 54: C0/H1/M23/L30/U0, unchanged | 63: C0/H1/M32/L30/U0, unchanged | 29, unchanged |
+| Runtime | `sha256:291d4bb328924a3d31addda236937d89f60220005e1856256a3145d28d32785d` | zero | zero | unchanged |
+
+**Input delta against the previous images** (`8413f19..945106e`, by each
+image's `.dockerignore`):
+
+- **Search**, 10 files:
+  - `container/Dockerfile` and `container/liblzma/` (`NOTICE`, `debian.sources`,
+    `manifest.json`, the new `verify.py`; `recipe.py` and the three patches
+    removed): Debian's official `liblzma5 5.8.1-1+deb13u2` replaces the local
+    backport ([details](liblzma-backport.md));
+  - `src/storage/release_job.py`: the migration job's stop and deadline bounds
+    no longer wait for the statement's cancellation.
+- **Release-tools**, 1 file: `release_tools/observe.py`, the observer's
+  whole-check deadline.
+
+**What changed in the matches.**
+
+- With the older database, Search's 49 tuples are the same except that the
+  liblzma row now names `5.8.1-1+deb13u2`: that database predates Debian's fix,
+  so it still lists `TEMP-1147318-639065` with no fixed version.
+- With the database of October 12, both liblzma rows are gone (DSA-6549-1 and
+  `TEMP-1147318-639065`, each fixed in `5.8.1-1+deb13u2`). Nothing was added.
+  Search has no UNKNOWN match left.
+- Release-tools is the same 63 as on October 10: `libsasl2-2` CVE-2026-107161
+  and the four krb5 libraries' CVE-2026-107708 and CVE-2026-107778 (MEDIUM, no
+  fixed version) still have no disposition.
+
+**Recheck.** The 93 added Python lines in those two files import only
+`threading` and `time`. None calls or imports anything the A and U rationales
+rest on (the list under the October 8 rebinding). Every other disposition
+therefore carries over unchanged as an assessment of these images. None is
+accepted, and the 27 retained service and 54 tools matches stay non-additive.
+
 ## Result and scope
 
 The retained Trivy 0.75.0 report (database updated `2026-10-06T19:11:49Z`)
@@ -109,7 +152,7 @@ any later release decision. Zero Python findings is not a native-code safety cla
 | Disposition | Package/advisory matches | Meaning |
 | --- | ---: | --- |
 | N — narrowly not affected | 21 | Named affected component absent, different architecture, or exact build/source excludes the faulty branch. Not a package-family exemption. |
-| F — fixed by local backport | 1 | Pinned liblzma source and bounded behavioral proof; raw UNKNOWN/upstream HIGH match retained. |
+| F — fixed | 1 | liblzma: first by a local backport, and since October 12, 2026 by Debian's official `5.8.1-1+deb13u2`, with the same bounded behavioral proof. A scanner database older than the fix still lists the raw UNKNOWN/upstream HIGH match. |
 | A — affected code retained | 16 | Source/build evidence supports applicability; no remote Search exploit demonstrated. |
 | U — unresolved applicability / disputed | 11 | Caller, native-template, privilege or disputed threat-model boundary is not established. Keep release hold. |
 
@@ -194,7 +237,7 @@ before release; narrower invalidation conditions follow the ledger.
 | [CVE-2026-95619](https://security-tracker.debian.org/tracker/CVE-2026-95619) / MEDIUM | `gcc-14-base=14.2.0-19` **N**; `libgcc-s1=14.2.0-19` **N**; `libgomp1=14.2.0-19` **N**; `libstdc++6=14.2.0-19` **N** | Unsafe rounding occurs only in certain aligned-new allocation fallbacks, not POSIX posix_memalign branch. Exact libstdc++.so.6.0.33 SHA256fff1f0050a33ddf29c44634c7639ac16e2573a61e3daab4fcc4c007b432ccf19: disassembly of _ZnwmSt11align_val_t at0xaa218 calls posix_memalign with unrounded size. Upstream fix explicitly excludes this branch. |
 | [CVE-2026-95818](https://security-tracker.debian.org/tracker/CVE-2026-95818) / MEDIUM | `libc6=2.41-12+deb13u4` **U** | AT_SECURE loader ORIGIN RPATH/RUNPATH buffer handling;2.14–2.44. Loader present; no privileged payload files found. Exact role privilege/mount contract is still a deployment-planning boundary. |
 | [CVE-2026-97399](https://security-tracker.debian.org/tracker/CVE-2026-97399) / LOW | `libc6=2.41-12+deb13u4` **N** | Overread confined to Power8-optimized strncasecmp. Exact immutable image and installed libc are ARM64/aarch64; Power8 implementation is not this architecture. |
-| [TEMP-1147318-639065](https://github.com/tukaani-project/xz/security/advisories/GHSA-5qpq-xqfv-j9pg) / UNKNOWN | `liblzma5=5.8.1-1+deb13u1+sentry1` **F** | Two upstream decoder reinitialization/cleanup fixes retained in the repository-owned Debian backport. Pinned fe4d763 + e5e63d5; regression ff834f2. Same library bytes as independently reviewed ABI candidate. Controlled alone/auto allocation-failure reuse red/green; seven Python compatibility checks; final 30 container and 737 setup checks. Source/package checksums and two identical clean packages recorded in adoption receipt. No direct lzip/MicroLZMA fault injection, sanitizer, AMD64 or cloud proof. |
+| [TEMP-1147318-639065](https://github.com/tukaani-project/xz/security/advisories/GHSA-5qpq-xqfv-j9pg) / UNKNOWN | `liblzma5=5.8.1-1+deb13u2` **F** | Fixed by Debian's official package (DSA-6549-1) since October 12, 2026; before that by the repository-owned backport `5.8.1-1+deb13u1+sentry1`. The official package cherry-picks upstream fe4d763 and e5e63d5, with changed lines identical to the backport's, and its changelog names the advisory. Pinned by dated snapshot, Release hashes and package SHA-256. Controlled alone/auto allocation-failure reuse and seven Python compatibility checks pass against the library the image loads. No direct lzip/MicroLZMA fault injection, sanitizer, AMD64 or cloud proof. |
 
 ## Release disposition and finite next action
 
@@ -220,11 +263,11 @@ static native-wheel templates or new input paths. Any such change reopens the
 associated dispositions. No production/customer-data exception follows from a
 synthetic-staging decision.
 
-The [liblzma replacement procedure](liblzma-backport.md) remains mandatory:
-authenticated official fixed Trixie source, behavioral/native compatibility,
-service lifecycle and fresh scan gates on intended architectures, then remove
-the temporary recipe but retain behavioral tests. No direct lzip/MicroLZMA fault
-injection, sanitizer or AMD64 proof is claimed.
+The [liblzma replacement](liblzma-backport.md) was carried out on October 12,
+2026: the authenticated official fixed Trixie package, the behavioral and native
+compatibility cases, the service suites and fresh scans on ARM64, with the
+temporary recipe removed and the behavioral tests retained. No direct
+lzip/MicroLZMA fault injection, sanitizer or AMD64 proof is claimed.
 
 ## Additional primary implementation references
 

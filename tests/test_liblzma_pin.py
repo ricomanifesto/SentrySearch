@@ -152,6 +152,28 @@ def test_the_build_names_one_reviewed_version_from_one_pinned_snapshot():
         assert re.fullmatch(r"[0-9a-f]{64}", digest)
 
 
+def test_the_build_checks_every_download_before_anything_uses_it():
+    # One shell chain per fetch: each check follows its download and precedes
+    # whatever consumes the bytes, so a failed check fails the build there.
+    dockerfile = (ROOT / "container" / "Dockerfile").read_text()
+    official = dockerfile[dockerfile.index("AS liblzma-official") :
+                          dockerfile.index("AS liblzma-test-build")]  # fmt: skip
+    probe = dockerfile[dockerfile.index("AS liblzma-test-build") :
+                       dockerfile.index("AS liblzma-test-tools")]  # fmt: skip
+    for stage, chain in (
+        (official, ["apt-get update --error-on=any && python /inputs/verify.py indexes && ",
+                    "apt-get download ", "python /inputs/verify.py packages /packages && "]),
+        (probe, ["apt-get source --download-only ", "python /inputs/verify.py sources /work && ",
+                 "dpkg -i /packages/liblzma5.deb ", "python /inputs/verify.py fixture /work /probe"]),
+    ):  # fmt: skip
+        positions = [stage.index(step) for step in chain]
+        assert positions == sorted(positions), chain
+    assert dockerfile.count("verify.py") == 6  # the copy, the comment and the four checks
+    # The service takes the package from the checked stage and from nowhere else.
+    assert dockerfile.count("liblzma5.deb") == 5
+    assert "COPY --from=liblzma-official /packages/liblzma5.deb /tmp/liblzma5.deb" in dockerfile
+
+
 def test_nothing_of_the_local_backport_remains():
     assert sorted(path.name for path in INPUTS.iterdir() if path.name != "__pycache__") == [
         "NOTICE", "debian.sources", "decoder_reinit_test.c", "manifest.json", "verify.py",

@@ -34,13 +34,47 @@ the retained-code and component coverage review, any required remediation, and
 the explicit release-risk decision before staging. Existing 27 retained
 service-image matches remain a separate gate; do not add counts across images.
 
-## Current candidate: maintained local liblzma backport
+## Current candidate: Debian's official liblzma fix (October 12, 2026)
 
-The default service-image recipe now builds the bounded backport described in
-[liblzma maintenance and replacement](liblzma-backport.md). The current ARM64
-local image is
+The service-image recipe installs Debian's official `liblzma5 5.8.1-1+deb13u2`
+(DSA-6549-1) over the donor image's `5.8.1-1+deb13u1`, as
+[liblzma: the official Debian fix](liblzma-backport.md) describes. The local
+backport below is gone from the recipe. The current ARM64 local image is
+`sha256:5cfa136c70748bad8f6c3539921ca0a6d140154ff42930948243c85e28279f06`.
+It is not a published registry manifest, an accepted image or a production
+repair.
+
+- **Pinning.** The package comes from the dated `debian-security` snapshot
+  `20261007T211543Z`. APT verified the archive signatures; the build also
+  required the recorded `InRelease` hashes and the package's SHA-256
+  `88f3aa499dc30edf01b9209ab40f11e37edfbecef971f84f4721de1874ed4827` (arm64).
+- **Content.** Its advisory patches are cherry-picks of the two upstream commits
+  the backport applied, with identical changed lines; the shipped changelog
+  names GHSA-5qpq-xqfv-j9pg and CVE-2026-34743.
+- **Behavior.** All ten final-image liblzma checks pass against the library the
+  image loads: two bounded allocator regressions, seven Python compatibility
+  cases and the installed package's version, checksums, license, changelog and
+  linkage. They ran with the service-image, platform-fit and log-volume cases
+  (34 in all).
+- **Scans.** Trivy 0.75.0, all severities, no ignore file. With the database of
+  `2026-10-12T13:18:23Z`: **C0/H7/M27/L14/U0**, 48 matches, no liblzma match.
+  With the older database of `2026-10-07T07:38:55Z`, which predates Debian's
+  fix: 49, the same tuples as before except that the liblzma row now names the
+  official version. The SBOM differs from the previous image's only in
+  `liblzma5`.
+
+**Release remains held.** The [exact-image disposition review](image-risk-dispositions.md)
+still stands for the 27 retained matches; they need compatible fixes, specific
+closure evidence or an explicit bounded release-owner decision. ARM64 evidence
+does not prove AMD64, direct lzip/MicroLZMA allocation-failure behavior,
+sanitizer coverage or cloud execution.
+
+## Earlier candidate: maintained local liblzma backport (superseded)
+
+From October 6 to October 12, 2026 the service-image recipe built a bounded
+local backport, while Debian had no fix. That ARM64 local image was
 `sha256:1acd566a7fd4921aa8305604144d3159467be1d214e69b6ca6a0e80a384df4c0`.
-It is not a published registry manifest or a production repair.
+It was never a published registry manifest or a production repair.
 
 Two clean package compilations with pinned donor, authenticated dated Debian
 snapshots, source/patch hashes and fixed timestamps produced identical
@@ -74,20 +108,22 @@ accounts for every raw match: 21 narrow exclusions, one locally backported fix,
 matches concern absent components; that does not clear differently rated native
 advisories or the remaining 27 matches. The review adds no scanner suppression.
 
-**Release remains held.** The remaining matches need compatible fixes, specific
-closure evidence or an explicit bounded release-owner decision, plus the staging
-contract and acceptance gates. No release exception is granted.
-The project owns this temporary package until a verified official Trixie fix
-passes the documented replacement gates. ARM64 evidence does not prove AMD64,
-direct lzip/MicroLZMA allocation-failure behavior, sanitizer coverage or cloud
-execution. Application pushes, publication and deployment are separate actions.
+**Release remained held.** The remaining matches needed compatible fixes,
+specific closure evidence or an explicit bounded release-owner decision, plus the
+staging contract and acceptance gates. No release exception was granted. The
+project owned that temporary package until the official Trixie fix passed the
+replacement gates, which it now has. Application pushes, publication and
+deployment are separate actions.
 
 ## Release-tools image
 
 The separate [release-tools image](release-tools.md) (psql 16.15 and Python 3.11 on
-the distroless base) has **no scan, SBOM or provenance yet**. It ships no
-liblzma, and the Search-image matches above are neither changed nor accepted by
-it. Scan the exact ARM64 bytes before any release decision.
+the distroless base) is scanned with the same tool and databases, and has an
+SBOM and build provenance. Its identities and matches are in the
+[image ledger](image-risk-dispositions.md). It ships no liblzma, and the
+Search-image matches above are neither changed nor accepted by it. Its libsasl2
+and krb5 matches have no fixed version and no disposition yet. Rescan the exact
+bytes at any release decision.
 
 ## Historical candidate: OS-package minimization
 
