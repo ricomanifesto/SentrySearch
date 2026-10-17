@@ -56,10 +56,14 @@ def runtime(tmp_path) -> Path:
 
 
 class Executor:
-    def __init__(self, failing: set[str] | None = None, missing: set[str] | None = None) -> None:
+    def __init__(self, failing: set[str] | None = None, missing: set[str] | None = None,
+                 nonzero: set[str] | None = None) -> None:  # fmt: skip
         self.calls: list[list[str]] = []
         self.failing = failing or set()
         self.missing = missing or set()
+        # Suites (by a fragment of their command) that exit nonzero although every node
+        # the matrix names passed: an unmapped failure or a failing teardown.
+        self.nonzero = nonzero or set()
 
     def __call__(self, command, *, cwd, env, text, capture_output, check):
         """Outcomes as the suites really report them: JUnit XML and go test -json."""
@@ -77,7 +81,9 @@ class Executor:
                     json.dumps({"Action": action, "Test": f"{proof.node}/subcase"}),
                     json.dumps({"Action": action, "Test": proof.node}),
                 ]
-            return subprocess.CompletedProcess(command, 0, "\n".join(lines) + "\n", "")
+            return subprocess.CompletedProcess(
+                command, self.code(command), "\n".join(lines) + "\n", ""
+            )
         junit = env["PYTEST_ADDOPTS"].split("=", 1)[1]
         cases = []
         for proof in {p for case in aws_08a.CASES for p in case.proofs
@@ -92,9 +98,18 @@ class Executor:
                 cases.append(
                     f'<testcase classname="{classname}" name="{name}{suffix}">' f"{body}</testcase>"
                 )
+        if self.code(command):
+            # The suite's own failure is in a node the matrix does not name.
+            cases.append(
+                '<testcase classname="tests.unmapped" name="test_other"><failure/></testcase>'
+            )
         Path(junit).write_text(f"<testsuites><testsuite>{''.join(cases)}</testsuite></testsuites>")
         # Console text is never read: a printed line between a node and its outcome is harmless.
-        return subprocess.CompletedProcess(command, 0, 'tests/x.py::y {"proof": 1}\nPASSED\n', "")
+        return subprocess.CompletedProcess(command, self.code(command),
+                                           'tests/x.py::y {"proof": 1}\nPASSED\n', "")  # fmt: skip
+
+    def code(self, command) -> int:
+        return 1 if any(fragment in " ".join(command) for fragment in self.nonzero) else 0
 
 
 def run_local(tmp_path, runtime, **executor):
@@ -163,6 +178,26 @@ def test_a_failed_or_missing_proof_fails_its_case(tmp_path, runtime):
     assert records["artifacts"]["result"] == "failed"
     assert {p["outcome"] for p in records["artifacts"]["proofs"]} == {"passed", "missing"}
     assert records["retry-exhaustion"]["result"] == "passed"
+
+
+@pytest.mark.parametrize("fragment, suite", [("check_runtime_consistency.py", "runtime-consistency"),
+                                             ("go test", "runtime-integration")])  # fmt: skip
+def test_a_suite_that_exits_nonzero_fails_its_cases_though_every_named_node_passed(
+    tmp_path, runtime, fragment, suite
+):
+    code, records, _, out = run_local(tmp_path, runtime, nonzero={fragment})
+    assert code == aws_08a.EXIT_FAILED, out
+    touched = [c.id for c in aws_08a.CASES if any(p.suite == suite for p in c.proofs)]
+    assert touched
+    for case in aws_08a.CASES:
+        record = records[case.id]
+        if case.id in touched:
+            assert record["result"] == "failed" and f"{suite} (1)" in record["reason"], record
+            # The named nodes' own outcomes are kept as they were observed.
+            assert {p["outcome"] for p in record["proofs"]} == {"passed"}
+            assert {p["suite_exit"] for p in record["proofs"] if p["suite"] == suite} == {1}
+        elif not case.platform:
+            assert record["result"] == "passed", case.id
 
 
 def test_a_proof_that_names_no_test_is_refused_before_anything_runs(tmp_path, runtime):

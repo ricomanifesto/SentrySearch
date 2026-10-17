@@ -831,12 +831,12 @@ def test_the_cutover_drain_counts_only_running_legacy_writers(reports):
     abandoned = str(uuid.uuid4())
     now = datetime.now(UTC)
     with service.db_manager.get_session() as session:
-        session.add(Report(id=finished, tool_name="Done", status="completed"))
-        session.add(Report(id=abandoned, tool_name="Abandoned", status="generating",
+        session.add(Report(id=uuid.UUID(finished), tool_name="Done", status="completed"))
+        session.add(Report(id=uuid.UUID(abandoned), tool_name="Abandoned", status="generating",
                            created_at=now - timedelta(hours=3)))  # fmt: skip
-        session.add(Report(id=evaluating, tool_name="Evaluating", status="completed",
+        session.add(Report(id=uuid.UUID(evaluating), tool_name="Evaluating", status="completed",
                            evaluation_lease_expires_at=now + timedelta(minutes=5)))  # fmt: skip
-        session.add(Report(id=expired, tool_name="Expired lease", status="completed",
+        session.add(Report(id=uuid.UUID(expired), tool_name="Expired lease", status="completed",
                            evaluation_lease_expires_at=now - timedelta(minutes=5)))  # fmt: skip
     with service.db_manager.get_session() as session:
         counts = dict(session.execute(drain_statement()).mappings().one())

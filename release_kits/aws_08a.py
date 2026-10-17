@@ -443,8 +443,17 @@ class Runner:
                        "suite_exit": suites[proof.suite]["exit"],
                        "log_sha256": suites[proof.suite]["log_sha256"]}
                       for proof in case.proofs]  # fmt: skip
-            passed = all(proof["outcome"] == "passed" for proof in proofs)
-            return {**base, "result": "passed" if passed else "failed", "proofs": proofs}
+            # A node's pass is an observation; the case passes only if every suite its
+            # proofs ran in also exited 0 (an unmapped failure or a failed teardown
+            # holds it).
+            failed_suites = sorted({proof["suite"] for proof in proofs if proof["suite_exit"] != 0})
+            passed = all(proof["outcome"] == "passed" for proof in proofs) and not failed_suites
+            record = {**base, "result": "passed" if passed else "failed", "proofs": proofs}
+            if failed_suites:
+                record["reason"] = "suite exited nonzero: " + ", ".join(
+                    f"{suite} ({suites[suite]['exit']})" for suite in failed_suites
+                )
+            return record
         if case.platform_runner is None or self.platform is None:
             return {**base, "result": "skip",
                     "reason": "no platform runner: the local proofs stand for this case"}  # fmt: skip
