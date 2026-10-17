@@ -341,7 +341,7 @@ class Kit:
             detail = str(error) if known else f"{type(error).__name__} (message withheld)"
             body.update(result="failed", detail=detail, partial=self.partial,
                         finished_at=render.iso(self.now()))  # fmt: skip
-            digest = self._write(step, body, secrets)
+            digest, _ = self._write(step, body, secrets)
             self.say(f"Step {step.id} FAILED: {detail}. Receipt {digest}")
             return EXIT_FAILED
         held = outputs.pop("_held", None)
@@ -349,25 +349,31 @@ class Kit:
                     finished_at=render.iso(self.now()))  # fmt: skip
         if held:
             body["detail"] = held
-        digest = self._write(step, body, secrets)
+        digest, written = self._write(step, body, secrets)
+        if written["result"] == "failed":
+            # The receipt was withheld and records a failure; the step reports that failure.
+            self.say(f"Step {step.id} FAILED: {written['detail']}. Receipt {digest}")
+            return EXIT_FAILED
         self.say(f"Step {step.id} {'HELD: ' + held if held else 'done'}. Receipt {digest}")
         self.say(f"Give the next command --chain-head {digest}")
         return EXIT_FAILED if held else EXIT_OK
 
-    def _write(self, step: Step, body: dict[str, Any], secrets: tuple[str, ...]) -> str:
+    def _write(self, step: Step, body: dict[str, Any],
+               secrets: tuple[str, ...]) -> tuple[str, dict[str, Any]]:  # fmt: skip
+        """Write the step's receipt; return its hash and the body it actually records."""
         if self.started_head is not _UNCHECKED and self.ledger.head()[1] != self.started_head:
             # Never chain onto a receipt that changed while this step ran.
             self.say(f"Step {step.id} finished {body.get('result')} but the receipts changed "
                      "while it ran; no receipt is written. Its outcome is in the logs.")  # fmt: skip
             raise ChainBroken("the receipts changed while the step ran")
         try:
-            return self.ledger.write(step.id, body, keep_out=secrets)
+            return self.ledger.write(step.id, body, keep_out=secrets), body
         except ValueError:
             # The outputs would have held a secret value: keep only that it happened.
             kept = {key: body[key] for key in ("section", "title", "typed", "started_at",
                                                "commands", "mode", "finished_at") if key in body}  # fmt: skip
             kept.update(result="failed", detail="receipt withheld: it would hold a secret value")
-            return self.ledger.write(step.id, kept, keep_out=secrets)
+            return self.ledger.write(step.id, kept, keep_out=secrets), kept
 
     def check_head(self, given: str | None) -> None:
         """The newest receipt is the one whose hash the operator was last shown."""

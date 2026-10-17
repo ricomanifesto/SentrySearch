@@ -29,7 +29,9 @@ same requests again: the custodian's secret versions are fixed by plan, release
 and purpose, so a secret this step already created is recognized by its version;
 an image already stored at its digest counts once it reads back unchanged.
 `detach` runs after any `attach` attempt, failed or not, and removes every policy
-the attach step names wherever it is attached.
+the attach step names wherever it is attached. A step whose receipt would hold a
+secret value writes a failed receipt that records only that, and the step fails
+with it: it prints `FAILED`, no next `--chain-head`, and exits `3`.
 
 Every value it uses (account, region, names, digests, ARNs, VersionIds) comes from
 the plan or from an earlier receipt; you type only step identifiers. A step that

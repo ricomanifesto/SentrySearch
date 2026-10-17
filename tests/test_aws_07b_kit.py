@@ -26,7 +26,7 @@ from release_cli import main as release_cli
 from release_kits import aws_07b, images, render
 from release_kits import session as sessions
 from release_kits.ledger import ChainBroken, Ledger
-from release_kits.plan import PlanRefused, load_plan
+from release_kits.plan import AccountPlan, PlanRefused, load_plan
 from release_kits.terraform import UnexpectedPlan, check_plan
 from tests import release_kit_fixtures as fx
 from tests.test_release_cli import write_credentials
@@ -438,6 +438,43 @@ def test_a_receipt_that_would_hold_a_secret_value_is_never_written(tmp_path):
         ledger.write("custodian", {"outputs": {"x": "the-secret-value"}},
                      keep_out=["the-secret-value"])  # fmt: skip
     assert not (tmp_path / "receipts").exists() or not list((tmp_path / "receipts").iterdir())
+
+
+KEPT_OUT = "fixture-value-kept-out"
+CUSTODIAN = aws_07b.Step("custodian", "7.3", "fixture custodian", None)
+
+
+def finish(tmp_path: Path, outputs: dict[str, Any]) -> tuple[int, list[str], Ledger]:
+    out = io.StringIO()
+    kit = aws_07b.Kit(AccountPlan(tmp_path, {"plan_sha256": "a" * 64}), tmp_path / "work",
+                      out=out)  # fmt: skip
+    code = kit._finish(CUSTODIAN, [], "custodian", lambda: dict(outputs), None, (KEPT_OUT,))
+    return code, out.getvalue().splitlines(), kit.ledger
+
+
+@pytest.mark.parametrize("held", [None, "a fixture hold"])
+def test_a_withheld_receipt_fails_the_step_in_its_output_and_exit_status(tmp_path, held):
+    code, lines, ledger = finish(tmp_path, {"value": KEPT_OUT, **({"_held": held} if held else {})})
+    ((path, record, digest),) = ledger.receipts()
+    withheld = "receipt withheld: it would hold a secret value"
+    assert (record["result"], record["detail"]) == ("failed", withheld)
+    assert code == aws_07b.EXIT_FAILED
+    # The step reports what its receipt records: no "done" or hold, no next chain head.
+    assert lines == [f"Step custodian FAILED: {withheld}. Receipt {digest}"]
+    assert KEPT_OUT not in path.read_text() and KEPT_OUT not in "\n".join(lines)
+    assert ledger.completed() == {}
+
+
+@pytest.mark.parametrize("held", [None, "a fixture hold"])
+def test_a_safe_receipt_reports_its_own_outcome_and_the_next_chain_head(tmp_path, held):
+    code, lines, ledger = finish(tmp_path,
+                                 {"value": "safe-reference", **({"_held": held} if held else {})})  # fmt: skip
+    ((_, record, digest),) = ledger.receipts()
+    assert record["result"] == ("held" if held else "ok")
+    assert code == (aws_07b.EXIT_FAILED if held else aws_07b.EXIT_OK)
+    assert lines == [f"Step custodian {'HELD: ' + held if held else 'done'}. Receipt {digest}",
+                     f"Give the next command --chain-head {digest}"]  # fmt: skip
+    assert set(ledger.completed()) == (set() if held else {"custodian"})
 
 
 # Sessions and the environment Terraform gets ----------------------------------------
