@@ -287,3 +287,36 @@ def test_pre_cutover_needs_the_deployed_settings(tmp_path):
     with pytest.raises(SystemExit):
         cutover.main(["pre-cutover", "--target", str(target(tmp_path)), "--work",
                       str(tmp_path / "work")], out=io.StringIO())  # fmt: skip
+
+
+def test_a_supplied_anchor_against_lost_or_missing_history_is_refused(tmp_path):
+    """A narrowing must never pass as an expansion because the history went missing."""
+    work = tmp_path / "work"
+    common = ["--target", str(target(tmp_path)), "--work", str(work)]
+    code, _ = run(tmp_path, "expand", *common, "--milestone", "first",
+                  "--identities", str(identities(tmp_path, "two", A, B)), typed=["first"])  # fmt: skip
+    anchor = head(tmp_path)
+    assert code == 0 and anchor
+    # The sole receipt moved away (kept, not deleted), then a one-identity scope.
+    (receipt,) = (work / "receipts").iterdir()
+    receipt.rename(tmp_path / "kept-receipt.json")
+    code, out = run(tmp_path, "expand", *common, "--milestone", "second", "--chain-head", anchor,
+                    "--identities", str(identities(tmp_path, "one", A)))  # fmt: skip
+    assert code == 2 and "history" in out and head(tmp_path) is None
+    # A wrong, empty work directory given the anchor is refused the same way.
+    elsewhere = ["--target", str(target(tmp_path)), "--work", str(tmp_path / "empty")]
+    for command in (["rollback"], ["verify", "--deployed", str(tmp_path / "kept-receipt.json")]):
+        code, out = run(tmp_path, *command, *elsewhere, "--chain-head", anchor)
+        assert code == 2 and "history" in out
+    # The cutover kit's chain is held to the same rule.
+    loaded, digest = admission_scope.load_target(target(tmp_path))
+    kit = cutover.CutoverKit(
+        loaded, digest, tmp_path / "cutover", out=io.StringIO(), run=Fixture({})
+    )
+    kit.retention()
+    old = kit.ledger.head()[1]
+    for path in (tmp_path / "cutover" / "receipts").iterdir():
+        path.rename(tmp_path / f"kept-{path.name}")
+    with pytest.raises(admission_scope.Refused, match="history"):
+        kit.head(old)
+    kit.head(None)  # a fresh chain without an anchor still starts

@@ -88,6 +88,12 @@ class ScopeKit:
 
     def head(self, given: str | None) -> dict[str, Any] | None:
         document, digest = self.ledger.head()
+        if digest is None and given is not None:
+            # A lost history must not read as an empty scope (a narrowing as an expansion).
+            raise Refused(
+                "--chain-head names a receipt, but this work directory has none: its history "
+                "is missing or this is the wrong directory"
+            )
         if digest is not None and given != digest:
             raise Refused("give --chain-head with the hash the last milestone printed")
         return document

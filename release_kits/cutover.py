@@ -141,6 +141,11 @@ class CutoverKit:
 
     def head(self, given: str | None) -> None:
         _, digest = self.ledger.head()
+        if digest is None and given is not None:
+            raise Refused(
+                "--chain-head names a receipt, but this work directory has none: its history "
+                "is missing or this is the wrong directory"
+            )
         if digest is not None and given != digest:
             raise Refused("give --chain-head with the hash the last check printed")
 
