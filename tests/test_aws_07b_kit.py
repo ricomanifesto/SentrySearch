@@ -477,6 +477,26 @@ def test_a_safe_receipt_reports_its_own_outcome_and_the_next_chain_head(tmp_path
     assert set(ledger.completed()) == (set() if held else {"custodian"})
 
 
+def test_a_failed_step_whose_receipt_is_withheld_keeps_its_failure_and_exit_status(tmp_path):
+    out = io.StringIO()
+    kit = aws_07b.Kit(AccountPlan(tmp_path, {"plan_sha256": "a" * 64}), tmp_path / "work",
+                      out=out)  # fmt: skip
+
+    def action() -> dict[str, Any]:
+        kit.partial["value"] = KEPT_OUT  # something ran, and what it returned is kept out
+        raise aws_07b.StepFailed("fixture failure")
+
+    code = kit._finish(CUSTODIAN, [], "custodian", action, None, (KEPT_OUT,))
+    ((path, record, digest),) = kit.ledger.receipts()
+    withheld = "receipt withheld: it would hold a secret value"
+    assert (record["result"], record["detail"]) == ("failed", withheld)
+    assert code == aws_07b.EXIT_FAILED
+    lines = out.getvalue().splitlines()
+    assert lines == [f"Step custodian FAILED: fixture failure. Receipt {digest}"]
+    assert KEPT_OUT not in path.read_text() and KEPT_OUT not in out.getvalue()
+    assert kit.ledger.completed() == {}
+
+
 # Sessions and the environment Terraform gets ----------------------------------------
 
 
