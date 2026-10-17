@@ -625,17 +625,24 @@ class Platform:
         statements = foundation["report_bucket_policy"].get("Statement", [])
         deny_only = bool(statements) and all(item.get("Effect") == "Deny" for item in statements)
         decisions: dict[str, dict[str, dict[str, str]]] = {}
+        observed = {"decisions": decisions, "bucket_policy_deny_only": deny_only,
+                    "evaluated_by": "iam:SimulatePrincipalPolicy on each role's identity "
+                                    "policies, every page of each answer; the bucket policy's "
+                                    "conditional denies are not simulated"}  # fmt: skip
         for role_key, own in S3_OWN_ACTIONS.items():
             role = f"arn:aws:iam::{account}:role/{names[role_key]}"
             decisions[role_key] = {}
-            for label, resource, actions in (
-                ("own", f"arn:aws:s3:::{bucket}/reports/aws-08a/probe", own),
-                ("other", f"arn:aws:s3:::{bucket}/aws-08a/outside", S3_OBJECT_ACTIONS),
-            ):
-                answer = iam.simulate_principal_policy(PolicySourceArn=role, ActionNames=list(actions),
-                                                       ResourceArns=[resource])  # fmt: skip
-                decisions[role_key][label] = {item["EvalActionName"]: item["EvalDecision"]
-                                              for item in answer["EvaluationResults"]}  # fmt: skip
+            for label, where, resource, actions in (
+                ("own", "under reports/", f"arn:aws:s3:::{bucket}/reports/aws-08a/probe", own),
+                ("other", "outside reports/", f"arn:aws:s3:::{bucket}/aws-08a/outside",
+                 S3_OBJECT_ACTIONS),
+            ):  # fmt: skip
+                try:
+                    decisions[role_key][label] = simulated_decisions(iam, role, resource, actions)
+                except IncompleteSimulation as incomplete:
+                    # Missing evidence is not a denial: the proof fails and says why.
+                    return {"ok": False, "observed": observed,
+                            "reason": f"incomplete IAM simulation, {role_key} {where}: {incomplete}"}  # fmt: skip
         # Each role's own actions are allowed under reports/, each one; outside reports/
         # nothing is allowed to either role.
         ok = deny_only and all(
@@ -644,10 +651,7 @@ class Platform:
             and not any(decision == "allowed" for decision in seen["other"].values())
             for role_key, seen in decisions.items()
         )
-        return {"ok": ok, "observed": {"decisions": decisions, "bucket_policy_deny_only": deny_only,
-                                       "evaluated_by": "iam:SimulatePrincipalPolicy on each role's "
-                                                       "identity policies; the bucket policy's "
-                                                       "conditional denies are not simulated"}}  # fmt: skip
+        return {"ok": ok, "observed": observed}
 
     def _alert(self, case: Case) -> dict[str, Any]:
         alarm = str(self.target.document.get("alert_alarm") or "")
@@ -772,6 +776,60 @@ class Platform:
 S3_OWN_ACTIONS = {"worker-task": ("s3:GetObject", "s3:PutObject"),
                   "api-task": ("s3:GetObject", "s3:DeleteObject")}  # fmt: skip
 S3_OBJECT_ACTIONS = ("s3:GetObject", "s3:PutObject", "s3:DeleteObject")
+SIMULATION_DECISIONS = frozenset({"allowed", "explicitDeny", "implicitDeny"})
+# Each request names at most three actions; an answer still truncated after this many
+# pages is not a usable one.
+SIMULATION_PAGES = 10
+
+
+class IncompleteSimulation(Exception):
+    """An IAM simulation answer that does not decide each requested action exactly once."""
+
+
+def simulated_decisions(iam: Any, role: str, resource: str,
+                        actions: tuple[str, ...]) -> dict[str, str]:  # fmt: skip
+    """Each requested action's decision on one resource, read across every page of the answer.
+
+    IAM may truncate a simulation's results below the page size, so an answer is complete
+    only when its last page says it is not truncated. A missing, unknown or repeated
+    decision, or one for another action or resource, is refused, never read as a denial.
+    """
+    request: dict[str, Any] = {"PolicySourceArn": role, "ActionNames": list(actions),
+                               "ResourceArns": [resource]}  # fmt: skip
+    decisions: dict[str, str] = {}
+    for _ in range(SIMULATION_PAGES):
+        answer = iam.simulate_principal_policy(**request)
+        results = answer.get("EvaluationResults") if isinstance(answer, dict) else None
+        if not isinstance(results, list):
+            raise IncompleteSimulation("an answer without a list of evaluation results")
+        for item in results:
+            if not isinstance(item, dict):
+                raise IncompleteSimulation("a malformed evaluation result")
+            action, decision = item.get("EvalActionName"), item.get("EvalDecision")
+            if action not in actions:
+                raise IncompleteSimulation("a decision for an action not requested")
+            if decision not in SIMULATION_DECISIONS:
+                raise IncompleteSimulation(f"an unknown decision for {action}")
+            if item.get("EvalResourceName", resource) != resource:
+                raise IncompleteSimulation(f"a decision for {action} on another resource")
+            if action in decisions:
+                raise IncompleteSimulation(f"more than one decision for {action}")
+            decisions[action] = decision
+        truncated = answer.get("IsTruncated", False)
+        if not isinstance(truncated, bool):
+            raise IncompleteSimulation("an answer with no clear truncation flag")
+        if not truncated:
+            break
+        marker = answer.get("Marker")
+        if not isinstance(marker, str) or not marker:
+            raise IncompleteSimulation("a truncated answer without a marker")
+        request = {**request, "Marker": marker}
+    else:
+        raise IncompleteSimulation(f"still truncated after {SIMULATION_PAGES} pages")
+    missing = [action for action in actions if action not in decisions]
+    if missing:
+        raise IncompleteSimulation("no decision for " + ", ".join(missing))
+    return decisions
 
 
 def stop_seconds(task: Mapping[str, Any]) -> float | None:

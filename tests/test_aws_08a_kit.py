@@ -11,6 +11,7 @@ import io
 import json
 from pathlib import Path
 import subprocess
+from typing import Any
 
 import httpx
 import pytest
@@ -535,3 +536,127 @@ def test_the_s3_case_checks_every_action_and_a_deny_only_bucket_policy(tmp_path,
         "s3:GetObject": "allowed",
         "s3:PutObject": "allowed",
     }
+
+
+def _decision(action: str, decision: str = "implicitDeny", **extra: Any) -> dict[str, Any]:
+    return {"EvalActionName": action, "EvalDecision": decision, **extra}
+
+
+class PagedIam:
+    """The reports/ simulation answers completely; the outside one answers with scripted pages."""
+
+    def __init__(self, pages: list[Any], own: FakeIam | None = None) -> None:
+        self.pages = pages
+        self.own = own or FakeIam()
+        self.markers: list[str | None] = []
+
+    def simulate_principal_policy(self, *, PolicySourceArn, ActionNames, ResourceArns,
+                                  Marker=None):  # fmt: skip
+        if "/reports/" in ResourceArns[0]:
+            return self.own.simulate_principal_policy(PolicySourceArn=PolicySourceArn,
+                                                      ActionNames=ActionNames,
+                                                      ResourceArns=ResourceArns)  # fmt: skip
+        self.markers.append(Marker)
+        return self.pages[0 if Marker is None else int(Marker.removeprefix("page-"))]
+
+
+GET, PUT, DELETE = "s3:GetObject", "s3:PutObject", "s3:DeleteObject"
+MORE = {"IsTruncated": True, "Marker": "page-1"}
+LAST = {"IsTruncated": False}
+
+
+@pytest.mark.parametrize("pages, reason", [
+    # A real answer over two pages: the allowance on the second page is a failed proof.
+    ([{"EvaluationResults": [_decision(GET)], **MORE},
+      {"EvaluationResults": [_decision(PUT, "allowed"), _decision(DELETE)], **LAST}], None),
+    ([{"EvaluationResults": [_decision(GET), _decision(PUT)], **LAST}],
+     "no decision for s3:DeleteObject"),
+    ([{"EvaluationResults": [_decision(GET), _decision(PUT), _decision(DELETE, "maybe")]}],
+     "an unknown decision for s3:DeleteObject"),
+    ([{"EvaluationResults": [_decision(GET), _decision(GET), _decision(PUT), _decision(DELETE)]}],
+     "more than one decision for s3:GetObject"),
+    ([{"EvaluationResults": [_decision(GET), _decision(PUT), _decision(DELETE)], **MORE},
+      {"EvaluationResults": [_decision(PUT, "allowed")], **LAST}],
+     "more than one decision for s3:PutObject"),
+    ([{"EvaluationResults": [_decision(GET), _decision(PUT), _decision(DELETE),
+                             _decision("s3:ListBucket")]}], "a decision for an action not requested"),
+    ([{"EvaluationResults": [_decision(GET), _decision(PUT),
+                             _decision(DELETE, EvalResourceName="arn:aws:s3:::other/x")]}],
+     "a decision for s3:DeleteObject on another resource"),
+    ([{"EvaluationResults": [_decision(GET)], "IsTruncated": True}],
+     "a truncated answer without a marker"),
+    ([{"EvaluationResults": [_decision(GET), _decision(PUT), _decision(DELETE)],
+       "IsTruncated": "false"}], "an answer with no clear truncation flag"),
+    ([{"IsTruncated": False}], "an answer without a list of evaluation results"),
+    ([{"EvaluationResults": [None]}], "a malformed evaluation result"),
+])  # fmt: skip
+def test_the_s3_case_needs_one_known_decision_per_action_across_every_page(tmp_path, pages,
+                                                                           reason):  # fmt: skip
+    target = aws_08a.load_target(platform_target(tmp_path))
+    target.document["aws_07b_chain_head"] = write_07b_receipts(tmp_path / "work", "a" * 64)
+    iam = PagedIam(pages)
+    platform = aws_08a.Platform(target, http=None, clients=lambda _s: iam,
+                                prompt=lambda _t: "", aws_07b=tmp_path / "work")  # fmt: skip
+    observed = platform.run(next(c for c in aws_08a.CASES if c.id == "cross-prefix-s3-denial"))
+    assert observed["ok"] is False, observed
+    if reason is None:
+        assert "reason" not in observed
+        assert observed["observed"]["decisions"]["worker-task"]["other"][PUT] == "allowed"
+    else:
+        prefix = "incomplete IAM simulation, worker-task outside reports/"
+        assert observed["reason"] == f"{prefix}: {reason}"
+
+
+def test_the_s3_case_passes_on_a_complete_answer_read_across_its_pages(tmp_path):
+    target = aws_08a.load_target(platform_target(tmp_path))
+    target.document["aws_07b_chain_head"] = write_07b_receipts(tmp_path / "work", "a" * 64)
+    iam = PagedIam([{"EvaluationResults": [_decision(GET)], **MORE},
+                    {"EvaluationResults": [_decision(PUT, "explicitDeny"), _decision(DELETE)],
+                     **LAST}])  # fmt: skip
+    platform = aws_08a.Platform(target, http=None, clients=lambda _s: iam,
+                                prompt=lambda _t: "", aws_07b=tmp_path / "work")  # fmt: skip
+    bucket = platform._receipts()["foundation"]["outputs"]["terraform"]["report_bucket"]
+    # A result may name its resource; the one requested is accepted.
+    iam.pages[0]["EvaluationResults"][0]["EvalResourceName"] = (
+        f"arn:aws:s3:::{bucket}/aws-08a/outside")  # fmt: skip
+    runner = aws_08a.Runner(target, tmp_path / "ledger", out=io.StringIO(), platform=platform)
+    assert runner.run(["cross-prefix-s3-denial"]) == aws_08a.EXIT_OK
+    (record,) = [doc for _, doc, _ in runner.ledger.receipts()]
+    assert record["result"] == "passed", record
+    assert record["observed"]["decisions"]["api-task"]["other"] == {
+        GET: "implicitDeny", PUT: "explicitDeny", DELETE: "implicitDeny"}  # fmt: skip
+    assert iam.markers == [None, "page-1", None, "page-1"]  # both roles, both pages
+
+
+def test_an_endless_simulation_is_refused_after_a_bounded_number_of_pages(tmp_path):
+    target = aws_08a.load_target(platform_target(tmp_path))
+    target.document["aws_07b_chain_head"] = write_07b_receipts(tmp_path / "work", "a" * 64)
+    iam = PagedIam([{"EvaluationResults": [], "IsTruncated": True, "Marker": f"page-{index + 1}"}
+                    for index in range(aws_08a.SIMULATION_PAGES + 5)])  # fmt: skip
+    platform = aws_08a.Platform(target, http=None, clients=lambda _s: iam,
+                                prompt=lambda _t: "", aws_07b=tmp_path / "work")  # fmt: skip
+    runner = aws_08a.Runner(target, tmp_path / "ledger", out=io.StringIO(), platform=platform)
+    assert runner.run(["cross-prefix-s3-denial"]) == aws_08a.EXIT_FAILED
+    (record,) = [doc for _, doc, _ in runner.ledger.receipts()]
+    assert record["result"] == "failed"
+    assert record["reason"] == ("incomplete IAM simulation, worker-task outside reports/: still "
+                                f"truncated after {aws_08a.SIMULATION_PAGES} pages")  # fmt: skip
+    assert len(iam.markers) == aws_08a.SIMULATION_PAGES
+
+
+def test_an_incomplete_reports_answer_is_not_an_allowance(tmp_path):
+    class Partial(FakeIam):
+        def simulate_principal_policy(self, *, PolicySourceArn, ActionNames, ResourceArns):
+            answer = super().simulate_principal_policy(PolicySourceArn=PolicySourceArn,
+                                                       ActionNames=ActionNames,
+                                                       ResourceArns=ResourceArns)  # fmt: skip
+            return {"EvaluationResults": answer["EvaluationResults"][:1]}
+
+    target = aws_08a.load_target(platform_target(tmp_path))
+    target.document["aws_07b_chain_head"] = write_07b_receipts(tmp_path / "work", "a" * 64)
+    platform = aws_08a.Platform(target, http=None, clients=lambda _s: Partial(),
+                                prompt=lambda _t: "", aws_07b=tmp_path / "work")  # fmt: skip
+    observed = platform.run(next(c for c in aws_08a.CASES if c.id == "cross-prefix-s3-denial"))
+    assert observed["ok"] is False
+    assert observed["reason"] == ("incomplete IAM simulation, worker-task under reports/: no "
+                                  "decision for s3:PutObject")  # fmt: skip
