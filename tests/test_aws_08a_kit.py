@@ -7,6 +7,7 @@ socket opens and no credential is read.
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 from pathlib import Path
@@ -573,6 +574,9 @@ LAST = {"IsTruncated": False}
      "no decision for s3:DeleteObject"),
     ([{"EvaluationResults": [_decision(GET), _decision(PUT), _decision(DELETE, "maybe")]}],
      "an unknown decision for s3:DeleteObject"),
+    ([{"EvaluationResults": [_decision(GET), _decision(PUT),
+                             {"EvalActionName": DELETE, "EvalDecision": ["allowed"]}]}],
+     "an unknown decision for s3:DeleteObject"),
     ([{"EvaluationResults": [_decision(GET), _decision(GET), _decision(PUT), _decision(DELETE)]}],
      "more than one decision for s3:GetObject"),
     ([{"EvaluationResults": [_decision(GET), _decision(PUT), _decision(DELETE)], **MORE},
@@ -607,12 +611,17 @@ def test_the_s3_case_needs_one_known_decision_per_action_across_every_page(tmp_p
         assert observed["reason"] == f"{prefix}: {reason}"
 
 
-def test_the_s3_case_passes_on_a_complete_answer_read_across_its_pages(tmp_path):
+@pytest.mark.parametrize("pages", [
+    [{"EvaluationResults": [_decision(GET)], **MORE},
+     {"EvaluationResults": [_decision(PUT, "explicitDeny"), _decision(DELETE)], **LAST}],
+    # Every decision on a truncated page, then an empty last page.
+    [{"EvaluationResults": [_decision(GET), _decision(PUT, "explicitDeny"), _decision(DELETE)],
+      **MORE}, {"EvaluationResults": [], **LAST}],
+])  # fmt: skip
+def test_the_s3_case_passes_on_a_complete_answer_read_across_its_pages(tmp_path, pages):
     target = aws_08a.load_target(platform_target(tmp_path))
     target.document["aws_07b_chain_head"] = write_07b_receipts(tmp_path / "work", "a" * 64)
-    iam = PagedIam([{"EvaluationResults": [_decision(GET)], **MORE},
-                    {"EvaluationResults": [_decision(PUT, "explicitDeny"), _decision(DELETE)],
-                     **LAST}])  # fmt: skip
+    iam = PagedIam(copy.deepcopy(pages))
     platform = aws_08a.Platform(target, http=None, clients=lambda _s: iam,
                                 prompt=lambda _t: "", aws_07b=tmp_path / "work")  # fmt: skip
     bucket = platform._receipts()["foundation"]["outputs"]["terraform"]["report_bucket"]

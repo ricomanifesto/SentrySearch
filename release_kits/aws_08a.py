@@ -808,7 +808,7 @@ def simulated_decisions(iam: Any, role: str, resource: str,
             action, decision = item.get("EvalActionName"), item.get("EvalDecision")
             if action not in actions:
                 raise IncompleteSimulation("a decision for an action not requested")
-            if decision not in SIMULATION_DECISIONS:
+            if not isinstance(decision, str) or decision not in SIMULATION_DECISIONS:
                 raise IncompleteSimulation(f"an unknown decision for {action}")
             if item.get("EvalResourceName", resource) != resource:
                 raise IncompleteSimulation(f"a decision for {action} on another resource")
