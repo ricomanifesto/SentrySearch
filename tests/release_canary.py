@@ -101,6 +101,10 @@ def canary_document(env: CanaryEnvironment, bindings: dict, *, release_id: str) 
     document["environment"]["name"] = ENVIRONMENT
     not_before, expires_at = wall_window()
     document["window"].update(not_before=_iso(not_before), expires_at=_iso(expires_at))
+    # The fixture's risk decision expires seven days after its fixed start date. The
+    # window here follows the wall clock, so the risk expiry does too (seven days past
+    # the window), or every manifest is refused once the fixture date has passed.
+    document["risk"]["expires_at"] = _iso(expires_at + timedelta(days=7))
     document["sources"] = {
         "runtime": bindings["runtime"]["source_revision"],
         "search": bindings["search"]["source_revision"],
@@ -403,9 +407,9 @@ VOLATILE = {"at", "issued_at", "epoch_at", "lock_etag", "prior_sha256", "manifes
             "stable_seconds"}  # fmt: skip
 RELATIVE = ("deadline_at", "token_expires_at")
 # The only fields of a saved manifest and approval that differ between two runs of
-# one release: the release window's wall times, and the approval's own window and
-# its hash of the manifest that carries them.
-MANIFEST_TIMES = (("window", "not_before"), ("window", "expires_at"))
+# one release: the release window's wall times and the risk expiry that follows
+# them, and the approval's own window and its hash of the manifest that carries them.
+MANIFEST_TIMES = (("window", "not_before"), ("window", "expires_at"), ("risk", "expires_at"))
 APPROVAL_TIMES = (("not_before",), ("not_after",), ("manifest_sha256",))
 
 
@@ -914,6 +918,8 @@ def rollback_document(prior: dict, failed: dict, *, release_id: str) -> dict:
     document["release_id"] = release_id
     document["environment"] = copy.deepcopy(failed["environment"])
     document["window"] = copy.deepcopy(failed["window"])
+    # The prior release's own risk decision, as the rollback kit renders it.
+    document["risk"] = copy.deepcopy(prior["risk"])
     document["sources"] = copy.deepcopy(prior["sources"])
     document["images"] = copy.deepcopy(prior["images"])
     document["rollback"] = copy.deepcopy(failed["rollback"])

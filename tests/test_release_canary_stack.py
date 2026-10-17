@@ -154,3 +154,50 @@ def test_a_later_release_from_the_same_images_gets_new_revisions_and_its_own_dea
     definitions.register(again, not_after=LATER)
     assert definitions.specs[revision_of("runtime-proof", 9)][1]["not_after"] == LATER
     assert {arn: spec for arn, spec in definitions.specs.items() if arn in before} == before
+
+
+def test_every_canary_release_is_accepted_whatever_the_date_it_runs(monkeypatch):
+    """The canary takes its window from the wall clock; its risk expiry must follow it,
+    in the first deployment, the upgrade and the rollback alike, and two runs of one
+    release may differ only in the masked wall times."""
+    from datetime import timedelta
+
+    from release.manifest import load_manifest
+    from release_tools.digest import report
+    from tests import release_canary
+    from tests.release_fakes import encode
+
+    env = cast(CanaryEnvironment, SimpleNamespace(pins=report()))
+    binding = {"source_revision": "e" * 40, "index": "sha256:" + "1" * 64,
+               "platform_manifest": "sha256:" + "2" * 64, "provenance_sha256": "3" * 64,
+               "sbom_sha256": "4" * 64, "scan_sha256": "5" * 64}  # fmt: skip
+    bindings = {name: binding for name in ("runtime", "search", "release-tools")}
+    ids = ["7d0c3f6a-2b1e-4c5d-9e8f-0a1b2c3d4e5f", "8e1d4a7b-3c2f-4d6e-8f9a-1b2c3d4e5f6a",
+           "9f2e5b8c-4d3a-4e7f-9a0b-2c3d4e5f6a7b"]  # fmt: skip
+
+    def documents() -> list[dict]:
+        prior = release_canary.canary_document(env, bindings, release_id=ids[0])
+        failed = release_canary.upgrade_document(env, bindings, prior, release_id=ids[1])
+        return [prior, failed, release_canary.rollback_document(prior, failed, release_id=ids[2])]
+
+    def masked(document: dict) -> dict:
+        document = copy.deepcopy(document)
+        for keys in release_canary.MANIFEST_TIMES:
+            document[keys[0]][keys[1]] = "<time>"
+        return document
+
+    first = documents()
+    # The second build runs well past the fixture's own risk expiry, whatever today is.
+    from tests.release_fakes import START
+
+    base = max(datetime.now(UTC), START + timedelta(days=30)).replace(microsecond=0)
+    monkeypatch.setattr(release_canary, "wall_window",
+                        lambda: (base - timedelta(minutes=2), base + timedelta(minutes=120)))  # fmt: skip
+    second = documents()
+    for build in (first, second):
+        for document in build:
+            loaded = load_manifest(encode(document))
+            assert loaded.manifest.risk.expires_at >= loaded.manifest.window.expires_at
+        assert build[2]["risk"] == build[0]["risk"], "the rollback keeps the prior's risk"
+    assert first[0]["risk"]["expires_at"] != second[0]["risk"]["expires_at"]
+    assert [masked(document) for document in first] == [masked(document) for document in second]
