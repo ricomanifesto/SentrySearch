@@ -122,8 +122,9 @@ the distroless base) is scanned with the same tool and databases, and has an
 SBOM and build provenance. Its identities and matches are in the
 [image ledger](image-risk-dispositions.md). It ships no liblzma, and the
 Search-image matches above are neither changed nor accepted by it. Its libsasl2
-and krb5 matches have no fixed version and no disposition yet. Rescan the exact
-bytes at any release decision.
+and krb5 matches have no fixed version; the ledger's October 17 section
+recommends dispositions for the nine that joined after October 7, none accepted.
+Rescan the exact bytes at any release decision.
 
 ## Historical candidate: OS-package minimization
 

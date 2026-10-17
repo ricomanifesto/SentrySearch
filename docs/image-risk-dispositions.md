@@ -141,6 +141,53 @@ rest on (the list under the October 8 rebinding). Every other disposition
 therefore carries over unchanged as an assessment of these images. None is
 accepted, and the 27 retained service and 54 tools matches stay non-additive.
 
+### Fresh scan of the same images (October 17, 2026)
+
+No image was rebuilt. The three local identities above were scanned again from
+their archives (each archive's SHA-256 checked against its recorded binding)
+with Trivy 0.75.0 and a database freshly downloaded from
+`mirror.gcr.io/aquasec/trivy-db:2`, updated `2026-10-16T01:13:54Z`. syft is not
+installed on the scanning host; the SBOMs are Trivy's CycloneDX, as before. No
+severity filter, ignore-unfixed setting or suppression was used.
+
+| Image | Raw matches | Against the database of October 12 |
+| --- | --- | --- |
+| Search | 48: C0/H7/M27/L14/U0 | the same 48 tuples |
+| Release-tools | 63: C0/H1/M32/L30/U0 | the same 63 tuples; Trivy now reports CVE-2026-107161 `fix_deferred` (was `affected`) |
+| Runtime | zero | zero |
+
+**Recommended dispositions for the nine release-tools matches that joined after
+October 7.** These are recommendations for the release owner; none is accepted
+here. They are not the whole of release-tools' open matches. Of the other 54,
+33 share the Search ledger's advisories and stay unaccepted for this image, and
+21 LOW matches of nine advisories from `psql`'s Kerberos and OpenLDAP
+dependencies ([image security](image-security.md)) still need their
+tools-specific review: `libldap2` CVE-2015-3276, CVE-2017-14159, CVE-2017-17740,
+CVE-2020-15719 and CVE-2026-22185, and the four krb5 libraries' CVE-2018-5709,
+CVE-2024-26458, CVE-2024-26461 and CVE-2026-11850.
+
+Evidence, read from the image's archive without running it (the ELF dynamic
+dependencies of all 360 ELF files): `release_tools` reaches PostgreSQL only by
+running `psql` (`release_tools/session.py`), in a constructed environment with
+`PGSSLMODE=verify-full`, `PGGSSENCMODE=disable` and
+`PGREQUIREAUTH=scram-sha-256`, and with no `PGSERVICE`, `PGSERVICEFILE` or
+`PGSYSCONFDIR`. The image's libpq consumers are `psql` and PostgreSQL's
+`isolationtester` (retained from the client package, never run; also a client).
+Only libpq links `libgssapi_krb5`; `libkrb5` is linked only by `libgssapi_krb5`
+and the SPAKE preauthentication plugin; only `libldap` links `libsasl2`. Python's
+native `_ctypes` extension is absent, so `ctypes` cannot load a library. There is no SASL mechanism plugin, Kerberos
+KDC, keytab, `krb5.conf`, `ldap.conf` or `pg_service.conf`.
+
+| Advisory | Matched packages | Recommended | Reason and reopening condition |
+| --- | --- | --- | --- |
+| [CVE-2026-107161](https://security-tracker.debian.org/tracker/CVE-2026-107161) / MEDIUM (Red Hat: Moderate, CVSS 3.1 7.5) | `libsasl2-2=2.1.28+dfsg1-9` | **N** | The overflow is in the DIGEST-MD5 mechanism plugin. Debian ships mechanism plugins in `libsasl2-modules`, which the image does not contain: there is no plugin directory, and `libsasl2.so.2` itself has no DIGEST-MD5 code. libsasl2 is reached only through libldap, which libpq uses only for an LDAP service lookup, which needs a service name the environment never sets. Reopens if a mechanism plugin, `SASL_PATH`, a service file or a service variable is added. Debian marks trixie `<no-dsa>` ("Will be fixed via point release"); sid is fixed in `2.1.28+dfsg1-12`. |
+| [CVE-2026-107708](https://security-tracker.debian.org/tracker/CVE-2026-107708) / MEDIUM | `libgssapi-krb5-2`, `libk5crypto3`, `libkrb5-3`, `libkrb5support0` `=1.21.3-5+deb13u1` | **N** | The faulty function is in the KDC (`src/kdc/kdc_util.c`), which builds `krb5kdc` only; the image carries the client libraries and no KDC. Reopens if a KDC is added. |
+| [CVE-2026-107778](https://security-tracker.debian.org/tracker/CVE-2026-107778) / MEDIUM | the same four packages | **A**, caller boundary established | `krb5_rd_cred` (`rd_cred.c`) is part of `libkrb5`, so the code is retained. It is reached by a GSS acceptor through `gss_accept_sec_context()`, or by a direct caller of that public function. libpq only ever initiates GSS exchanges (it imports `gss_init_sec_context`, not `gss_accept_sec_context`), and under `PGGSSENCMODE=disable` and `PGREQUIREAUTH=scram-sha-256` it starts none: it refuses a GSS authentication request before starting the exchange, and never probes for a credential cache. Nothing else in the image links `libkrb5` or `libgssapi_krb5` but the SPAKE plugin, which libkrb5 loads only for Kerberos preauthentication. Reopens if `psql`'s environment changes, or a keytab, `krb5.conf`, GSS acceptor or any new consumer of `libkrb5` or `libgssapi_krb5` is added. |
+
+These recommendations do not change the counts above: the 27 retained Search
+matches and the release-tools matches stay non-additive and unaccepted until
+the release owner decides.
+
 ## Result and scope
 
 The retained Trivy 0.75.0 report (database updated `2026-10-06T19:11:49Z`)
