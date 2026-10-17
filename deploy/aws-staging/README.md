@@ -189,13 +189,26 @@ key planned from the prior pair's images, a separate approval.
 
 ### Monitoring
 
-`foundation/` renders an alarm only where AWS itself publishes the metric: one
-per service when no task reports ECS service CPU (silence breaches), and one per
-database when free storage drops below 10% of the allocation (missing data
-breaches). The `alerts` output lists those with their producer and missing-data
-behaviour, and every other named alert (worker readiness, backlog age, lease and
-retry exhaustion, phase deadlines, certificate expiry, backup) as unwired with the
-reason: nothing publishes a metric for them yet. Without the optional
+`foundation/` renders an alarm only where a metric has a producer:
+- one per service when no task reports ECS service CPU (silence breaches);
+- one per database when free storage drops below 10% of the allocation (missing
+  data breaches);
+- three from metric filters over the worker's readiness receipts in its log
+  group (one line each: the marker and compact JSON): no ready receipt for ten
+  minutes (`worker-unready`, silence breaches), the Runtime reported unavailable
+  or its access denied in two consecutive five-minute periods
+  (`worker-runtime-unreachable`), and any phase past its deadline
+  (`worker-phase-deadline`). The ready filter counts receipts carrying the marker
+  and one exact phrase; each error filter counts receipts carrying any one of its
+  exact phrases;
+  `tests/test_alarm_inventory.py` checks the patterns against real receipt lines.
+
+The `alerts` output lists those with their producer and missing-data behaviour,
+and every other named alert as unwired with the reason: backlog age, lease and
+retry exhaustion, Runtime and product terminal mismatches and certificate expiry
+need a producer that does not exist yet (each is an image or service change);
+release phase deadlines are held and journaled by the attended controller; RDS
+backups publish no outcome metric. Without the optional
 `notifications` input (an approved recipient and a monthly review threshold, not
 a cap) there is no SNS topic, subscription or budget, and alarms have no actions.
 The topic has no server-side encryption: CloudWatch cannot publish to a topic

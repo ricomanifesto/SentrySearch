@@ -61,3 +61,8 @@ output "endpoint_policies" {
 output "report_bucket_policy" {
   value = local.report_bucket_policy
 }
+
+output "worker_metric_filters" {
+  description = "Each worker-receipt metric filter's pattern, for a platform check of what it matches."
+  value       = { for name, filter in aws_cloudwatch_log_metric_filter.worker : name => filter.pattern }
+}

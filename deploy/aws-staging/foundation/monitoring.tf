@@ -1,5 +1,6 @@
-# Alarm, notification and budget shapes. An alarm exists here only where AWS
-# itself publishes the metric; every other alert the staging requirements name
+# Alarm, notification and budget shapes. An alarm exists here only where a metric
+# has a producer: AWS's own service and database metrics, and metric filters over
+# the worker's readiness receipts. Every other alert the staging requirements name
 # has no producer yet and is listed as unwired instead of rendered as an alarm
 # that could never fire. Nothing here delivers a notification or enforces a
 # budget until a recipient is approved: without one, no topic, subscription or
@@ -23,6 +24,20 @@ variable "notifications" {
 
 locals {
   notify = var.notifications != null
+  # Worker readiness receipts (src/execution/readiness_receipts.py) are one line each
+  # in the worker's log group: the marker, a space and compact JSON. The ready filter
+  # counts lines with the marker and one exact phrase; the error filters count lines
+  # with any one of their exact phrases (only receipts carry "error_code").
+  worker_namespace = "${var.name_prefix}/worker"
+  worker_deadline_codes = [for phase in ["starting", "maintenance", "generation", "evaluation", "idle", "stopped", "drain"] :
+  "${phase}_deadline_exceeded"]
+  worker_receipt_metrics = {
+    WorkerReadyReceipts = "\"SENTRY_WORKER_READINESS\" \"\\\"ready\\\":true\""
+    WorkerRuntimeErrors = join(" ", [for code in ["runtime_unavailable", "runtime_access_denied"] :
+    "?\"\\\"error_code\\\":\\\"${code}\\\"\""])
+    WorkerDeadlineErrors = join(" ", [for code in local.worker_deadline_codes :
+    "?\"\\\"error_code\\\":\\\"${code}\\\"\""])
+  }
   # Each wired alarm's producer, dimensions, threshold and missing-data handling.
   wired_alarms = merge(
     { for name, service in module.names.service_names : "${name}-missing" => {
@@ -39,17 +54,37 @@ locals {
       comparison  = "LessThanThreshold", threshold = local.db_allocated_storage * 1073741824 / 10, period = 300, evaluation_periods = 1
       missing     = "breaching"
     } },
+    {
+      worker-unready = {
+        description = "No worker reported ready for ten minutes: it is down, unready, or its receipts are not arriving."
+        namespace   = local.worker_namespace, metric = "WorkerReadyReceipts", statistic = "Sum", dimensions = {}
+        comparison  = "LessThanThreshold", threshold = 1, period = 300, evaluation_periods = 2
+        missing     = "breaching"
+      }
+      worker-runtime-unreachable = {
+        description = "A worker reported the Runtime unavailable or its access denied in two consecutive five-minute periods."
+        namespace   = local.worker_namespace, metric = "WorkerRuntimeErrors", statistic = "Sum", dimensions = {}
+        comparison  = "GreaterThanOrEqualToThreshold", threshold = 1, period = 300, evaluation_periods = 2
+        missing     = "notBreaching"
+      }
+      worker-phase-deadline = {
+        description = "A worker phase (starting, maintenance, generation, evaluation, idle, stopped, drain) passed its deadline."
+        namespace   = local.worker_namespace, metric = "WorkerDeadlineErrors", statistic = "Sum", dimensions = {}
+        comparison  = "GreaterThanOrEqualToThreshold", threshold = 1, period = 300, evaluation_periods = 1
+        missing     = "notBreaching"
+      }
+    },
   )
   # Alerts the staging requirements name that have no metric producer yet. They
   # stay visible here, not as alarms that could never fire.
   unwired_alerts = {
-    worker-unready     = "Readiness is proven by the attended gate from worker receipts; no metric is published from them."
-    backlog-age        = "Neither Runtime nor Search publishes queue or backlog metrics."
-    lease-exhaustion   = "Runtime records lease expiry in its ledger; no metric is published."
-    retry-exhaustion   = "Runtime records retry exhaustion in its ledger; no metric is published."
-    phase-deadlines    = "Release phase deadlines are enforced by the attended controller and journaled, not published as metrics."
-    certificate-expiry = "Runtime's private certificate lives in a Secrets Manager bundle; nothing publishes its expiry."
-    backup             = "RDS automated backups publish no success or failure metric; restore is a documented operator check."
+    backlog-age             = "The worker samples the product backlog but writes it to no log line or metric; it needs a producer (an image change)."
+    lease-exhaustion        = "Runtime records lease expiry in its ledger and logs nothing about it; it needs a producer."
+    retry-exhaustion        = "Runtime records retry exhaustion in its ledger and logs nothing about it; it needs a producer."
+    terminal-mismatch       = "The worker's reconciler records Runtime and product mismatches in the product database but writes no log line or metric; it needs a producer."
+    release-phase-deadlines = "Release phase deadlines are enforced by the attended controller, which holds and journals; they are not published as metrics."
+    certificate-expiry      = "Runtime's private certificate lives in a Secrets Manager bundle; nothing publishes its expiry."
+    backup                  = "RDS automated backups publish no success or failure metric; restore is a documented operator check."
   }
 }
 
@@ -69,6 +104,19 @@ resource "aws_sns_topic_subscription" "alerts" {
   endpoint  = var.notifications.email
 }
 
+resource "aws_cloudwatch_log_metric_filter" "worker" {
+  for_each       = local.worker_receipt_metrics
+  name           = "${var.name_prefix}-${each.key}"
+  log_group_name = aws_cloudwatch_log_group.this["worker"].name
+  pattern        = each.value
+  metric_transformation {
+    name          = each.key
+    namespace     = local.worker_namespace
+    value         = "1"
+    default_value = "0"
+  }
+}
+
 resource "aws_cloudwatch_metric_alarm" "this" {
   for_each            = local.wired_alarms
   alarm_name          = "${var.name_prefix}-${each.key}"
@@ -85,6 +133,8 @@ resource "aws_cloudwatch_metric_alarm" "this" {
   actions_enabled     = local.notify
   alarm_actions       = local.notify ? [aws_sns_topic.alerts[0].arn] : []
   ok_actions          = local.notify ? [aws_sns_topic.alerts[0].arn] : []
+  # A log-derived metric exists only once its filter does.
+  depends_on = [aws_cloudwatch_log_metric_filter.worker]
 }
 
 resource "aws_budgets_budget" "monthly" {

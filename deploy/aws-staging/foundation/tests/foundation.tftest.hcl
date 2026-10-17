@@ -450,12 +450,17 @@ run "alarms_exist_only_for_published_metrics_and_notify_nobody_without_a_recipie
   assert {
     condition = (length(aws_sns_topic.alerts) == 0 && length(aws_sns_topic_subscription.alerts) == 0 &&
       length(aws_budgets_budget.monthly) == 0 &&
-      toset(keys(aws_cloudwatch_metric_alarm.this)) == toset(["runtime-missing", "api-missing", "worker-missing", "runtime-db-storage", "product-db-storage"]) &&
+      toset(keys(aws_cloudwatch_metric_alarm.this)) == toset(["runtime-missing", "api-missing", "worker-missing", "runtime-db-storage", "product-db-storage",
+      "worker-unready", "worker-runtime-unreachable", "worker-phase-deadline"]) &&
       alltrue([for alarm in aws_cloudwatch_metric_alarm.this :
-        !alarm.actions_enabled && length(alarm.alarm_actions) == 0 && length(alarm.ok_actions) == 0 &&
-        alarm.treat_missing_data == "breaching"
-    ]))
-    error_message = "Without a recipient nothing is delivered or budgeted; every rendered alarm has a real producer and treats silence as a breach."
+        !alarm.actions_enabled && length(alarm.alarm_actions) == 0 && length(alarm.ok_actions) == 0
+      ]) &&
+      # Presence alarms treat silence as a breach; error-count alarms treat it as none.
+      toset([for name, alarm in aws_cloudwatch_metric_alarm.this : name if alarm.treat_missing_data == "breaching"]) == toset([
+      "runtime-missing", "api-missing", "worker-missing", "runtime-db-storage", "product-db-storage", "worker-unready"]) &&
+      alltrue([for name in ["worker-runtime-unreachable", "worker-phase-deadline"] :
+    aws_cloudwatch_metric_alarm.this[name].treat_missing_data == "notBreaching"]))
+    error_message = "Without a recipient nothing is delivered or budgeted; every rendered alarm has a real producer, and silence breaches every presence alarm."
   }
   assert {
     condition = (aws_cloudwatch_metric_alarm.this["worker-missing"].namespace == "AWS/ECS" &&
@@ -472,11 +477,39 @@ run "alarms_exist_only_for_published_metrics_and_notify_nobody_without_a_recipie
   }
   assert {
     condition = (toset([for name, alert in output.alerts : name if !alert.wired]) == toset([
-      "worker-unready", "backlog-age", "lease-exhaustion", "retry-exhaustion", "phase-deadlines", "certificate-expiry", "backup"
-      ]) && alltrue([for name, alert in output.alerts : alert.wired ? (alert.producer != null && alert.missing_data == "breaching") : (
+      "backlog-age", "lease-exhaustion", "retry-exhaustion", "terminal-mismatch", "release-phase-deadlines", "certificate-expiry", "backup"
+      ]) && alltrue([for name, alert in output.alerts : alert.wired ? (alert.producer != null && alert.missing_data != null) : (
         alert.producer == null && length(alert.reason) > 0 && !contains(keys(aws_cloudwatch_metric_alarm.this), name)
     )]))
     error_message = "Every named alert is either a wired alarm with a producer or explicitly unwired with a reason, never an alarm without a producer."
+  }
+}
+
+run "worker_receipts_feed_metric_filters_on_the_worker_log_group" {
+  command = plan
+  assert {
+    condition = (toset(keys(aws_cloudwatch_log_metric_filter.worker)) == toset(["WorkerReadyReceipts", "WorkerRuntimeErrors", "WorkerDeadlineErrors"]) &&
+      alltrue([for name, filter in aws_cloudwatch_log_metric_filter.worker :
+        filter.log_group_name == "/sentry-staging/worker" && filter.name == "sentry-staging-${name}" &&
+        one(filter.metric_transformation).namespace == "sentry-staging/worker" &&
+        one(filter.metric_transformation).name == name &&
+        one(filter.metric_transformation).value == "1" && one(filter.metric_transformation).default_value == "0"
+      ]) &&
+      aws_cloudwatch_log_metric_filter.worker["WorkerReadyReceipts"].pattern == "\"SENTRY_WORKER_READINESS\" \"\\\"ready\\\":true\"" &&
+      aws_cloudwatch_log_metric_filter.worker["WorkerRuntimeErrors"].pattern == "?\"\\\"error_code\\\":\\\"runtime_unavailable\\\"\" ?\"\\\"error_code\\\":\\\"runtime_access_denied\\\"\"" &&
+    aws_cloudwatch_log_metric_filter.worker["WorkerDeadlineErrors"].pattern == "?\"\\\"error_code\\\":\\\"starting_deadline_exceeded\\\"\" ?\"\\\"error_code\\\":\\\"maintenance_deadline_exceeded\\\"\" ?\"\\\"error_code\\\":\\\"generation_deadline_exceeded\\\"\" ?\"\\\"error_code\\\":\\\"evaluation_deadline_exceeded\\\"\" ?\"\\\"error_code\\\":\\\"idle_deadline_exceeded\\\"\" ?\"\\\"error_code\\\":\\\"stopped_deadline_exceeded\\\"\" ?\"\\\"error_code\\\":\\\"drain_deadline_exceeded\\\"\"")
+    error_message = "Three filters count exact phrases of the worker's readiness receipts into the environment's worker namespace."
+  }
+  assert {
+    condition = (aws_cloudwatch_metric_alarm.this["worker-unready"].namespace == "sentry-staging/worker" &&
+      aws_cloudwatch_metric_alarm.this["worker-unready"].metric_name == "WorkerReadyReceipts" &&
+      aws_cloudwatch_metric_alarm.this["worker-unready"].statistic == "Sum" &&
+      aws_cloudwatch_metric_alarm.this["worker-unready"].comparison_operator == "LessThanThreshold" &&
+      aws_cloudwatch_metric_alarm.this["worker-unready"].evaluation_periods == 2 &&
+      aws_cloudwatch_metric_alarm.this["worker-runtime-unreachable"].metric_name == "WorkerRuntimeErrors" &&
+      aws_cloudwatch_metric_alarm.this["worker-runtime-unreachable"].comparison_operator == "GreaterThanOrEqualToThreshold" &&
+    aws_cloudwatch_metric_alarm.this["worker-phase-deadline"].metric_name == "WorkerDeadlineErrors")
+    error_message = "No ready receipt for ten minutes, a Runtime that stays unreachable, or a phase past its deadline raises an alarm."
   }
 }
 
