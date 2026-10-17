@@ -320,6 +320,7 @@ def rehearsal(request):
 
 def test_the_aws_07b_kit_rehearses_every_step_to_held_paused(rehearsal):
     root, env, bound, shim = rehearsal
+    (root / "account").mkdir()
     plan_dir, plan_hash = fx.account_plan(root / "account")
     from release_kits.plan import load_plan
 
