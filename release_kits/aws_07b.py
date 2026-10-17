@@ -373,6 +373,11 @@ class Kit:
         """The newest receipt is the one whose hash the operator was last shown."""
         _, head = self.ledger.head()
         self.started_head = head
+        if head is None and given is not None:
+            raise Refused(
+                "--chain-head names a receipt, but this work directory has none: its history "
+                "is missing or this is the wrong directory"
+            )
         if head is not None and given != head:
             raise Refused("give --chain-head with the hash the last step printed; the newest "
                           "receipt is not the one it names")  # fmt: skip
@@ -772,14 +777,15 @@ class Kit:
             for name in ("manifest", "approval"):
                 if _hash_file(Path(done[name])) != done[f"{name}_file_sha256"]:
                     raise StepFailed(f"the {name} changed after validation")
+            release_id = json.loads(Path(done["manifest"]).read_bytes())["release_id"]
             code, report = self.release_cli(run)
             status_code, summary = self.release_cli(status)
             outputs: dict[str, Any] = {"run_exit": code, "run": report,
                                        "status_exit": status_code, "status": summary}  # fmt: skip
             if code != 0 or report.get("state") != "held_paused":
                 outputs["_held"] = f"release_cli run exited {code}: {report.get('reason')}"
-            elif summary.get("lock") is not None:
-                outputs["_held"] = "the environment lock is still held"
+            elif problem := status_problem(status_code, summary, release_id):
+                outputs["_held"] = problem
             return outputs
 
         return commands, action, ()
@@ -817,11 +823,16 @@ class Kit:
         raw = path.read_bytes()
         document = json.loads(raw)
         _, head = self.ledger.head()
+        if head is None or "init" not in self.receipts():
+            # Never an approved account write tied to no release history.
+            raise Refused("this work directory has no receipts of an initialized AWS-07b "
+                          "chain; restore and teardown run only on one")  # fmt: skip
         if not isinstance(document, dict) or document.get("schema") != schema:
             raise Refused(f"the approval is not a {schema} document")
         if document.get("plan_sha256") != self.plan.plan_sha256:
             raise Refused("the approval is for another plan")
-        if document.get("chain_head_sha256") != head:
+        named = document.get("chain_head_sha256")
+        if not isinstance(named, str) or not re.fullmatch(r"[0-9a-f]{64}", named) or named != head:
             raise Refused("the approval names another receipt chain head")
         if document.get("approved_by") != self.plan.operator:
             raise Refused("the approval is not the operator's")
@@ -1005,6 +1016,30 @@ class Kit:
         pending = [step.id for step in self.steps if step.id not in done]
         self.say(f"Next: {pending[0] if pending else 'nothing; section 8 commands only'}")
         return EXIT_OK
+
+
+def status_problem(code: int, summary: dict[str, Any], release_id: str) -> str | None:
+    """Why a ``release_cli status`` answer does not prove this release ended held_paused
+    with nothing outstanding and the environment lock released; None when it does.
+
+    A refusal, an unparseable answer or a missing field is never read as an absent
+    lock or a finished run.
+    """
+    if code != 0:
+        reason = summary.get("error") or "unparsed output"
+        return f"release_cli status exited {code} ({reason}): nothing about the lock is known"
+    if summary.get("command") != "status" or summary.get("release_id") != release_id:
+        return "release_cli status did not answer for this release"
+    journal = summary.get("journal")
+    if not isinstance(journal, dict) or journal.get("state") != "held_paused":
+        return "the journal does not show held_paused"
+    if journal.get("outstanding") != []:
+        return "the journal still has outstanding intents"
+    if "lock" not in summary:
+        return "release_cli status did not report the lock"
+    if summary["lock"] is not None:
+        return "the environment lock is still held"
+    return None
 
 
 def attached(iam: Any, role: str) -> list[str]:

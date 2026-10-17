@@ -350,12 +350,9 @@ class RollbackKit(Kit):
 
         def action() -> dict[str, Any]:
             code, summary = self.release_cli(status)
-            journal = summary.get("journal") or {}
             problems = []
-            if code or journal.get("state") != "held_paused" or journal.get("outstanding"):
-                problems.append("the rollback journal did not end held_paused with nothing open")
-            if summary.get("lock") is not None:
-                problems.append("the environment lock is still held")
+            if problem := aws_07b.status_problem(code, summary, document["release_id"]):
+                problems.append(problem)
             services = list(environment["services"].values())
             described = ecs.describe_services(cluster=cluster, services=services)["services"]
             revisions = {item["serviceArn"]: item["taskDefinition"] for item in described}

@@ -264,7 +264,11 @@ class FakeKit(aws_07b.Kit):
             return code, json.loads(out.getvalue())
         if args[0] == "run":
             return self.world.get("run_result", (0, {"state": "held_paused", "reason": None}))
-        return 0, {"command": "status", "lock": self.world.get("lock")}
+        if "status_result" in self.world:
+            return self.world["status_result"]
+        release_id = json.loads(Path(args[args.index("--manifest") + 1]).read_text())["release_id"]
+        return 0, {"command": "status", "release_id": release_id, "lock": self.world.get("lock"),
+                   "journal": {"state": "held_paused", "outstanding": [], "reason": None}}  # fmt: skip
 
 
 @pytest.fixture
@@ -611,6 +615,43 @@ def test_a_release_that_holds_is_recorded_held_and_detach_still_runs(setup):
     assert step(setup, kit, "detach", session_path=str(setup["deployer"])) == aws_07b.EXIT_OK
 
 
+def status_like(kit, **changes):
+    document = json.loads(Path(kit.receipts()["validate"]["outputs"]["manifest"]).read_text())
+    found = {"command": "status", "release_id": document["release_id"], "lock": None,
+             "journal": {"state": "held_paused", "outstanding": [], "reason": None}}  # fmt: skip
+    found.update(changes)
+    return found
+
+
+@pytest.mark.parametrize("label", ["aws_unconfirmed", "session_expires_too_soon", "unparsed",
+                                   "no lock field", "another release", "still open",
+                                   "lock held"])  # fmt: skip
+def test_the_run_step_holds_unless_status_proves_the_release_paused_and_unlocked(setup, label):
+    kit = initialized(setup)
+    run_through(setup, kit, "validate")
+    rid = status_like(kit)["release_id"]
+    responses = {
+        "aws_unconfirmed": (4, {"error": "aws_unconfirmed"}),
+        "session_expires_too_soon": (2, {"error": "session_expires_too_soon"}),
+        "unparsed": (0, {"unparsed_output_sha256": "0" * 64}),
+        "no lock field": (0, {k: v for k, v in status_like(kit).items() if k != "lock"}),
+        "another release": (0, status_like(kit, release_id="0" * 8 + rid[8:])),
+        "still open": (0, status_like(kit, journal={"state": "held_paused", "outstanding": [
+            {"action": "RunTask", "subject": "job:x", "sequence": 9}]})),
+        "lock held": (0, status_like(kit, lock={"release_id": rid, "session_id": "s",
+                                                "etag": "e"})),
+    }  # fmt: skip
+    setup["world"]["status_result"] = responses[label]
+    setup["world"][
+        "arn"
+    ] = f"arn:aws:sts::111122223333:assumed-role/sentry-staging-operator/{OPERATOR}"
+    assert step(setup, kit, "run", session_path=str(setup["operator"])) == aws_07b.EXIT_FAILED
+    held, _ = kit.ledger.head()
+    assert held is not None and held["result"] == "held"
+    setup["world"]["arn"] = f"arn:aws:sts::111122223333:assumed-role/admin/{OPERATOR}"
+    assert step(setup, kit, "detach", session_path=str(setup["deployer"])) == aws_07b.EXIT_OK
+
+
 def test_the_operator_steps_need_the_operator_roles_own_session(setup):
     kit = initialized(setup)
     run_through(setup, kit, "attach")
@@ -638,6 +679,20 @@ def test_detach_fails_naming_a_policy_no_step_attached_and_leaves_it(setup):
     assert iam.attached["sentry-staging-operator"] == ["arn:aws:iam::aws:stray"]
     failed, _ = kit.ledger.head()
     assert failed is not None and "arn:aws:iam::aws:stray" in failed["detail"]
+
+
+def test_an_anchor_given_against_missing_history_is_refused(setup):
+    kit = initialized(setup)
+    run_through(setup, kit, "foundation")
+    anchor = head(kit)
+    for path in (setup["tmp"] / "work" / "receipts").iterdir():
+        path.rename(setup["tmp"] / f"kept-{path.name}")
+    setup["typed"].append("custodian")
+    with pytest.raises(aws_07b.Refused, match="history"):
+        kit.run_step("custodian", chain_head=anchor, session_path=str(setup["deployer"]),
+                     custodian=setup["custody"])  # fmt: skip
+    assert setup["typed"] == ["custodian"], "the step asked before refusing"
+    assert kit.ledger.receipts() == []
 
 
 def test_custodian_inputs_must_be_owner_only_and_hold_exactly_the_bundle_keys(setup):
@@ -734,6 +789,19 @@ def section_8_approval(setup, kit, schema, **fields) -> Path:
                                 "chain_head_sha256": head, "approved_by": OPERATOR,
                                 "not_after": "2099-01-01T00:00:00Z", **fields}))  # fmt: skip
     return path
+
+
+def test_restore_and_teardown_refuse_an_empty_or_uninitialized_chain(setup):
+    """An approval prepared against an empty directory must not start a fresh chain."""
+    kit = setup["kit"]()  # no init: the work directory has no receipts
+    restore = section_8_approval(setup, kit, aws_07b.RESTORE_SCHEMA, database="runtime",
+                                 target_identifier="sentry-staging-runtime-db-restore-x",
+                                 restore_time="2026-10-17T00:00:00Z")  # fmt: skip
+    teardown = section_8_approval(setup, kit, aws_07b.TEARDOWN_SCHEMA, remove=[])
+    for command, approval in ((kit.restore, restore), (kit.teardown, teardown)):
+        with pytest.raises(aws_07b.Refused, match="no receipts"):
+            command(session_path=str(setup["deployer"]), approval_path=approval)
+    assert kit.ledger.receipts() == [] and not (setup["tmp"] / "work" / "terraform").exists()
 
 
 def test_restore_and_teardown_refuse_without_their_own_bound_approval(setup):
