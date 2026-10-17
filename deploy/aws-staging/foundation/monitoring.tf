@@ -20,6 +20,10 @@ variable "notifications" {
     )
     error_message = "Name one approved recipient address and a whole-dollar monthly review threshold between 1 and 10000."
   }
+  validation {
+    condition     = !endswith(var.name_prefix, "-production") || var.notifications != null
+    error_message = "A production environment names its alert recipient and monthly budget."
+  }
 }
 
 locals {

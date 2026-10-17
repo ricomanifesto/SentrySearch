@@ -67,11 +67,11 @@ resource "aws_db_instance" "this" {
   network_type                        = "IPV4"
   port                                = 5432
   publicly_accessible                 = false
-  multi_az                            = false
+  multi_az                            = var.multi_az
   iam_database_authentication_enabled = false
   performance_insights_enabled        = false
   monitoring_interval                 = 0
-  backup_retention_period             = 7
+  backup_retention_period             = var.backup_retention_days
   copy_tags_to_snapshot               = true
   delete_automated_backups            = false
   deletion_protection                 = true
@@ -147,4 +147,16 @@ resource "aws_s3_bucket_policy" "reports" {
   bucket     = aws_s3_bucket.reports.bucket
   policy     = jsonencode(local.report_bucket_policy)
   depends_on = [aws_s3_bucket_public_access_block.reports]
+}
+
+# A manual snapshot of both databases before a release runs, named by its release key.
+# Kept until a retention decision: a rollback names these as the prior pair's backups.
+resource "aws_db_snapshot" "pre_release" {
+  for_each = { for pair in setproduct(keys(module.names.db_identifiers), sort(tolist(var.pre_release_snapshots))) :
+  "${pair[0]}-${pair[1]}" => { database = pair[0], key = pair[1] } }
+  db_instance_identifier = aws_db_instance.this[each.value.database].identifier
+  db_snapshot_identifier = "${module.names.db_identifiers[each.value.database]}-pre-${each.value.key}"
+  lifecycle {
+    prevent_destroy = true
+  }
 }

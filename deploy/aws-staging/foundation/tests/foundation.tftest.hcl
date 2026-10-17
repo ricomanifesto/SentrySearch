@@ -546,3 +546,66 @@ run "reject_a_budget_without_a_threshold" {
   }
   expect_failures = [var.notifications]
 }
+
+run "a_production_environment_is_protected_backed_up_snapshotted_and_watched" {
+  command = plan
+  variables {
+    name_prefix           = "sentry-production"
+    multi_az              = true
+    backup_retention_days = 14
+    pre_release_snapshots = ["r0b9f7c1e"]
+    notifications         = { email = "operator@example.test", monthly_budget_usd = 400 }
+  }
+  assert {
+    condition = alltrue([for db in aws_db_instance.this :
+      db.multi_az && db.backup_retention_period == 14 && db.deletion_protection && !db.skip_final_snapshot &&
+      db.final_snapshot_identifier == "${db.identifier}-final" && !db.delete_automated_backups
+    ])
+    error_message = "Production databases run Multi-AZ, keep 14 days of backups, are deletion-protected and leave a final snapshot."
+  }
+  assert {
+    condition = (toset(keys(aws_db_snapshot.pre_release)) == toset(["runtime-r0b9f7c1e", "product-r0b9f7c1e"]) &&
+      aws_db_snapshot.pre_release["runtime-r0b9f7c1e"].db_snapshot_identifier == "sentry-production-runtime-db-pre-r0b9f7c1e" &&
+    aws_db_snapshot.pre_release["product-r0b9f7c1e"].db_instance_identifier == "sentry-production-product-db")
+    error_message = "Each named release gets a manual snapshot of both databases, named by its release key."
+  }
+  assert {
+    condition = (length(aws_budgets_budget.monthly) == 1 && aws_budgets_budget.monthly[0].limit_amount == "400" &&
+      aws_sns_topic_subscription.alerts[0].endpoint == "operator@example.test" &&
+    alltrue([for alarm in aws_cloudwatch_metric_alarm.this : alarm.actions_enabled]))
+    error_message = "A production environment's alarms and budget reach its named recipient."
+  }
+}
+
+run "staging_keeps_single_az_seven_day_backups_and_no_snapshots" {
+  command = plan
+  assert {
+    condition = (alltrue([for db in aws_db_instance.this : !db.multi_az && db.backup_retention_period == 7]) &&
+    length(aws_db_snapshot.pre_release) == 0)
+    error_message = "Staging stays single-AZ with seven days of backups unless asked otherwise."
+  }
+}
+
+run "reject_production_without_a_recipient" {
+  command = plan
+  variables {
+    name_prefix           = "sentry-production"
+    backup_retention_days = 14
+  }
+  expect_failures = [var.notifications]
+}
+
+run "reject_production_with_short_backups" {
+  command = plan
+  variables {
+    name_prefix   = "sentry-production"
+    notifications = { email = "operator@example.test", monthly_budget_usd = 400 }
+  }
+  expect_failures = [var.backup_retention_days]
+}
+
+run "reject_a_snapshot_key_that_is_not_a_release_key" {
+  command = plan
+  variables { pre_release_snapshots = ["latest"] }
+  expect_failures = [var.pre_release_snapshots]
+}

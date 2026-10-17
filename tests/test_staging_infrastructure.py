@@ -29,6 +29,11 @@ REVIEWED_DEFAULTS = {
     "notifications",
     "observer_security_group_ids",
     "operator_trust",
+    # Production inputs whose defaults are the staging posture: single-AZ, seven days
+    # of backups, no pre-release snapshots. A production prefix requires more.
+    "multi_az",
+    "backup_retention_days",
+    "pre_release_snapshots",
 }
 # Resource types (regular expressions) with no place in the private staging roots.
 FORBIDDEN_RESOURCES = (

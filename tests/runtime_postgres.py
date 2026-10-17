@@ -813,3 +813,31 @@ def test_accepted_intent_survives_outage_and_drains_during_admission_pause(
     assert service.get_report(report_id, include_content=False)["status"] == "completed"
     assert service.get_pending_runtime_dispatches() == []
     assert service.get_pending_runtime_evaluations() == [(report_id, "owner")]
+
+
+def test_the_cutover_drain_counts_only_running_legacy_writers(reports):
+    """release_kits.cutover's drain query, against PostgreSQL (AWS-08c)."""
+    from datetime import UTC, datetime, timedelta
+
+    from release_kits.cutover import drain_statement
+
+    service, _objects = reports
+    legacy_generating, runtime_generating = str(uuid.uuid4()), str(uuid.uuid4())
+    service.create_pending_report(legacy_generating, "Legacy", "owner")
+    service.create_pending_report(runtime_generating, "Runtime", "owner", runtime_dispatch=True)
+    finished = str(uuid.uuid4())
+    evaluating = str(uuid.uuid4())
+    expired = str(uuid.uuid4())
+    abandoned = str(uuid.uuid4())
+    now = datetime.now(UTC)
+    with service.db_manager.get_session() as session:
+        session.add(Report(id=finished, tool_name="Done", status="completed"))
+        session.add(Report(id=abandoned, tool_name="Abandoned", status="generating",
+                           created_at=now - timedelta(hours=3)))  # fmt: skip
+        session.add(Report(id=evaluating, tool_name="Evaluating", status="completed",
+                           evaluation_lease_expires_at=now + timedelta(minutes=5)))  # fmt: skip
+        session.add(Report(id=expired, tool_name="Expired lease", status="completed",
+                           evaluation_lease_expires_at=now - timedelta(minutes=5)))  # fmt: skip
+    with service.db_manager.get_session() as session:
+        counts = dict(session.execute(drain_statement()).mappings().one())
+    assert counts == {"legacy_generating": 1, "legacy_evaluating": 1, "legacy_abandoned": 1}

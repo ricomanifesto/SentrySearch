@@ -63,7 +63,11 @@ from src.api.contracts import (
     SortDirection,
 )
 from src.domain.model_routes import generation_fallback_state
-from src.execution.config import ExecutionMode, execution_mode_from_environment
+from src.execution.config import (
+    ExecutionMode,
+    execution_mode_for,
+    execution_mode_from_environment,
+)
 from src.domain.execution import GenerationLease, GenerationLeaseLost
 from src.domain.reports import (
     AnalystDisposition,
@@ -89,11 +93,17 @@ from src.domain.reports import (
 logger = logging.getLogger(__name__)
 
 
-def require_execution_admission() -> ExecutionMode:
-    """Fail before reserving work; configuration errors never select legacy work."""
+def require_execution_admission(identity: str | None = None) -> ExecutionMode:
+    """Fail before reserving work; configuration errors never select legacy work.
+
+    With an identity (new reports), an explicit runtime admission scope may admit
+    that identity to the runtime; everything else keeps the explicit mode.
+    """
 
     try:
-        mode = execution_mode_from_environment()
+        mode = (
+            execution_mode_from_environment() if identity is None else execution_mode_for(identity)
+        )
     except ValueError:
         logger.error("Execution admission configuration is invalid")
         raise HTTPException(status_code=503, detail="New work is unavailable") from None
@@ -1224,7 +1234,7 @@ async def create_report(
         raise HTTPException(
             status_code=422, detail="Report target unavailable under content policy"
         ) from error
-    mode = require_execution_admission()
+    mode = require_execution_admission(user.id)
     try:
         report_id = str(uuid.uuid4())
         if mode == "runtime":

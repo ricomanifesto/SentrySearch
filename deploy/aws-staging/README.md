@@ -10,6 +10,14 @@ against that same mocked provider, because a catalog transition needs state
 carried from one run to the next; no test configures a real provider. A green run is not IAM evaluation,
 an account-specific plan, a reachability proof or deployment approval.
 
+The roots take a `name_prefix` ending in `-staging` or `-production`. A production
+prefix requires an alert recipient and monthly budget (`notifications`) and at
+least 14 days of backups (`backup_retention_days`, 7 by default); `multi_az`
+(off by default) runs both databases with a standby, and `pre_release_snapshots`
+takes a retained manual snapshot of both databases for each named release key
+before that release runs (a rollback names them as its backups). Production has no
+lifetime: the seven-day teardown review is a staging procedure.
+
 ## Roots and ownership
 
 | Directory | State | Owns |

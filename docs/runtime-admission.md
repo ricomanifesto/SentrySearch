@@ -30,6 +30,23 @@ Worker configuration is separate: workers may continue dispatch, reconciliation,
 generation, and evaluation of accepted work while API admission is paused.
 Use the worker supervisor's SIGTERM drain when execution itself must stop.
 
+### Runtime admission scope
+
+An explicit scope narrows the change for a cutover: `SENTRYSEARCH_RUNTIME_SCOPE`
+lists the identities (sorted lowercase user UUIDs, comma-separated) whose new
+reports are admitted to the runtime, and `SENTRYSEARCH_RUNTIME_SCOPE_SHA256` is
+the SHA-256 of exactly that text. Every other identity keeps the explicit mode.
+A scope requires an explicit `legacy` or `paused` mode and a valid runtime
+endpoint (the legacy rule against runtime endpoint settings is lifted only when a
+scope is set); anything else, including a list out of canonical order or a hash
+that does not match, fails closed with 503 for everyone. Without the two settings
+nothing changes. Removing them returns every identity to the explicit mode and
+leaves admitted work with the runtime; under `legacy` the runtime endpoint
+settings must go too, or legacy admission refuses them. Evaluation retries are
+not scoped: they follow the explicit mode, so under `paused` they return 503 for
+everyone. The cutover kit records each scope change
+(`deploy/aws-staging/aws-08c/README.md`).
+
 The API chooses routing from explicit mode only for **new reports**. Durable
 dispatch ownership governs existing runtime-managed evaluation retries, including
 when the API has explicit legacy admission and no runtime URL. Runtime admission

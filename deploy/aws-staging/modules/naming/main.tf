@@ -24,10 +24,10 @@ variable "region" {
 
 variable "name_prefix" {
   type        = string
-  description = "Short environment prefix ending in -staging. Its length keeps release-scoped IAM role names within 64 characters."
+  description = "Short environment prefix ending in -staging or -production. Its length keeps release-scoped IAM role names within 64 characters."
   validation {
-    condition     = can(regex("^[a-z][a-z0-9]*(-[a-z0-9]+)*-staging$", var.name_prefix)) && length(var.name_prefix) <= 28
-    error_message = "Use at most 28 lowercase letters, digits and single hyphens, ending in -staging."
+    condition     = can(regex("^[a-z][a-z0-9]*(-[a-z0-9]+)*-(staging|production)$", var.name_prefix)) && length(var.name_prefix) <= 28
+    error_message = "Use at most 28 lowercase letters, digits and single hyphens, ending in -staging or -production."
   }
 }
 

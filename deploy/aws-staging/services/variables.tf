@@ -18,10 +18,10 @@ variable "region" {
 
 variable "name_prefix" {
   type        = string
-  description = "Environment prefix shared by every staging root; at most 28 characters and ending in -staging."
+  description = "Environment prefix shared by every staging root; at most 28 characters and ending in -staging or -production."
   validation {
-    condition     = can(regex("^[a-z][a-z0-9]*(-[a-z0-9]+)*-staging$", var.name_prefix)) && length(var.name_prefix) <= 28
-    error_message = "Use at most 28 lowercase letters, digits and single hyphens, ending in -staging."
+    condition     = can(regex("^[a-z][a-z0-9]*(-[a-z0-9]+)*-(staging|production)$", var.name_prefix)) && length(var.name_prefix) <= 28
+    error_message = "Use at most 28 lowercase letters, digits and single hyphens, ending in -staging or -production."
   }
 }
 

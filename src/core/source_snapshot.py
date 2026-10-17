@@ -13,6 +13,8 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 
+from src.execution import provider_canary
+
 MAX_SNAPSHOT_SOURCES = 12
 MAX_SNAPSHOT_BYTES = 1_048_576
 MAX_SNAPSHOT_TEXT = 12_000
@@ -129,6 +131,8 @@ def capture_source_snapshot(
     captured_at = (now or datetime.now(UTC)).isoformat()
     owned_client = client is None
     active_client = client or httpx.Client(
+        # A real-provider canary bounds which sources and how many (AWS-08b).
+        transport=provider_canary.transport_for("sources"),
         follow_redirects=False,
         timeout=httpx.Timeout(6.0, connect=2.0),
         headers={

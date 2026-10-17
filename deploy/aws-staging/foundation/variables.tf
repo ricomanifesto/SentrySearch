@@ -18,10 +18,10 @@ variable "region" {
 
 variable "name_prefix" {
   type        = string
-  description = "Environment prefix shared by every staging root; at most 28 characters and ending in -staging."
+  description = "Environment prefix shared by every staging root; at most 28 characters and ending in -staging or -production."
   validation {
-    condition     = can(regex("^[a-z][a-z0-9]*(-[a-z0-9]+)*-staging$", var.name_prefix)) && length(var.name_prefix) <= 28
-    error_message = "Use at most 28 lowercase letters, digits and single hyphens, ending in -staging."
+    condition     = can(regex("^[a-z][a-z0-9]*(-[a-z0-9]+)*-(staging|production)$", var.name_prefix)) && length(var.name_prefix) <= 28
+    error_message = "Use at most 28 lowercase letters, digits and single hyphens, ending in -staging or -production."
   }
 }
 
@@ -93,5 +93,32 @@ variable "report_retention_days" {
   validation {
     condition     = var.report_retention_days >= 1 && var.report_retention_days <= 365 && floor(var.report_retention_days) == var.report_retention_days
     error_message = "Use a whole number of days between 1 and 365."
+  }
+}
+
+variable "multi_az" {
+  type        = bool
+  default     = false
+  description = "Run both databases Multi-AZ (a standby in the second zone). Off for staging; an option for production."
+}
+
+variable "backup_retention_days" {
+  type        = number
+  default     = 7
+  description = "Days of automated backups and point-in-time recovery. A production environment keeps at least 14."
+  validation {
+    condition = (var.backup_retention_days == floor(var.backup_retention_days) && var.backup_retention_days >= 7 &&
+    var.backup_retention_days <= 35 && (!endswith(var.name_prefix, "-production") || var.backup_retention_days >= 14))
+    error_message = "Keep 7 to 35 whole days of backups, and at least 14 for a production environment."
+  }
+}
+
+variable "pre_release_snapshots" {
+  type        = set(string)
+  default     = []
+  description = "Release keys (r plus eight hex digits) to take a manual snapshot of both databases for, before that release runs. Each is kept until a retention decision; a rollback names them as its backups."
+  validation {
+    condition     = alltrue([for key in var.pre_release_snapshots : can(regex("^r[0-9a-f]{8}$", key))])
+    error_message = "Name each pre-release snapshot by its release key: r plus the first eight hex digits of the release UUID."
   }
 }

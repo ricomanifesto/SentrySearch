@@ -62,6 +62,11 @@ output "report_bucket_policy" {
   value = local.report_bucket_policy
 }
 
+output "pre_release_snapshot_arns" {
+  description = "Each pre-release snapshot by database and release key, for a rollback's backups."
+  value       = { for name, snapshot in aws_db_snapshot.pre_release : name => snapshot.db_snapshot_arn }
+}
+
 output "worker_metric_filters" {
   description = "Each worker-receipt metric filter's pattern, for a platform check of what it matches."
   value       = { for name, filter in aws_cloudwatch_log_metric_filter.worker : name => filter.pattern }

@@ -28,6 +28,7 @@ from src.domain.model_routes import (
     ModelRoutePurpose,
 )
 from src.domain.reports import GenerationErrorCode
+from src.execution import provider_canary
 
 EMPTY_RESPONSE_RETRIES = 3
 EMPTY_RESPONSE_RETRY_DELAY = 1.5
@@ -214,7 +215,8 @@ class ModelClient:
             base_url or os.getenv(OPENROUTER_BASE_URL_ENV_VAR, DEFAULT_OPENROUTER_BASE_URL)
         ).rstrip("/")
         self.timeout = timeout
-        self.transport = transport
+        # A real-provider canary bounds what this process may send (AWS-08b).
+        self.transport = transport or provider_canary.transport_for("openrouter")
         self._api_key = key
         self._route_lock = Lock()
         self._route_observations: list[ModelRouteObservation] = []
@@ -528,6 +530,9 @@ class ModelClient:
                     json=request,
                     headers=self._headers(),
                 )
+        except provider_canary.CanaryCapReached as error:
+            # Never retried: the canary manifest does not allow this request.
+            raise ModelRequestRejectedError("Provider canary cap reached") from error
         except httpx.TimeoutException as error:
             raise ModelTimeoutError("OpenRouter request timed out") from error
         except httpx.RequestError as error:

@@ -18,8 +18,8 @@ variable "account_id" {
 variable "name_prefix" {
   type = string
   validation {
-    condition     = can(regex("^[a-z][a-z0-9-]{1,29}-staging$", var.name_prefix))
-    error_message = "Use a short lowercase prefix ending in -staging."
+    condition     = can(regex("^[a-z][a-z0-9-]{1,29}-(staging|production)$", var.name_prefix)) && length(var.name_prefix) <= 38
+    error_message = "Use a lowercase prefix of at most 38 characters ending in -staging or -production."
   }
 }
 

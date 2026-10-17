@@ -104,9 +104,9 @@ run "reject_short_account" {
   expect_failures = [var.account_id]
 }
 
-run "reject_non_staging_prefix" {
+run "reject_a_prefix_that_names_no_environment_kind" {
   command = plan
-  variables { name_prefix = "sentry-production" }
+  variables { name_prefix = "sentry-prod" }
   expect_failures = [var.name_prefix]
 }
 
