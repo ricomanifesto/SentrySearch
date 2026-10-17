@@ -10,7 +10,8 @@ and a ``decisions.json`` of the environment values someone chose, and writes:
   identities filled in and every later value marked ``TBD(...)``;
 - ``account-plan.json`` and ``account-plan.md``: the inspection checklist with
   each item met, unmet or unknown, the price table refreshed from the bundle's
-  price records, the inputs still pending, and one hash over the plan.
+  price records, the inputs still pending, and one hash over the plan (its inputs,
+  skeleton, bundle and decisions hashes, and the checklist).
 
     python -m dev.assemble_account_plan verify   --bundle <dir>
     python -m dev.assemble_account_plan draft    --bundle <dir> --out decisions.json
@@ -709,9 +710,11 @@ def assemble(bundle: Bundle, decisions: dict[str, Any]) -> dict[str, Any]:
     items = checklist(bundle, decisions, prices)
     days = decisions.get("lifetime_days", 7)
     refreshed = prices["monthly_refreshed"]
+    # The checklist is hashed too: a kit that runs only on an all-met inspection
+    # must not be talked past it by an edited status.
     hashed = {"inputs": inputs, "manifest_skeleton": skeleton,
               "bundle_manifest_sha256": bundle.manifest_sha256,
-              "decisions_sha256": sha256(canonical(decisions))}  # fmt: skip
+              "decisions_sha256": sha256(canonical(decisions)), "checklist": items}  # fmt: skip
     return {
         "plan_sha256": sha256(canonical(hashed)),
         "bundle": {"manifest_sha256": bundle.manifest_sha256, "account_id": bundle.account_id,

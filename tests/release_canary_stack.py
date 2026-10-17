@@ -756,7 +756,7 @@ class CanaryLogs:
                        end_time_ms: int, next_token: str | None, limit: int) -> dict:  # fmt: skip
         self.calls.append({"log_stream": log_stream, "next_token": next_token})
         task = next(
-            (item for item in self.ecs.tasks.values() if item.group == "service:worker"
+            (item for item in self.ecs.tasks.values() if item.group == self.ecs.worker_group()
              and log_stream == f"worker/{self.release_id}/app/" + item.arn.rsplit("/", 1)[1]),
             None,
         )  # fmt: skip

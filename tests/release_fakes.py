@@ -472,6 +472,8 @@ class FakeTask:
 class FakeService:
     name: str
     task_definition: str
+    # The ECS service name (the ARN's last segment); ECS groups its tasks by it.
+    ecs_name: str = ""
     desired: int = 0
     deployments: list[dict] = field(default_factory=list)
     extra_tasks: int = 0
@@ -479,6 +481,10 @@ class FakeService:
     replace_after: float | None = None
     linger_old: bool = False
     settings: dict = field(default_factory=lambda: copy.deepcopy(TERRAFORM_SERVICE_SETTINGS))
+
+    @property
+    def group(self) -> str:
+        return f"service:{self.ecs_name or self.name}"
 
 
 class FakeEcs:
@@ -501,12 +507,16 @@ class FakeEcs:
         self.counter = 0
 
     # Test configuration -------------------------------------------------
+    def worker_group(self) -> str:
+        return next(s.group for s in self.services.values() if s.name == "worker")
+
     def configure(self, document: dict, *, running_prior: bool = False) -> None:
         images = document["images"]
         self.digests = {name: images[name]["arm64_digest"] for name in images}
         for name, arn in document["environment"]["services"].items():
             candidate = document["services"][name]["task_definition"]
-            service = FakeService(name=name, task_definition=candidate)
+            service = FakeService(name=name, task_definition=candidate,
+                                  ecs_name=arn.rsplit("/", 1)[1])  # fmt: skip
             self.services[arn] = service
             if running_prior:
                 prior = document["rollback"]["services"][name]
@@ -518,7 +528,7 @@ class FakeEcs:
                     for key in document["rollback"]["images"]
                 }
                 self._task(
-                    prior["task_definition"], deployment["id"], f"service:{name}",
+                    prior["task_definition"], deployment["id"], service.group,
                     [(c["name"], prior_digests[c["image"]]) for c in prior["containers"]],
                 )  # fmt: skip
         observers = [check for check in document["operational_checks"] if "task" in check]
@@ -773,7 +783,7 @@ class FakeEcs:
         primary["desiredCount"] = service.desired
         if service.desired == 0:
             for task in self.tasks.values():
-                if task.group == f"service:{service.name}" and task.stopped_at is None:
+                if task.group == service.group and task.stopped_at is None:
                     task.stopped_at = self.clock.now() + timedelta(seconds=10)
                     task.stop_code = "ServiceSchedulerInitiated"
         response = {"service": self._service(request["service"])}
@@ -784,7 +794,7 @@ class FakeEcs:
         now = self.clock.now()
         for service in self.services.values():
             primary = next((d for d in service.deployments if d["status"] == "PRIMARY"), None)
-            group = f"service:{service.name}"
+            group = service.group
             live = [
                 t for t in self.tasks.values() if t.group == group and self._status(t) != "STOPPED"
             ]
@@ -821,7 +831,7 @@ class FakeEcs:
     def _service(self, arn: str) -> dict:
         self._converge()
         service = self.services[arn]
-        group = f"service:{service.name}"
+        group = service.group
         live = [self._describe(t) for t in self.tasks.values() if t.group == group]
         running = [t for t in live if t["lastStatus"] == "RUNNING"]
         pending = [t for t in live if t["lastStatus"] == "PENDING"]
@@ -918,7 +928,10 @@ class FakeEvidence:
         """The address a fresh DNS lookup would return: the service's running task."""
         if target in self.dns_peers:
             return self.dns_peers[target]
-        running = self.ecs.list_tasks(CLUSTER, service_name=target)
+        # ECS lists a service's tasks by the service's own name, not its role.
+        name = next((service.ecs_name or service.name for service in self.ecs.services.values()
+                     if service.name == target), target)  # fmt: skip
+        running = self.ecs.list_tasks(CLUSTER, service_name=name)
         if len(running) != 1:
             return None
         details = self.ecs.attachments.get(running[0], [{}])[0].get("details", [])
@@ -1053,7 +1066,7 @@ class FakeLogs:
             (
                 item
                 for item in self.ecs.tasks.values()
-                if item.group == "service:worker"
+                if item.group == self.ecs.worker_group()
                 and log_stream == f"worker/{self.release_id}/app/" + item.arn.rsplit("/", 1)[1]
             ),
             None,

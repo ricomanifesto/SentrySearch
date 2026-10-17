@@ -189,6 +189,11 @@ class FakeAws:
         if "startedBy" in filters and filters != {"startedBy"}:
             raise ServiceError("InvalidParameterException", 400)
         assert params["cluster"] == self.ecs_cluster
+        if "serviceName" in params and params["serviceName"] not in {
+            service.ecs_name or service.name for service in self.ecs.services.values()
+        }:
+            # ECS answers an unknown service name with an error, never an empty list.
+            raise ServiceError("ServiceNotFoundException", 400)
         self.ecs._converge()
         wanted = params.get("desiredStatus", "RUNNING")
         arns = [
