@@ -111,6 +111,8 @@ decision until someone confirms it.
 | `operator`, `operator_trust` | the release operator and the principal that issues the operator role's sessions; optional |
 | `notifications` | alert recipient and whole-dollar monthly review threshold; optional |
 | `lifetime_days` | how long the environment is planned to live; 7 if omitted |
+| `log_gb_month` | assumed monthly log volume in GB for the cost model: a number or a `[low, high]` pair; `[1, 10]` if omitted |
+| `lifetime_crosses_month_boundary` | whether the run crosses into another calendar month (one more hosted-zone month); unknown if omitted, and then both figures are shown |
 
 `assemble` applies the roots' own input rules to those values, then writes into
 an empty directory:

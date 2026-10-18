@@ -80,8 +80,29 @@ ESTIMATE = {
     "rds_storage_gb_month": 0.115,
     "secret_month": 0.40,
 }
-# Lines the bundle does not price: CloudWatch alarms and logs, and the small rest.
-UNPRICED_MONTHLY = (0.50 + 1.0, 5.50 + 3.0)
+# Lines the bundle does not price, modeled from public rates read on SUPPLEMENT_DATE.
+# The counts are what the foundation renders (its mocked-plan assertions pin them).
+SUPPLEMENT_DATE = "2026-10-17"
+ALARM_COUNT, CUSTOM_METRIC_COUNT, DISCOVERY_SERVICES = 8, 3, 2
+ALARM_MONTH, CUSTOM_METRIC_MONTH = 0.10, 0.30
+LOG_INGESTED_GB, LOG_STORED_GB_MONTH, LOG_RETENTION_DAYS = 0.50, 0.03, 14
+HOSTED_ZONE_MONTH, DISCOVERY_SERVICE_MONTH = 0.50, 0.10
+RDS_MANAGED_SECRET_MONTH = 0.40  # each database's RDS-managed administrator secret
+LOG_GB_MONTH = (1.0, 10.0)  # assumed, not observed; decisions.json may choose another
+LOG_GB_MONTH_MAX = 100000
+# Usage the model cannot price without assumptions nobody has made. Not zero.
+UNQUANTIFIED = (
+    "ECR image storage",
+    "S3 report bytes, requests and object versions",
+    "SNS notification delivery",
+    "API calls to CloudWatch, Secrets Manager, ECS and ECR",
+    "VPC endpoint data processing",
+    "cross-zone data transfer",
+    "RDS CPU credits",
+    "backups and snapshots beyond the free allowance",
+    "short-lived jobs and observers",
+    "retention after the run",
+)
 # Proposed when nothing was chosen; each is checked against the account's VPCs.
 CIDR_CANDIDATES = ("10.64.0.0/20", "10.96.0.0/20", "172.24.0.0/20", "192.168.64.0/20")
 
@@ -201,6 +222,7 @@ DECISION_KEYS = {
     "account_id", "account_confirmed_by", "region", "name_prefix", "availability_zones",
     "vpc_cidr", "private_dns_namespace", "postgres_engine_version", "operator",
     "operator_trust", "notifications", "lifetime_days", "basis",
+    "log_gb_month", "lifetime_crosses_month_boundary",
 }  # fmt: skip
 NAMESPACE = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+")
 PRIVATE = [ipaddress.ip_network(net) for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
@@ -289,7 +311,32 @@ def check_decisions(decisions: Any) -> dict[str, Any]:
     days = decisions.get("lifetime_days", 7)
     _require(isinstance(days, int) and not isinstance(days, bool) and 1 <= days <= 90,
              "lifetime_days is 1 to 90")  # fmt: skip
+    _require(log_volume(decisions) is not None,
+             f"log_gb_month is a number of GB, or a [low, high] pair, above 0 and at most "
+             f"{LOG_GB_MONTH_MAX}")  # fmt: skip
+    crosses = decisions.get("lifetime_crosses_month_boundary")
+    _require(crosses is None or isinstance(crosses, bool),
+             "lifetime_crosses_month_boundary is true, false or null (unknown)")  # fmt: skip
+    # A run longer than the longest month always crosses into another one.
+    _require(not (crosses is False and days > 31),
+             "lifetime_crosses_month_boundary cannot be false for a run over 31 days")  # fmt: skip
     return decisions
+
+
+def _gb(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if 0 < value <= LOG_GB_MONTH_MAX else None
+
+
+def log_volume(decisions: dict[str, Any]) -> tuple[float, float] | None:
+    """The assumed monthly log volume: the default range, one number, or a pair."""
+    value = decisions.get("log_gb_month", list(LOG_GB_MONTH))
+    if isinstance(value, list) and len(value) == 2:
+        low, high = _gb(value[0]), _gb(value[1])
+        return (low, high) if low is not None and high is not None and low <= high else None
+    single = _gb(value)
+    return (single, single) if single is not None else None
 
 
 # What the bundle says ----------------------------------------------------------------
@@ -530,7 +577,46 @@ def _usd(product: Any, ending: str, unit: str) -> list[float]:
         return []
 
 
-def refreshed_prices(bundle: Bundle) -> dict[str, Any]:
+def monthly_cost(use: dict[str, float], logs: tuple[float, float]) -> dict[str, Any]:
+    """One month of the plan at the given rates: the six priced lines, the modeled lines
+    the bundle does not price, and their sum. The sum is a modeled subtotal, not a total:
+    the usage in UNQUANTIFIED is not in it."""
+    fargate = (
+        SERVICE_VCPU * use["fargate_vcpu_hour"] + SERVICE_GB * use["fargate_gb_hour"]
+    ) * HOURS
+    endpoints = INTERFACE_ENDPOINTS * ENDPOINT_ZONES * use["endpoint_hour"] * HOURS
+    rds = DATABASES * (use["rds_instance_hour"] * HOURS + STORAGE_GB * use["rds_storage_gb_month"])
+
+    def log_month(gb: float) -> float:
+        # Ingested once, then stored for the retention period of a 30-day month.
+        return gb * LOG_INGESTED_GB + gb * LOG_STORED_GB_MONTH * LOG_RETENTION_DAYS / 30
+
+    alarms = ALARM_COUNT * ALARM_MONTH
+    metrics = CUSTOM_METRIC_COUNT * CUSTOM_METRIC_MONTH
+    dns = HOSTED_ZONE_MONTH + DISCOVERY_SERVICES * DISCOVERY_SERVICE_MONTH
+    managed = DATABASES * RDS_MANAGED_SECRET_MONTH
+    fixed = fargate + endpoints + rds + alarms + metrics + dns + managed
+    low = fixed + SECRETS[0] * use["secret_month"] + log_month(logs[0])
+    high = fixed + SECRETS[1] * use["secret_month"] + log_month(logs[1])
+    return {"fargate": round(fargate, 2), "endpoints": round(endpoints, 2), "rds": round(rds, 2),
+            "secrets_low": round(SECRETS[0] * use["secret_month"], 2),
+            "secrets_high": round(SECRETS[1] * use["secret_month"], 2),
+            "modeled": {"alarms": round(alarms, 2), "custom_metrics": round(metrics, 2),
+                        "logs_low": round(log_month(logs[0]), 2),
+                        "logs_high": round(log_month(logs[1]), 2),
+                        "private_dns": round(dns, 2), "rds_managed_secrets": round(managed, 2),
+                        "budgets": 0.0},
+            "modeled_subtotal_low": round(low, 2), "modeled_subtotal_high": round(high, 2)}  # fmt: skip
+
+
+def lifetime_cost(monthly: float, days: int, *, crosses_month_boundary: bool) -> float:
+    """A short run's share of a monthly subtotal. The hosted zone is billed by the month,
+    never prorated, and once more when the run crosses into another month."""
+    zones = HOSTED_ZONE_MONTH * (2 if crosses_month_boundary else 1)
+    return round((monthly - HOSTED_ZONE_MONTH) * days * 24 / HOURS + zones, 2)
+
+
+def refreshed_prices(bundle: Bundle, logs: tuple[float, float] = LOG_GB_MONTH) -> dict[str, Any]:
     """The estimate's rates beside the bundle's, and the monthly cost under each."""
     rates: dict[str, dict[str, Any]] = {}
     for rate, (command, ending, unit) in PRICE_SOURCES.items():
@@ -549,30 +635,20 @@ def refreshed_prices(bundle: Bundle) -> dict[str, Any]:
             "source": f"{command}.json",
         }  # fmt: skip
 
-    def monthly(use: dict[str, float]) -> dict[str, float]:
-        fargate = (
-            SERVICE_VCPU * use["fargate_vcpu_hour"] + SERVICE_GB * use["fargate_gb_hour"]
-        ) * HOURS
-        endpoints = INTERFACE_ENDPOINTS * ENDPOINT_ZONES * use["endpoint_hour"] * HOURS
-        rds = DATABASES * (
-            use["rds_instance_hour"] * HOURS + STORAGE_GB * use["rds_storage_gb_month"]
-        )
-        low = fargate + endpoints + rds + SECRETS[0] * use["secret_month"] + UNPRICED_MONTHLY[0]
-        high = fargate + endpoints + rds + SECRETS[1] * use["secret_month"] + UNPRICED_MONTHLY[1]
-        return {"fargate": round(fargate, 2), "endpoints": round(endpoints, 2), "rds": round(rds, 2),
-                "secrets_low": round(SECRETS[0] * use["secret_month"], 2),
-                "secrets_high": round(SECRETS[1] * use["secret_month"], 2),
-                "unpriced_low": UNPRICED_MONTHLY[0], "unpriced_high": UNPRICED_MONTHLY[1],
-                "total_low": round(low, 2), "total_high": round(high, 2)}  # fmt: skip
-
     current = {rate: (entry["bundle"] if entry["bundle"] is not None else entry["estimate"])
                for rate, entry in rates.items()}  # fmt: skip
     return {
         "estimate_date": ESTIMATE_DATE,
+        "supplement_date": SUPPLEMENT_DATE,
         "rates": rates,
-        "monthly_estimate": monthly(ESTIMATE),
+        "log_gb_month": list(logs),
+        "counts": {"alarms": ALARM_COUNT, "custom_metrics": CUSTOM_METRIC_COUNT,
+                   "discovery_services": DISCOVERY_SERVICES, "databases": DATABASES,
+                   "log_retention_days": LOG_RETENTION_DAYS},  # fmt: skip
+        "monthly_estimate": monthly_cost(ESTIMATE, logs),
         # A rate the bundle could not supply keeps the estimate's value here.
-        "monthly_refreshed": monthly(current),
+        "monthly_refreshed": monthly_cost(current, logs),
+        "unquantified": list(UNQUANTIFIED),
         "unknown": sorted(rate for rate, entry in rates.items() if entry["status"] == "unknown"),
         "changed": sorted(rate for rate, entry in rates.items() if entry["status"] == "changed"),
     }
@@ -704,12 +780,33 @@ def assemble(bundle: Bundle, decisions: dict[str, Any]) -> dict[str, Any]:
         raise Unusable("the bundle inspected another account than decisions.json names")
     if decisions["region"] != bundle.region:
         raise Unusable("the bundle inspected another region than decisions.json names")
-    prices = refreshed_prices(bundle)
+    logs = log_volume(decisions)
+    assert logs is not None  # check_decisions refused anything else
+    prices = refreshed_prices(bundle, logs)
     inputs, pending = root_inputs(decisions)
     skeleton = manifest_skeleton(decisions)
     items = checklist(bundle, decisions, prices)
     days = decisions.get("lifetime_days", 7)
     refreshed = prices["monthly_refreshed"]
+    crosses = decisions.get("lifetime_crosses_month_boundary")
+
+    def share(boundary: bool) -> dict[str, float]:
+        return {"low": lifetime_cost(refreshed["modeled_subtotal_low"], days,
+                                     crosses_month_boundary=boundary),
+                "high": lifetime_cost(refreshed["modeled_subtotal_high"], days,
+                                      crosses_month_boundary=boundary)}  # fmt: skip
+
+    lifetime: dict[str, Any] = {"days": days, "hosted_zone_month": HOSTED_ZONE_MONTH,
+                                "crosses_month_boundary": crosses}  # fmt: skip
+    if crosses is None and days <= 31:
+        lifetime.update(boundary="unknown: both values are shown", without_boundary=share(False),
+                        with_boundary=share(True))  # fmt: skip
+    elif crosses is None:
+        # A run longer than the longest month always crosses into another one.
+        lifetime.update(boundary="at least one: a run over 31 days crosses a month boundary",
+                        **share(True))  # fmt: skip
+    else:
+        lifetime.update(share(crosses))
     # The checklist is hashed too: a kit that runs only on an all-met inspection
     # must not be talked past it by an edited status.
     hashed = {"inputs": inputs, "manifest_skeleton": skeleton,
@@ -727,9 +824,7 @@ def assemble(bundle: Bundle, decisions: dict[str, Any]) -> dict[str, Any]:
         "manifest_skeleton": skeleton,
         "checklist": items,
         "prices": prices,
-        "lifetime": {"days": days,
-                     "cost_low": round(refreshed["total_low"] * days * 24 / HOURS, 2),
-                     "cost_high": round(refreshed["total_high"] * days * 24 / HOURS, 2)},  # fmt: skip
+        "lifetime": lifetime,
     }
 
 
@@ -753,18 +848,56 @@ def render(plan: dict[str, Any]) -> str:
         seen = "none" if entry["bundle"] is None else f"{entry['bundle']:.6f}"
         lines.append(f"| {rate} | {entry['estimate']:.6f} | {seen} | {entry['status']} |")
     old, new, life = prices["monthly_estimate"], prices["monthly_refreshed"], plan["lifetime"]
+    counts, logs = prices["counts"], prices["log_gb_month"]
+
+    def pair(low: float, high: float) -> str:
+        return f"{low:.2f}" if low == high else f"{low:.2f} to {high:.2f}"
+
+    def row(label: str, key: str) -> str:
+        return f"| {label} | {old['modeled'][key]:.2f} | {new['modeled'][key]:.2f} |"
+
+    gb = f"{logs[0]:g}" if logs[0] == logs[1] else f"{logs[0]:g} to {logs[1]:g}"
     lines += [
         "", "| Monthly (USD) | Estimate | Refreshed |", "| --- | --- | --- |",
         f"| Fargate services | {old['fargate']:.2f} | {new['fargate']:.2f} |",
         f"| Interface endpoints | {old['endpoints']:.2f} | {new['endpoints']:.2f} |",
         f"| Two databases | {old['rds']:.2f} | {new['rds']:.2f} |",
-        f"| Secrets | {old['secrets_low']:.2f} to {old['secrets_high']:.2f} | "
-        f"{new['secrets_low']:.2f} to {new['secrets_high']:.2f} |",
-        f"| Not priced by the bundle (CloudWatch and small items) | {old['unpriced_low']:.2f} to "
-        f"{old['unpriced_high']:.2f} | same |",
-        f"| **Total** | {old['total_low']:.2f} to {old['total_high']:.2f} | "
-        f"{new['total_low']:.2f} to {new['total_high']:.2f} |", "",
-        f"Over {life['days']} days: about {life['cost_low']:.2f} to {life['cost_high']:.2f} USD. "
+        f"| Secrets | {pair(old['secrets_low'], old['secrets_high'])} | "
+        f"{pair(new['secrets_low'], new['secrets_high'])} |",
+        row(f"CloudWatch alarms ({counts['alarms']})", "alarms"),
+        row(f"Log-derived custom metrics ({counts['custom_metrics']})", "custom_metrics"),
+        f"| Logs ({gb} GB a month, assumed; {counts['log_retention_days']}-day retention) | "
+        f"{pair(old['modeled']['logs_low'], old['modeled']['logs_high'])} | "
+        f"{pair(new['modeled']['logs_low'], new['modeled']['logs_high'])} |",
+        row(f"Private DNS: hosted zone and {counts['discovery_services']} discovery services",
+            "private_dns"),
+        row(f"RDS-managed administrator secrets ({counts['databases']})", "rds_managed_secrets"),
+        row("AWS Budgets", "budgets"),
+        f"| **Modeled subtotal** | {pair(old['modeled_subtotal_low'], old['modeled_subtotal_high'])} | "
+        f"{pair(new['modeled_subtotal_low'], new['modeled_subtotal_high'])} |", "",
+        f"Modeled lines use public rates read on {prices['supplement_date']}. A modeled subtotal "
+        "is neither a bill nor a spending cap. The usage below is in addition, and it is not "
+        "zero.", "",
+        "**plus unquantified usage:**", "",
+        *[f"- {item}" for item in prices["unquantified"]], "",
+    ]  # fmt: skip
+    hosted = "the hosted zone is billed for a whole month"
+    if "without_boundary" in life:
+        lines.append(
+            f"Over {life['days']} days ({hosted}, not prorated): about "
+            f"{pair(life['without_boundary']['low'], life['without_boundary']['high'])} USD "
+            f"modeled, or {pair(life['with_boundary']['low'], life['with_boundary']['high'])} if "
+            "the run crosses into another month; the boundary is unknown."
+        )
+    else:
+        crossing = ("crosses" if life["crosses_month_boundary"]
+                    else "does not cross" if life["crosses_month_boundary"] is False
+                    else "crosses, as every run over 31 days does,")  # fmt: skip
+        lines.append(
+            f"Over {life['days']} days ({hosted}, not prorated; the run {crossing} a month "
+            f"boundary): about {pair(life['low'], life['high'])} USD modeled."
+        )
+    lines += [
         "An estimate, not a quote; a rate the bundle could not supply keeps the estimate's value.",
         "", "## Inputs still pending", "",
     ]  # fmt: skip

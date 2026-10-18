@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
@@ -358,8 +359,194 @@ def test_the_prices_reproduce_the_estimate_when_the_rates_are_unchanged(tmp_path
     # The estimate's own lines: 32.73, 58.40, 27.96 and 5.20 to 6.80.
     assert (monthly["fargate"], monthly["endpoints"], monthly["rds"]) == (32.73, 58.40, 27.96)
     assert (monthly["secrets_low"], monthly["secrets_high"]) == (5.20, 6.80)
-    assert (monthly["total_low"], monthly["total_high"]) == (125.79, 134.39)
-    assert result["lifetime"] == {"days": 7, "cost_low": 28.95, "cost_high": 30.93}
+    # The modeled lines replace the old flat allowance (see the modeled-lines test).
+    assert (monthly["modeled_subtotal_low"], monthly["modeled_subtotal_high"]) == (128.01, 134.23)
+    assert result["lifetime"] == {
+        "days": 7, "hosted_zone_month": 0.50, "crosses_month_boundary": None,
+        "boundary": "unknown: both values are shown",
+        "without_boundary": {"low": 29.84, "high": 31.28},
+        "with_boundary": {"low": 30.34, "high": 31.78},
+    }  # fmt: skip
+
+
+def test_each_modeled_line_follows_its_rate_and_count(tmp_path):
+    result = plan.assemble(plan.Bundle(write_bundle(tmp_path / "bundle")), decisions())
+    monthly = result["prices"]["monthly_refreshed"]
+    assert monthly["modeled"] == {
+        "alarms": 0.80,                # 8 alarms x 0.10
+        "custom_metrics": 0.90,        # 3 log-derived metrics x 0.30
+        "logs_low": 0.51,              # 1 GB: 0.50 ingested + 0.03 x 1 x 14/30 retained
+        "logs_high": 5.14,             # 10 GB
+        "private_dns": 0.70,           # 0.50 hosted zone + 2 services x 0.10
+        "rds_managed_secrets": 0.80,   # 2 databases x 0.40
+        "budgets": 0.0,
+    }  # fmt: skip
+    prices = result["prices"]
+    assert prices["supplement_date"] == "2026-10-17"
+    assert prices["log_gb_month"] == [1.0, 10.0]
+    assert prices["counts"] == {"alarms": 8, "custom_metrics": 3, "discovery_services": 2,
+                                "databases": 2, "log_retention_days": 14}  # fmt: skip
+    assert prices["unquantified"] == [
+        "ECR image storage", "S3 report bytes, requests and object versions",
+        "SNS notification delivery", "API calls to CloudWatch, Secrets Manager, ECS and ECR",
+        "VPC endpoint data processing", "cross-zone data transfer", "RDS CPU credits",
+        "backups and snapshots beyond the free allowance", "short-lived jobs and observers",
+        "retention after the run",
+    ]  # fmt: skip
+    # One log volume: low and high are the same line.
+    one = plan.assemble(plan.Bundle(write_bundle(tmp_path / "one")), decisions(log_gb_month=4))
+    modeled = one["prices"]["monthly_refreshed"]["modeled"]
+    assert modeled["logs_low"] == modeled["logs_high"] == 2.06  # 2.00 + 0.03 x 4 x 14/30
+
+
+def test_each_hourly_rate_is_converted_over_730_hours():
+    use = {"fargate_vcpu_hour": 0.1, "fargate_gb_hour": 0.01, "endpoint_hour": 0.01,
+           "rds_instance_hour": 0.02, "rds_storage_gb_month": 0.0, "secret_month": 0.0}  # fmt: skip
+    monthly = plan.monthly_cost(use, (1.0, 1.0))
+    assert monthly["fargate"] == round((1.0 * 0.1 + 3.5 * 0.01) * 730, 2)
+    assert monthly["endpoints"] == round(4 * 2 * 0.01 * 730, 2)
+    assert monthly["rds"] == round(2 * 0.02 * 730, 2)
+
+
+def test_the_hosted_zone_month_is_not_prorated_and_a_boundary_adds_one_more(tmp_path):
+    # Seven days of a 128.00 modeled subtotal: (128.00 - 0.50) x 168 / 730 + 0.50.
+    assert plan.lifetime_cost(128.00, 7, crosses_month_boundary=False) == 29.84
+    assert plan.lifetime_cost(128.00, 7, crosses_month_boundary=True) == 30.34
+    assert plan.lifetime_cost(0.50, 30, crosses_month_boundary=False) == 0.50
+    bundle = plan.Bundle(write_bundle(tmp_path / "bundle"))
+    known = plan.assemble(bundle, decisions(lifetime_crosses_month_boundary=True))["lifetime"]
+    assert known == {"days": 7, "hosted_zone_month": 0.50, "crosses_month_boundary": True,
+                     "low": 30.34, "high": 31.78}  # fmt: skip
+    none = plan.assemble(bundle, decisions(lifetime_crosses_month_boundary=False))["lifetime"]
+    assert (none["low"], none["high"]) == (29.84, 31.28)
+    assert round(known["low"] - none["low"], 2) == round(known["high"] - none["high"], 2) == 0.50
+
+
+def test_the_page_shows_a_modeled_subtotal_plus_unquantified_usage_and_no_total(tmp_path):
+    result = plan.assemble(plan.Bundle(write_bundle(tmp_path / "bundle")), decisions())
+    page = plan.render(result)
+    assert "| **Modeled subtotal** | 128.01 to 134.23 | 128.01 to 134.23 |" in page
+    assert "plus unquantified usage" in page
+    for item in result["prices"]["unquantified"]:
+        assert f"- {item}" in page
+    assert "A modeled subtotal is neither a bill nor a spending cap." in page
+    # No figure in the money table is labeled a total, a bill or a cap.
+    table = page.split("| Monthly (USD) |", 1)[1].split("\n\n", 1)[0]
+    labels = [line.split("|")[1] for line in table.splitlines()[2:]]
+    assert len(labels) == 11
+    assert not any(re.search(r"\b(total|bill|cap)\b", label, re.I) for label in labels)
+    # The historical six-rate lines stay visible for comparison.
+    assert "| fargate_vcpu_hour |" in page and "| Fargate services | 32.73 | 32.73 |" in page
+    assert "the boundary is unknown" in page
+
+
+FOUNDATION = REPO / "deploy/aws-staging/foundation"
+
+
+def asserted_keys(tftest: str, resource: str) -> int:
+    """How many instances the foundation's mocked plan pins, over every resource of the
+    type the foundation declares. A declared resource without a pinned key set fails."""
+    declared = {
+        name
+        for path in FOUNDATION.glob("*.tf")
+        for name in re.findall(rf'resource "{resource}" "([A-Za-z_][\w-]*)"', path.read_text())
+    }
+    assert declared, resource
+    total = 0
+    for name in sorted(declared):
+        found = re.search(rf"toset\(keys\({resource}\.{name}\)\) == toset\(\[([^\]]+)\]\)", tftest)
+        assert found, f"{resource}.{name} has no pinned key set"
+        total += len(re.findall(r'"[^"]+"', found.group(1)))
+    return total
+
+
+def test_the_modeled_counts_are_what_the_foundation_renders():
+    tftest = (FOUNDATION / "tests/foundation.tftest.hcl").read_text()
+    assert plan.ALARM_COUNT == asserted_keys(tftest, "aws_cloudwatch_metric_alarm")
+    assert plan.CUSTOM_METRIC_COUNT == asserted_keys(tftest, "aws_cloudwatch_log_metric_filter")
+    services = re.search(
+        r"aws_service_discovery_service\.this : name => service\.name \} == \{([^}]+)\}", tftest
+    )
+    assert services
+    assert plan.DISCOVERY_SERVICES == len(re.findall(r"\w+\s*=", services.group(1)))
+    retention = re.findall(r"group\.retention_in_days == (\d+)\b", tftest)
+    assert retention and {int(days) for days in retention} == {plan.LOG_RETENTION_DAYS}
+
+
+# The fixture bundle with the fixture decisions, as assembled before the cost model
+# changed: prices and the lifetime are outside the hash, so the hash must not move.
+FIXTURE_PLAN_SHA256 = "1ab0a86eef3d282c4dbc140ad4e037b230533c3e19373903de487cb96065e4f6"
+
+
+def test_the_boundary_rule_starts_after_the_longest_month(tmp_path):
+    bundle = plan.Bundle(write_bundle(tmp_path / "bundle"))
+    # Thirty-one days can start and end in the same month: false is still a choice.
+    within = plan.assemble(bundle, decisions(lifetime_days=31,
+                                             lifetime_crosses_month_boundary=False))["lifetime"]  # fmt: skip
+    assert within["crosses_month_boundary"] is False and "without_boundary" not in within
+    # Thirty-two days cannot: unknown is reported as crossing, with one figure only.
+    over = plan.assemble(bundle, decisions(lifetime_days=32))
+    life = over["lifetime"]
+    assert life["crosses_month_boundary"] is None and "without_boundary" not in life
+    monthly = over["prices"]["monthly_refreshed"]
+    assert (life["low"], life["high"]) == (
+        plan.lifetime_cost(monthly["modeled_subtotal_low"], 32, crosses_month_boundary=True),
+        plan.lifetime_cost(monthly["modeled_subtotal_high"], 32, crosses_month_boundary=True),
+    )
+    assert "crosses, as every run over 31 days does," in plan.render(over)
+
+
+def test_the_lifetime_is_the_share_of_the_refreshed_month(tmp_path):
+    found = answers()
+    found["14-price-vpc-endpoints"] = {"PriceList": [
+        product("USE1-VpcEndpoint-Hours", "Hrs", "0.0110000000")]}  # fmt: skip
+    result = plan.assemble(plan.Bundle(write_bundle(tmp_path / "changed", found)),
+                           decisions(lifetime_crosses_month_boundary=False))  # fmt: skip
+    refreshed = result["prices"]["monthly_refreshed"]
+    assert (
+        refreshed["modeled_subtotal_low"]
+        != result["prices"]["monthly_estimate"]["modeled_subtotal_low"]
+    )
+    assert result["lifetime"]["low"] == plan.lifetime_cost(
+        refreshed["modeled_subtotal_low"], 7, crosses_month_boundary=False
+    )
+    assert result["lifetime"]["high"] == plan.lifetime_cost(
+        refreshed["modeled_subtotal_high"], 7, crosses_month_boundary=False
+    )
+
+
+def test_an_old_format_decisions_file_keeps_its_plan_hash(tmp_path):
+    result = plan.assemble(plan.Bundle(write_bundle(tmp_path / "bundle")), decisions())
+    assert result["plan_sha256"] == FIXTURE_PLAN_SHA256
+
+
+@pytest.mark.parametrize("changes, message", [
+    ({"log_gb_month": 0}, "log_gb_month"),
+    ({"log_gb_month": -1}, "log_gb_month"),
+    ({"log_gb_month": True}, "log_gb_month"),
+    ({"log_gb_month": "4"}, "log_gb_month"),
+    ({"log_gb_month": [10, 1]}, "log_gb_month"),
+    ({"log_gb_month": [1, 2, 3]}, "log_gb_month"),
+    ({"log_gb_month": 100001}, "log_gb_month"),
+    ({"lifetime_crosses_month_boundary": "yes"}, "lifetime_crosses_month_boundary"),
+    ({"lifetime_crosses_month_boundary": 1}, "lifetime_crosses_month_boundary"),
+    ({"lifetime_crosses_month_boundary": 0}, "lifetime_crosses_month_boundary"),
+    ({"log_gb_month": None}, "log_gb_month"),
+    ({"log_gb_month": [True, 2]}, "log_gb_month"),
+    ({"log_gb_month": [1, False]}, "log_gb_month"),
+    ({"log_gb_month": float("nan")}, "log_gb_month"),
+    ({"log_gb_month": float("inf")}, "log_gb_month"),
+    ({"lifetime_crosses_month_boundary": False, "lifetime_days": 32}, "over 31 days"),
+])  # fmt: skip
+def test_the_cost_inputs_are_optional_and_bounded(tmp_path, changes, message):
+    bundle = plan.Bundle(write_bundle(tmp_path / "bundle"))
+    with pytest.raises(plan.Unusable, match=message):
+        plan.assemble(bundle, decisions(**changes))
+    accepted = plan.assemble(bundle, decisions(log_gb_month=[2, 5],
+                                               lifetime_crosses_month_boundary=None))  # fmt: skip
+    assert accepted["prices"]["log_gb_month"] == [2.0, 5.0]
+    # A chosen input is part of the decisions, so it is part of the plan hash.
+    assert accepted["plan_sha256"] != FIXTURE_PLAN_SHA256
 
 
 def test_a_changed_rate_revises_the_estimate_and_a_missing_one_is_unknown(tmp_path):
