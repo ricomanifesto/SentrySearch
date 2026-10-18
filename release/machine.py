@@ -36,6 +36,9 @@ class State(StrEnum):
     SERVICES_STARTED = "services_started"
     OPERATIONAL_VERIFIED = "operational_verified"
     HELD_PAUSED = "held_paused"
+    # Restore verification runs only: the restored instance reconciled, then proven.
+    RESTORE_RECONCILED = "restore_reconciled"
+    RESTORE_VERIFIED = "restore_verified"
     HOLD = "hold"
 
 
@@ -62,7 +65,17 @@ ROLLBACK_STATES = (
     State.OPERATIONAL_VERIFIED,
     State.HELD_PAUSED,
 )
-TERMINAL_STATES = frozenset({State.HELD_PAUSED, State.HOLD})
+# A restore verification proves one restored instance and touches nothing else: no
+# quiesce, service, admission, migration, grant or bootstrap.
+RESTORE_STATES = (
+    State.PREPARED,
+    State.LOCKED,
+    State.RESTORE_RECONCILED,
+    State.RESTORE_VERIFIED,
+)
+# The states a run finishes in successfully, and every terminal state.
+FINISHED_STATES = frozenset({State.HELD_PAUSED, State.RESTORE_VERIFIED})
+TERMINAL_STATES = FINISHED_STATES | {State.HOLD}
 TOKEN_MAX_LIFETIME = timedelta(hours=24)
 TOKEN_TASK_MARGIN = timedelta(hours=1)
 SUCCESSFUL_STOP_CODES = frozenset({"EssentialContainerExited"})
@@ -392,6 +405,18 @@ def plan_rollback(
     manifest: Manifest, outcomes: Mapping[str, str], *, services_touched: bool
 ) -> dict[str, Any]:
     """Describe the manual recovery path for a hold. Nothing here is executed."""
+    if manifest.execution == "restore_verify":
+        # A held verification changed nothing but its own jobs: the restored instance
+        # and the release are left exactly as they are.
+        return {
+            "kind": "restore_hold",
+            "automatic": False,
+            "actions": [
+                "leave_restored_instance_untouched",
+                "retain_resources_and_evidence",
+                "review_restore_hold_before_any_retry",
+            ],
+        }
     if manifest.execution == "rollback":
         # A held rollback ran no migration: the schemas are the stated ones,
         # unless a reconcile job saw otherwise. Nothing is retried automatically.

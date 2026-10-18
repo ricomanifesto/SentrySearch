@@ -11,7 +11,12 @@ from urllib.parse import parse_qsl, unquote, urlsplit
 
 from release_tools import contract
 
-KINDS = frozenset({"bootstrap", "grant", "proof", "reconcile"})
+# The restore-verification kinds (rv: a job id stays within PostgreSQL's 63-byte
+# application name) run the reconcile and proof programs against a restored
+# instance; their results add the host they reached, the proof its program digest
+# and the reconcile its foreign-session count (sql/restore_sessions.sql), so the
+# forward and rollback kinds are unchanged.
+KINDS = frozenset({"bootstrap", "grant", "proof", "reconcile", "rv-recon", "rv-proof"})
 DATABASES = frozenset({"runtime", "product"})
 # The job's principal SQL program; the tools digest covers every other file.
 MAIN_SQL = {
@@ -23,6 +28,10 @@ MAIN_SQL = {
     ("reconcile", "product"): "sql/reconcile.sql",
     ("bootstrap", "runtime"): "sql/bootstrap.sql",
     ("bootstrap", "product"): "sql/bootstrap.sql",
+    ("rv-proof", "runtime"): "sql/runtime/proof.sql",
+    ("rv-proof", "product"): "sql/product/proof.sql",
+    ("rv-recon", "runtime"): "sql/reconcile.sql",
+    ("rv-recon", "product"): "sql/reconcile.sql",
 }
 CA_FILE = "/run/material/postgres-ca.pem"
 MIN_BUDGET_SECONDS, MAX_BUDGET_SECONDS = contract.MIN_BUDGET_SECONDS, contract.MAX_BUDGET_SECONDS
@@ -171,7 +180,7 @@ def load(kind: str, environ: dict[str, str]) -> JobConfig:
     ):
         required = {
             "service_role": kind in {"grant", "bootstrap"},
-            "owner_role": kind in {"proof", "bootstrap"},
+            "owner_role": kind in {"proof", "rv-proof", "bootstrap"},
             "target_database": kind == "bootstrap",
         }[name]
         if required:

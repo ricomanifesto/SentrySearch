@@ -46,11 +46,12 @@ def environment(kind: str, database: str = "runtime", **overrides: str) -> dict[
     owner, service = ("runtime_owner", "runtime_app")
     if database == "product":
         owner, service = ("search_owner", "search_app")
-    principal = {"grant": owner, "reconcile": owner, "proof": service, "bootstrap": "postgres"}
+    principal = {"grant": owner, "reconcile": owner, "proof": service, "bootstrap": "postgres",
+                 "rv-recon": owner, "rv-proof": service}  # fmt: skip
     values["RELEASE_EXPECT_PRINCIPAL"] = principal[kind]
     if kind in {"grant", "bootstrap"}:
         values["RELEASE_SERVICE_ROLE"] = service
-    if kind in {"proof", "bootstrap"}:
+    if kind in {"proof", "rv-proof", "bootstrap"}:
         values["RELEASE_OWNER_ROLE"] = owner
     if kind == "bootstrap":
         values["RELEASE_EXPECT_DATABASE"] = "postgres"
@@ -933,3 +934,154 @@ def test_reconcile_marks_unexpected_session_fields_invalid(fake_psql, metadata, 
     assert observed[0]["backend_start"] == "unknown"
     assert observed[0]["application_name"] == "invalid"
     assert {"event": "session_unparsed"} in events
+
+
+# Restore verification kinds (F077) ---------------------------------------------------
+
+
+def restore_run(kind, database, metadata, capsys):
+    env = environment(kind, database, ECS_CONTAINER_METADATA_URI_V4=metadata)
+    code = jobs.main([kind], env, now=lambda: NOW)
+    captured = capsys.readouterr()
+    receipts = [json.loads(line.split(" ", 1)[1]) for line in captured.out.splitlines()
+                if line.startswith(receipt.RECEIPT_MARKER + " ")]  # fmt: skip
+    events = [json.loads(line) for line in captured.err.splitlines()]
+    return code, receipts, events
+
+
+PROOF_LINES = ("result|database|sentrysearch\nresult|principal|search_app\n"
+               "result|schema|sentrysearch:1:0123456789abcdef\n")  # fmt: skip
+DENIED = 'psql: error: ... FATAL:  permission denied for database "postgres"\n'
+
+
+def test_a_restore_proof_reports_the_host_and_the_program_it_ran(fake_psql, metadata, capsys):
+    reply, _ = fake_psql
+    reply(stdout=PROOF_LINES)
+    reply(code=2, stderr=DENIED)
+    code, receipts, events = restore_run("rv-proof", "product", metadata, capsys)
+    assert code == 0, receipts
+    (result,) = [item["result"] for item in receipts]
+    program = environment("rv-proof", "product")["RELEASE_SQL_SHA256"]
+    assert program == digest.file_sha256(PACKAGE / "sql/product/proof.sql")
+    assert result == {"database": "sentrysearch", "principal": "search_app",
+                      "schema": "sentrysearch:1:0123456789abcdef",
+                      "host": "db.internal.example", "sql_digest": program}  # fmt: skip
+    assert receipts[0]["job_id"] == "product-rv-proof"
+    started = next(event for event in events if event["event"] == "job_started")
+    assert started["host"] == "db.internal.example" and started["kind"] == "rv-proof"
+
+
+RECONCILE_LINES = ("result|database|sentryruntime\nresult|principal|runtime_owner\n"
+                   "result|schema|goose:1,2,3\nresult|release_sessions|0\n"
+                   "result|owner_sessions|0\n")  # fmt: skip
+
+
+def test_a_restore_reconcile_counts_and_lists_foreign_sessions(fake_psql, metadata, capsys):
+    reply, recorded = fake_psql
+    reply(stdout=RECONCILE_LINES + "result|foreign_sessions|1\n"
+          "session|4343|unknown|sentryruntime|runtime_service|psql|unknown\n")  # fmt: skip
+    code, receipts, events = restore_run("rv-recon", "runtime", metadata, capsys)
+    assert code == 0, receipts
+    assert receipts[0]["result"] == {"database": "sentryruntime", "principal": "runtime_owner",
+                                     "schema": "goose:1,2,3", "release_sessions": "0",
+                                     "owner_sessions": "0", "foreign_sessions": "1",
+                                     "host": "db.internal.example"}  # fmt: skip
+    assert {"event": "session_observed", "pid": "4343", "backend_start": "unknown",
+            "database": "sentryruntime", "principal": "runtime_service",
+            "application_name": "psql", "state": "unknown"} in events  # fmt: skip
+    # The restore reconcile runs the reconcile programs, then the foreign-session one.
+    (call,) = recorded()
+    files = [Path(argv).name for argv in call["argv"] if argv.endswith(".sql")]
+    assert files[-2:] == ["reconcile.sql", "restore_sessions.sql"]
+
+
+def test_a_restore_reconcile_without_its_foreign_session_count_is_not_a_success(
+    fake_psql, metadata, capsys
+):
+    reply, _ = fake_psql
+    reply(stdout=RECONCILE_LINES)
+    code, receipts, _events = restore_run("rv-recon", "runtime", metadata, capsys)
+    assert code == 11
+    assert receipts[0]["result"] == {"reason": "observation_mismatch", "sql_outcome": "unknown"}
+
+
+def test_the_forward_reconcile_runs_exactly_its_programs_and_reports_its_keys(
+    fake_psql, metadata, capsys
+):
+    reply, recorded = fake_psql
+    reply(stdout=RECONCILE_LINES)
+    code, receipts, _captured = _run("reconcile", "runtime", metadata, capsys)
+    assert code == 0
+    assert set(receipts[0]["result"]) == {"database", "principal", "schema",
+                                          "release_sessions", "owner_sessions"}  # fmt: skip
+    (call,) = recorded()
+    files = [Path(argv).name for argv in call["argv"] if argv.endswith(".sql")]
+    assert files == ["session_check.sql", "refresh.sql", "identity.sql", "schema_runtime.sql",
+                     "reconcile.sql"]  # fmt: skip
+
+
+@pytest.mark.parametrize("kind", ["proof", "rv-proof"])
+def test_the_proof_programs_are_the_same_for_both_proof_kinds(fake_psql, metadata, capsys, kind):
+    reply, recorded = fake_psql
+    reply(stdout=PROOF_LINES)
+    reply(code=2, stderr=DENIED)
+    code, _receipts, _events = restore_run(kind, "product", metadata, capsys)
+    assert code == 0
+    files = [[Path(argv).name for argv in call["argv"] if argv.endswith(".sql")]
+             for call in recorded()]  # fmt: skip
+    assert files == [["session_check.sql", "refresh.sql", "identity.sql", "schema_product.sql",
+                      "refresh.sql", "proof.sql"], []]  # fmt: skip
+
+
+def test_the_forward_proof_receipt_and_start_event_are_unchanged(fake_psql, metadata, capsys):
+    reply, _ = fake_psql
+    reply(stdout=PROOF_LINES)
+    reply(code=2, stderr=DENIED)
+    code, receipts, captured = _run("proof", "product", metadata, capsys)
+    assert code == 0
+    assert set(receipts[0]["result"]) == {"database", "principal", "schema"}
+    started = [json.loads(line) for line in captured.err.splitlines()][0]
+    assert started["event"] == "job_started" and "host" not in started
+
+
+def test_a_session_both_restore_programs_list_is_logged_once(fake_psql, metadata, capsys):
+    reply, _ = fake_psql
+    # The owner's session from another connection: reconcile.sql lists it as an owner
+    # session, restore_sessions.sql as a foreign one (its state read in between).
+    reply(stdout=RECONCILE_LINES.replace("owner_sessions|0", "owner_sessions|1")
+          + "session|4242|2026-10-18T00:00:00.000000Z|sentryruntime|runtime_owner|psql|idle\n"
+          + "result|foreign_sessions|1\n"
+          + "session|4242|2026-10-18T00:00:00.000000Z|sentryruntime|runtime_owner|psql|active\n")  # fmt: skip
+    code, receipts, events = restore_run("rv-recon", "runtime", metadata, capsys)
+    assert code == 0, receipts
+    assert receipts[0]["result"]["foreign_sessions"] == "1"
+    observed = [event for event in events if event["event"] == "session_observed"]
+    assert [(event["pid"], event["state"]) for event in observed] == [("4242", "idle")]
+
+
+def test_a_failed_restore_proof_is_never_a_success(fake_psql, metadata, capsys):
+    reply, _ = fake_psql
+    reply(stdout=PROOF_LINES)
+    reply(stdout="1\n")  # the service login reached another database
+    code, receipts, _events = restore_run("rv-proof", "product", metadata, capsys)
+    assert code == 11
+    assert receipts[0]["status"] == "failed"
+    assert receipts[0]["result"] == {"reason": "cross_database_access", "sql_outcome": "unknown"}
+
+
+def test_restore_kinds_refuse_settings_their_base_kinds_refuse():
+    # The restore proof needs the owner role it checks against; the restore reconcile
+    # takes none.
+    proof = environment("rv-proof", "runtime")
+    del proof["RELEASE_OWNER_ROLE"]
+    with pytest.raises(config.ConfigError):
+        config.load("rv-proof", proof)
+    recon = environment("rv-recon", "runtime", RELEASE_OWNER_ROLE="runtime_owner")
+    with pytest.raises(config.ConfigError, match="unexpected_setting"):
+        config.load("rv-recon", recon)
+    assert (
+        config.load("rv-recon", environment("rv-recon", "runtime")).main_sql == "sql/reconcile.sql"
+    )
+    assert config.load("rv-proof", environment("rv-proof", "product")).main_sql == (
+        "sql/product/proof.sql"
+    )

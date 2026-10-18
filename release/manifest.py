@@ -6,9 +6,10 @@ JSON. Approval is a separate receipt bound to that hash, never a manifest field.
 
 Schema 2 is the current, executable format, defined here. It states its
 execution purpose explicitly: ``forward`` (migrate, grant and prove, optionally
-after a first-deployment bootstrap) or ``rollback`` (restore the retained prior
-pair after a failed release; reconcile and prove only). Direction is never
-inferred from the fallback ``rollback`` plan.
+after a first-deployment bootstrap), ``rollback`` (restore the retained prior
+pair after a failed release; reconcile and prove only) or ``restore_verify``
+(reconcile and prove one database restored into a new instance; nothing else).
+Direction is never inferred from the fallback ``rollback`` plan.
 
 Schema 1 is the earlier accepted format, frozen in ``release.manifest_v1``. A
 schema-1 manifest still loads here with the hash it was approved under and can
@@ -69,6 +70,21 @@ RELEASE_TOOLS_RESULT_KEYS = {
     "reconcile": frozenset(
         {"database", "principal", "schema", "release_sessions", "owner_sessions"}
     ),
+    # Restore verification: the same programs against a restored instance, each also
+    # naming the host it reached; the reconcile counts foreign sessions, the proof
+    # names the program it ran (its privilege inventory is that program's).
+    "rv-recon": frozenset(
+        {
+            "database",
+            "principal",
+            "schema",
+            "release_sessions",
+            "owner_sessions",
+            "foreign_sessions",
+            "host",
+        }
+    ),
+    "rv-proof": frozenset({"database", "principal", "schema", "host", "sql_digest"}),
 }
 MAX_VALIDITY = timedelta(days=7)
 DATABASES = ("runtime", "product")
@@ -91,7 +107,7 @@ ROLLBACK_ORDER = (
 )
 PHASES = ("migrate", "grant", "proof")
 # Owner jobs hold database-owner (or administrator) credentials.
-OWNER_PHASES = frozenset({"bootstrap", "migrate", "grant", "reconcile"})
+OWNER_PHASES = frozenset({"bootstrap", "migrate", "grant", "reconcile", "rv-recon"})
 RECEIPT_CONTROL_FIELDS = frozenset(
     {"release_id", "job_id", "task_arn", "status", "result", "receipt_schema", "schema_version"}
 )
@@ -246,7 +262,7 @@ class SqlPin(Strict):
 
 class Job(Strict):
     id: Name
-    phase: Literal["bootstrap", "migrate", "grant", "proof", "reconcile"]
+    phase: Literal["bootstrap", "migrate", "grant", "proof", "reconcile", "rv-recon", "rv-proof"]
     database: Literal["runtime", "product"]
     task: TaskSpec
     deadline_seconds: int = Field(ge=60, le=3600)
@@ -357,6 +373,24 @@ class RollbackRun(Strict):
     actual_schemas: ActualSchemas
 
 
+class RestoreVerifyRun(Strict):
+    """Verify one database restored by point in time into a new instance. Never
+    migrates, grants, bootstraps, quiesces or starts anything.
+
+    The manifest's release is the current release (its receipts name it); the
+    verification has its own id, which names the run's journal, lock and launches.
+    The restore jobs reconcile and prove the release's schema on the restored
+    instance and report the host they reached.
+    """
+
+    kind: Literal["restore_verify"]
+    database: Literal["runtime", "product"]
+    restored_instance: Name
+    restored_endpoint: HostName
+    verification_id: Uuid
+    not_after: UtcTime
+
+
 class Manifest(Strict):
     schema_version: Literal[2]
     release_id: Uuid
@@ -374,15 +408,25 @@ class Manifest(Strict):
     operational_checks: tuple[OperationalCheck, ...] = Field(min_length=1, max_length=16)
     rollback: Annotated[EmptyHold | CompatibleRelease, Field(discriminator="kind")]
     # Both are required (_check_manifest); an explicit null is as missing as none.
-    purpose: Annotated[ForwardRun | RollbackRun, Field(discriminator="kind")] | None = None
+    purpose: (
+        Annotated[ForwardRun | RollbackRun | RestoreVerifyRun, Field(discriminator="kind")] | None
+    ) = None
     # The IAM role the named operator's session must have assumed; the preflight
     # binds the caller to it.
     operator_role: str | None = None
 
     @property
     def execution(self) -> str:
-        """``forward`` or ``rollback``, from the explicit purpose only."""
+        """``forward``, ``rollback`` or ``restore_verify``, from the explicit purpose only."""
         return "forward" if self.purpose is None else self.purpose.kind
+
+    @property
+    def run_id(self) -> str:
+        """The id this run journals, locks and launches under: the release's own, or a
+        restore verification's, so a verification never writes the release's journal."""
+        if isinstance(self.purpose, RestoreVerifyRun):
+            return self.purpose.verification_id
+        return self.release_id
 
     @property
     def evidence_release_id(self) -> str:
@@ -570,6 +614,8 @@ def _check_manifest(manifest: Manifest) -> None:
         raise ReleaseRejected("rollback_not_prior_release", "rollback.release_id")
     if isinstance(manifest.purpose, RollbackRun):
         _check_rollback_run(manifest, manifest.purpose)
+    if isinstance(manifest.purpose, RestoreVerifyRun):
+        _check_restore_verify(manifest, manifest.purpose)
 
 
 def _scoped(value: str, prefix: str, structure: str, detail: str) -> None:
@@ -686,7 +732,9 @@ def _check_scope(manifest: Manifest) -> None:
 def _check_jobs(manifest: Manifest) -> None:
     jobs = manifest.jobs
     plan = tuple((job.phase, job.database) for job in jobs)
-    if manifest.execution == "rollback":
+    if isinstance(manifest.purpose, RestoreVerifyRun):
+        allowed = {restore_order(manifest.purpose.database)}
+    elif manifest.execution == "rollback":
         allowed = {ROLLBACK_ORDER}
     else:
         allowed = {JOB_ORDER, BOOTSTRAP_ORDER}
@@ -703,7 +751,7 @@ def _check_jobs(manifest: Manifest) -> None:
         if RECEIPT_CONTROL_FIELDS & job.expect.keys():
             raise ReleaseRejected("job_expectation_reserved", f"jobs.{job.id}.expect")
         required = {"database", "principal"} | (
-            {"schema"} if job.phase in {"migrate", "reconcile"} else set()
+            {"schema"} if job.phase in {"migrate", "reconcile", "rv-recon"} else set()
         )
         if not required <= job.expect.keys():
             raise ReleaseRejected("job_expectation_incomplete", f"jobs.{job.id}.expect")
@@ -753,8 +801,8 @@ def _check_release_tools_jobs(manifest: Manifest) -> None:
             or job.sql.source_commit != manifest.sources.release_tools
         ):
             raise ReleaseRejected("grant_pin_mismatch", f"{where}.sql")
-    if manifest.execution == "rollback":
-        return  # _check_rollback_run binds reconcile and proof identities.
+    if manifest.execution in {"rollback", "restore_verify"}:
+        return  # _check_rollback_run and _check_restore_verify bind the identities.
     for database in DATABASES:
         migrate, grant, proof = (jobs[(phase, database)].expect for phase in PHASES)
         if (
@@ -821,6 +869,66 @@ def _check_rollback_run(manifest: Manifest, purpose: RollbackRun) -> None:
             or reconcile["owner_sessions"] != "0"
         ):
             raise ReleaseRejected("job_expectation_inconsistent", f"jobs.{database}")
+
+
+RESTORE_LABEL_MAX = 20
+
+
+def restore_label_valid(label: str) -> bool:
+    """A restored instance's label: lowercase letters, digits and single hyphens, not
+    starting or ending with one (RDS identifier rules), at most 20 characters. The kit
+    names the instances it restores, and the manifest accepts, by this one rule."""
+    return (
+        len(label) <= RESTORE_LABEL_MAX
+        and re.fullmatch(r"[a-z0-9](?:-?[a-z0-9])*", label) is not None
+    )
+
+
+def restore_order(database: str) -> tuple[tuple[str, str], ...]:
+    """A restore verification's jobs: reconcile, then prove, the one restored database."""
+    return (("rv-recon", database), ("rv-proof", database))
+
+
+def _check_restore_verify(manifest: Manifest, purpose: RestoreVerifyRun) -> None:
+    """A verification of one restored instance, under its own id, within its deadline.
+
+    The restore jobs connect to the restored endpoint; the reconcile sees no release,
+    owner or foreign session; the proof observes the reconcile's schema as another
+    login and names the proof program that ran.
+    """
+    rollback = manifest.rollback
+    others = {manifest.release_id} | (
+        {rollback.release_id} if isinstance(rollback, CompatibleRelease) else set()
+    )
+    if purpose.verification_id in others:
+        raise ReleaseRejected("restore_verification_id_invalid", "purpose.verification_id")
+    expected = f"{manifest.environment.name}-{purpose.database}-db-restore-"
+    label = purpose.restored_instance.removeprefix(expected)
+    if label == purpose.restored_instance or not restore_label_valid(label):
+        raise ReleaseRejected("restore_instance_invalid", "purpose.restored_instance")
+    # The endpoint is the restored instance's own: its first label is the instance
+    # identifier, in this environment's region.
+    endpoint = purpose.restored_endpoint
+    if endpoint.split(".", 1)[0] != purpose.restored_instance or not endpoint.endswith(
+        f".{manifest.environment.region}.rds.amazonaws.com"
+    ):
+        raise ReleaseRejected("restore_endpoint_invalid", "purpose.restored_endpoint")
+    if purpose.not_after < manifest.window.expires_at:
+        raise ReleaseRejected("restore_deadline_before_window", "purpose.not_after")
+    jobs = {job.phase: job.expect for job in manifest.jobs}
+    reconcile, proof = jobs["rv-recon"], jobs["rv-proof"]
+    if (
+        reconcile["host"] != purpose.restored_endpoint
+        or proof["host"] != purpose.restored_endpoint
+        or reconcile["database"] != proof["database"]
+        or reconcile["schema"] != proof["schema"]
+        or reconcile["principal"] == proof["principal"]
+        or reconcile["release_sessions"] != "0"
+        or reconcile["owner_sessions"] != "0"
+        or reconcile["foreign_sessions"] != "0"
+        or not re.fullmatch(r"[0-9a-f]{64}", proof["sql_digest"])
+    ):
+        raise ReleaseRejected("job_expectation_inconsistent", f"jobs.{purpose.database}")
 
 
 def _check_operational(manifest: Manifest) -> None:

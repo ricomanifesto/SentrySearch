@@ -128,6 +128,9 @@ prepared -> locked -> quiesced -> migrated -> grants_verified
 any uncertain or failed step -> hold (reason, last proven state, rollback plan)
 ```
 
+A `restore_verify` run (below) has its own sequence:
+`prepared -> locked -> restore_reconciled -> restore_verified`.
+
 Steps advance one at a time and only on complete evidence. `held_paused` keeps
 API admission paused; nothing in this package enables admission.
 
@@ -505,6 +508,41 @@ release as `current` before a rollback run. That release's job revisions keep
 the deadline fixed when it was first planned: a rollback after it expires holds
 at its first job, and needs a new release key planned from the prior pair's
 images, a separate approval.
+
+## Restore verification runs
+
+A `restore_verify` purpose (`database`, `restored_instance`, `restored_endpoint`,
+`verification_id`, `not_after`) reconciles and then proves one database restored by
+point in time into a new instance, under the environment lock so it never overlaps
+a release. It runs exactly two jobs, `<db>-rv-recon` and `<db>-rv-proof`, which must
+report the restored endpoint as their `host`, no release, owner or foreign session,
+the reconcile's schema read by another login, and the proof program's `sql_digest`.
+It never quiesces, scales, deploys, migrates, grants, bootstraps or changes
+admission, and it finishes `restore_verified` (journal milestone `restore_verified`)
+with the lock released.
+
+The manifest's `release_id` is the current release's: its receipts name it and its
+approval binds it. The run journals, locks and launches under its own
+`verification_id`, so the release's journal is never written. The restored
+instance is `<environment>-<db>-db-restore-<label>` and its endpoint starts with that
+identifier in the environment's region. A hold (`restore_hold`) leaves the restored
+instance untouched. Because a verification changes nothing else, its lock is
+released once none of its own jobs can still run: no launch is unresolved, and every
+task this journal launched or tried to stop is described STOPPED with one of this
+journal's launch tokens, or is no longer described by ECS (which forgets only stopped
+tasks) and was recorded stopped; a stop still open is then journaled
+`stop_confirmed`, and no stop is re-sent. While anything is uncertain the lock is
+kept. Only the session that owns it releases it, on its own later `run` or `cleanup`;
+a new session first runs `recover` (prior session, exact lock ETag, fence evidence)
+and then `run` or `cleanup`; a plain `run` from a new session reports the hold and
+changes nothing. A run held before it took the lock (for example `environment_locked`)
+has none to release. A release the owner could not confirm is retried the same way,
+and a failure to release raises `finalization_unconfirmed`, `lock_release_conflict`
+or `lock_not_held` as for a finished run. A held verification with an unresolved
+launch, or with a task neither seen stopped nor recorded stopped, keeps the
+environment lock, as any held release does: `cleanup` stops what it can find by
+token but never resolves a launch, so releasing that lock is an operator action
+outside the controller.
 
 ## Not implemented
 

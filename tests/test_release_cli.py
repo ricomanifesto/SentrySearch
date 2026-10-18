@@ -1073,3 +1073,32 @@ def test_recover_handoff_arguments_are_all_or_none_and_rollback_only(
     assert code == cli.EXIT_REFUSED, report
     assert report["error"] == error
     assert r.store.objects == before
+
+
+# Restore verification through the CLI ------------------------------------------------
+
+
+def restore_cli_rig(tmp_path):
+    from tests.release_fakes import restore_verify_document
+
+    return cli_rig(tmp_path, document=restore_verify_document(base=cli_document()))
+
+
+def test_a_restore_verification_that_finishes_exits_zero(tmp_path):
+    r = restore_cli_rig(tmp_path)
+    code, report = r.main(*r.args("run"))
+    assert code == cli.EXIT_OK, report
+    assert report["state"] == "restore_verified"
+    assert lock_key() not in r.store.objects
+
+
+def test_status_of_a_restore_verification_reads_its_own_journal(tmp_path):
+    r = restore_cli_rig(tmp_path)
+    assert r.main(*r.args("run"))[0] == cli.EXIT_OK
+    code, report = r.main(*r.args("status", approval=False), session="cli-status")
+    assert code == cli.EXIT_OK, report
+    purpose = r.document["purpose"]
+    assert report["release_id"] == r.document["release_id"]
+    assert report["run_id"] == purpose["verification_id"]
+    assert report["journal"]["state"] == "restore_verified"
+    assert report["lock"] is None

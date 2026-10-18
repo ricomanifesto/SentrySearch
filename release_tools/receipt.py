@@ -61,6 +61,7 @@ LOG_FIELDS = frozenset(
         "application_name",
         "state",
         "target",
+        "host",
     }
 )
 _KEY = re.compile(r"[a-z][a-z_]{0,31}")

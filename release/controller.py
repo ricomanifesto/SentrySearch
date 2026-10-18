@@ -1,7 +1,8 @@
 """Attended release controller: journal intent, act, then prove the outcome.
 
-The controller runs one approved manifest to ``held_paused`` or stops in
-``hold`` with a bounded reason. It never enables admission, retries blindly,
+The controller runs one approved manifest to ``held_paused`` (a release or a
+rollback) or ``restore_verified`` (a restore verification), or stops in ``hold``
+with a bounded reason. It never enables admission, retries blindly,
 steals a lock or treats a partial observation as success. All AWS access goes
 through ports; this module contains no SDK, credential or network code.
 """
@@ -17,7 +18,9 @@ from typing import Any
 
 from release.journal import Journal, ObjectStore, PreconditionFailed, encode, journal_key, lock_key
 from release.machine import (
+    FINISHED_STATES,
     FORWARD_STATES,
+    RESTORE_STATES,
     ROLLBACK_STATES,
     TERMINAL_STATES,
     State,
@@ -39,6 +42,7 @@ from release.manifest import (
     LoadedManifest,
     ObserverCheck,
     ReleaseRejected,
+    RestoreVerifyRun,
     RollbackRun,
     canonical_sha256,
     executable,
@@ -281,12 +285,19 @@ class ReleaseController:
         self.tokens = tokens
         self.session_id = session_id
         self.handoff = handoff
-        self.release_id = self.manifest.release_id
+        self.restore_run = isinstance(self.manifest.purpose, RestoreVerifyRun)
+        # A restore verification runs under its own id: its journal, lock and launch
+        # tags never touch the release's own journal, whose receipts it proves again.
+        self.release_id = self.manifest.run_id
         # Every receipt names the release whose revisions run: for a rollback, the
         # retained prior release. Journal, lock, approval and launch tags use ours.
         self.evidence_id = self.manifest.evidence_release_id
         self.rollback_run = self.manifest.execution == "rollback"
-        self.sequence = ROLLBACK_STATES if self.rollback_run else FORWARD_STATES
+        self.sequence = (
+            RESTORE_STATES
+            if self.restore_run
+            else ROLLBACK_STATES if self.rollback_run else FORWARD_STATES
+        )
         self.cluster = self.manifest.environment.cluster_arn
         self.poll = self.manifest.window.poll_seconds
         self.journal = Journal(store, journal_key(self.release_id))
@@ -317,6 +328,9 @@ class ReleaseController:
             if approval_error not in (None, "approval_expired"):
                 raise ReleaseHalted(str(approval_error))
             if not self._open(may_create=approval_error is None):
+                # A held verification whose lock was kept while a task could still
+                # run releases it once nothing can.
+                self._release_lock_after_restore_hold()
                 return self._outcome()
         except ClockUntrusted:
             # Nothing recorded yet can anchor a hold; nothing was sent.
@@ -342,6 +356,14 @@ class ReleaseController:
                 State.PROVEN: self._start_services,
                 State.SERVICES_STARTED: self._verify_operational,
                 State.OPERATIONAL_VERIFIED: self._finish,
+            }
+        if self.restore_run:
+            # One restored instance, under the environment lock: reconcile and prove
+            # it; nothing is quiesced, started, admitted, migrated or granted.
+            steps = {
+                State.PREPARED: self._lock_environment,
+                State.LOCKED: lambda: self._run_jobs({"rv-recon"}, State.RESTORE_RECONCILED),
+                State.RESTORE_RECONCILED: self._finish_restore_verification,
             }
         code: str | None = None
         try:
@@ -371,13 +393,14 @@ class ReleaseController:
         # Act outside the except blocks, so nothing journaled or raised from here
         # chains to the original error, which may quote provider or log content.
         if code is not None:
-            if code == "controller_error" and self.state == State.HELD_PAUSED:
+            if code == "controller_error" and self.state in FINISHED_STATES:
                 raise ReleaseHalted("finalization_unconfirmed")
             if code in {"approval_expired", "release_window_exceeded"}:
                 # Expiry forbids forward progress, not cleanup of this release's
                 # already-launched work. Never retry a launch during cleanup.
                 self._cleanup_expired_jobs()
             self._hold(code)
+            self._release_lock_after_restore_hold()
         return self._outcome()
 
     def abort(self) -> Outcome:
@@ -392,11 +415,12 @@ class ReleaseController:
             raise ReleaseHalted("journal_missing")
         if self.journal.document.get("session_id") != self.session_id:
             raise ReleaseHalted("session_conflict")
-        if self.state == State.HELD_PAUSED:
+        if self.state in FINISHED_STATES:
             return self._outcome()
         self._cleanup_expired_jobs()
         if self.state != State.HOLD:
             self._hold("operator_abort")
+        self._release_lock_after_restore_hold()
         return self._outcome()
 
     def recover(self, authorization: RecoveryAuthorization) -> None:
@@ -536,7 +560,7 @@ class ReleaseController:
             return True
         if self.state == State.HOLD:
             return False
-        if self.state == State.HELD_PAUSED:
+        if self.state in FINISHED_STATES:
             if self._last("environment", "lock_released") is not None:
                 return False
             if self.journal.document.get("session_id") != self.session_id:
@@ -1237,6 +1261,10 @@ class ReleaseController:
         }
 
     def _run_jobs(self, phases: set[str], target: State) -> None:
+        self._complete_jobs(phases)
+        self._transition(target)
+
+    def _complete_jobs(self, phases: set[str]) -> None:
         for job in self.manifest.jobs:
             if job.phase not in phases or self._last(job.id, "job_succeeded") is not None:
                 continue
@@ -1247,7 +1275,6 @@ class ReleaseController:
                     raise _Hold(refused.get("reason", "launch_not_accepted"))
                 self._launch(job)
             self._await_job(job)
-        self._transition(target)
 
     def _launch(self, job: Job | ObserverCheck) -> None:
         token = self.tokens()
@@ -1737,6 +1764,88 @@ class ReleaseController:
         if self._outstanding():
             raise _Hold("outstanding_actions")
         self._transition(State.HELD_PAUSED, admission="paused")
+        self._release_environment_lock()
+
+    def _release_lock_after_restore_hold(self) -> None:
+        """A held verification changed nothing in the environment but its own jobs. Once
+        none of them can still run, the session that owns its lock releases it, so
+        releases and rollbacks are not blocked. Only tasks this journal launched or tried
+        to stop count, never a listing: an unresolved launch keeps the lock; a task ECS
+        describes must read STOPPED and carry one of this journal's launch tokens (an
+        open stop of it is then journaled ``stop_confirmed``; no stop is re-sent); a task
+        ECS no longer describes needs a recorded stop. Any task-status uncertainty keeps
+        the lock. Only the owning session acts: a plain run from another session changes
+        nothing, and a new session first runs ``recover`` (prior session, exact lock
+        ETag, fence evidence), then ``run`` or ``cleanup``. A run held before it took
+        the lock has none to release. A release that fails raises as it does for a
+        finished run (``finalization_unconfirmed``, ``lock_release_conflict``,
+        ``lock_not_held``), and the owner retries it the same way. A release's or
+        rollback's hold always keeps its lock."""
+        if not self.restore_run or self.state != State.HOLD:
+            return
+        if self.journal.document.get("session_id") != self.session_id:
+            return
+        if self._last("environment", "lock_released") is not None:
+            return
+        took_lock = any(
+            (event["kind"] == "transition" and event["to"] == State.LOCKED.value)
+            or (event["kind"] == "intent" and event["action"] == "release_lock")
+            for event in self.journal.events
+        )
+        if not took_lock:
+            # Held before LOCKED: a lock this run never took is not its to release.
+            # Between the create and the LOCKED transition the record is the only
+            # evidence that the lock is this run's.
+            try:
+                if not self._lock_is_ours():
+                    return
+            except Exception:
+                return
+        tokens = {str(event["token"]) for event in self.journal.events
+                  if event["kind"] == "intent" and event["action"] == "run_task"
+                  and event.get("token")}  # fmt: skip
+        tasks: set[str] = set()
+        stopped: set[str] = set()
+        for event in self.journal.events:
+            if event["kind"] != "observation" or event.get("subject") not in self.jobs:
+                continue
+            arns = {str(arn) for arn in event.get("task_arns") or []}
+            if event.get("task_arn"):
+                arns.add(str(event["task_arn"]))
+            tasks |= arns
+            if event.get("result") in RECORDED_STOPS:
+                stopped |= arns
+        stops: dict[str, Job] = {}
+        for intent in self._outstanding():
+            if intent["action"] == "release_lock":
+                continue  # its own finalization, resumed by the release below
+            job = self.jobs.get(str(intent["subject"]))
+            if intent["action"] != "stop_task" or not intent.get("task_arn") or job is None:
+                return  # an unresolved launch, or anything else: a task may still run
+            stops[str(intent["task_arn"])] = job
+        tasks |= set(stops)
+        try:
+            described = {arn: self._describe_task(arn) for arn in sorted(tasks)}
+        except Exception:
+            return  # an uncertain read proves nothing: the lock stays
+        for arn, task in described.items():
+            if task is None:
+                if arn not in stopped:
+                    return  # neither seen stopped nor recorded stopped
+            elif task.get("lastStatus") != "STOPPED" or task.get("startedBy") not in tokens:
+                return  # live status wins; a task of another launch is not this journal's
+        for arn, job in stops.items():
+            if described[arn] is not None:
+                self._observe(job.id, "stop_confirmed", resolves="stop_task", task_arn=arn,
+                              **self._sql_unknown(job))  # fmt: skip
+        self._release_environment_lock()
+
+    def _finish_restore_verification(self) -> None:
+        """Prove the restored instance, then release the lock: milestone restore_verified."""
+        self._complete_jobs({"rv-proof"})
+        if self._outstanding():
+            raise _Hold("outstanding_actions")
+        self._transition(State.RESTORE_VERIFIED, milestone="restore_verified")
         self._release_environment_lock()
 
     def _release_environment_lock(self) -> None:

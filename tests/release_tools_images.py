@@ -221,7 +221,8 @@ class Stack:
             if database == "runtime"
             else ("search_owner", "search_app")
         )
-        principal = {"grant": owner, "reconcile": owner, "proof": service, "bootstrap": "postgres"}
+        principal = {"grant": owner, "reconcile": owner, "proof": service, "bootstrap": "postgres",
+                     "rv-recon": owner, "rv-proof": service}  # fmt: skip
         values = {
             "RELEASE_ID": self.release_id,
             "RELEASE_JOB_ID": f"{database}-{kind}",
@@ -235,7 +236,7 @@ class Stack:
         }
         if kind in {"grant", "bootstrap"}:
             values["RELEASE_SERVICE_ROLE"] = service
-        if kind in {"proof", "bootstrap"}:
+        if kind in {"proof", "rv-proof", "bootstrap"}:
             values["RELEASE_OWNER_ROLE"] = owner
         if kind == "bootstrap":
             values["RELEASE_TARGET_DATABASE"] = dbname
@@ -1177,6 +1178,175 @@ def test_reconcile_reports_exact_release_sessions_read_only(stack, released):
         "application_name": tag,
         "state": "active",
     } in run.events
+
+
+# --- restore verification: foreign sessions (F077, plan sections 13 RV2 and 15 RV4) -----
+
+
+def held_session(stack: Stack, user: str, database: str, tag: str) -> str:
+    """A session held open by another connection; returns its pid."""
+    docker(
+        "exec", "-d", "-e", f"PGAPPNAME={tag}", stack.postgres, "psql", "-X", "-U", user,
+        "-d", database, "-c", "SELECT pg_sleep(60)",
+    )  # fmt: skip
+    wait_for(f"session {tag}", lambda: stack.backend(tag))
+    return stack.backend(tag)[0].split("|")[0]
+
+
+def end_sessions(stack: Stack, *pids: str) -> None:
+    """Terminate the held sessions and wait (up to five seconds each) until they exit."""
+    if pids:
+        stack.sql("postgres", "SELECT " + ", ".join(f"pg_terminate_backend({pid}, 5000)"
+                                                    for pid in pids))  # fmt: skip
+
+
+def settled(stack: Stack) -> None:
+    """No earlier test's client session is still leaving the Runtime database."""
+    wait_for("earlier sessions to exit", lambda: stack.sql(
+        "postgres", "SELECT count(*) FROM pg_stat_activity WHERE datname = 'sentryruntime'"
+                    " AND backend_type = 'client backend'") == "0")  # fmt: skip
+
+
+def rv_recon(stack: Stack) -> tuple[dict[str, str], list[dict]]:
+    run = stack.job("rv-recon", "runtime")
+    assert run.code == 0 and run.receipt is not None, run.stderr
+    return run.receipt["result"], run.events
+
+
+def test_a_restore_reconcile_with_only_its_own_session_counts_none(stack, released):
+    settled(stack)
+    result, _events = rv_recon(stack)
+    assert result["foreign_sessions"] == "0"
+    assert result["release_sessions"] == result["owner_sessions"] == "0"
+    assert result["host"] == "postgres"
+
+
+def test_a_held_service_login_is_a_foreign_session_listed_and_left_alone(stack, released):
+    settled(stack)
+    pid = held_session(stack, "runtime_app", "sentryruntime", "held-service")
+    try:
+        result, events = rv_recon(stack)
+        assert result["foreign_sessions"] == "1"
+        assert {"event": "session_observed", "pid": pid, "backend_start": "unknown",
+                "database": "sentryruntime", "principal": "runtime_app",
+                "application_name": "held-service", "state": "unknown"} in events  # fmt: skip
+        assert stack.backend("held-service"), "the job terminated the session"
+    finally:
+        end_sessions(stack, pid)
+
+
+def test_an_owner_session_counts_as_owner_and_foreign(stack, released):
+    settled(stack)
+    pid = held_session(stack, "runtime_owner", "sentryruntime", "held-owner")
+    try:
+        result, _events = rv_recon(stack)
+        assert result["owner_sessions"] == "1" and result["foreign_sessions"] == "1"
+    finally:
+        end_sessions(stack, pid)
+
+
+def test_another_releases_session_the_old_counters_miss_is_foreign(stack, released):
+    settled(stack)
+    tag = "release:11111111-2222-4333-8444-555555555555:x"
+    pid = held_session(stack, "runtime_app", "sentryruntime", tag)
+    try:
+        result, _events = rv_recon(stack)
+        assert result["release_sessions"] == "0" and result["foreign_sessions"] == "1"
+    finally:
+        end_sessions(stack, pid)
+
+
+def test_the_bootstrap_superusers_session_is_not_foreign(stack, released):
+    settled(stack)
+    pid = held_session(stack, "postgres", "sentryruntime", "held-superuser")
+    try:
+        assert rv_recon(stack)[0]["foreign_sessions"] == "0"
+    finally:
+        end_sessions(stack, pid)
+
+
+def test_a_session_in_another_database_of_the_instance_is_not_foreign(stack, released):
+    settled(stack)
+    pid = held_session(stack, "search_owner", "sentrysearch", "held-other-database")
+    try:
+        assert rv_recon(stack)[0]["foreign_sessions"] == "0"
+    finally:
+        end_sessions(stack, pid)
+
+
+def test_the_forward_reconcile_on_the_same_stack_is_unchanged(stack, released):
+    settled(stack)
+    run = stack.job("reconcile", "runtime")
+    assert run.code == 0 and run.receipt is not None
+    assert run.receipt["result"] == {"database": "sentryruntime", "principal": "runtime_owner",
+                                     "schema": "goose:1,2,3", "release_sessions": "0",
+                                     "owner_sessions": "0"}  # fmt: skip
+    assert not [event for event in run.events if event["event"] == "session_observed"]
+
+
+# RV4 (plan section 15): the predicate counts login sessions only. A fixture view that
+# shadows pg_stat_activity gives the unmodified program each row shape at once.
+FIXTURE_SCHEMA = "rv4_fixture"
+FIXTURE_ROWS = """
+    (900001, timestamptz '2026-10-18 00:00:01+00', 'sentryruntime'::name, NULL::oid,
+     NULL::name, ''::text, NULL::text),
+    (900002, timestamptz '2026-10-18 00:00:02+00', 'sentryruntime', 10::oid,
+     'postgres', 'psql', 'idle'),
+    (900003, timestamptz '2026-10-18 00:00:03+00', 'sentryruntime',
+     'runtime_app'::regrole::oid, 'runtime_app', 'held-service', NULL),
+    (900004, timestamptz '2026-10-18 00:00:04+00', 'sentryruntime',
+     'runtime_owner'::regrole::oid, 'runtime_owner', 'held-owner', 'idle'),
+    (900005, timestamptz '2026-10-18 00:00:05+00', 'sentryruntime',
+     'runtime_app'::regrole::oid, 'runtime_app',
+     'release:11111111-2222-4333-8444-555555555555:x', NULL),
+    (900006, timestamptz '2026-10-18 00:00:06+00', 'sentrysearch',
+     'search_owner'::regrole::oid, 'search_owner', 'psql', 'idle')
+"""
+
+
+def test_the_restore_program_counts_only_login_sessions_in_its_database(stack, released):
+    # Rows: (1) an engine worker without a user (the autovacuum shape), (2) the
+    # bootstrap superuser, (3) the service login, (4) the owner, (5) the service login
+    # tagged as another release, (6) a login in another database. Only 3, 4 and 5 count.
+    stack.sql("sentryruntime", f"CREATE SCHEMA {FIXTURE_SCHEMA}", user="runtime_owner")
+    try:
+        stack.sql("sentryruntime", f"CREATE VIEW {FIXTURE_SCHEMA}.pg_stat_activity"
+                  " (pid, backend_start, datname, usesysid, usename, application_name, state)"
+                  f" AS VALUES {FIXTURE_ROWS}", user="runtime_owner")  # fmt: skip
+        program = (REPO / "release_tools/sql/restore_sessions.sql").read_text()
+        # The unmodified file through psql as the owner; pg_catalog later in the path
+        # lets the fixture schema shadow the view.
+        run = docker(
+            "exec", "-i", "-e", f"PGOPTIONS=-c search_path={FIXTURE_SCHEMA},pg_catalog",
+            stack.postgres, "psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-U", "runtime_owner",
+            "-d", "sentryruntime", "-tA", "-f", "-", stdin=program,
+        )  # fmt: skip
+    finally:
+        stack.sql("sentryruntime", f"DROP SCHEMA {FIXTURE_SCHEMA} CASCADE", user="runtime_owner")
+    lines = [line for line in run.stdout.splitlines() if line]
+    assert [line for line in lines if line.startswith("result|")] == ["result|foreign_sessions|3"]
+    assert [line for line in lines if line.startswith("session|")] == [
+        "session|900003|2026-10-18T00:00:03.000000Z|sentryruntime|runtime_app|held-service|unknown",
+        "session|900004|2026-10-18T00:00:04.000000Z|sentryruntime|runtime_owner|held-owner|idle",
+        "session|900005|2026-10-18T00:00:05.000000Z|sentryruntime|runtime_app|"
+        "release:11111111-2222-4333-8444-555555555555:x|unknown",
+    ]
+
+
+def test_engine_processes_carry_no_user_in_the_owners_view(stack, released):
+    # The live catalog, read as the owner: processes without a user exist, show no user
+    # name, and those of the launcher, checkpointer and writers have no database. This
+    # proves the representation; the fixture view above proves the same-database case.
+    def owner(statement: str) -> str:
+        return stack.sql("sentryruntime", statement, user="runtime_owner")
+
+    assert int(owner("SELECT count(*) FROM pg_stat_activity WHERE usesysid IS NULL"
+                     " AND usename IS NULL AND datname IS NULL")) >= 1  # fmt: skip
+    assert owner("SELECT count(*) FROM pg_stat_activity"
+                 " WHERE usesysid IS NULL AND usename IS NOT NULL") == "0"  # fmt: skip
+    # The superuser sees which processes those are: never a client backend.
+    assert stack.sql("postgres", "SELECT count(*) FROM pg_stat_activity"
+                     " WHERE usesysid IS NULL AND backend_type = 'client backend'") == "0"  # fmt: skip
 
 
 def test_receipts_are_unique_per_task_stream(stack, released):

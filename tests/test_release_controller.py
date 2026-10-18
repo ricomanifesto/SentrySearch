@@ -4190,3 +4190,514 @@ def test_a_handoff_reaching_its_authorization_limit_at_the_intent_write_moves_no
     [intent] = rollback_events(r, "intent", action="lock_handoff")
     assert not rollback_events(r, "observation", result="lock_handed_off")
     assert intent["lock_etag"] == lock[1]
+
+
+# Restore verification (F077) ----------------------------------------------------------
+
+
+def restore_rig(database: str = "runtime", **approval) -> Rig:
+    from tests.release_fakes import restore_verify_document
+
+    return document_rig(restore_verify_document(database), **approval)
+
+
+def restore_journal(r: Rig) -> dict:
+    from tests.release_fakes import RESTORE_VERIFICATION_ID
+
+    return json.loads(r.store.objects[journal_key(RESTORE_VERIFICATION_ID)][0])
+
+
+def restore_events(r: Rig, kind: str, **match) -> list[dict]:
+    return [e for e in restore_journal(r)["events"]
+            if e["kind"] == kind and all(e.get(k) == v for k, v in match.items())]  # fmt: skip
+
+
+def test_a_restore_verification_reconciles_and_proves_only_the_restored_instance():
+    r = restore_rig()
+    seeded = encode({"schema_version": 1, "release_id": r.document["release_id"], "seeded": True})
+    r.store.objects[JOURNAL] = (seeded, "release-journal-etag")
+    outcome = r.controller().run()
+    assert outcome.state == "restore_verified", outcome
+    transitions = restore_events(r, "transition")
+    assert [e["to"] for e in transitions] == ["prepared", "locked", "restore_reconciled",
+                                              "restore_verified"]  # fmt: skip
+    assert transitions[-1]["milestone"] == "restore_verified"
+    assert launched_job_ids(r) == ["runtime-rv-recon", "runtime-rv-proof"]
+    # Nothing but its own two jobs: no service scaled or deployed, no quiesce.
+    assert {name for name, _request in r.ecs.mutations} == {"run_task"}
+    # It runs under its own journal; the release's own is byte for byte as it was, and
+    # the environment lock is released.
+    assert r.store.objects[JOURNAL] == (seeded, "release-journal-etag")
+    assert LOCK not in r.store.objects
+    assert restore_events(r, "observation", subject="environment", result="lock_released")
+
+
+def test_a_restore_verification_never_overlaps_a_release_holding_the_lock():
+    r = restore_rig()
+    r.store.create(LOCK, encode({"release_id": FAILED_RELEASE_ID, "session_id": "another",
+                                 "manifest_sha256": sha("another manifest")}))  # fmt: skip
+    outcome = r.controller().run()
+    assert outcome.state == "hold" and outcome.reason == "environment_locked"
+    assert r.calls("run_task") == []
+    assert json.loads(r.store.objects[LOCK][0])["release_id"] == FAILED_RELEASE_ID
+
+
+def test_a_release_never_overlaps_a_running_verification():
+    from tests.release_fakes import RESTORE_VERIFICATION_ID
+
+    forward = rig()
+    forward.store.create(LOCK, encode({"release_id": RESTORE_VERIFICATION_ID,
+                                       "session_id": "verifying"}))  # fmt: skip
+    outcome = forward.controller().run()
+    assert outcome.state == "hold" and outcome.reason == "environment_locked"
+    assert forward.calls("run_task") == []
+
+
+@pytest.mark.parametrize("job, change", [
+    ("runtime-rv-recon", {"foreign_sessions": "1"}),
+    ("runtime-rv-proof", {"sql_digest": "c" * 64}),
+    ("runtime-rv-proof", {"schema": "goose:1"}),
+    ("runtime-rv-proof", {"host": "the-source-instance.example.com"}),
+])  # fmt: skip
+def test_a_receipt_other_than_expected_holds_and_frees_the_settled_lock(job, change):
+    r = restore_rig()
+    expect = copy.deepcopy(r.evidence.jobs[job]["expect"])
+    r.evidence.job_changes[job] = {"result": {**expect, **change}}
+    outcome = r.controller().run()
+    assert outcome.state == "hold" and outcome.reason == "job_receipt_mismatch", outcome
+    hold = restore_events(r, "transition", to="hold")[-1]
+    assert hold["rollback"]["kind"] == "restore_hold"
+    assert "leave_restored_instance_untouched" in hold["rollback"]["actions"]
+    # Nothing cancelled or changed: only its own launches.
+    assert {name for name, _request in r.ecs.mutations} == {"run_task"}
+    # Every task it launched has stopped, so the lock is released for the next release.
+    assert LOCK not in r.store.objects
+    assert restore_events(r, "observation", subject="environment", result="lock_released")
+
+
+def test_a_held_verification_keeps_the_lock_while_a_task_may_still_run(monkeypatch):
+    from release.machine import State
+
+    r = restore_rig()
+    expect = copy.deepcopy(r.evidence.jobs["runtime-rv-proof"]["expect"])
+    r.evidence.job_changes["runtime-rv-proof"] = {"result": {**expect, "schema": "goose:1"}}
+    controller = r.controller()
+    real = controller._describe_task
+    running = {"on": True}
+
+    def maybe_running(arn):
+        # After the hold is journaled: a task it launched reads as still running.
+        task = real(arn)
+        held = controller.state == State.HOLD
+        return {**(task or {}), "lastStatus": "RUNNING"} if running["on"] and held else task
+
+    monkeypatch.setattr(controller, "_describe_task", maybe_running)
+    outcome = controller.run()
+    assert outcome.state == "hold" and outcome.reason == "job_receipt_mismatch", outcome
+    assert LOCK in r.store.objects, "a task it launched might still run"
+    # Once it is seen stopped, the session that owns the lock frees it.
+    running["on"] = False
+    again = r.controller()
+    assert again.run().state == "hold"
+    assert LOCK not in r.store.objects
+
+
+def hold_on_proof_schema(r: Rig) -> None:
+    expect = copy.deepcopy(r.evidence.jobs["runtime-rv-proof"]["expect"])
+    r.evidence.job_changes["runtime-rv-proof"] = {"result": {**expect, "schema": "goose:1"}}
+
+
+def released_locks(r: Rig) -> list[dict]:
+    return restore_events(r, "observation", subject="environment", result="lock_released")
+
+
+def release_intents(r: Rig) -> list[dict]:
+    return restore_events(r, "intent", action="release_lock")
+
+
+def running_after_the_hold(monkeypatch, controller: ReleaseController, **fields) -> dict:
+    """After the hold is journaled, the tasks it launched read with these fields
+    (RUNNING by default) until the returned switch is turned off."""
+    from release.machine import State
+
+    real = controller._describe_task
+    switch = {"on": True}
+
+    def describe(arn):
+        task = real(arn)
+        if switch["on"] and controller.state == State.HOLD and task is not None:
+            return {**task, **(fields or {"lastStatus": "RUNNING"})}
+        return task
+
+    monkeypatch.setattr(controller, "_describe_task", describe)
+    return switch
+
+
+@pytest.mark.parametrize("retry", ["owner", "cleanup"])
+def test_a_failed_lock_release_after_a_hold_raises_and_is_retried(monkeypatch, retry):
+    r = restore_rig()
+    hold_on_proof_schema(r)
+
+    def refuse(*_args, **_kwargs):
+        raise RuntimeError("store unavailable")
+
+    monkeypatch.setattr(r.store, "delete", refuse)
+    with pytest.raises(ReleaseHalted) as halted:
+        r.controller().run()
+    assert halted.value.code == "finalization_unconfirmed"
+    assert restore_events(r, "transition")[-1]["to"] == "hold"
+    assert LOCK in r.store.objects and len(release_intents(r)) == 1 and not released_locks(r)
+    monkeypatch.undo()
+    mutations = len(r.ecs.mutations)
+    # Each CLI process is a new session: a plain run is not the owner and changes nothing.
+    before = dict(r.store.objects)
+    assert r.controller("session-c").run().state == "hold"
+    assert r.store.objects == before
+    if retry == "owner":
+        assert r.controller().run().state == "hold"
+        assert len(release_intents(r)) == 1, "the owner resumes its own intent"
+    else:
+        # cleanup: recovery takes the lock over under fence evidence, then aborts.
+        assert r.recover().abort().state == "hold"
+    [released] = released_locks(r)
+    assert released["resolves"] == "release_lock" and LOCK not in r.store.objects
+    assert len(r.ecs.mutations) == mutations
+
+
+def test_a_crash_after_the_lock_delete_is_finished_without_deleting_again(monkeypatch):
+    r = restore_rig()
+    hold_on_proof_schema(r)
+    original = r.store.delete
+    deletes = []
+
+    def delete_then_crash(key, *, if_match):
+        deletes.append(key)
+        original(key, if_match=if_match)
+        raise SimulatedCrash("after the lock delete")
+
+    monkeypatch.setattr(r.store, "delete", delete_then_crash)
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    assert LOCK not in r.store.objects and not released_locks(r)
+    assert r.controller().run().state == "hold"
+    assert len(deletes) == 1 and len(release_intents(r)) == 1
+    [released] = released_locks(r)
+    assert released["resolves"] == "release_lock"
+
+
+@pytest.mark.parametrize("when", ["before", "after"])
+def test_a_new_session_recovers_and_finishes_an_interrupted_hold_release(monkeypatch, when):
+    r = restore_rig()
+    hold_on_proof_schema(r)
+    original = r.store.delete
+
+    def crash_delete(key, *, if_match):
+        if when == "after":
+            original(key, if_match=if_match)
+        raise SimulatedCrash("lock release")
+
+    monkeypatch.setattr(r.store, "delete", crash_delete)
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    monkeypatch.setattr(r.store, "delete", original)
+    controller = r.controller("session-b")
+    controller.recover(RecoveryAuthorization(
+        prior_session_id="session-a", lock_etag=r.lock_etag() if when == "before" else "",
+        fence_evidence_sha256=sha("fenced"), authorized_by="fixture-operator",
+    ))  # fmt: skip
+    transferred = r.lock_etag() if when == "before" else None
+    assert controller.run().state == "hold"
+    assert LOCK not in r.store.objects and len(released_locks(r)) == 1
+    intents = release_intents(r)
+    if when == "before":
+        assert len(intents) == 2
+        assert (intents[-1]["session_id"], intents[-1]["lock_etag"]) == ("session-b", transferred)
+    else:
+        assert len(intents) == 1
+
+
+@pytest.mark.parametrize("replacement", ["foreign", "drift"])
+def test_a_replacement_lock_is_never_deleted_after_an_interrupted_hold_release(
+    monkeypatch, replacement
+):
+    r = restore_rig()
+    hold_on_proof_schema(r)
+
+    def crash_delete(*_args, **_kwargs):
+        raise SimulatedCrash("before delete")
+
+    monkeypatch.setattr(r.store, "delete", crash_delete)
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    monkeypatch.undo()
+    body = r.store.objects[LOCK][0]
+    if replacement == "foreign":
+        body = encode({"release_id": FAILED_RELEASE_ID, "session_id": "other"})
+    r.store.objects[LOCK] = (body, '"replacement-etag"')
+    placed = r.store.objects[LOCK]
+    # A plain run from another session touches nothing.
+    before = dict(r.store.objects)
+    assert r.controller("session-c").run().state == "hold"
+    assert r.store.objects == before
+    with pytest.raises(ReleaseHalted) as halted:
+        r.controller().run()
+    assert halted.value.code == "lock_release_conflict"
+    assert r.store.objects[LOCK] == placed and not released_locks(r)
+    assert restore_events(r, "transition")[-1]["to"] == "hold"
+
+
+def test_after_its_lock_is_released_a_held_verification_changes_nothing():
+    r = restore_rig()
+    hold_on_proof_schema(r)
+    assert r.controller().run().state == "hold"
+    assert LOCK not in r.store.objects
+    before, mutations = dict(r.store.objects), len(r.ecs.mutations)
+    assert r.controller().run().state == "hold"
+    assert r.controller().abort().state == "hold"
+    assert r.store.objects == before and len(r.ecs.mutations) == mutations
+
+
+@pytest.mark.parametrize("retry", ["owner", "cleanup"])
+def test_a_held_verification_whose_stopped_tasks_ecs_forgot_frees_the_lock(monkeypatch, retry):
+    r = restore_rig()
+    hold_on_proof_schema(r)
+    controller = r.controller()
+    running_after_the_hold(monkeypatch, controller)
+    assert controller.run().state == "hold"
+    assert LOCK in r.store.objects
+    # ECS forgets stopped tasks; the journal recorded both of these stops.
+    r.ecs.tasks.clear()
+    if retry == "owner":
+        assert r.controller().run().state == "hold"
+    else:
+        assert r.recover().abort().state == "hold"
+    assert LOCK not in r.store.objects and len(released_locks(r)) == 1
+
+
+def test_a_task_ecs_no_longer_describes_without_a_recorded_stop_keeps_the_lock(monkeypatch):
+    from release.ports import AmbiguousResponse
+
+    r = restore_rig()
+    controller = r.controller()
+    real = controller._describe_task
+    lost = {"once": True}
+
+    def lost_after_launch(arn):
+        if lost["once"] and controller._last("runtime-rv-recon", "launched") is not None:
+            lost["once"] = False
+            raise AmbiguousResponse("describe response lost")
+        return real(arn)
+
+    monkeypatch.setattr(controller, "_describe_task", lost_after_launch)
+    outcome = controller.run()
+    assert outcome.state == "hold" and outcome.reason == "observation_ambiguous", outcome
+    assert not controller._outstanding(), "the launch was resolved"
+    assert LOCK in r.store.objects, "its reconcile task is still running"
+    # ECS no longer describes it, and the journal never recorded it stopped.
+    r.ecs.tasks.clear()
+    assert r.controller().run().state == "hold"
+    assert LOCK in r.store.objects and not released_locks(r)
+
+
+def held_with_an_unconfirmed_stop(monkeypatch, r: Rig) -> dict:
+    """A proof that outlives its deadline and ignores its stop: stop_unconfirmed."""
+    proof = next(job for job in r.document["jobs"] if job["id"] == "runtime-rv-proof")
+    definition = proof["task"]["task_definition"]
+    r.ecs.plans[definition] = JobPlan(seconds=10_000)
+    original = r.ecs._describe
+    stuck = {"on": True}
+
+    def ignores_its_stop(item):
+        described = original(item)
+        if stuck["on"] and item.task_definition == definition:
+            described = {**described, "lastStatus": "RUNNING"}
+        return described
+
+    monkeypatch.setattr(r.ecs, "_describe", ignores_its_stop)
+    outcome = r.controller().run()
+    assert outcome.state == "hold" and outcome.reason == "job_deadline_exceeded", outcome
+    assert restore_events(r, "observation", result="stop_unconfirmed")
+    assert LOCK in r.store.objects, "the proof task may still run"
+    return stuck
+
+
+@pytest.mark.parametrize("settle", ["owner", "cleanup"])
+def test_a_stop_never_confirmed_is_settled_once_the_task_is_seen_stopped(monkeypatch, settle):
+    r = restore_rig()
+    stuck = held_with_an_unconfirmed_stop(monkeypatch, r)
+    stops = len(r.calls("stop_task"))
+    stuck["on"] = False
+    r.clock.advance(seconds=60)
+    if settle == "owner":
+        # The owner's run re-describes the open stop and journals it confirmed; it
+        # sends no stop of its own.
+        assert r.controller().run().state == "hold"
+        assert len(r.calls("stop_task")) == stops
+    else:
+        assert r.recover().abort().state == "hold"
+        assert restore_events(r, "observation", result="cleanup_stopped")
+    [confirmed] = [event for event in restore_events(r, "observation", result="stop_confirmed")
+                   if event["subject"] == "runtime-rv-proof"]  # fmt: skip
+    assert confirmed["resolves"] == "stop_task" and confirmed["sql_outcome"] == "unknown"
+    assert LOCK not in r.store.objects and len(released_locks(r)) == 1
+
+
+def test_an_unconfirmed_stop_of_a_task_ecs_forgot_keeps_the_lock(monkeypatch):
+    # An invariant, not a correction: no record says this task stopped.
+    r = restore_rig()
+    held_with_an_unconfirmed_stop(monkeypatch, r)
+    r.ecs.tasks.clear()
+    assert r.controller().run().state == "hold"
+    assert LOCK in r.store.objects
+    assert r.recover().abort().state == "hold"
+    assert LOCK in r.store.objects and not released_locks(r)
+
+
+def test_a_described_task_of_another_launch_keeps_the_lock(monkeypatch):
+    r = restore_rig()
+    hold_on_proof_schema(r)
+    controller = r.controller()
+    running_after_the_hold(monkeypatch, controller, startedBy="another-launch-token")
+    assert controller.run().state == "hold"
+    assert LOCK in r.store.objects and not released_locks(r)
+
+
+def test_an_expired_approval_stops_its_task_and_frees_the_lock_in_the_same_run():
+    r = restore_rig(not_after=iso(START + timedelta(seconds=50)))
+    recon = next(job for job in r.document["jobs"] if job["id"] == "runtime-rv-recon")
+    r.ecs.plans[recon["task"]["task_definition"]] = JobPlan(seconds=10_000)
+    outcome = r.controller().run()
+    assert outcome.state == "hold" and outcome.reason == "approval_expired", outcome
+    assert launched_job_ids(r) == ["runtime-rv-recon"]
+    assert restore_events(r, "observation", subject="runtime-rv-recon", result="stop_confirmed")
+    [intent] = release_intents(r)
+    assert LOCK not in r.store.objects and len(released_locks(r)) == 1
+    # After expiry: only the stop and the lock release, never a forward intent.
+    events = restore_journal(r)["events"]
+    hold = next(i for i, e in enumerate(events) if e["kind"] == "transition" and e["to"] == "hold")
+    assert {e["action"] for e in events[hold:] if e["kind"] == "intent"} <= {"release_lock"}
+    assert intent["sequence"] > events[hold]["sequence"]
+
+
+def test_an_unresolved_launch_keeps_the_lock_and_is_never_resent(monkeypatch):
+    r = restore_rig()
+    r.ecs.visibility_delay = 10**7
+    r.ecs.crash[("run_task", "after")] = 1
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    r.clock.advance(seconds=900 + 3600 + 1)
+    launches = len(r.calls("run_task"))
+    outcome = r.recover().run()
+    assert outcome.state == "hold" and outcome.reason == "launch_outcome_unknown", outcome
+    assert LOCK in r.store.objects
+    listed = []
+    original = r.ecs.list_tasks
+
+    def counting(*args, **kwargs):
+        listed.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(r.ecs, "list_tasks", counting)
+    assert r.controller("session-b").run().state == "hold"
+    assert not listed, "the hold's lock check never lists tasks"
+    assert r.controller("session-b").abort().state == "hold"
+    assert LOCK in r.store.objects and not released_locks(r)
+    assert len(r.calls("run_task")) == launches
+
+
+def test_a_verification_held_between_taking_the_lock_and_locked_frees_its_own_lock(monkeypatch):
+    r = restore_rig(not_after=iso(START + timedelta(seconds=50)))
+    original = r.store.create
+
+    def create_then_expire(key, body):
+        etag = original(key, body)
+        if key == LOCK:
+            r.clock.advance(seconds=60)  # the approval expires before LOCKED is journaled
+        return etag
+
+    monkeypatch.setattr(r.store, "create", create_then_expire)
+    outcome = r.controller().run()
+    assert outcome.state == "hold" and outcome.reason == "approval_expired", outcome
+    assert not restore_events(r, "transition", to="locked") and r.calls("run_task") == []
+    assert LOCK not in r.store.objects and len(released_locks(r)) == 1
+
+
+def test_a_journal_conflict_while_freeing_a_held_lock_halts(monkeypatch):
+    r = restore_rig()
+    hold_on_proof_schema(r)
+    controller = r.controller()
+
+    def conflicting():
+        raise ReleaseHalted("journal_conflict")
+
+    monkeypatch.setattr(controller, "_release_environment_lock", conflicting)
+    with pytest.raises(ReleaseHalted) as halted:
+        controller.run()
+    assert halted.value.code == "journal_conflict"
+    assert LOCK in r.store.objects
+
+
+@pytest.mark.parametrize("when", ["before", "after"])
+def test_a_verification_lost_mid_launch_is_recovered_to_exactly_one_task(when):
+    r = restore_rig()
+    r.ecs.visibility_delay = 20 if when == "after" else 0
+    r.ecs.crash[("run_task", when)] = 1
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    assert r.recover().run().state == "restore_verified"
+    assert [len(r.job_tasks(job)) for job in ("runtime-rv-recon", "runtime-rv-proof")] == [1, 1]
+    assert LOCK not in r.store.objects
+
+
+def test_a_verification_lost_before_its_final_transition_finishes_once():
+    r = restore_rig()
+
+    def crash_on_verified(key, body):
+        event = json.loads(body)["events"][-1]
+        if event["kind"] == "transition" and event["to"] == "restore_verified":
+            r.store.before_replace = None
+            raise SimulatedCrash("before restore_verified")
+
+    r.store.before_replace = crash_on_verified
+    with pytest.raises(SimulatedCrash):
+        r.controller().run()
+    assert not restore_events(r, "transition", to="restore_verified")
+    launched = len(r.calls("run_task"))
+    assert r.recover().run().state == "restore_verified"
+    assert len(r.calls("run_task")) == launched, "the proof is not run again"
+    assert LOCK not in r.store.objects and len(released_locks(r)) == 1
+
+
+def test_a_missing_proof_receipt_is_never_a_verification():
+    r = restore_rig()
+    r.evidence.missing_jobs.add("runtime-rv-proof")
+    outcome = r.controller().run()
+    assert outcome.state == "hold" and outcome.reason == "job_deadline_exceeded"
+    assert not restore_events(r, "transition", to="restore_verified")
+
+
+def test_a_finished_verification_run_or_aborted_again_launches_nothing():
+    r = restore_rig()
+    assert r.controller().run().state == "restore_verified"
+    launched = len(r.calls("run_task"))
+    assert r.controller().run().state == "restore_verified"
+    assert r.controller().abort().state == "restore_verified"
+    assert len(r.calls("run_task")) == launched
+
+
+def test_an_unconfirmed_lock_release_after_verification_is_not_a_success(monkeypatch):
+    r = restore_rig()
+
+    def refuse(*_args, **_kwargs):
+        raise RuntimeError("store unavailable")
+
+    monkeypatch.setattr(r.store, "delete", refuse)
+    with pytest.raises(ReleaseHalted) as halted:
+        r.controller().run()
+    assert halted.value.code == "finalization_unconfirmed"
+    assert restore_events(r, "transition", to="restore_verified")
+    assert LOCK in r.store.objects
+    monkeypatch.undo()
+    # The same session finishes releasing its lock on the next run.
+    assert r.controller().run().state == "restore_verified"
+    assert LOCK not in r.store.objects

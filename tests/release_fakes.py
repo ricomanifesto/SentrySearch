@@ -335,6 +335,41 @@ def rollback_run_document() -> dict:
     return document
 
 
+RESTORE_VERIFICATION_ID = "5a1e4c2d-7b3f-4e8a-9c6d-0f1e2d3c4b5a"
+# The restored instance's endpoint: its identifier, then the environment's region.
+RESTORED_ENDPOINT = "staging-runtime-db-restore-r1.abc123xyz.us-east-1.rds.amazonaws.com"
+PROOF_PROGRAM_SHA256 = "b" * 64
+
+
+def restore_verify_document(database: str = "runtime", base: dict | None = None) -> dict:
+    """A restore verification of the current release's database on a restored instance
+    (of the forward document, or of ``base``, a current release's manifest)."""
+    document = copy.deepcopy(base) if base is not None else manifest_document()
+    names = {"runtime": ("runtime_db", "runtime_owner", "runtime_service"),
+             "product": ("product_db", "product_owner", "product_service")}[database]  # fmt: skip
+    schema = next(job["expect"]["schema"] for job in document["jobs"]
+                  if job["phase"] == "migrate" and job["database"] == database)  # fmt: skip
+    environment = document["environment"]["name"]
+    region = document["environment"]["region"]
+    endpoint = f"{environment}-{database}-db-restore-r1.abc123xyz.{region}.rds.amazonaws.com"
+    document["purpose"] = {
+        "kind": "restore_verify", "database": database,
+        "restored_instance": f"{environment}-{database}-db-restore-r1",
+        "restored_endpoint": endpoint, "verification_id": RESTORE_VERIFICATION_ID,
+        "not_after": document["window"]["expires_at"],
+    }  # fmt: skip
+    document["jobs"] = [
+        job(f"{database}-rv-recon", "rv-recon", database, image="release_tools",
+            expect={"database": names[0], "principal": names[1], "schema": schema,
+                    "release_sessions": "0", "owner_sessions": "0", "foreign_sessions": "0",
+                    "host": endpoint}),
+        job(f"{database}-rv-proof", "rv-proof", database, image="release_tools",
+            expect={"database": names[0], "principal": names[2], "schema": schema,
+                    "host": endpoint, "sql_digest": PROOF_PROGRAM_SHA256}),
+    ]  # fmt: skip
+    return document
+
+
 def evidence_release_id(document: dict) -> str:
     """The release whose revisions run: a rollback runs the retained prior release's."""
     purpose = document.get("purpose") or {}
@@ -886,7 +921,10 @@ class FakeEvidence:
         self.ecs = ecs
         # Tasks this run launched carry its tag; their revisions fix the release
         # whose receipts they write (the prior one for a rollback).
-        self.run_id = document["release_id"]
+        # A restore verification launches under its own id; its definitions still name
+        # the current release in every receipt.
+        purpose = document.get("purpose") or {}
+        self.run_id = purpose.get("verification_id") or document["release_id"]
         self.evidence_id = evidence_release_id(document)
         self.jobs = {item["id"]: item for item in document["jobs"]}
         self.checks = {item["id"]: item for item in document["operational_checks"]}

@@ -43,7 +43,7 @@ import uuid
 from dev.assemble_account_plan import canonical
 from botocore.exceptions import ClientError
 
-from release.manifest import RUNTIME_GRANT_PIN, ReleaseRejected
+from release.manifest import RUNTIME_GRANT_PIN, ReleaseRejected, restore_label_valid
 from release_kits import images as oci
 from release_kits import render
 from release_kits import session as sessions
@@ -938,7 +938,8 @@ class Kit:
             raise Refused("the approval names no database of this environment")
         source = f"{self.plan.name_prefix}-{database}-db"
         target = str(approval.get("target_identifier"))
-        if not re.fullmatch(rf"{re.escape(source)}-restore-[a-z0-9-]{{1,20}}", target):
+        if not (target.startswith(f"{source}-restore-")
+                and restore_label_valid(target.removeprefix(f"{source}-restore-"))):  # fmt: skip
             raise Refused(f"the target must be a new instance named {source}-restore-<label>")
         restore_time = approval.get("restore_time")
         session = self.session(step, session_path)

@@ -31,10 +31,13 @@ lost session always goes through `recover` or `cleanup`, which journal who
 authorized the takeover and the evidence that the prior process is fenced.
 
 Output is one JSON document on stdout: no credential, token or provider message;
-an unexpected error is reported by its class only. Exit codes: `0` success, `2`
-refused before any release action (input, credentials, identity, environment or
+an unexpected error is reported by its class only. Exit codes: `0` success (a
+release or rollback at `held_paused`, a restore verification at `restore_verified`),
+`2` refused before any release action (input, credentials, identity, environment or
 clock), `3` the release holds, `4` the controller halted (for example a journal
-conflict, a refused recovery or an unexpected error).
+conflict, a refused recovery or an unexpected error). For a restore verification,
+`status` reads the run's own journal (its `verification_id`, reported as `run_id`
+beside the release's `release_id`).
 
 Credentialed commands need a schema-2 manifest: its `operator_role` names the IAM
 role the operator's session must have assumed. A schema-1 manifest names no role

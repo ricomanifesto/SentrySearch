@@ -188,7 +188,8 @@ class Job:
             raise JobFailed("cross_database_unproven", "unknown", EXIT_SQL)
         return {**result, "schema": observed["schema"]}
 
-    def reconcile(self) -> dict[str, str]:
+    def reconcile(self, extra: tuple[str, ...] = (), keys: tuple[str, ...] = ()) -> dict[str, str]:
+        """The reconcile observation; a restore verification adds files and keys."""
         result = self._session(
             [
                 "session_check.sql",
@@ -196,16 +197,23 @@ class Job:
                 "identity.sql",
                 self._schema_file(),
                 "reconcile.sql",
+                *extra,
             ],
             {"release_id": self.config.release_id},
         )
         observed = self._checked(result)
+        # A session two programs list (an owner or release session a restore
+        # verification also counts as foreign) is logged once, as the first saw it.
+        listed: set[str] = set()
         for line in result.stdout.splitlines():
             if line.startswith("session|"):
                 values = line.split("|")[1:]
                 if len(values) != len(_SESSION_FIELDS):
                     receipt.log("session_unparsed")
                     continue
+                if values[0] in listed:
+                    continue
+                listed.add(values[0])
                 receipt.log(
                     "session_observed",
                     **{
@@ -213,10 +221,26 @@ class Job:
                         for name, value in zip(_SESSION_FIELDS, values)
                     },
                 )
-        keys = ("schema", "release_sessions", "owner_sessions")
-        if any(key not in observed for key in keys):
+        reported = ("schema", "release_sessions", "owner_sessions", *keys)
+        if any(key not in observed for key in reported):
             raise JobFailed("observation_mismatch", "unknown", EXIT_SQL)
-        return {**self._expect(observed, self._identity()), **{key: observed[key] for key in keys}}
+        return {
+            **self._expect(observed, self._identity()),
+            **{key: observed[key] for key in reported},
+        }
+
+    def rv_recon(self) -> dict[str, str]:
+        """Reconcile a restored instance: the same observation, the count of foreign
+        sessions in its database (restore_sessions.sql) and the host it reached."""
+        observed = self.reconcile(extra=("restore_sessions.sql",), keys=("foreign_sessions",))
+        return {**observed, "host": self.config.connection.host}
+
+    def rv_proof(self) -> dict[str, str]:
+        """Prove a restored instance: the same proof, the host it reached and the
+        verified digest of the proof program that ran (the inventory it enforces is
+        that program's; no catalog or data checksum is measured)."""
+        return {**self.proof(), "host": self.config.connection.host,
+                "sql_digest": self.config.sql_sha256}  # fmt: skip
 
     def bootstrap(self) -> dict[str, str]:
         assert self.config.owner_password and self.config.service_password
@@ -246,11 +270,13 @@ class Job:
 
     def run(self) -> int:
         common = {"release_id": self.config.release_id, "job_id": self.config.job_id}
-        receipt.log("job_started", kind=self.config.kind, database=self.config.database, **common)
+        restore = self.config.kind.startswith("rv-")
+        receipt.log("job_started", kind=self.config.kind, database=self.config.database, **common,
+                    **({"host": self.config.connection.host} if restore else {}))  # fmt: skip
         try:
             if not _material_ok():
                 raise JobFailed("material_invalid", "none", EXIT_MATERIAL)
-            result = getattr(self, self.config.kind)()
+            result = getattr(self, self.config.kind.replace("-", "_"))()
         except JobFailed as failure:
             receipt.emit_receipt(
                 **common,

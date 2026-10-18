@@ -923,3 +923,137 @@ def test_migration_job_ids_are_the_ones_their_task_definitions_fix(index, job_id
     assert document["jobs"][index]["phase"] == "migrate"
     document["jobs"][index]["id"] = job_id
     assert rejected(encode(document)).code == "job_id_invalid"
+
+
+# Restore verification (F077) ----------------------------------------------------------
+
+
+def restore_document(**changes) -> dict:
+    from tests.release_fakes import restore_verify_document
+
+    document = restore_verify_document()
+    for path, value in changes.items():
+        target = document
+        keys = path.split("__")
+        for key in keys[:-1]:
+            target = target[int(key)] if isinstance(target, list) else target[key]
+        if value is _DELETE:
+            del target[keys[-1]]
+        else:
+            target[keys[-1]] = value
+    return document
+
+
+def test_a_restore_verification_loads_as_its_own_execution():
+    from release.manifest import RestoreVerifyRun
+
+    manifest = executable(load_manifest(encode(restore_document())))
+    assert manifest.execution == "restore_verify"
+    # Its receipts name the current release; the verification id is the run's own.
+    assert manifest.evidence_release_id == manifest.release_id
+    assert isinstance(manifest.purpose, RestoreVerifyRun)
+    assert manifest.run_id == manifest.purpose.verification_id != manifest.release_id
+
+
+@pytest.mark.parametrize("changes, code", [
+    ({"jobs__0__expect__host": "another.example.com"}, "job_expectation_inconsistent"),
+    ({"jobs__1__expect__host": "another.example.com"}, "job_expectation_inconsistent"),
+    ({"jobs__1__expect__principal": "runtime_owner"}, "job_expectation_inconsistent"),
+    ({"jobs__1__expect__schema": "goose:1"}, "job_expectation_inconsistent"),
+    ({"jobs__1__expect__database": "product_db"}, "job_expectation_inconsistent"),
+    ({"jobs__0__expect__release_sessions": "1"}, "job_expectation_inconsistent"),
+    ({"jobs__0__expect__owner_sessions": "2"}, "job_expectation_inconsistent"),
+    ({"jobs__0__expect__foreign_sessions": "1"}, "job_expectation_inconsistent"),
+    ({"jobs__0__expect__foreign_sessions": _DELETE}, "job_expectation_invalid"),
+    ({"jobs__1__expect__sql_digest": "not-a-digest"}, "job_expectation_inconsistent"),
+    ({"jobs__1__expect__sql_digest": _DELETE}, "job_expectation_invalid"),
+    ({"jobs__1__expect__inventory_digest": "a" * 64}, "job_expectation_invalid"),
+    ({"purpose__restored_instance": "staging-runtime-db"}, "restore_instance_invalid"),
+    ({"purpose__restored_instance": "staging-product-db-restore-r1"}, "restore_instance_invalid"),
+    ({"purpose__restored_instance": "staging-runtime-db-restore-r1-"}, "restore_instance_invalid"),
+    ({"purpose__restored_instance": "staging-runtime-db-restore-r--1"},
+     "restore_instance_invalid"),
+    ({"purpose__restored_instance": "staging-runtime-db-restore-" + "a" * 21},
+     "restore_instance_invalid"),
+    ({"purpose__restored_endpoint": "staging-runtime-db.abc123xyz.us-east-1.rds.amazonaws.com"},
+     "restore_endpoint_invalid"),
+    ({"purpose__restored_endpoint":
+      "staging-runtime-db-restore-r1.abc123xyz.us-west-2.rds.amazonaws.com"},
+     "restore_endpoint_invalid"),
+    ({"purpose__database": "product"}, "job_plan_invalid"),
+])  # fmt: skip
+def test_a_restore_verification_is_refused_unless_its_jobs_and_target_agree(changes, code):
+    assert rejected(encode(restore_document(**changes))).code == code
+
+
+def test_a_restore_verification_id_is_neither_the_release_nor_the_prior_release():
+    from tests.release_fakes import manifest_document
+
+    same = restore_document()
+    same["purpose"]["verification_id"] = same["release_id"]
+    assert rejected(encode(same)).code == "restore_verification_id_invalid"
+    prior = restore_document()
+    prior["rollback"] = manifest_document(rollback="compatible_release")["rollback"]
+    prior["purpose"]["verification_id"] = prior["rollback"]["release_id"]
+    assert rejected(encode(prior)).code == "restore_verification_id_invalid"
+
+
+def test_a_restore_verification_deadline_covers_its_window():
+    document = restore_document()
+    document["purpose"]["not_after"] = document["window"]["not_before"]
+    assert rejected(encode(document)).code == "restore_deadline_before_window"
+
+
+def test_a_restore_verification_runs_only_its_two_restore_jobs():
+    from tests.release_fakes import manifest_document
+
+    forward = manifest_document()["jobs"]
+    # Another job beside the two restore jobs.
+    for extra in forward:
+        document = restore_document()
+        document["jobs"].append(copy.deepcopy(extra))
+        assert rejected(encode(document)).code == "job_plan_invalid", extra["id"]
+    # The forward reconcile and proof kinds in place of the restore kinds.
+    document = restore_document()
+    for job, phase in zip(document["jobs"], ("reconcile", "proof")):
+        job["phase"], job["id"] = phase, f"runtime-{phase}"
+    assert rejected(encode(document)).code in {"job_plan_invalid", "job_expectation_invalid"}
+
+
+def test_restore_kinds_never_run_in_a_release_or_a_rollback():
+    from tests.release_fakes import manifest_document, rollback_run_document
+
+    for document in (manifest_document(), rollback_run_document()):
+        proof = next(job for job in document["jobs"] if job["phase"] == "proof")
+        proof["phase"], proof["id"] = "rv-proof", f"{proof['database']}-rv-proof"
+        proof["expect"] = {**proof["expect"], "host": "h.example.com", "sql_digest": "b" * 64}
+        assert rejected(encode(document)).code == "job_plan_invalid"
+
+
+def test_restore_jobs_report_exactly_their_keys_and_forward_jobs_do_not_change():
+    from release.manifest import RELEASE_TOOLS_RESULT_KEYS
+
+    assert RELEASE_TOOLS_RESULT_KEYS["rv-recon"] == (
+        RELEASE_TOOLS_RESULT_KEYS["reconcile"] | {"host", "foreign_sessions"}
+    )
+    assert RELEASE_TOOLS_RESULT_KEYS["rv-proof"] == (
+        RELEASE_TOOLS_RESULT_KEYS["proof"] | {"host", "sql_digest"}
+    )
+    assert RELEASE_TOOLS_RESULT_KEYS["proof"] == {"database", "principal", "schema"}
+    assert RELEASE_TOOLS_RESULT_KEYS["reconcile"] == {
+        "database", "principal", "schema", "release_sessions", "owner_sessions"
+    }  # fmt: skip
+    # A forward proof expecting a host is no longer the forward contract.
+    document = manifest_document()
+    proof = next(job for job in document["jobs"] if job["phase"] == "proof")
+    proof["expect"]["host"] = "db.example.com"
+    assert rejected(encode(document)).code == "job_expectation_invalid"
+
+
+def test_the_kit_and_the_manifest_share_one_restore_label_rule():
+    from release.manifest import restore_label_valid
+
+    for good in ("r1", "a", "a-b", "rv20261018", "a" * 20):
+        assert restore_label_valid(good), good
+    for bad in ("", "-a", "a-", "a--b", "A1", "a_b", "a" * 21):
+        assert not restore_label_valid(bad), bad

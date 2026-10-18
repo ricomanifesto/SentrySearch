@@ -52,7 +52,7 @@ port zero is invalid and never selects a different target by falling back.
 | `RELEASE_TOOLS_SHA256`, `RELEASE_SQL_SHA256` | Must equal the image's computed digests |
 | `RELEASE_EXPECT_DATABASE`, `RELEASE_EXPECT_PRINCIPAL` | Must equal the connection's database and login |
 | `RELEASE_SERVICE_ROLE` | grant, bootstrap |
-| `RELEASE_OWNER_ROLE` | proof, bootstrap |
+| `RELEASE_OWNER_ROLE` | proof, rv-proof, bootstrap |
 | `RELEASE_TARGET_DATABASE`, `RELEASE_OWNER_PASSWORD`, `RELEASE_SERVICE_PASSWORD` | bootstrap only |
 | `DATABASE_URL` or `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASSWORD` | From a pinned secret version; exactly one form. A URL may carry only `sslmode=verify-full` and `sslrootcert=/run/material/postgres-ca.pem` |
 
@@ -62,6 +62,8 @@ port zero is invalid and never selects a different target by falling back.
 | `grant` (product) | database owner | `sql/product/grants.sql` (implements [storage-release](storage-release.md)) |
 | `proof` | service login | `sql/<db>/proof.sql`, then a connection attempt to `postgres` |
 | `reconcile` | database owner | `sql/reconcile.sql` (read-only) |
+| `rv-recon` | database owner | a restore verification: `sql/reconcile.sql`, then `sql/restore_sessions.sql` (both read-only) |
+| `rv-proof` | service login | a restore verification: `sql/<db>/proof.sql`, then a connection attempt to `postgres` |
 | `bootstrap` | instance administrator, connected to `postgres` | `sql/bootstrap.sql` |
 
 ## Guard
@@ -111,6 +113,29 @@ controller's fixed envelope: `schema` (`sentry.release-tools.job.v1`),
 | proof | `database`, `principal`, `schema` (`goose:1,2,3` or `sentrysearch:<version>:<checksum16>`) |
 | reconcile | `database`, `principal`, `schema`, `release_sessions`, `owner_sessions` |
 | bootstrap | `database`, `principal`, `owner_role`, `service_role` |
+| rv-recon | the reconcile keys, `foreign_sessions`, `host` |
+| rv-proof | the proof keys, `host`, `sql_digest` (the verified digest of the proof program that ran) |
+
+The restore-verification kinds (`rv`: a job id `<database>-rv-recon` keeps the
+session's application name within PostgreSQL's 63 bytes) run against a database
+restored into a new instance. They use the reconcile and proof programs unchanged
+and add only what a verification needs: `host`, the host the job connected to (a
+hostname, never a secret), on both; the proof's `sql_digest`, which names the
+program and therefore the privilege inventory it enforced (no catalog or data
+checksum is measured: the proof covers the service login's privileges and denials,
+not data content, indexes, constraints or row counts); and the reconcile's
+`foreign_sessions`. A foreign session is any session but the job's own connected to
+the restored database, whatever its login role or application name
+(`usesysid IS NOT NULL AND usesysid <> 10`). Excluded are engine processes, which
+carry no user (NULL `usesysid`: autovacuum workers; the launcher, checkpointer and
+writers have no database), and the bootstrap superuser (role OID 10, the engine's own
+role; on RDS its management role). Each counted session is listed in a
+`session_observed` event and none is cancelled. Scope limits: sessions in other
+databases of the same instance are not counted; the bootstrap-superuser exclusion is
+a declared predicate, not an observation of the target's role mapping; and whether
+the target engine's management sessions run as OID 10, and how visible other roles'
+sessions are there, are platform checks not made locally. The forward and rollback kinds, their programs, receipts and
+start events are unchanged; `job_started` names the host only for the restore kinds.
 
 A failure receipt carries only `reason` and `sql_outcome`, and only once the task
 ARN is known; earlier failures write a `job_failed` log event instead. stderr

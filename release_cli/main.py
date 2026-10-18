@@ -40,6 +40,7 @@ from release.controller import (
     ReleaseHalted,
 )
 from release.journal import Journal, ObjectStore, journal_key, lock_key
+from release.machine import FINISHED_STATES
 from release.manifest import (
     LoadedApproval,
     LoadedManifest,
@@ -264,14 +265,18 @@ def _outcome(command: str, session_id: str, outcome: Outcome) -> tuple[int, dict
         "admission": outcome.admission,
         "rollback": outcome.rollback,
     }
-    return (EXIT_OK if outcome.state == "held_paused" else EXIT_HELD), document
+    finished = {state.value for state in FINISHED_STATES}
+    return (EXIT_OK if outcome.state in finished else EXIT_HELD), document
 
 
 def _status(loaded: LoadedManifest, source: ClientSource) -> dict[str, Any]:
     manifest = executable(loaded)
     store = ReadOnlyStore(_store(source, manifest))
-    journal = Journal(store, journal_key(manifest.release_id))
+    # A restore verification journals under its own id, never the release's.
+    journal = Journal(store, journal_key(manifest.run_id))
     summary: dict[str, Any] = {"command": "status", "release_id": manifest.release_id}
+    if manifest.run_id != manifest.release_id:
+        summary["run_id"] = manifest.run_id
     if not journal.load():
         summary["journal"] = None
     else:
