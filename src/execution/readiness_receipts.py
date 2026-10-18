@@ -8,6 +8,12 @@ instead of looking fresh. The sequence advances before a bounded, nonblocking
 enqueue; a full queue drops the receipt and leaves a visible gap. A separate
 writer thread owns its own duplicate of the stdout descriptor, so a blocked log
 pipe never delays signals, drain, reaping or interpreter shutdown. Receipts carry no user, report, URL, credential or exception data.
+
+A writer made with ``emit_metrics=True`` (the worker entrypoint) also writes one
+``sentry.worker-metrics.v1`` event per interval: a standalone JSON object with no
+marker, through the same queue and single-write sink, with its own sequence. Its
+fields are whole non-negative numbers or null and never an error code; the
+receipt itself is unchanged, and the controller's parser ignores the event.
 """
 
 from __future__ import annotations
@@ -25,6 +31,9 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 RECEIPT_KIND = "sentry.worker-readiness.v1"
+METRICS_KIND = "sentry.worker-metrics.v1"
+METRIC_FIELDS = ("backlog_size", "backlog_oldest_seconds", "runtime_certificate_days_left",
+                 "reconcile_checked", "reconcile_mismatches")  # fmt: skip
 RECEIPT_MARKER = "SENTRY_WORKER_READINESS"
 INTERVAL_SECONDS = 10
 QUEUE_SIZE = 64
@@ -95,6 +104,13 @@ def release_id_from_environment(environ: Mapping[str, str]) -> str | None:
     return value
 
 
+def _count(value: object) -> int | None:
+    """A metric value: a whole non-negative number, or null when unknown or invalid."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return int(value) if value >= 0 else None
+
+
 def _seconds(value: object, digits: int = 3) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         return 0.0
@@ -111,6 +127,7 @@ class ReadinessReceipts:
         queue_size: int = QUEUE_SIZE,
         monotonic: Callable[[], float] = time.monotonic,
         wall: Callable[[], datetime] = lambda: datetime.now(UTC),
+        emit_metrics: bool = False,
     ) -> None:
         if not _RELEASE_ID.fullmatch(release_id):
             raise ValueError("release identity must be a lowercase UUID")
@@ -118,6 +135,9 @@ class ReadinessReceipts:
         self.boot_id = secrets.token_hex(16)
         self.sequence = 0
         self.dropped = 0
+        self.emit_metrics = emit_metrics
+        self.metric_sequence = 0
+        self._last_metrics: float | None = None
         self._sink = sink
         self._interval = interval_seconds
         self._monotonic = monotonic
@@ -170,6 +190,43 @@ class ReadinessReceipts:
         ):
             self._last_emit, self._last_state = now, state
             self._emit(snapshot)
+
+    def observe_metrics(
+        self, take: Callable[[], Mapping[str, Any]], *, final: bool = False
+    ) -> None:
+        """Emit one metric event if the interval elapsed, or now when ``final`` (the
+        supervisor's last one before the stopped receipt). ``take`` is called only for
+        an event about to be queued; an event dropped on a full queue or for its size
+        loses the counts it carried, and its sequence gap shows it."""
+        if not self.emit_metrics:
+            return
+        now = self._monotonic()
+        if (
+            not final
+            and self._last_metrics is not None
+            and now - self._last_metrics < self._interval
+        ):
+            return
+        self._last_metrics = now
+        # Like a receipt's, the sequence advances even when the event is dropped.
+        self.metric_sequence += 1
+        fields = take()
+        event = {
+            "kind": METRICS_KIND,
+            "release_id": self.release_id,
+            "boot_id": self.boot_id,
+            "sequence": self.metric_sequence,
+            "observed_at": self._wall().astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            **{name: _count(fields.get(name)) for name in METRIC_FIELDS},
+        }
+        line = json.dumps(event, separators=(",", ":"))
+        if len(line) > MAX_RECEIPT_BYTES:
+            self.dropped += 1
+            return
+        try:
+            self._queue.put_nowait(line + "\n")
+        except queue.Full:
+            self.dropped += 1
 
     def close(self, snapshot: Mapping[str, Any], *, timeout: float = 1.0) -> None:
         """Best-effort stopped receipt and flush, bounded by ``timeout``.

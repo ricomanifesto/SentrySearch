@@ -25,7 +25,9 @@ BACKLOG_FIELDS = {
     "ready_evaluations",
     "active_evaluations",
     "dispatch_errors",
+    "oldest_pending_seconds",
 }
+DAY_SECONDS = 86400
 Emit = Callable[[dict[str, Any]], None]
 WorkerTarget = Callable[["WorkerSettings", threading.Event, Emit], int]
 
@@ -91,6 +93,11 @@ class WorkerStatus:
         self._error: str | None = None
         self._backlog: dict[str, int] | None = None
         self._backlog_at = 0.0
+        # Metric-event state: counts since the last event, and the Runtime certificate's
+        # expiry (wall-clock seconds) as last seen by the worker.
+        self._reconcile_checked = 0
+        self._reconcile_mismatches = 0
+        self._certificate_not_after: float | None = None
 
     def set_alive(self, alive: bool) -> None:
         with self._lock:
@@ -146,8 +153,51 @@ class WorkerStatus:
                 self._ready = False
             elif kind == "recovered":
                 self._error = None
+            elif kind == "reconcile":
+                checked, mismatches = event["checked"], event["mismatches"]
+                if any(type(value) is not int or value < 0 for value in (checked, mismatches)):
+                    raise ValueError("invalid reconcile counts")
+                if mismatches > checked:
+                    raise ValueError("more mismatches than reports checked")
+                self._reconcile_checked += checked
+                self._reconcile_mismatches += mismatches
+            elif kind == "certificate":
+                not_after = event["not_after"]
+                if (
+                    type(not_after) not in {int, float}
+                    or not math.isfinite(not_after)
+                    or not_after <= 0
+                ):
+                    raise ValueError("invalid certificate expiry")
+                self._certificate_not_after = float(not_after)
             else:
                 raise ValueError("unknown worker event")
+
+    def take_metrics(self) -> dict[str, int | None]:
+        """The metric event's fields; reconcile counts restart from zero once taken."""
+        with self._lock:
+            backlog = self._backlog or {}
+            size = backlog.get("pending_dispatches")
+            oldest = backlog.get("oldest_pending_seconds")
+            if oldest is not None and size:
+                # The sample's age grows with time: a stalled sampler cannot hide it.
+                oldest = int(oldest + max(0.0, time.monotonic() - self._backlog_at))
+            elif oldest is not None:
+                oldest = 0
+            days = None
+            if self._certificate_not_after is not None:
+                left = (self._certificate_not_after - time.time()) / DAY_SECONDS
+                # An expired certificate reads zero, never below the filter's floor.
+                days = max(0, math.floor(left))
+            taken = {
+                "backlog_size": size,
+                "backlog_oldest_seconds": oldest,
+                "runtime_certificate_days_left": days,
+                "reconcile_checked": self._reconcile_checked,
+                "reconcile_mismatches": self._reconcile_mismatches,
+            }
+            self._reconcile_checked = self._reconcile_mismatches = 0
+            return taken
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -349,6 +399,7 @@ class WorkerSupervisor:
                 snapshot = self.status.snapshot()
                 if self.receipts is not None:
                     self.receipts.observe(snapshot)
+                    self.receipts.observe_metrics(self.status.take_metrics)
                 if (
                     snapshot["draining"]
                     and snapshot["drain_elapsed_seconds"] >= self.settings.drain_seconds
@@ -372,7 +423,9 @@ class WorkerSupervisor:
                 process.close()
             self.status.set_alive(False)
             if self.receipts is not None:
-                # Stopped is best-effort and bounded: never wait on a blocked pipe.
+                # The last interval's counts, then the stopped receipt; both best-effort
+                # and bounded: never wait on a blocked pipe.
+                self.receipts.observe_metrics(self.status.take_metrics, final=True)
                 self.receipts.close(self.status.snapshot(), timeout=1.0)
             for connection in (receive, send, control_receive, control_send):
                 connection.close()

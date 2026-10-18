@@ -209,14 +209,41 @@ key planned from the prior pair's images, a separate approval.
   (`worker-phase-deadline`). The ready filter counts receipts carrying the marker
   and one exact phrase; each error filter counts receipts carrying any one of its
   exact phrases;
-  `tests/test_alarm_inventory.py` checks the patterns against real receipt lines.
+- five from JSON filters over standalone JSON events, whose silence is missing
+  data (covered by `worker-unready` and the service alarms). The worker writes a
+  `sentry.worker-metrics.v1` event once per receipt interval (plain JSON, no
+  marker; the receipt is unchanged): the oldest undispatched report's age over 900
+  seconds for two periods (`backlog-age`), the product and the Runtime disagreeing
+  about a bound run (`terminal-mismatch`), and the
+  verified Runtime certificate expiring in under 14 days (`certificate-expiry`).
+  The Runtime writes `lease_expired` and `retry_exhausted` as one JSON object per
+  line: three lease expiries in five minutes (`lease-exhaustion`) and any retry
+  exhaustion (`retry-exhaustion`).
+
+  Limits of these signals: `terminal-mismatch` counts observations, not reports.
+  A terminal disagreement the product store records (`runtime_result_missing`,
+  `runtime_failed_after_publication`) counts once, since the report then leaves
+  reconciliation; a run naming another report, answering as another run or
+  missing from the Runtime counts on every pass over it (up to twice per worker
+  cycle) until the data is repaired, so the alarm is raised again on each pass
+  while it persists (a period with no pass over that report, such as a long
+  generation, returns it to OK until the next). An unavailable Runtime and a refused observation
+  (stale, still running, repeated, of a deleted report or applied first by another
+  worker) never count. The certificate check reads only the leaf the worker verifies: after a
+  worker restart with an expired or unverifiable Runtime certificate it sends no
+  value (`worker-runtime-unreachable` fires instead), and the private CA's own
+  expiry is not monitored.
+
+`tests/test_alarm_inventory.py` checks every pattern against the complete lines
+their writers emit; JSON selectors apply only to a line that is JSON in its
+entirety, so a receipt never counts for a JSON filter and a metric event never for
+a receipt filter. That models CloudWatch's published syntax; only the platform's
+alert-delivery case proves it.
 
 The `alerts` output lists those with their producer and missing-data behaviour,
-and every other named alert as unwired with the reason: backlog age, lease and
-retry exhaustion, Runtime and product terminal mismatches and certificate expiry
-need a producer that does not exist yet (each is an image or service change);
-release phase deadlines are held and journaled by the attended controller; RDS
-backups publish no outcome metric. Without the optional
+and the two remaining named alerts as unwired with the reason: release phase
+deadlines are held and journaled by the attended controller; RDS backups publish
+no outcome metric. Without the optional
 `notifications` input (an approved recipient and a monthly review threshold, not
 a cap) there is no SNS topic, subscription or budget, and alarms have no actions.
 The topic has no server-side encryption: CloudWatch cannot publish to a topic
@@ -348,7 +375,7 @@ approved read-only account inspection, an exact reviewed plan and, separately,
 an approved apply.
 
 Not implemented here: secret containers (created by the credential owner),
-VPC flow logs (retention approval), producers for the unwired alerts, DNS
+VPC flow logs (retention approval), metrics for the two unwired alerts, DNS
 Firewall, the live bootstrap administrator path, published and scanned images
 carrying the observers and migration release jobs, the Runtime and API log
 buffers' behavior on Fargate (their sizes come from a

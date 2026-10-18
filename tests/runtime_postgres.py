@@ -596,7 +596,10 @@ def test_runtime_backlog_reports_counts_without_report_contents(reports, artifac
     assert service.has_runtime_dispatch(evaluating)
     assert not service.has_runtime_dispatch(legacy)
     service.record_runtime_dispatch_failure(pending, "runtime_unavailable")
-    assert service.get_runtime_backlog() == {
+    sampled = service.get_runtime_backlog()
+    # The one pending intent was created moments ago.
+    assert 0 <= sampled.pop("oldest_pending_seconds") < 60
+    assert sampled == {
         "pending_dispatches": 1,
         "submitted_dispatches": 1,
         "ready_evaluations": 1,
@@ -841,3 +844,257 @@ def test_the_cutover_drain_counts_only_running_legacy_writers(reports):
     with service.db_manager.get_session() as session:
         counts = dict(session.execute(drain_statement()).mappings().one())
     assert counts == {"legacy_generating": 1, "legacy_evaluating": 1, "legacy_abandoned": 1}
+
+
+# Terminal-mismatch counting over the real product store (F079; plan section 12) -------
+#
+# Each case drives reconcile_runtime_reports through ReconcileCounts over the real
+# ReportStorageService with a fake Runtime read port, and checks the store's result,
+# the rows and the counts.
+
+
+class RuntimeReads:
+    """The Runtime read port, answering from runs the test sets."""
+
+    def __init__(self, runs: dict[str, Any] | None = None) -> None:
+        self.runs: dict[str, Any] = dict(runs or {})
+        self.missing: set[str] = set()
+        self.unavailable = False
+        self.before_answer: Any = None
+
+    def get_run(self, run_id: str):
+        from src.execution.runtime_client import RuntimeRunMissing, RuntimeUnavailable
+
+        if self.before_answer is not None:
+            self.before_answer()
+        if self.unavailable:
+            raise RuntimeUnavailable("runtime is unavailable")
+        if run_id in self.missing:
+            raise RuntimeRunMissing("bound runtime run is unavailable")
+        return self.runs[run_id]
+
+
+def bound(service, *, lease_version: int = 1) -> tuple[str, str]:
+    """A generating report whose submitted intent is bound to a run."""
+    from src.domain.execution import GenerationLease
+
+    report_id, run_id = str(uuid.uuid4()), str(uuid.uuid4())
+    service.create_pending_report(report_id, "Example", "owner", runtime_dispatch=True)
+    service.mark_runtime_dispatch_submitted(report_id, run_id)
+    assert service.begin_runtime_attempt(
+        report_id, GenerationLease(run_id, "worker", lease_version)
+    )
+    return report_id, run_id
+
+
+def observed(run_id: str, report_id: str, state: str, *, lease_version: int = 1):
+    from src.execution.runtime_client import RuntimeRun
+
+    return RuntimeRun(run_id=run_id, state=state, attempt=1, lease_owner="worker",
+                      lease_version=lease_version, input_ref={"report_id": report_id},
+                      error_code="worker_error" if state == "failed" else None)  # fmt: skip
+
+
+def dispatch_of(service, report_id: str) -> tuple[str, str | None] | None:
+    from src.storage.models import ReportRuntimeDispatch
+
+    with service.db_manager.get_session() as session:
+        row = session.get(ReportRuntimeDispatch, uuid.UUID(report_id))
+        return None if row is None else (row.state, row.last_error_code)
+
+
+def one_pass(service, runtime) -> Any:
+    from src.execution.reconciler import ReconcileCounts, reconcile_runtime_reports
+
+    counts = ReconcileCounts(service)
+    reconcile_runtime_reports(runtime, counts)
+    return counts
+
+
+def test_a_succeeded_run_without_its_published_report_counts_once(reports):
+    service, _objects = reports
+    report_id, run_id = bound(service)
+    result = service.apply_runtime_observation(report_id, run_id, state="succeeded",
+                                               lease_version=1, error_code=None)  # fmt: skip
+    assert result and result.disagreement == "runtime_result_missing"
+    # Through the reconciler: a second report in the same state, counted once, then gone.
+    report_id, run_id = bound(service)
+    runtime = RuntimeReads({run_id: observed(run_id, report_id, "succeeded")})
+    counts = one_pass(service, runtime)
+    assert (counts.checked, counts.mismatches) == (1, 1)
+    assert dispatch_of(service, report_id) == ("succeeded", "runtime_result_missing")
+    report = service.get_report(report_id)
+    assert report["status"] == "failed" and report["generation_error_code"] == "persistence_failed"
+    again = one_pass(service, runtime)
+    assert (again.checked, again.mismatches) == (0, 0), "the report left the batch"
+
+
+def test_a_run_failed_after_publication_counts_once_and_keeps_the_report(reports, artifact):
+    from src.domain.execution import GenerationLease
+
+    service, objects = reports
+    report_id, run_id = bound(service)
+    service.finalize_report(
+        report_id, artifact, generation_lease=GenerationLease(run_id, "worker", 1)
+    )
+    published = dict(objects)
+    runtime = RuntimeReads({run_id: observed(run_id, report_id, "failed")})
+    counts = one_pass(service, runtime)
+    assert (counts.checked, counts.mismatches) == (1, 1)
+    assert dispatch_of(service, report_id) == ("failed", "runtime_failed_after_publication")
+    assert service.get_report(report_id)["status"] == "completed" and objects == published
+    again = one_pass(service, runtime)
+    assert (again.checked, again.mismatches) == (0, 0), "the report left the batch"
+
+
+def test_a_run_naming_another_report_counts_on_every_pass(reports):
+    service, _objects = reports
+    report_id, run_id = bound(service)
+    runtime = RuntimeReads({run_id: observed(run_id, "another-report", "succeeded")})
+    for _pass in range(2):
+        counts = one_pass(service, runtime)
+        assert (counts.checked, counts.mismatches) == (1, 1)
+        assert dispatch_of(service, report_id) == ("submitted", "runtime_reference_mismatch")
+
+
+def test_a_run_answering_as_another_run_counts_on_every_pass(reports):
+    service, _objects = reports
+    report_id, run_id = bound(service)
+    runtime = RuntimeReads({run_id: observed(str(uuid.uuid4()), report_id, "succeeded")})
+    for _pass in range(2):
+        counts = one_pass(service, runtime)
+        assert (counts.checked, counts.mismatches) == (1, 1)
+        assert dispatch_of(service, report_id) == ("submitted", "runtime_reference_mismatch")
+
+
+def test_a_missing_bound_run_counts_on_every_pass(reports):
+    service, _objects = reports
+    report_id, run_id = bound(service)
+    runtime = RuntimeReads()
+    runtime.missing.add(run_id)
+    for _pass in range(2):
+        counts = one_pass(service, runtime)
+        assert (counts.checked, counts.mismatches) == (1, 1)
+        assert dispatch_of(service, report_id) == ("submitted", "runtime_run_missing")
+
+
+def test_agreement_and_the_designed_recovery_count_nothing(reports, artifact):
+    from src.domain.execution import GenerationLease
+
+    service, _objects = reports
+    succeeded, succeeded_run = bound(service)
+    service.finalize_report(succeeded, artifact,
+                            generation_lease=GenerationLease(succeeded_run, "worker", 1))  # fmt: skip
+    failed, failed_run = bound(service)
+    runtime = RuntimeReads({succeeded_run: observed(succeeded_run, succeeded, "succeeded"),
+                            failed_run: observed(failed_run, failed, "failed")})  # fmt: skip
+    counts = one_pass(service, runtime)
+    assert (counts.checked, counts.mismatches) == (2, 0)
+    assert dispatch_of(service, succeeded) == ("succeeded", None)
+    assert service.get_report(succeeded)["status"] == "completed"
+    assert dispatch_of(service, failed) == ("failed", None)
+    report = service.get_report(failed)
+    assert report["status"] == "failed" and report["generation_error_code"] == "unknown"
+
+
+@pytest.mark.parametrize("state", ["queued", "running", "retry_wait"])
+def test_a_run_still_in_progress_is_refused_and_counts_nothing(reports, state):
+    service, _objects = reports
+    report_id, run_id = bound(service)
+    result = service.apply_runtime_observation(report_id, run_id, state=state, lease_version=1,
+                                               error_code=None)  # fmt: skip
+    assert not result and result.disagreement is None
+    counts = one_pass(service, RuntimeReads({run_id: observed(run_id, report_id, state)}))
+    assert (counts.checked, counts.mismatches) == (1, 0)
+    assert dispatch_of(service, report_id) == ("submitted", None)
+    assert service.get_report(report_id)["status"] == "generating"
+
+
+def test_a_stale_observation_is_refused_and_counts_nothing(reports):
+    service, _objects = reports
+    report_id, run_id = bound(service, lease_version=2)
+    counts = one_pass(service, RuntimeReads({run_id: observed(run_id, report_id, "failed",
+                                                              lease_version=1)}))  # fmt: skip
+    assert (counts.checked, counts.mismatches) == (1, 0)
+    assert dispatch_of(service, report_id) == ("submitted", "stale_runtime_observation")
+    assert service.get_report(report_id)["status"] == "generating"
+
+
+def test_a_repeated_or_raced_observation_counts_its_disagreement_once(reports):
+    from src.execution.reconciler import ReconcileCounts, reconcile_runtime_reports
+    from src.storage.report_service import ReportStorageService
+
+    service, _objects = reports
+    report_id, run_id = bound(service)
+    first = service.apply_runtime_observation(report_id, run_id, state="succeeded",
+                                              lease_version=1, error_code=None)  # fmt: skip
+    repeat = service.apply_runtime_observation(report_id, run_id, state="succeeded",
+                                               lease_version=1, error_code=None)  # fmt: skip
+    assert first and first.disagreement == "runtime_result_missing"
+    assert not repeat and repeat.disagreement is None
+    # Two services over one database: the second read its batch before the first applied.
+    other = ReportStorageService()
+    other.db_manager, other.s3_manager = service.db_manager, service.s3_manager
+    report_id, run_id = bound(service)
+    run = observed(run_id, report_id, "succeeded")
+    winner, loser = ReconcileCounts(service), ReconcileCounts(other)
+    racing = RuntimeReads({run_id: run})
+    applied: list[int] = []
+    racing.before_answer = lambda: applied.append(
+        reconcile_runtime_reports(RuntimeReads({run_id: run}), winner)
+    )
+    assert reconcile_runtime_reports(racing, loser) == 0, "the loser applies nothing"
+    assert applied == [1], "the winner applies the observation once"
+    assert (winner.checked, winner.mismatches) == (1, 1)
+    assert (loser.checked, loser.mismatches) == (1, 0), "the lost race is no disagreement"
+    assert dispatch_of(service, report_id) == ("succeeded", "runtime_result_missing")
+
+
+def test_an_observation_of_a_deleted_report_counts_nothing(reports):
+    service, _objects = reports
+    report_id, run_id = bound(service)
+    runtime = RuntimeReads({run_id: observed(run_id, report_id, "succeeded")})
+    runtime.before_answer = lambda: service.delete_report(report_id)
+    counts = one_pass(service, runtime)
+    assert (counts.checked, counts.mismatches) == (1, 0)
+    assert service.get_report(report_id) is None and dispatch_of(service, report_id) is None
+
+
+def test_an_unavailable_runtime_is_recorded_but_counts_nothing(reports):
+    service, _objects = reports
+    report_id, _run_id = bound(service)
+    runtime = RuntimeReads()
+    runtime.unavailable = True
+    counts = one_pass(service, runtime)
+    assert (counts.checked, counts.mismatches) == (1, 0)
+    assert dispatch_of(service, report_id) == ("submitted", "runtime_unavailable")
+
+
+def test_a_commit_failure_changes_no_row_and_no_count(reports, monkeypatch):
+    from sqlalchemy.orm import Session
+
+    from src.execution.reconciler import ReconcileCounts, reconcile_runtime_reports
+
+    service, _objects = reports
+    report_id, run_id = bound(service)
+    before = dispatch_of(service, report_id)
+    armed = {"on": False}
+    commit = Session.commit
+
+    def failing(self):
+        if armed["on"]:
+            armed["on"] = False
+            self.flush()  # the changes reach the database; the rollback must undo them
+            raise RuntimeError("commit failed")
+        return commit(self)
+
+    monkeypatch.setattr(Session, "commit", failing)
+    runtime = RuntimeReads({run_id: observed(run_id, report_id, "succeeded")})
+    runtime.before_answer = lambda: armed.update(on=True)
+    counts = ReconcileCounts(service)
+    with pytest.raises(RuntimeError, match="commit failed"):
+        reconcile_runtime_reports(runtime, counts)
+    assert (counts.checked, counts.mismatches) == (1, 0)
+    monkeypatch.setattr(Session, "commit", commit)
+    assert dispatch_of(service, report_id) == before == ("submitted", None)
+    assert service.get_report(report_id)["status"] == "generating"

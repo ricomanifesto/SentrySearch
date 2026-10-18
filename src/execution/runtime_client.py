@@ -17,6 +17,30 @@ DEFAULT_MAX_ATTEMPTS = 3
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
+# The latest verified Runtime certificate expiry this process saw (seconds since the
+# epoch), for the worker's certificate-expiry metric. Only an owned TLS transport
+# records it; None until then.
+_PEER_NOT_AFTER: float | None = None
+
+
+def peer_certificate_not_after() -> float | None:
+    return _PEER_NOT_AFTER
+
+
+def _record_peer_certificate(response: httpx.Response) -> None:
+    """Read the verified peer certificate while the response's connection is open.
+    Telemetry only: a certificate that cannot be read leaves the last value."""
+    global _PEER_NOT_AFTER
+    stream = response.extensions.get("network_stream")
+    try:
+        ssl_object = stream.get_extra_info("ssl_object") if stream is not None else None
+        certificate = ssl_object.getpeercert() if ssl_object is not None else None
+        if certificate and certificate.get("notAfter"):
+            _PEER_NOT_AFTER = float(ssl.cert_time_to_seconds(certificate["notAfter"]))
+    except (AttributeError, KeyError, TypeError, ValueError, ssl.SSLError):
+        return
+
+
 class RuntimeUnavailable(RuntimeError):
     """The runtime could not accept a request."""
 
@@ -99,6 +123,7 @@ class RuntimeClient:
             trust_env=False,
             verify=verification,
             follow_redirects=False,
+            event_hooks={"response": [_record_peer_certificate]},
         )
 
     def close(self) -> None:

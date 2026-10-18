@@ -15,11 +15,12 @@ from dotenv import load_dotenv
 from src.execution import provider_canary
 from src.execution.dispatcher import dispatch_pending_reports
 from src.execution.config import runtime_endpoint_from_environment
-from src.execution.reconciler import reconcile_runtime_reports
+from src.execution.reconciler import ReconcileCounts, reconcile_runtime_reports
 from src.execution.runtime_client import (
     RuntimeAccessDenied,
     RuntimeClient,
     RuntimeUnavailable,
+    peer_certificate_not_after,
     validate_runtime_token,
 )
 from src.execution.readiness_receipts import (
@@ -62,12 +63,13 @@ def main() -> int:
         settings = WorkerSettings(**vars(parse_args()))
         # A release task definition fixes the release identity; local runs emit none.
         release_id = release_id_from_environment(os.environ)
-        # Receipts go to the process's standard output descriptor, which the log
-        # driver reads, never through the buffered sys.stdout object or its lock.
+        # Receipts and the metric event go to the process's standard output
+        # descriptor, which the log driver reads, never through the buffered
+        # sys.stdout object or its lock.
         receipts = (
             None
             if release_id is None
-            else ReadinessReceipts(release_id, DescriptorSink(STDOUT_FILENO))
+            else ReadinessReceipts(release_id, DescriptorSink(STDOUT_FILENO), emit_metrics=True)
         )
         # The worker reaches no provider, or one only through a canary manifest. A
         # local run with a provider key supplies a canary too; only receipts depend on
@@ -133,6 +135,20 @@ def run_worker_loop(settings: WorkerSettings, stop: threading.Event, emit: Emit)
         sampled_at = time.monotonic()
         emit({"event": "backlog", "counts": report_service.get_runtime_backlog(), "at": sampled_at})
 
+    reported_certificate: list[float] = []
+
+    def reconcile() -> None:
+        # The supervisor turns these counts and the certificate's expiry into the
+        # worker's metric event; a pass that checked nothing reports nothing.
+        counts = ReconcileCounts(report_service)
+        reconcile_runtime_reports(dispatcher_runtime, counts)
+        if counts.checked:
+            emit({"event": "reconcile", "checked": counts.checked, "mismatches": counts.mismatches})
+        not_after = peer_certificate_not_after()
+        if not_after is not None and reported_certificate[-1:] != [not_after]:
+            reported_certificate[:] = [not_after]
+            emit({"event": "certificate", "not_after": not_after})
+
     try:
         report_service, generate, evaluate = load_jobs()
         worker = DurableGenerationWorker(
@@ -146,12 +162,15 @@ def run_worker_loop(settings: WorkerSettings, stop: threading.Event, emit: Emit)
         while not stop.is_set():
             emit({"event": "phase", "phase": "maintenance"})
             sample_backlog()
-            reconcile_runtime_reports(dispatcher_runtime, report_service)
+            reconcile()
             if stop.is_set():
                 break
             dispatched = dispatch_pending_reports(
                 dispatcher_runtime, report_service, should_stop=stop.is_set
             )
+            # The supervisor ages the last sample through generation; take it after
+            # dispatch, so what it ages is what is still waiting.
+            sample_backlog()
             if stop.is_set():
                 break
             emit({"event": "phase", "phase": "generation"})
@@ -166,7 +185,7 @@ def run_worker_loop(settings: WorkerSettings, stop: threading.Event, emit: Emit)
             if stop.is_set():
                 break
             emit({"event": "phase", "phase": "maintenance"})
-            reconcile_runtime_reports(dispatcher_runtime, report_service)
+            reconcile()
             sample_backlog()
             for report_id, user_id in report_service.get_pending_runtime_evaluations(limit=1):
                 if stop.is_set():

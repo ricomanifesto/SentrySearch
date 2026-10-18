@@ -79,8 +79,10 @@ included. What the systems themselves keep:
   record and its S3 objects but not the Runtime run, leaving a Runtime run with
   no product report;
 - the worker's reconciler keeps reconciling runtime-owned reports while any
-  worker runs; a mismatch is surfaced by the `terminal-mismatch` alert once it has
-  a producer (it is unwired today).
+  worker runs; a run naming another report, answering as another run or missing
+  from the Runtime, or a
+  terminal disagreement the product store records, is counted in the worker's
+  metric event and raises the `terminal-mismatch` alarm.
 
 Deleting an orphan is a separate decision with its own receipt.
 

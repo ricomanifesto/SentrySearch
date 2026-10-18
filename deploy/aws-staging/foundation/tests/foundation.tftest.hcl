@@ -451,7 +451,8 @@ run "alarms_exist_only_for_published_metrics_and_notify_nobody_without_a_recipie
     condition = (length(aws_sns_topic.alerts) == 0 && length(aws_sns_topic_subscription.alerts) == 0 &&
       length(aws_budgets_budget.monthly) == 0 &&
       toset(keys(aws_cloudwatch_metric_alarm.this)) == toset(["runtime-missing", "api-missing", "worker-missing", "runtime-db-storage", "product-db-storage",
-      "worker-unready", "worker-runtime-unreachable", "worker-phase-deadline"]) &&
+        "worker-unready", "worker-runtime-unreachable", "worker-phase-deadline", "backlog-age", "terminal-mismatch", "certificate-expiry",
+      "lease-exhaustion", "retry-exhaustion"]) &&
       alltrue([for alarm in aws_cloudwatch_metric_alarm.this :
         !alarm.actions_enabled && length(alarm.alarm_actions) == 0 && length(alarm.ok_actions) == 0
       ]) &&
@@ -477,7 +478,7 @@ run "alarms_exist_only_for_published_metrics_and_notify_nobody_without_a_recipie
   }
   assert {
     condition = (toset([for name, alert in output.alerts : name if !alert.wired]) == toset([
-      "backlog-age", "lease-exhaustion", "retry-exhaustion", "terminal-mismatch", "release-phase-deadlines", "certificate-expiry", "backup"
+      "release-phase-deadlines", "backup"
       ]) && alltrue([for name, alert in output.alerts : alert.wired ? (alert.producer != null && alert.missing_data != null) : (
         alert.producer == null && length(alert.reason) > 0 && !contains(keys(aws_cloudwatch_metric_alarm.this), name)
     )]))
@@ -510,6 +511,49 @@ run "worker_receipts_feed_metric_filters_on_the_worker_log_group" {
       aws_cloudwatch_metric_alarm.this["worker-runtime-unreachable"].comparison_operator == "GreaterThanOrEqualToThreshold" &&
     aws_cloudwatch_metric_alarm.this["worker-phase-deadline"].metric_name == "WorkerDeadlineErrors")
     error_message = "No ready receipt for ten minutes, a Runtime that stays unreachable, or a phase past its deadline raises an alarm."
+  }
+}
+
+run "standalone_json_events_feed_the_backlog_mismatch_certificate_lease_and_retry_alarms" {
+  command = plan
+  assert {
+    condition = (toset(keys(aws_cloudwatch_log_metric_filter.events)) == toset(["WorkerBacklogOldestSeconds", "WorkerReconcileMismatches",
+      "WorkerCertificateDaysLeft", "RuntimeLeaseExpired", "RuntimeRetryExhausted"]) &&
+      alltrue([for name, filter in aws_cloudwatch_log_metric_filter.events :
+        filter.name == "sentry-staging-${name}" && one(filter.metric_transformation).name == name &&
+        filter.log_group_name == (startswith(name, "Worker") ? "/sentry-staging/worker" : "/sentry-staging/runtime") &&
+        one(filter.metric_transformation).namespace == (startswith(name, "Worker") ? "sentry-staging/worker" : "sentry-staging/runtime")
+      ]) &&
+      aws_cloudwatch_log_metric_filter.events["WorkerBacklogOldestSeconds"].pattern == "{ $.kind = \"sentry.worker-metrics.v1\" && $.backlog_oldest_seconds >= 0 }" &&
+      aws_cloudwatch_log_metric_filter.events["WorkerReconcileMismatches"].pattern == "{ $.kind = \"sentry.worker-metrics.v1\" && $.reconcile_mismatches > 0 }" &&
+      aws_cloudwatch_log_metric_filter.events["WorkerCertificateDaysLeft"].pattern == "{ $.kind = \"sentry.worker-metrics.v1\" && $.runtime_certificate_days_left >= 0 }" &&
+      aws_cloudwatch_log_metric_filter.events["RuntimeLeaseExpired"].pattern == "{ $.event = \"lease_expired\" }" &&
+      aws_cloudwatch_log_metric_filter.events["RuntimeRetryExhausted"].pattern == "{ $.event = \"retry_exhausted\" }" &&
+      one(aws_cloudwatch_log_metric_filter.events["WorkerBacklogOldestSeconds"].metric_transformation).value == "$.backlog_oldest_seconds" &&
+      one(aws_cloudwatch_log_metric_filter.events["WorkerReconcileMismatches"].metric_transformation).value == "$.reconcile_mismatches" &&
+      one(aws_cloudwatch_log_metric_filter.events["WorkerCertificateDaysLeft"].metric_transformation).value == "$.runtime_certificate_days_left" &&
+      one(aws_cloudwatch_log_metric_filter.events["RuntimeLeaseExpired"].metric_transformation).value == "1" &&
+      one(aws_cloudwatch_log_metric_filter.events["RuntimeRetryExhausted"].metric_transformation).value == "1" &&
+      alltrue([for name in ["WorkerBacklogOldestSeconds", "WorkerReconcileMismatches", "WorkerCertificateDaysLeft"] :
+      one(aws_cloudwatch_log_metric_filter.events[name].metric_transformation).default_value == null]) &&
+      alltrue([for name in ["RuntimeLeaseExpired", "RuntimeRetryExhausted"] :
+      one(aws_cloudwatch_log_metric_filter.events[name].metric_transformation).default_value == "0"]) &&
+    output.event_metric_filters == { for name, filter in aws_cloudwatch_log_metric_filter.events : name => filter.pattern })
+    error_message = "Five JSON filters read the worker's metric event and the Runtime's operator events; value metrics have no default, so silence is missing data."
+  }
+  assert {
+    condition = (alltrue([for name, want in {
+      backlog-age        = ["sentry-staging/worker", "WorkerBacklogOldestSeconds", "Maximum", "GreaterThanThreshold", 900, 2]
+      terminal-mismatch  = ["sentry-staging/worker", "WorkerReconcileMismatches", "Sum", "GreaterThanOrEqualToThreshold", 1, 1]
+      certificate-expiry = ["sentry-staging/worker", "WorkerCertificateDaysLeft", "Minimum", "LessThanThreshold", 14, 1]
+      lease-exhaustion   = ["sentry-staging/runtime", "RuntimeLeaseExpired", "Sum", "GreaterThanOrEqualToThreshold", 3, 1]
+      retry-exhaustion   = ["sentry-staging/runtime", "RuntimeRetryExhausted", "Sum", "GreaterThanOrEqualToThreshold", 1, 1]
+      } : (aws_cloudwatch_metric_alarm.this[name].namespace == want[0] && aws_cloudwatch_metric_alarm.this[name].metric_name == want[1] &&
+      aws_cloudwatch_metric_alarm.this[name].statistic == want[2] && aws_cloudwatch_metric_alarm.this[name].comparison_operator == want[3] &&
+      aws_cloudwatch_metric_alarm.this[name].threshold == want[4] && aws_cloudwatch_metric_alarm.this[name].evaluation_periods == want[5] &&
+      aws_cloudwatch_metric_alarm.this[name].period == 300 && aws_cloudwatch_metric_alarm.this[name].treat_missing_data == "notBreaching" &&
+    try(length(aws_cloudwatch_metric_alarm.this[name].dimensions), 0) == 0)]))
+    error_message = "Backlog over 900 s for two periods, any mismatch, a certificate under 14 days, three lease expiries in five minutes and any retry exhaustion raise alarms."
   }
 }
 

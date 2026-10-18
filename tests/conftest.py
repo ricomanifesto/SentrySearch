@@ -1,6 +1,18 @@
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def runtime_certificate_is_per_test():
+    """The Runtime client records the last verified certificate process-wide; no test
+    sees another test's value."""
+    from src.execution import runtime_client
+
+    saved = runtime_client._PEER_NOT_AFTER
+    runtime_client._PEER_NOT_AFTER = None
+    yield
+    runtime_client._PEER_NOT_AFTER = saved
+
+
 def build_threat_profile_data(source_url: str = "https://example.com/report") -> dict:
     return {
         "coreMetadata": {

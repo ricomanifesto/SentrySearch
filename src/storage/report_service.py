@@ -12,7 +12,13 @@ from contextlib import nullcontext
 from sqlalchemy import and_, asc, desc, func, or_, select
 from sqlalchemy.orm import Session
 
-from src.domain.execution import EVALUATION_LEASE_SECONDS, GenerationLease, GenerationLeaseLost
+from src.domain.execution import (
+    EVALUATION_LEASE_SECONDS,
+    GenerationLease,
+    Disagreement,
+    GenerationLeaseLost,
+    RuntimeObservation,
+)
 
 from src.domain.reports import (
     AnalystDisposition,
@@ -1265,6 +1271,26 @@ class ReportStorageService:
             dispatches.where(ReportRuntimeDispatch.last_error_code.is_not(None))
             .scalar_subquery()
             .label("dispatch_errors"),
+            # The oldest undispatched intent's age in whole seconds; zero when none waits,
+            # and never negative (a row committed by a transaction that began later).
+            select(
+                func.greatest(
+                    func.coalesce(
+                        func.floor(
+                            func.extract(
+                                "epoch",
+                                func.statement_timestamp()
+                                - func.min(ReportRuntimeDispatch.created_at),
+                            )
+                        ),
+                        0,
+                    ),
+                    0,
+                )
+            )
+            .where(ReportRuntimeDispatch.state == "pending")
+            .scalar_subquery()
+            .label("oldest_pending_seconds"),
         )
         with self.db_manager.get_session() as session:
             return {
@@ -1293,8 +1319,10 @@ class ReportStorageService:
 
     def apply_runtime_observation(
         self, report_id: str, run_id: str, *, state: str, lease_version: int, error_code: str | None
-    ) -> bool:
-        """Reconcile a terminal run without inventing or downgrading artifacts."""
+    ) -> RuntimeObservation:
+        """Reconcile a terminal run without inventing or downgrading artifacts. The result
+        is true when applied and names the terminal disagreement this transaction recorded;
+        it is returned only after the transaction commits."""
         if state not in {"queued", "running", "retry_wait", "succeeded", "failed"}:
             raise ValueError("unknown runtime state")
         with self.db_manager.get_session() as session:
@@ -1306,14 +1334,15 @@ class ReportStorageService:
                 or dispatch.state != "submitted"
                 or str(dispatch.runtime_run_id) != run_id
             ):
-                return False
+                return RuntimeObservation(applied=False)
             dispatch.updated_at = func.clock_timestamp()
             if lease_version < int(dispatch.lease_version or 0):
                 dispatch.last_error_code = "stale_runtime_observation"
-                return False
+                return RuntimeObservation(applied=False)
             dispatch.last_error_code = None
             if state not in {"succeeded", "failed"}:
-                return False
+                return RuntimeObservation(applied=False)
+            disagreement: Disagreement | None = None
             dispatch.state = state
             dispatch.lease_version = lease_version
             if report.status == ReportStatus.GENERATING.value:
@@ -1333,12 +1362,12 @@ class ReportStorageService:
                     "runtime_error_code": error_code,
                 }
                 if state == "succeeded":
-                    dispatch.last_error_code = "runtime_result_missing"
+                    dispatch.last_error_code = disagreement = "runtime_result_missing"
                 self._refresh_review_status(report)
             elif report.status == ReportStatus.COMPLETED.value and state == "failed":
-                dispatch.last_error_code = "runtime_failed_after_publication"
+                dispatch.last_error_code = disagreement = "runtime_failed_after_publication"
             session.commit()
-            return True
+            return RuntimeObservation(applied=True, disagreement=disagreement)
 
     def begin_report_evaluation(self, report_id: str, *, user_id: str) -> bool:
         """Atomically claim one evaluator-only retry for a completed owned report."""

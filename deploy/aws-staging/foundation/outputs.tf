@@ -71,3 +71,8 @@ output "worker_metric_filters" {
   description = "Each worker-receipt metric filter's pattern, for a platform check of what it matches."
   value       = { for name, filter in aws_cloudwatch_log_metric_filter.worker : name => filter.pattern }
 }
+
+output "event_metric_filters" {
+  description = "Each JSON event filter's pattern (the worker's metric event and the Runtime's operator events), for a platform check of what it matches."
+  value       = { for name, filter in aws_cloudwatch_log_metric_filter.events : name => filter.pattern }
+}

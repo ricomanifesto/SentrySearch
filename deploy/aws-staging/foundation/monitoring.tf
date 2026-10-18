@@ -1,6 +1,7 @@
 # Alarm, notification and budget shapes. An alarm exists here only where a metric
-# has a producer: AWS's own service and database metrics, and metric filters over
-# the worker's readiness receipts. Every other alert the staging requirements name
+# has a producer: AWS's own service and database metrics, metric filters over the
+# worker's readiness receipts, and JSON filters over the worker's metric event and
+# the Runtime's operator events. Every other alert the staging requirements name
 # has no producer yet and is listed as unwired instead of rendered as an alarm
 # that could never fire. Nothing here delivers a notification or enforces a
 # budget until a recipient is approved: without one, no topic, subscription or
@@ -42,6 +43,35 @@ locals {
     WorkerDeadlineErrors = join(" ", [for code in local.worker_deadline_codes :
     "?\"\\\"error_code\\\":\\\"${code}\\\"\""])
   }
+  # Standalone JSON events: the worker's metric event (one per receipt interval, kind
+  # sentry.worker-metrics.v1, no marker) and the Runtime's operator events (one JSON
+  # object per line). CloudWatch applies JSON selectors only to events that are JSON
+  # in their entirety, so a marked readiness receipt never matches these. A value
+  # filter has no default, so an absent event is missing data, never a zero.
+  runtime_namespace = "${var.name_prefix}/runtime"
+  worker_metric     = "$.kind = \"sentry.worker-metrics.v1\""
+  event_metrics = {
+    WorkerBacklogOldestSeconds = {
+      group   = "worker", namespace = local.worker_namespace, default = null, value = "$.backlog_oldest_seconds"
+      pattern = "{ ${local.worker_metric} && $.backlog_oldest_seconds >= 0 }"
+    }
+    WorkerReconcileMismatches = {
+      group   = "worker", namespace = local.worker_namespace, default = null, value = "$.reconcile_mismatches"
+      pattern = "{ ${local.worker_metric} && $.reconcile_mismatches > 0 }"
+    }
+    WorkerCertificateDaysLeft = {
+      group   = "worker", namespace = local.worker_namespace, default = null, value = "$.runtime_certificate_days_left"
+      pattern = "{ ${local.worker_metric} && $.runtime_certificate_days_left >= 0 }"
+    }
+    RuntimeLeaseExpired = {
+      group   = "runtime", namespace = local.runtime_namespace, default = "0", value = "1"
+      pattern = "{ $.event = \"lease_expired\" }"
+    }
+    RuntimeRetryExhausted = {
+      group   = "runtime", namespace = local.runtime_namespace, default = "0", value = "1"
+      pattern = "{ $.event = \"retry_exhausted\" }"
+    }
+  }
   # Each wired alarm's producer, dimensions, threshold and missing-data handling.
   wired_alarms = merge(
     { for name, service in module.names.service_names : "${name}-missing" => {
@@ -77,17 +107,43 @@ locals {
         comparison  = "GreaterThanOrEqualToThreshold", threshold = 1, period = 300, evaluation_periods = 1
         missing     = "notBreaching"
       }
+      # Silence in these is covered by worker-unready and the service-missing alarms.
+      backlog-age = {
+        description = "The oldest report waiting for dispatch has waited more than fifteen minutes for ten minutes."
+        namespace   = local.worker_namespace, metric = "WorkerBacklogOldestSeconds", statistic = "Maximum", dimensions = {}
+        comparison  = "GreaterThanThreshold", threshold = 900, period = 300, evaluation_periods = 2
+        missing     = "notBreaching"
+      }
+      terminal-mismatch = {
+        description = "The worker found the product and the Runtime disagreeing about a bound run: the run names another report or is missing, or the product store recorded a terminal disagreement."
+        namespace   = local.worker_namespace, metric = "WorkerReconcileMismatches", statistic = "Sum", dimensions = {}
+        comparison  = "GreaterThanOrEqualToThreshold", threshold = 1, period = 300, evaluation_periods = 1
+        missing     = "notBreaching"
+      }
+      certificate-expiry = {
+        description = "The Runtime certificate the worker verifies expires in less than fourteen days."
+        namespace   = local.worker_namespace, metric = "WorkerCertificateDaysLeft", statistic = "Minimum", dimensions = {}
+        comparison  = "LessThanThreshold", threshold = 14, period = 300, evaluation_periods = 1
+        missing     = "notBreaching"
+      }
+      lease-exhaustion = {
+        description = "Three or more Runtime leases expired within five minutes: workers are dying or stalling mid-run."
+        namespace   = local.runtime_namespace, metric = "RuntimeLeaseExpired", statistic = "Sum", dimensions = {}
+        comparison  = "GreaterThanOrEqualToThreshold", threshold = 3, period = 300, evaluation_periods = 1
+        missing     = "notBreaching"
+      }
+      retry-exhaustion = {
+        description = "A Runtime run failed with its retry budget spent."
+        namespace   = local.runtime_namespace, metric = "RuntimeRetryExhausted", statistic = "Sum", dimensions = {}
+        comparison  = "GreaterThanOrEqualToThreshold", threshold = 1, period = 300, evaluation_periods = 1
+        missing     = "notBreaching"
+      }
     },
   )
   # Alerts the staging requirements name that have no metric producer yet. They
   # stay visible here, not as alarms that could never fire.
   unwired_alerts = {
-    backlog-age             = "The worker samples the product backlog but writes it to no log line or metric; it needs a producer (an image change)."
-    lease-exhaustion        = "Runtime records lease expiry in its ledger and logs nothing about it; it needs a producer."
-    retry-exhaustion        = "Runtime records retry exhaustion in its ledger and logs nothing about it; it needs a producer."
-    terminal-mismatch       = "The worker's reconciler records Runtime and product mismatches in the product database but writes no log line or metric; it needs a producer."
     release-phase-deadlines = "Release phase deadlines are enforced by the attended controller, which holds and journals; they are not published as metrics."
-    certificate-expiry      = "Runtime's private certificate lives in a Secrets Manager bundle; nothing publishes its expiry."
     backup                  = "RDS automated backups publish no success or failure metric; restore is a documented operator check."
   }
 }
@@ -121,6 +177,19 @@ resource "aws_cloudwatch_log_metric_filter" "worker" {
   }
 }
 
+resource "aws_cloudwatch_log_metric_filter" "events" {
+  for_each       = local.event_metrics
+  name           = "${var.name_prefix}-${each.key}"
+  log_group_name = aws_cloudwatch_log_group.this[each.value.group].name
+  pattern        = each.value.pattern
+  metric_transformation {
+    name          = each.key
+    namespace     = each.value.namespace
+    value         = each.value.value
+    default_value = each.value.default
+  }
+}
+
 resource "aws_cloudwatch_metric_alarm" "this" {
   for_each            = local.wired_alarms
   alarm_name          = "${var.name_prefix}-${each.key}"
@@ -138,7 +207,7 @@ resource "aws_cloudwatch_metric_alarm" "this" {
   alarm_actions       = local.notify ? [aws_sns_topic.alerts[0].arn] : []
   ok_actions          = local.notify ? [aws_sns_topic.alerts[0].arn] : []
   # A log-derived metric exists only once its filter does.
-  depends_on = [aws_cloudwatch_log_metric_filter.worker]
+  depends_on = [aws_cloudwatch_log_metric_filter.worker, aws_cloudwatch_log_metric_filter.events]
 }
 
 resource "aws_budgets_budget" "monthly" {

@@ -360,12 +360,12 @@ def test_the_prices_reproduce_the_estimate_when_the_rates_are_unchanged(tmp_path
     assert (monthly["fargate"], monthly["endpoints"], monthly["rds"]) == (32.73, 58.40, 27.96)
     assert (monthly["secrets_low"], monthly["secrets_high"]) == (5.20, 6.80)
     # The modeled lines replace the old flat allowance (see the modeled-lines test).
-    assert (monthly["modeled_subtotal_low"], monthly["modeled_subtotal_high"]) == (128.01, 134.23)
+    assert (monthly["modeled_subtotal_low"], monthly["modeled_subtotal_high"]) == (130.01, 136.23)
     assert result["lifetime"] == {
         "days": 7, "hosted_zone_month": 0.50, "crosses_month_boundary": None,
         "boundary": "unknown: both values are shown",
-        "without_boundary": {"low": 29.84, "high": 31.28},
-        "with_boundary": {"low": 30.34, "high": 31.78},
+        "without_boundary": {"low": 30.31, "high": 31.74},
+        "with_boundary": {"low": 30.81, "high": 32.24},
     }  # fmt: skip
 
 
@@ -373,8 +373,8 @@ def test_each_modeled_line_follows_its_rate_and_count(tmp_path):
     result = plan.assemble(plan.Bundle(write_bundle(tmp_path / "bundle")), decisions())
     monthly = result["prices"]["monthly_refreshed"]
     assert monthly["modeled"] == {
-        "alarms": 0.80,                # 8 alarms x 0.10
-        "custom_metrics": 0.90,        # 3 log-derived metrics x 0.30
+        "alarms": 1.30,                # 13 alarms x 0.10
+        "custom_metrics": 2.40,        # 8 log-derived metrics x 0.30
         "logs_low": 0.51,              # 1 GB: 0.50 ingested + 0.03 x 1 x 14/30 retained
         "logs_high": 5.14,             # 10 GB
         "private_dns": 0.70,           # 0.50 hosted zone + 2 services x 0.10
@@ -384,7 +384,7 @@ def test_each_modeled_line_follows_its_rate_and_count(tmp_path):
     prices = result["prices"]
     assert prices["supplement_date"] == "2026-10-17"
     assert prices["log_gb_month"] == [1.0, 10.0]
-    assert prices["counts"] == {"alarms": 8, "custom_metrics": 3, "discovery_services": 2,
+    assert prices["counts"] == {"alarms": 13, "custom_metrics": 8, "discovery_services": 2,
                                 "databases": 2, "log_retention_days": 14}  # fmt: skip
     assert prices["unquantified"] == [
         "ECR image storage", "S3 report bytes, requests and object versions",
@@ -416,16 +416,16 @@ def test_the_hosted_zone_month_is_not_prorated_and_a_boundary_adds_one_more(tmp_
     bundle = plan.Bundle(write_bundle(tmp_path / "bundle"))
     known = plan.assemble(bundle, decisions(lifetime_crosses_month_boundary=True))["lifetime"]
     assert known == {"days": 7, "hosted_zone_month": 0.50, "crosses_month_boundary": True,
-                     "low": 30.34, "high": 31.78}  # fmt: skip
+                     "low": 30.81, "high": 32.24}  # fmt: skip
     none = plan.assemble(bundle, decisions(lifetime_crosses_month_boundary=False))["lifetime"]
-    assert (none["low"], none["high"]) == (29.84, 31.28)
+    assert (none["low"], none["high"]) == (30.31, 31.74)
     assert round(known["low"] - none["low"], 2) == round(known["high"] - none["high"], 2) == 0.50
 
 
 def test_the_page_shows_a_modeled_subtotal_plus_unquantified_usage_and_no_total(tmp_path):
     result = plan.assemble(plan.Bundle(write_bundle(tmp_path / "bundle")), decisions())
     page = plan.render(result)
-    assert "| **Modeled subtotal** | 128.01 to 134.23 | 128.01 to 134.23 |" in page
+    assert "| **Modeled subtotal** | 130.01 to 136.23 | 130.01 to 136.23 |" in page
     assert "plus unquantified usage" in page
     for item in result["prices"]["unquantified"]:
         assert f"- {item}" in page

@@ -312,7 +312,13 @@ def write_07b_receipts(work: Path, plan_sha256: str) -> str:
                                      "worker_metric_filters": {
                                          "WorkerReadyReceipts": '"ready":true',
                                          "WorkerRuntimeErrors": '"error_code":"runtime_unavailable"',
-                                         "WorkerDeadlineErrors": '_deadline_exceeded"'}}},
+                                         "WorkerDeadlineErrors": '_deadline_exceeded"'},
+                                     "event_metric_filters": {
+                                         "WorkerBacklogOldestSeconds": '"backlog_oldest_seconds":1200',
+                                         "WorkerReconcileMismatches": '"reconcile_mismatches":1',
+                                         "WorkerCertificateDaysLeft": '"runtime_certificate_days_left":0',
+                                         "RuntimeLeaseExpired": '"event":"lease_expired"',
+                                         "RuntimeRetryExhausted": '"event":"retry_exhausted"'}}},
         "releases": {"terraform": {"current_release": "r0b9f7c1e", "releases": {"r0b9f7c1e": {
             "iam_role_names": {"worker-task": "sentry-staging-r0b9f7c1e-worker-task",
                                "api-task": "sentry-staging-r0b9f7c1e-api-task"}}}}},
@@ -669,3 +675,24 @@ def test_an_incomplete_reports_answer_is_not_an_allowance(tmp_path):
     assert observed["ok"] is False
     assert observed["reason"] == ("incomplete IAM simulation, worker-task under reports/: no "
                                   "decision for s3:PutObject")  # fmt: skip
+
+
+def test_alert_delivery_fails_when_the_foundation_exposes_no_event_filters(tmp_path, monkeypatch):
+    # A foundation without the JSON event filters' patterns cannot prove them, so the
+    # platform case fails rather than passing on the receipt filters alone.
+    target = aws_08a.load_target(platform_target(tmp_path))
+    target.document["aws_07b_chain_head"] = write_07b_receipts(tmp_path / "work", "a" * 64)
+    platform = aws_08a.Platform(
+        target, http=httpx.Client(base_url=target.document["endpoint"],
+                                  transport=httpx.MockTransport(api)),
+        clients=lambda service: {"logs": FakeLogs()}[service],
+        prompt=lambda _text: "", aws_07b=tmp_path / "work")  # fmt: skip
+    assert all(platform._filter_matches().values())
+    monkeypatch.setattr(platform, "_receipts", lambda: {"foundation": {"outputs": {"terraform": {"worker_metric_filters": {
+        "WorkerReadyReceipts": '"ready":true', "WorkerRuntimeErrors": '"error_code":"runtime_unavailable"',
+        "WorkerDeadlineErrors": '_deadline_exceeded"'}}}}})  # fmt: skip
+    found = platform._filter_matches()
+    assert {name for name, ok in found.items() if not ok} == {
+        "WorkerBacklogOldestSeconds", "WorkerReconcileMismatches", "WorkerCertificateDaysLeft",
+        "RuntimeLeaseExpired", "RuntimeRetryExhausted",
+    }  # fmt: skip

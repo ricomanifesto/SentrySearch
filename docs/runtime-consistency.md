@@ -43,6 +43,10 @@ bound run ID or move a terminal dispatch back to submitted.
 | Runtime unavailable, run missing, or references disagree | Preserve the intent and record an error for operator inspection. Never silently bind another run. |
 | Runtime credentials or scope rejected | Stop the worker for operator correction. |
 
+The rows that record `runtime_result_missing` or `runtime_failed_after_publication`,
+and a missing run or disagreeing references, raise the staging `terminal-mismatch`
+alarm through the worker's metric event; an unavailable Runtime does not.
+
 The runtime terminalizes expired, exhausted runs during claim scans. Merely
 reading an expired run does not trigger that transition. Product recovery needs
 a running worker loop; it is not instantaneous. The supervised worker bounds

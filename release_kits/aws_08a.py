@@ -47,6 +47,21 @@ IDENTITIES_SCHEMA = "sentry.aws-08a-identities.v1"
 EXIT_OK, EXIT_REFUSED, EXIT_FAILED = 0, 2, 3
 
 
+# The Runtime's two operator events in the shape its slog JSON handler writes them.
+# The shape is a line captured from a Runtime built from source on macOS, which
+# printed microseconds with the local zone offset; these samples use UTC, and a Linux
+# build may print up to nanoseconds. No filter reads the time. The Runtime's own tests
+# pin each line's exact keys (sentryruntime internal/runtime/events_test.go); the
+# alarm inventory and the alert-delivery case test filters on them.
+RUNTIME_EVENT_SAMPLES = {
+    "lease_expired": '{"time":"2026-10-18T03:03:57.964322Z","level":"INFO","msg":"lease_expired",'
+    '"event":"lease_expired","run_id":"0b9f7c1e-4d2a-4f6b-9a3e-2c1d0e9f8a7b","attempt":2}',
+    "retry_exhausted": '{"time":"2026-10-18T03:03:57.964322Z","level":"INFO","msg":"retry_exhausted",'
+    '"event":"retry_exhausted","run_id":"0b9f7c1e-4d2a-4f6b-9a3e-2c1d0e9f8a7b","attempt":3,'
+    '"max_attempts":3}',
+}
+
+
 class Refused(Exception):
     """The target or an input cannot be used; nothing ran."""
 
@@ -675,13 +690,16 @@ class Platform:
                              "metric_filters_match_receipts": filters}}  # fmt: skip
 
     def _filter_matches(self) -> dict[str, bool]:
-        """CloudWatch's own TestMetricFilter over receipt lines the worker's writer makes."""
+        """CloudWatch's own TestMetricFilter over the lines the filters count: receipts
+        and metric events the worker's writer makes, and the Runtime's operator events.
+        Every filter must match exactly its own samples among all of them."""
         import io
 
-        from src.execution.readiness_receipts import ReadinessReceipts
+        from src.execution.readiness_receipts import RECEIPT_MARKER, ReadinessReceipts
 
         foundation = self._receipts()["foundation"]["outputs"]["terraform"]
-        patterns = foundation.get("worker_metric_filters") or {}
+        patterns = {**(foundation.get("worker_metric_filters") or {}),
+                    **(foundation.get("event_metric_filters") or {})}  # fmt: skip
 
         def line(**snapshot: Any) -> str:
             sink = io.StringIO()
@@ -692,11 +710,31 @@ class Platform:
             receipts.close({"alive": False, "ready": False, "phase": "stopped"}, timeout=1.0)
             return sink.getvalue().splitlines()[0]
 
+        def metric(**fields: Any) -> str:
+            sink = io.StringIO()
+            receipts = ReadinessReceipts("00000000-0000-4000-8000-000000000000", sink,
+                                         emit_metrics=True)  # fmt: skip
+            receipts.observe_metrics(lambda: fields)
+            receipts.close({"alive": False, "ready": False, "phase": "stopped"}, timeout=1.0)
+            return next(text for text in sink.getvalue().splitlines()
+                        if not text.startswith(RECEIPT_MARKER))  # fmt: skip
+
         samples = {"ready": line(ready=True), "unready": line(),
                    "runtime": line(error_code="runtime_unavailable"),
-                   "deadline": line(error_code="generation_deadline_exceeded")}  # fmt: skip
+                   "deadline": line(error_code="generation_deadline_exceeded"),
+                   "metric": metric(backlog_size=4, backlog_oldest_seconds=1200,
+                                    runtime_certificate_days_left=0, reconcile_checked=3,
+                                    reconcile_mismatches=1),
+                   "metric-quiet": metric(backlog_size=0, backlog_oldest_seconds=None,
+                                          runtime_certificate_days_left=None,
+                                          reconcile_checked=3, reconcile_mismatches=0),
+                   **RUNTIME_EVENT_SAMPLES}  # fmt: skip
         expected = {"WorkerReadyReceipts": {"ready"}, "WorkerRuntimeErrors": {"runtime"},
-                    "WorkerDeadlineErrors": {"deadline"}}  # fmt: skip
+                    "WorkerDeadlineErrors": {"deadline"},
+                    "WorkerBacklogOldestSeconds": {"metric"}, "WorkerReconcileMismatches": {"metric"},
+                    "WorkerCertificateDaysLeft": {"metric"},
+                    "RuntimeLeaseExpired": {"lease_expired"},
+                    "RuntimeRetryExhausted": {"retry_exhausted"}}  # fmt: skip
         logs = self.clients("logs")
         found = {}
         for name, wanted in expected.items():
