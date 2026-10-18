@@ -302,6 +302,13 @@ app-container stream pattern for the launcher's receipt reads, and
 `release_tools_bindings` gives the manifest's migration, grant and proof
 expectations.
 
+Each job's containers, log configuration and execution-policy document are
+rendered by the resource-free
+[`../aws-staging/modules/release-job`](../aws-staging/modules/release-job/main.tf)
+module, which the restore verifications in `releases/` use as well. The roles,
+policies and task definitions stay at their addresses here, and a retained
+release renders the same bytes as before the module existed.
+
 ## Optional Runtime and API observers
 
 `observers` (default `null`; requires `release_tools`) adds `runtime-observe` and

@@ -138,7 +138,7 @@ locals {
       ]
     }
   }
-  attended_launcher_policies = merge(local.release_launcher_policies, local.observer_launcher_policy)
+  attended_launcher_policies = merge(local.release_launcher_policies, local.observer_launcher_policy, local.restore_launcher_policy)
   # Bootstrap is a separate administrator path: its launcher is never part of
   # the attended set and nothing in this run attaches it. It exists for a first
   # deployment only: one current release with nothing retained beside it. The

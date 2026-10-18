@@ -358,6 +358,7 @@ def restore_verify_document(database: str = "runtime", base: dict | None = None)
         "restored_endpoint": endpoint, "verification_id": RESTORE_VERIFICATION_ID,
         "not_after": document["window"]["expires_at"],
     }  # fmt: skip
+    families = {"rv-recon": "restore-reconcile", "rv-proof": "restore-proof"}
     document["jobs"] = [
         job(f"{database}-rv-recon", "rv-recon", database, image="release_tools",
             expect={"database": names[0], "principal": names[1], "schema": schema,
@@ -367,6 +368,9 @@ def restore_verify_document(database: str = "runtime", base: dict | None = None)
             expect={"database": names[0], "principal": names[2], "schema": schema,
                     "host": endpoint, "sql_digest": PROOF_PROGRAM_SHA256}),
     ]  # fmt: skip
+    for item in document["jobs"]:
+        family = f"{environment}-{families[item['phase']]}-{database}"
+        item["task"]["task_definition"] = task_definition(family, 1)
     return document
 
 

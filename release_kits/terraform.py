@@ -31,6 +31,20 @@ ROOT_TOP_LEVEL = {
 }
 
 
+# A restore verification's own resources at the releases root (releases/restore.tf). They
+# exist only while one verification runs and belong to no release module.
+RESTORE_ADDRESSES = (
+    "aws_iam_role.restore_execution[",
+    "aws_iam_role_policy.restore_execution[",
+    "aws_ecs_task_definition.restore[",
+    'aws_iam_policy.release_launcher["restore"]',
+)
+
+
+def restore_address(address: str) -> bool:
+    return address.startswith(RESTORE_ADDRESSES)
+
+
 class UnexpectedPlan(Exception):
     """The plan differs from what this step expects; nothing is applied."""
 

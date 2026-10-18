@@ -525,7 +525,10 @@ The manifest's `release_id` is the current release's: its receipts name it and i
 approval binds it. The run journals, locks and launches under its own
 `verification_id`, so the release's journal is never written. The restored
 instance is `<environment>-<db>-db-restore-<label>` and its endpoint starts with that
-identifier in the environment's region. A hold (`restore_hold`) leaves the restored
+identifier in the environment's region. Each job runs its own definition,
+`<environment>-restore-reconcile-<db>` or `<environment>-restore-proof-<db>`
+(registered by the releases root's `restore_verifications`), never one of the
+release's job definitions. A hold (`restore_hold`) leaves the restored
 instance untouched. Because a verification changes nothing else, its lock is
 released once none of its own jobs can still run: no launch is unresolved, and every
 task this journal launched or tried to stop is described STOPPED with one of this

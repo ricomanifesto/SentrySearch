@@ -25,10 +25,12 @@ REVIEWED_DEFAULTS = {
     "log_retention_days",
     "report_retention_days",
     # Optional inputs that render nothing until approved: alert recipient and
-    # budget, observer network groups and the attended operator's trust.
+    # budget, observer network groups, the attended operator's trust and a restore
+    # verification's jobs.
     "notifications",
     "observer_security_group_ids",
     "operator_trust",
+    "restore_verifications",
     # Production inputs whose defaults are the staging posture: single-AZ, seven days
     # of backups, no pre-release snapshots. A production prefix requires more.
     "multi_az",
@@ -93,7 +95,11 @@ def configuration(directory: Path) -> str:
 
 
 def all_configuration() -> str:
-    directories = [STAGING / root for root in ROOTS] + [STAGING / "modules" / "naming", TASK_MODULE]
+    directories = [STAGING / root for root in ROOTS] + [
+        STAGING / "modules" / "naming",
+        STAGING / "modules" / "release-job",
+        TASK_MODULE,
+    ]
     return "\n".join(configuration(directory) for directory in directories)
 
 
@@ -384,9 +390,15 @@ def test_job_receipts_are_read_from_the_streams_terraform_configures():
                 task_module,
                 re.MULTILINE,
             )
-    assert "awslogs-stream-prefix = key\n" in task_module
-    assert re.search(r"^      name += job\.kind$", task_module, re.MULTILINE)
-    assert 'log-stream:${key}/${job.kind}/*"' in task_module
+    # The shared release-job module renders them: stream prefix the job id, container
+    # and receipt stream named for the kind; the tools jobs pass their key and kind.
+    job_module = configuration(STAGING / "modules" / "release-job")
+    assert "awslogs-stream-prefix = var.job_id\n" in job_module
+    assert re.search(r"^      name += var\.kind$", job_module, re.MULTILINE)
+    assert 'log-stream:${var.job_id}/${var.kind}/*"' in job_module
+    for caller in (task_module, releases):
+        assert re.search(r"^  job_id += each\.key$", caller, re.MULTILINE)
+        assert re.search(r"^  kind += each\.value\.kind$", caller, re.MULTILINE)
     # Both write to the naming module's /<prefix>/<database>-release group.
     for database in ("runtime", "product"):
         assert f'log_group = module.names.log_groups["{database}-release"]' in releases
@@ -425,8 +437,24 @@ def test_job_receipts_are_read_from_the_streams_terraform_configures():
             "product-bootstrap/bootstrap/" + "b" * 32,
         ),
     }
+    assert "awslogs-stream-prefix = key\n" in task_module
     assert 'name                   = "bootstrap"' in task_module
     assert 'log-stream:${key}/bootstrap/*"' in task_module
+    # A restore verification's jobs log as <database>-rv-<kind> from a container named
+    # for the kind, in the same release log group.
+    from tests.release_fakes import restore_verify_document
+
+    restore = executable(load_manifest(encode(restore_verify_document())))
+    assert {job.id: job_stream("sentry-staging", job, task) for job in restore.jobs} == {
+        "runtime-rv-recon": (
+            "/sentry-staging/runtime-release",
+            "runtime-rv-recon/rv-recon/" + "b" * 32,
+        ),
+        "runtime-rv-proof": (
+            "/sentry-staging/runtime-release",
+            "runtime-rv-proof/rv-proof/" + "b" * 32,
+        ),
+    }
 
 
 def between(text: str, start: str, end: str) -> str:

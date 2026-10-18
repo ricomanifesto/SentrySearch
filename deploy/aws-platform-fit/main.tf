@@ -276,6 +276,11 @@ resource "aws_ecs_task_definition" "service" {
   }
 }
 
+output "assume_task_role" {
+  description = "The ECS task trust policy of every role here: this account's tasks in this region only."
+  value       = local.assume_task_role
+}
+
 output "task_contracts" {
   value = local.task_contracts
 }

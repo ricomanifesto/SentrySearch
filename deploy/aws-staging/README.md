@@ -24,7 +24,7 @@ lifetime: the seven-day teardown review is a staging procedure.
 | --- | --- | --- |
 | `bootstrap/` | Local and encrypted on the bootstrap operator's machine until a reviewed migration to `state/bootstrap.tfstate` | Private versioned control bucket (`state/`, `releases/`, `locks/`); unattached per-root state policies and the release-evidence policy; an optional attended operator role (none by default) |
 | `foundation/` | `state/foundation.tfstate` | Two-AZ private VPC, routes, endpoints, security groups, both PostgreSQL 16 instances, report bucket, three ECR repositories, log groups (including the observers'), ECS cluster, private DNS; alarms for published metrics and, with an approved recipient, notifications and a monthly budget |
-| `releases/` | `state/releases.tfstate` | The current release and at most one compatible rollback, each a keyed instance of [`../aws-platform-fit`](../aws-platform-fit/README.md) with its guarded release-tools jobs, optional observers and (first deployment only) bootstrap jobs; the unattached attended release-launcher set and a separate bootstrap launcher |
+| `releases/` | `state/releases.tfstate` | The current release and at most one compatible rollback, each a keyed instance of [`../aws-platform-fit`](../aws-platform-fit/README.md) with its guarded release-tools jobs, optional observers and (first deployment only) bootstrap jobs; the unattached attended release-launcher set and a separate bootstrap launcher; optional restore-verification jobs and their launcher document |
 | `services/` | `state/services.tfstate` | The three ECS services, created at desired count zero |
 | `modules/naming/` | none | Shared names derived from account, region and prefix |
 
@@ -194,6 +194,54 @@ The attended scope stays the **current** release's: the operator re-plans
 proof and observer revisions keep the deadline fixed when it was first planned,
 so a rollback after that deadline holds at its first job and needs a new release
 key planned from the prior pair's images, a separate approval.
+
+### Restore verifications
+
+`restore_verifications` (default `{}`; at most one entry per database, keyed by
+the database) registers the two jobs that verify a database restored by point in
+time into a new instance: `<name_prefix>-restore-reconcile-<db>` and
+`<name_prefix>-restore-proof-<db>`, running the release-tools commands `rv-recon`
+and `rv-proof` (see [release-tools](../../docs/release-tools.md) and
+[release-controller](../../docs/release-controller.md#restore-verification-runs)).
+They are rendered by the same
+[`modules/release-job`](modules/release-job/main.tf) as the release's own jobs:
+the current release's CA-only init and release task role, the database's release
+log group with stream prefix `<db>-rv-recon` or `<db>-rv-proof`, and each job's
+own execution role, which pulls the Search and release-tools images, writes its
+own streams and reads only its bundle at the exact version.
+
+| Input | Rule |
+| --- | --- |
+| `database` | `runtime` or `product`, equal to the key |
+| `instance_identifier` | `<name_prefix>-<db>-db-restore-<label>`, the label as the kit's restore names it (lowercase letters and digits, single inner hyphens, at most 20 characters) |
+| `not_after`, `budget_seconds` | Absolute UTC deadline after the plan and at most seven days after it; whole seconds, 60–3600 |
+| `image` | This environment's release-tools repository, by digest (the rebuilt image the verification pins; never inherited from a release) |
+| `tools_sha256`, `sql_sha256` | From that image's `digest` report; `reconcile` and `proof` must equal the current release's programs |
+| `owner_bundle`, `proof_bundle` | `<name_prefix>/restore-owner-environment/<db>` and `<name_prefix>/restore-proof-environment/<db>` at exact versions, never a release's bundle |
+
+The definitions name the current release (its `release_id`, databases and
+logins) but belong to no release key, so every retained release keeps its
+`definitions_sha256`. The `-restore` launcher document, part of the attended set
+only while an entry exists, allows `RunTask` on those revisions in this cluster,
+`iam:PassRole` for their execution roles and the release task role they use, and
+`logs:GetLogEvents` on their receipt streams (`<db>-rv-recon/rv-recon/*`,
+`<db>-rv-proof/rv-proof/*`), and denies Exec; the other documents are unchanged
+with or without a verification. Launch tags, stops and task reads come from the
+jobs and tasks documents. `restore_verifications` (output) gives each entry's
+revisions, roles, receipt streams and the expectations Terraform fixes; the
+manifest binds each job to its family.
+
+An entry exists for one verification only: it is added, the verification runs, the
+attended set is detached, and then the entry is removed in its own checked plan
+(detach first: IAM refuses to delete an attached policy). The revisions stay
+registered as evidence; removing the entry removes their roles and the launcher
+document, so nothing can launch them. While an entry exists its document is part of
+the attended set. A rollback re-plan renders no entry and may remove exactly these
+resources, so an interrupted verification never blocks the re-plan once the attended
+set is detached (a verification held with an unresolved launch still keeps the
+environment lock, which the operator releases); an entry left past its deadline fails
+validation in every plan until it is removed. A first deployment (AWS-07b) never has
+one.
 
 ### Monitoring
 

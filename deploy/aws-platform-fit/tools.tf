@@ -104,67 +104,36 @@ locals {
     job.kind == "grant" ? { RELEASE_SERVICE_ROLE = local.tools[job.database].service } : {},
     job.kind == "proof" ? { RELEASE_OWNER_ROLE = local.tools[job.database].owner } : {},
   ) }
-  tools_log_configuration = { for key, job in local.tools_jobs : key => {
-    logDriver = "awslogs"
-    options = {
-      awslogs-group         = var.release_jobs[job.database].log_group
-      awslogs-region        = var.region
-      awslogs-stream-prefix = key
-    }
-  } }
-  tools_task_contracts = { for key, job in local.tools_jobs : key => [
-    # The same fail-closed CA-only init as the owner migration job.
-    merge(local.release_task_contracts[job.database][0], { logConfiguration = local.tools_log_configuration[key] }),
-    {
-      name                   = job.kind
-      image                  = local.tools.image
-      essential              = true
-      user                   = local.release_roles[job.database].uid
-      workingDirectory       = "/"
-      readonlyRootFilesystem = true
-      linuxParameters        = { capabilities = { drop = ["ALL"] } }
-      dependsOn              = [{ containerName = "init", condition = "SUCCESS" }]
-      startTimeout           = 120
-      # Above the in-image stop grace, so a stop request lets the job reap psql.
-      stopTimeout = 30
-      command     = [job.kind]
-      environment = [for name, value in local.tools_environment[key] : { name = name, value = value }]
-      secrets = [for name in local.tools_secret_keys[job.database] : {
-        name      = name
-        valueFrom = "${local.tools_bundle[key].arn}:${name}::${local.tools_bundle[key].version_id}"
-      }]
-      mountPoints      = [{ sourceVolume = "material", containerPath = "/run/material", readOnly = true }]
-      portMappings     = []
-      logConfiguration = local.tools_log_configuration[key]
-    }
-  ] }
-  tools_execution_policies = { for key, job in local.tools_jobs : key => {
-    Version = "2012-10-17"
-    Statement = [
-      { Sid = "RegistryToken", Effect = "Allow", Action = ["ecr:GetAuthorizationToken"], Resource = ["*"] },
-      {
-        Sid      = "PullImages", Effect = "Allow", Action = ["ecr:BatchCheckLayerAvailability", "ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage"]
-        Resource = [local.ecr_arns.search, local.tools_ecr_arn]
-      },
-      {
-        Sid      = "TaskLogs", Effect = "Allow", Action = ["logs:CreateLogStream", "logs:PutLogEvents"]
-        Resource = ["arn:aws:logs:${var.region}:${var.account_id}:log-group:${var.release_jobs[job.database].log_group}:log-stream:${key}/*"]
-      },
-      {
-        Sid       = "PinnedJobEnvironment", Effect = "Allow", Action = ["secretsmanager:GetSecretValue"]
-        Resource  = [local.tools_bundle[key].arn]
-        Condition = { StringEquals = { "secretsmanager:VersionId" = local.tools_bundle[key].version_id } }
-      },
-    ]
-  } }
+  # Each job's containers, log configuration and execution policy, rendered by the
+  # shared release-job module (the restore verifications render theirs the same way).
+  tools_task_contracts     = { for key in keys(local.tools_jobs) : key => module.tools_job[key].task_contract }
+  tools_execution_policies = { for key in keys(local.tools_jobs) : key => module.tools_job[key].execution_policy }
   # The controller reads a job's receipt only from the stream of the exact task
   # it observed: <prefix>/<app container>/<task id>.
   release_receipt_streams = { for name in keys(local.release_roles) : "${name}-migrate" =>
     "arn:aws:logs:${var.region}:${var.account_id}:log-group:${var.release_jobs[name].log_group}:log-stream:${name}-release/migration/*"
   }
-  tools_receipt_streams = { for key, job in local.tools_jobs : key =>
-    "arn:aws:logs:${var.region}:${var.account_id}:log-group:${var.release_jobs[job.database].log_group}:log-stream:${key}/${job.kind}/*"
-  }
+  tools_receipt_streams = { for key in keys(local.tools_jobs) : key => module.tools_job[key].receipt_stream }
+}
+
+module "tools_job" {
+  source   = "../aws-staging/modules/release-job"
+  for_each = local.tools_jobs
+
+  account_id = var.account_id
+  region     = var.region
+  job_id     = each.key
+  kind       = each.value.kind
+  image      = local.tools.image
+  user       = local.release_roles[each.value.database].uid
+  # The same fail-closed CA-only init as the owner migration job.
+  init        = local.release_task_contracts[each.value.database][0]
+  log_group   = var.release_jobs[each.value.database].log_group
+  environment = local.tools_environment[each.key]
+  secret_keys = local.tools_secret_keys[each.value.database]
+  bundle      = local.tools_bundle[each.key]
+  # The init runs the search image; the job runs the release-tools image.
+  pull_repositories = [local.ecr_arns.search, local.tools_ecr_arn]
 }
 
 resource "aws_iam_role" "tools_execution" {

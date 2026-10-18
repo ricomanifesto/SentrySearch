@@ -1020,6 +1020,39 @@ def test_a_restore_verification_runs_only_its_two_restore_jobs():
     assert rejected(encode(document)).code in {"job_plan_invalid", "job_expectation_invalid"}
 
 
+@pytest.mark.parametrize("family", [
+    "staging-runtime-reconcile",            # the release's own reconcile definition
+    "staging-runtime-release",              # its migration, which the launcher can run
+    "staging-restore-proof-runtime",        # the other restore job's family
+    "staging-restore-reconcile-product",    # another database's
+])  # fmt: skip
+def test_restore_jobs_run_only_their_own_task_families(family):
+    from tests.release_fakes import task_definition
+
+    document = restore_document()
+    reconcile = next(job for job in document["jobs"] if job["phase"] == "rv-recon")
+    reconcile["task"]["task_definition"] = task_definition(family, 1)
+    error = rejected(encode(document))
+    assert (error.code, error.detail) == (
+        "restore_task_definition_invalid",
+        "jobs.runtime-rv-recon.task",
+    )
+
+
+@pytest.mark.parametrize("database", ["runtime", "product"])
+def test_restore_task_families_follow_the_environment_and_the_database(database):
+    from tests.release_fakes import restore_verify_document
+
+    document = restore_verify_document(database)
+    families = [job["task"]["task_definition"].rsplit("/", 1)[1].split(":")[0]
+                for job in document["jobs"]]  # fmt: skip
+    assert families == [
+        f"staging-restore-reconcile-{database}",
+        f"staging-restore-proof-{database}",
+    ]
+    assert executable(load_manifest(encode(document))).execution == "restore_verify"
+
+
 def test_restore_kinds_never_run_in_a_release_or_a_rollback():
     from tests.release_fakes import manifest_document, rollback_run_document
 

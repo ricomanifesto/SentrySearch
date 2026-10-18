@@ -872,6 +872,9 @@ def _check_rollback_run(manifest: Manifest, purpose: RollbackRun) -> None:
 
 
 RESTORE_LABEL_MAX = 20
+# Task families of a verification's two jobs, after the environment prefix and before
+# the database.
+RESTORE_FAMILIES = {"rv-recon": "restore-reconcile", "rv-proof": "restore-proof"}
 
 
 def restore_label_valid(label: str) -> bool:
@@ -915,6 +918,12 @@ def _check_restore_verify(manifest: Manifest, purpose: RestoreVerifyRun) -> None
         raise ReleaseRejected("restore_endpoint_invalid", "purpose.restored_endpoint")
     if purpose.not_after < manifest.window.expires_at:
         raise ReleaseRejected("restore_deadline_before_window", "purpose.not_after")
+    # Its own definitions (deploy/aws-staging/releases/restore.tf), never a release's
+    # job definitions, which the attended launcher can also run.
+    for job in manifest.jobs:
+        family = job.task.task_definition.rsplit("/", 1)[1].split(":", 1)[0]
+        if family != f"{manifest.environment.name}-{RESTORE_FAMILIES[job.phase]}-{job.database}":
+            raise ReleaseRejected("restore_task_definition_invalid", f"jobs.{job.id}.task")
     jobs = {job.phase: job.expect for job in manifest.jobs}
     reconcile, proof = jobs["rv-recon"], jobs["rv-proof"]
     if (

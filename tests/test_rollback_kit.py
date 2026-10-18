@@ -317,6 +317,29 @@ def test_a_replan_that_would_change_a_retained_release_is_never_applied():
              "change": {"actions": ["delete", "create"]}}]}, {})  # fmt: skip
 
 
+def test_a_replan_removes_an_interrupted_verification_and_touches_nothing_else_of_it():
+    addresses = ['aws_iam_role.restore_execution["runtime-rv-recon"]',
+                 'aws_iam_role_policy.restore_execution["runtime-rv-proof"]',
+                 'aws_ecs_task_definition.restore["runtime-rv-recon"]',
+                 'aws_iam_policy.release_launcher["restore"]']  # fmt: skip
+    removed = rollback.check_replan({"terraform_version": "1.16.5", "variables": {},
+                                     "resource_changes": [{"address": address,
+                                                           "change": {"actions": ["delete"]}}
+                                                          for address in addresses]}, {})  # fmt: skip
+    assert removed == {"actions": {"delete": 4}}
+    for address in addresses:
+        for actions in (["create"], ["update"], ["delete", "create"]):
+            with pytest.raises(UnexpectedPlan, match="only ever removed"):
+                rollback.check_replan({"terraform_version": "1.16.5", "variables": {},
+                                       "resource_changes": [{"address": address, "change": {
+                                           "actions": actions}}]}, {})  # fmt: skip
+    # Another launcher document is still only updated.
+    with pytest.raises(UnexpectedPlan, match="only updated"):
+        rollback.check_replan({"terraform_version": "1.16.5", "variables": {}, "resource_changes": [
+            {"address": 'aws_iam_policy.release_launcher["jobs"]',
+             "change": {"actions": ["delete"]}}]}, {})  # fmt: skip
+
+
 def test_a_decision_with_an_incompatible_schema_or_another_release_is_refused(setup):
     world, _prior, failed, failed_path, failed_input, decision = rollback_world(setup)
     stated = json.loads(decision.read_text())

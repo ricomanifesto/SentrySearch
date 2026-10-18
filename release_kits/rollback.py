@@ -46,7 +46,7 @@ from release_kits import aws_07b, render
 from release_kits.aws_07b import Kit, Refused, Step, StepFailed
 from release_kits.ledger import ChainBroken, Ledger
 from release_kits.plan import PlanRefused, load_plan, sha256
-from release_kits.terraform import RootRun, UnexpectedPlan
+from release_kits.terraform import RootRun, UnexpectedPlan, restore_address
 
 KIT = "rollback"
 DECISION_SCHEMA = "sentry.rollback-decision.v1"
@@ -87,7 +87,13 @@ def check_replan(document: dict[str, Any], variables: dict[str, Any],
     for change in document.get("resource_changes") or []:
         actions = sorted(change.get("change", {}).get("actions") or [])
         address = str(change.get("address"))
-        if address.startswith("module.release["):
+        if restore_address(address):
+            # An interrupted verification's entry: the re-plan renders none and removes it
+            # (its revisions stay registered). Nothing else may touch these.
+            if actions not in (["no-op"], ["delete"]):
+                raise UnexpectedPlan(f"{address}: {actions}; a restore verification's "
+                                     "resources are only ever removed here")  # fmt: skip
+        elif address.startswith("module.release["):
             if actions not in (["no-op"], ["read"]):
                 raise UnexpectedPlan(f"{address}: {actions} would change a retained release")
         elif address.startswith("aws_iam_policy.release_launcher["):
