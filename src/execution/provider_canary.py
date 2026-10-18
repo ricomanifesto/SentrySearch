@@ -180,11 +180,113 @@ def configured(env: Mapping[str, str] | None = None) -> CanaryCaps | None:
 
 
 def transport_for(provider: str) -> httpx.BaseTransport | None:
+    # A disabled worker reaches nothing: its source fetches are refused like its model
+    # requests. Outside the worker no policy is installed and nothing changes.
+    if _POLICY is not None and _POLICY.mode == "disabled":
+        return RefusedTransport()
     caps = configured()
     return None if caps is None else caps.transport(provider)
 
 
-def reset_for_tests() -> None:
-    global _CAPS, _LOADED
+# The worker's provider policy ----------------------------------------------------------
+#
+# The deployed worker either reaches no provider (the disabled scaffold: a placeholder
+# key and the discard address) or reaches one only through a canary manifest. The
+# worker entrypoint installs this policy in its process before any application client
+# exists; the model-client factory consults it only when it is installed, so the API,
+# legacy-generation and report-evaluation processes keep their contract unchanged.
+
+KEY_ENV, BASE_URL_ENV = "OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"
+SENTINEL_KEY = "disabled-local-platform-fit"
+DISCARD_BASE_URL = "http://127.0.0.1:9"
+MISCONFIGURED = "provider_misconfigured"
+
+
+class ProviderMisconfigured(ValueError):
+    """The worker's provider settings are neither the disabled scaffold nor a valid canary."""
+
+
+@dataclass(frozen=True)
+class ProviderPolicy:
+    mode: str  # "disabled" or "canary"
+    caps: CanaryCaps | None = None
+
+
+def worker_policy(env: Mapping[str, str]) -> ProviderPolicy:
+    """The only provider settings a worker may run with; anything else is refused.
+
+    The messages name the combination, never a key or an address.
+    """
+    key = env.get(KEY_ENV, "").strip()
+    base_url = env.get(BASE_URL_ENV, "").strip().rstrip("/")
+    raw = env.get(ENV, "")
+    placeholder = key in ("", SENTINEL_KEY)
+    if raw:
+        try:
+            caps = load(json.loads(raw))
+        except (ValueError, TypeError, AttributeError, KeyError):
+            raise ProviderMisconfigured("the canary manifest is not usable") from None
+        if caps.now() >= caps.not_after:
+            raise ProviderMisconfigured("the canary manifest has expired")
+        if placeholder:
+            raise ProviderMisconfigured("a canary needs a provider key")
+        # A canary whose model host the manifest does not name would report ready and
+        # refuse every model request; it is refused at startup instead.
+        if not names_model_host(caps, base_url):
+            raise ProviderMisconfigured("the canary does not name the provider address's host")
+        return ProviderPolicy("canary", caps)
+    if placeholder and base_url == DISCARD_BASE_URL:
+        return ProviderPolicy("disabled")
+    if placeholder:
+        raise ProviderMisconfigured("a placeholder key with a provider address")
+    raise ProviderMisconfigured("a provider key without a canary manifest")
+
+
+def names_model_host(caps: CanaryCaps, base_url: str) -> bool:
+    """Whether the canary lets the model client reach its base URL (the client's
+    default when none is set)."""
+    from src.core.openrouter_client import DEFAULT_OPENROUTER_BASE_URL
+
+    try:
+        host = httpx.URL(base_url or DEFAULT_OPENROUTER_BASE_URL).host
+    except httpx.InvalidURL:
+        return False
+    allowed = caps.providers.get("openrouter")
+    return allowed is not None and host in allowed.hosts
+
+
+class RefusedTransport(httpx.BaseTransport):
+    """The disabled worker's model transport: every request is refused unsent."""
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        raise CanaryCapReached("the worker's provider is disabled")
+
+
+_POLICY: ProviderPolicy | None = None
+
+
+def install_worker_policy(env: Mapping[str, str] | None = None) -> ProviderPolicy:
+    """Decide the worker process's provider policy once. Its caps are the ones every
+    capped transport in the process counts against, sources included."""
+    global _POLICY, _CAPS, _LOADED
+    policy = worker_policy(os.environ if env is None else env)
     with _GUARD:
-        _CAPS, _LOADED = None, False
+        _POLICY = policy
+        _CAPS, _LOADED = policy.caps, True
+    return policy
+
+
+def installed_policy() -> ProviderPolicy | None:
+    return _POLICY
+
+
+def model_transport(policy: ProviderPolicy) -> httpx.BaseTransport:
+    if policy.mode == "canary" and policy.caps is not None:
+        return policy.caps.transport("openrouter")
+    return RefusedTransport()
+
+
+def reset_for_tests() -> None:
+    global _CAPS, _LOADED, _POLICY
+    with _GUARD:
+        _CAPS, _LOADED, _POLICY = None, False, None

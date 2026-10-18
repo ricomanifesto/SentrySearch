@@ -12,10 +12,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import json
+import re
 from typing import Any
 
 from release.manifest import RUNTIME_GRANT_PIN, load_approval, load_manifest
-from release_kits.plan import AccountPlan
+from release_kits.plan import AccountPlan, sha256
+from src.execution import provider_canary
 
 # Secret bundles the custodian creates (operational proposal, section 4). One
 # secret per purpose; a later release adds versions to the same secrets.
@@ -41,6 +43,11 @@ BUNDLES: dict[str, tuple[str, ...]] = {
     "bootstrap-ca/runtime": ("postgres-ca.pem",),
     "bootstrap-ca/product": ("postgres-ca.pem",),
 }  # fmt: skip
+# A release whose record names a provider canary also gives its worker a provider
+# key; every other release keeps the disabled scaffold and has no such bundle.
+PROVIDER_BUNDLE = "provider-key/worker"
+PROVIDER_KEYS = ("OPENROUTER_API_KEY",)
+PROVIDER_FIELDS = ("canary_id", "canary_manifest", "canary_manifest_sha256", "base_url")
 DATABASES = ("runtime", "product")
 # The logins bootstrap creates and every later job and bundle uses.
 IDENTITIES = {
@@ -117,6 +124,40 @@ def attended_policies(plan: AccountPlan, releases: dict[str, Any]) -> dict[str, 
 # The releases root -------------------------------------------------------------------
 
 
+def model_provider(record: dict[str, Any], now: datetime) -> dict[str, str] | None:
+    """The provider canary the release record names, or None: the worker keeps the
+    disabled scaffold."""
+    named = record.get("provider")
+    return None if named is None else check_provider(named, now)
+
+
+def check_provider(named: Any, now: datetime) -> dict[str, str]:
+    """A named provider canary, checked as the worker will check it."""
+    if (
+        not isinstance(named, dict)
+        or set(named) != set(PROVIDER_FIELDS)
+        or not all(isinstance(value, str) and value for value in named.values())
+    ):
+        raise ValueError(f"the release's provider names {', '.join(sorted(PROVIDER_FIELDS))}")
+    manifest = named["canary_manifest"]
+    if sha256(manifest.encode()) != named["canary_manifest_sha256"]:
+        raise ValueError("the canary manifest is not the one the release names")
+    try:
+        caps = provider_canary.load(json.loads(manifest))
+    except (ValueError, TypeError, AttributeError, KeyError):
+        raise ValueError("the release's canary is not a usable canary manifest") from None
+    if caps.canary_id != named["canary_id"]:
+        raise ValueError("the canary manifest is not the one the release names")
+    if now >= caps.not_after:
+        raise ValueError("the release's canary has expired")
+    if not re.fullmatch(r"https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?(/[A-Za-z0-9._~/-]*)?",
+                        named["base_url"]):  # fmt: skip
+        raise ValueError("the provider's base_url is an https address")
+    if not provider_canary.names_model_host(caps, named["base_url"]):
+        raise ValueError("the release's canary does not name the base_url's host")
+    return {field: named[field] for field in PROVIDER_FIELDS}
+
+
 def releases_input(plan: AccountPlan, record: dict[str, Any], foundation: dict[str, Any],
                    bundles: dict[str, dict[str, str]], admin: dict[str, dict[str, str]],
                    pushed: dict[str, str], now: datetime) -> dict[str, Any]:  # fmt: skip
@@ -166,6 +207,13 @@ def releases_input(plan: AccountPlan, record: dict[str, Any], foundation: dict[s
             } for database in DATABASES},
         },
     }  # fmt: skip
+    provider = model_provider(record, now)
+    if provider is not None:
+        release["model_provider"] = {
+            **{field: provider[field]
+               for field in ("base_url", "canary_manifest", "canary_manifest_sha256")},
+            "key_bundle": bundles[PROVIDER_BUNDLE],
+        }  # fmt: skip
     groups = foundation["security_group_ids"]
     return {
         "releases": {release_key(release_id): release},
@@ -235,9 +283,13 @@ def manifest(plan: AccountPlan, record: dict[str, Any], receipts: dict[str, dict
         for key in IMAGE_KEYS
     }  # fmt: skip
     app = {"runtime": "runtime", "api": "search", "worker": "search"}
+    secrets = {name: [bundles[f"environment/{name}"], bundles[f"material/{name}"]]
+               for name in ("runtime", "api", "worker")}  # fmt: skip
+    if record.get("provider") is not None:
+        # The worker's task definition also reads its provider key.
+        secrets["worker"].append(bundles[PROVIDER_BUNDLE])
     document["services"] = {
-        name: _task(plan, release, name, f"{name}-task", f"{name}-execution",
-                    [bundles[f"environment/{name}"], bundles[f"material/{name}"]],
+        name: _task(plan, release, name, f"{name}-task", f"{name}-execution", secrets[name],
                     [groups[name]], [("init", "search"), ("app", app[name])])
         for name in ("runtime", "api", "worker")
     }  # fmt: skip

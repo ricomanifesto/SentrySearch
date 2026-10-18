@@ -79,6 +79,10 @@ def test_worker_cli_loads_environment_before_spawning(monkeypatch):
     monkeypatch.setattr(runner, "load_dotenv", lambda: calls.append("environment"), raising=False)
     monkeypatch.setattr(runner, "parse_args", lambda: SimpleNamespace())
     monkeypatch.delenv("SENTRYSEARCH_RELEASE_ID", raising=False)
+    # The worker's disabled provider scaffold (the entrypoint refuses anything else).
+    monkeypatch.delenv("SENTRYSEARCH_PROVIDER_CANARY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "disabled-local-platform-fit")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "http://127.0.0.1:9")
 
     class Supervisor:
         def __init__(self, *_args, receipts=None):

@@ -197,9 +197,10 @@ an external dependency, not implicitly configured here.
   A future isolated auth configuration must not reuse production credentials.
 - Worker OpenRouter configuration is fixed to `http://127.0.0.1:9` with the
   disposable literal `disabled-local-platform-fit`. This is **not a live key or
-  functional stub** and cannot run useful generation. There is no provider-key
-  secret wired. This does not prove that every research path has no egress; no
-  work may be admitted until a complete fake-provider and egress contract exists.
+  functional stub** and cannot run useful generation. With `model_provider` null
+  (the default) there is no provider-key secret wired. This does not prove that
+  every research path has no egress; no work may be admitted until a complete
+  fake-provider and egress contract exists.
 - Source images must contain `/app/probe` and `dev.prepare_service_volumes`; a
   packaging digest from before those helpers cannot satisfy this draft. A digest
   alone does not prove ARM64 support, security scan status or file contents.
@@ -213,6 +214,18 @@ inputs. Its `runtime` and `product` entries each require `environment_bundle` an
 `sql_sha256` (64 lowercase hex). See the mock test fixture for the structure;
 those identifiers and hashes are deliberately fake, not runnable staging values.
 There is no arbitrary command, plaintext DB credential or extra environment input.
+
+## Optional model provider
+
+`model_provider` is for a capped real-provider canary only. Set, it gives the
+worker, and no other service, `OPENROUTER_BASE_URL` (an https address) and
+`SENTRYSEARCH_PROVIDER_CANARY` (a `sentry.provider-canary.v1` manifest whose
+SHA-256 must match `canary_manifest_sha256`) as environment values, and
+`OPENROUTER_API_KEY` from `key_bundle` at its exact version, which only the
+worker's execution role may read. Null, every definition and policy is the
+disabled scaffold's, byte for byte. The worker refuses to start unless its
+settings are that scaffold or an unexpired canary that names the base URL's host
+for `openrouter`, with a key.
 
 | Definition | Immutable image input / command | CA initializer / process UID |
 | --- | --- | --- |

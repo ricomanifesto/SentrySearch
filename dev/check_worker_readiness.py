@@ -78,7 +78,13 @@ def _ready(body: bytes) -> bool:
     if phase not in {"starting", "maintenance", "generation", "evaluation", "idle", "stopped"}:
         raise InvalidResponse
     error = snapshot.get("error_code", "missing")
-    if error not in {None, "runtime_unavailable", "runtime_access_denied", "worker_error"}:
+    if error not in {
+        None,
+        "runtime_unavailable",
+        "runtime_access_denied",
+        "worker_error",
+        "provider_misconfigured",
+    }:
         raise InvalidResponse
     for key in ("phase_elapsed_seconds", "phase_budget_seconds", "drain_elapsed_seconds"):
         value = snapshot.get(key)

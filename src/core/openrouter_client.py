@@ -190,8 +190,17 @@ def evaluation_request_options(model_name: str | None = None) -> dict[str, Any]:
 
 
 def create_model_client() -> "ModelClient":
-    """Create the direct OpenRouter HTTP client."""
-    return ModelClient()
+    """Create the direct OpenRouter HTTP client.
+
+    In the worker process the entrypoint installs a provider policy first, and every
+    client built there gets the policy's transport: capped by the canary manifest, or
+    refusing every request when the provider is disabled. Without an installed policy
+    (the API, legacy generation and report evaluation) nothing changes.
+    """
+    policy = provider_canary.installed_policy()
+    if policy is None:
+        return ModelClient()
+    return ModelClient(transport=provider_canary.model_transport(policy))
 
 
 class ModelClient:

@@ -670,3 +670,60 @@ run "reject_namespace_with_scheme" {
   variables { private_dns_namespace = "https://sentry-staging.internal.example" }
   expect_failures = [var.private_dns_namespace]
 }
+
+# The optional worker provider. Without one, every retained release renders exactly
+# the definitions it had before the input existed; with one, only that release's
+# worker gets the key, from its own bundle at its exact version.
+run "releases_without_a_provider_keep_their_definitions" {
+  command = plan
+  assert {
+    condition = (output.releases.r11111111.definitions_sha256 == "890ad9024b5ddd7b1a227e731296432d457ae882f1d6fc9a5a050947ee87b5c1" &&
+    output.releases.r22222222.definitions_sha256 == "86f1b7ec0d48bbf0c07a64c7e6d0848b37f717ebddf4a4081ae6c98c1137de55")
+    error_message = "A release without a provider must keep the definitions it rendered before the provider input existed."
+  }
+}
+
+run "a_release_with_a_provider_gives_only_its_worker_the_pinned_key" {
+  command = plan
+  variables {
+    releases = merge(var.releases, { r22222222 = merge(var.releases.r22222222, { model_provider = {
+      base_url               = "https://openrouter.ai/api/v1"
+      canary_manifest        = "{\"schema\":\"sentry.provider-canary.v1\",\"canary_id\":\"aws-08b-1\"}"
+      canary_manifest_sha256 = sha256("{\"schema\":\"sentry.provider-canary.v1\",\"canary_id\":\"aws-08b-1\"}")
+      key_bundle             = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:sentry-staging/provider-key/worker-KKKKKK", version_id = "e1000000-0000-4000-8000-000000000002" }
+    } }) })
+  }
+  assert {
+    condition = (contains(module.release["r22222222"].task_contracts.worker[1].secrets, {
+      name = "OPENROUTER_API_KEY", valueFrom = "arn:aws:secretsmanager:us-east-1:111122223333:secret:sentry-staging/provider-key/worker-KKKKKK:OPENROUTER_API_KEY::e1000000-0000-4000-8000-000000000002" }) &&
+      !contains([for secret in module.release["r11111111"].task_contracts.worker[1].secrets : secret.name], "OPENROUTER_API_KEY") &&
+    output.releases.r11111111.definitions_sha256 == "890ad9024b5ddd7b1a227e731296432d457ae882f1d6fc9a5a050947ee87b5c1")
+    error_message = "A provider belongs to its own release's worker; the retained release is unchanged."
+  }
+}
+
+run "reject_a_provider_key_aliasing_a_release_bundle" {
+  command = plan
+  variables {
+    releases = merge(var.releases, { r22222222 = merge(var.releases.r22222222, { model_provider = {
+      base_url               = "https://openrouter.ai/api/v1"
+      canary_manifest        = "{\"schema\":\"sentry.provider-canary.v1\"}"
+      canary_manifest_sha256 = sha256("{\"schema\":\"sentry.provider-canary.v1\"}")
+      key_bundle             = var.releases.r22222222.release_jobs.runtime.environment_bundle
+    } }) })
+  }
+  expect_failures = [var.releases]
+}
+
+run "reject_a_provider_key_outside_the_environment_prefix" {
+  command = plan
+  variables {
+    releases = merge(var.releases, { r22222222 = merge(var.releases.r22222222, { model_provider = {
+      base_url               = "https://openrouter.ai/api/v1"
+      canary_manifest        = "{\"schema\":\"sentry.provider-canary.v1\"}"
+      canary_manifest_sha256 = sha256("{\"schema\":\"sentry.provider-canary.v1\"}")
+      key_bundle             = { arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:other-staging/provider-key/worker-KKKKKK", version_id = "e1000000-0000-4000-8000-000000000002" }
+    } }) })
+  }
+  expect_failures = [var.releases]
+}

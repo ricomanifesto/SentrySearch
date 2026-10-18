@@ -123,3 +123,30 @@ variable "material_bundles" {
     error_message = "All six environment/material bundle ARNs must be distinct to preserve per-role boundaries."
   }
 }
+
+variable "model_provider" {
+  description = "Optional real-provider canary for the worker only (AWS-08b). Null renders the disabled scaffold: a placeholder key and the discard address. Set, the worker gets the base URL and the canary manifest as values and its key from the bundle's exact version; the API and the Runtime never change."
+  type = object({
+    base_url               = string
+    canary_manifest        = string
+    canary_manifest_sha256 = string
+    key_bundle             = object({ arn = string, version_id = string })
+  })
+  default = null
+  validation {
+    condition = var.model_provider == null ? true : (
+      can(regex("^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$", var.model_provider.base_url)) &&
+      try(jsondecode(var.model_provider.canary_manifest).schema == "sentry.provider-canary.v1", false) &&
+      sha256(var.model_provider.canary_manifest) == var.model_provider.canary_manifest_sha256
+    )
+    error_message = "A provider needs an https base URL and a sentry.provider-canary.v1 manifest whose SHA-256 is the one given."
+  }
+  validation {
+    condition = var.model_provider == null ? true : (
+      can(regex("^arn:aws:secretsmanager:${var.region}:${var.account_id}:secret:[A-Za-z0-9/_+=.@-]+-[A-Za-z0-9]{6}$", var.model_provider.key_bundle.arn)) &&
+      can(regex("^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$", var.model_provider.key_bundle.version_id)) &&
+      !contains(concat([for bundle in values(var.material_bundles) : bundle.arn], [for bundle in values(var.environment_bundles) : bundle.arn]), var.model_provider.key_bundle.arn)
+    )
+    error_message = "The provider key bundle needs a full regional/account Secret ARN distinct from every environment and material bundle, and an exact lowercase UUID VersionId."
+  }
+}

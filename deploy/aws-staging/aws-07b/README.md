@@ -70,7 +70,7 @@ source switched off.
 ```bash
 python -m release_kits.aws_07b init --plan PLAN --plan-sha256 HASH --work WORK \
     --image-bindings BINDINGS --risk-decision RISK --runtime-checkout RUNTIME \
-    --terraform /path/to/terraform-1.16.5
+    --terraform /path/to/terraform-1.16.5 [--provider-canary PROVIDER_APPROVAL]
 python -m release_kits.aws_07b status --plan PLAN --plan-sha256 HASH --work WORK
 python -m release_kits.aws_07b step bootstrap --plan PLAN --plan-sha256 HASH --work WORK \
     --session DEPLOYER.json --chain-head LAST_RECEIPT_HASH
@@ -85,6 +85,16 @@ image's source commit) and the product schema (version and migration checksum
 at the Search image's source commit); the risk decision; and the fixed job
 budgets, deadline, database identities and window.
 
+`--provider-canary` is only for a capped real-provider canary. Its file is a
+`sentry.provider-canary-approval.v1` document naming `plan_sha256`, the image
+bindings' `image_bindings_sha256`, `decided_by`, `decided_at` (UTC), and the
+canary: `canary_id`, `canary_manifest` (the `sentry.provider-canary.v1` JSON),
+`canary_manifest_sha256` and an https `base_url` whose host the manifest names
+for `openrouter`. `init` checks it as the worker will check its settings, shows
+the whole canary before you confirm, and fixes it into the record. Without it a
+release has no provider: the worker keeps the disabled scaffold and the custodian
+step refuses a provider key.
+
 Exit codes: `0` done, `2` refused before anything ran (nothing written), `3`
 the step ran and failed or held (its receipt says why).
 
@@ -96,7 +106,7 @@ The section column is the operational proposal's section each step implements.
 | --- | --- | --- | --- | --- |
 | `bootstrap` | 7.1 | deployer | `bootstrap/`: init (local state in the work directory), plan, check, apply | plan file and hash, outputs (control bucket, operator role) |
 | `foundation` | 7.2 | deployer | `foundation/`: init with the control bucket, plan, check, apply | outputs (subnets, groups, repositories, databases, admin secret ARNs) |
-| `custodian` | 7.3 | deployer | creates the 17 section 4 secrets from `--custodian DIR`, reads the two RDS-managed administrator secrets' current versions | ARN and VersionId of each, never a value |
+| `custodian` | 7.3 | deployer | creates the 17 section 4 secrets (18 when the record names a provider canary) from `--custodian DIR`, reads the two RDS-managed administrator secrets' current versions | ARN and VersionId of each, never a value |
 | `images` | 7.4 | deployer | pushes the three platform manifests by digest from their archives | registry digests; fails if a digest would change |
 | `releases` | 7.5 | deployer | `releases/`: renders one `current` release (with observers and bootstrap), plan, check, apply | rendered input, outputs |
 | `services` | 7.6 | deployer | `services/`: three services at desired count zero | outputs, the four plan files' combined hash |
@@ -145,6 +155,7 @@ id the receipt records.
 | `observer-material/runtime` | `runtime-ca.pem`, `probe-token` |
 | `bootstrap-credentials/runtime`, `bootstrap-credentials/product` | `RELEASE_OWNER_PASSWORD`, `RELEASE_SERVICE_PASSWORD` |
 | `bootstrap-ca/runtime`, `bootstrap-ca/product` | `postgres-ca.pem` |
+| `provider-key/worker` | `OPENROUTER_API_KEY`; only for a release whose record names a provider canary, refused otherwise, and never blank or the disabled placeholder |
 
 The logins are fixed: `runtime_db` owned by `runtime_owner` with service login
 `runtime_service`, and `product_db`, `product_owner`, `product_service`; the

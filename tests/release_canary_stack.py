@@ -43,6 +43,7 @@ from dev.tls_fixtures import create_certificates
 from release.readiness import WORKER_RECEIPT_MARKER
 from release_tools.receipt import RECEIPT_MARKER
 from tests.aws_offline import FakeAws, ServiceError
+from tests.provider_stand_in import stand_in_canary
 from tests.release_fakes import (
     ACCOUNT,
     OBSERVER_NAMESPACE,
@@ -82,6 +83,11 @@ METADATA_SERVER = (
     "print('metadata listening', flush=True)\n"
     "http.server.ThreadingHTTPServer(('0.0.0.0', 80), H).serve_forever()\n"
 )
+# A worker reaches a provider only through a canary manifest: the held-open stub is
+# named by a stand-in one at a dotted alias (tests/provider_stand_in.py).
+PROVIDER_HOST = f"provider.{OBSERVER_NAMESPACE}"
+
+
 PROVIDER_STUB = (
     "import socket\n"
     "server=socket.create_server(('0.0.0.0',9000))\n"
@@ -217,7 +223,7 @@ class CanaryEnvironment:
         self._service_material()
         provider = self.name("provider")
         self.run(self.images.search, provider, ["python", "-c", PROVIDER_STUB], {},
-                 uid=PRODUCT_UID, aliases=["provider"])  # fmt: skip
+                 uid=PRODUCT_UID, aliases=["provider", PROVIDER_HOST])  # fmt: skip
         wait_for("provider stub", lambda: "listening" in self.logs(provider))
 
     def stop(self) -> None:
@@ -616,7 +622,8 @@ class TaskDefinitions:
              "SENTRYRUNTIME_PRODUCER_TOKEN": env.secrets["token:producer"],
              "SENTRYRUNTIME_WORKER_TOKEN": env.secrets["token:worker"],
              "OPENROUTER_API_KEY": env.secret("provider"),
-             "OPENROUTER_BASE_URL": "http://provider:9000/api/v1"},
+             "OPENROUTER_BASE_URL": f"http://{PROVIDER_HOST}:9000/api/v1",
+             "SENTRYSEARCH_PROVIDER_CANARY": stand_in_canary(PROVIDER_HOST, datetime.now(UTC))},
             PRODUCT_UID, mounts=trust, stop_timeout=60, ready=READY["worker"],
         )  # fmt: skip
 

@@ -115,14 +115,28 @@ spend.
 
 ### What reaching a provider still needs
 
-The canary is the caps and their enforcement; nothing here wires a provider into
-a deployed worker. Today the platform's worker runs the disabled generation
-scaffold (`deploy/aws-platform-fit/main.tf`: a discard base URL and no live key),
-and the bound worker image predates the caps. Before AWS-08b can run, a separate
-change must give the canary environment's worker a provider key from its secret
-store, the provider base URL and `SENTRYSEARCH_PROVIDER_CANARY` with the
-manifest, from a worker image rebuilt from this series with its scans and
-suites. Nothing yet refuses a live key without a manifest.
+The canary is the caps and their enforcement. The wiring exists and sets nothing:
+`deploy/aws-platform-fit` takes an optional `model_provider` (the base URL, the
+canary manifest and its SHA-256, and the `provider-key/worker` bundle at its exact
+version) and gives it to the worker alone; null, the default, renders the disabled
+generation scaffold (a discard base URL and a placeholder key) byte for byte. The
+releases root passes it per release. The 07b kit's `init --provider-canary` fixes
+an approved canary (its id, manifest, manifest hash and base URL, for that plan and
+those images) into the release record; the custodian step then creates the
+`provider-key/worker` secret for that release only, refusing the key file for any
+other release and a canary the worker would refuse, and the 7.9 manifest lists the
+key among the worker's secrets.
+
+The worker checks its provider settings before it starts. It runs only with the
+disabled scaffold (an empty or placeholder key and the discard address) or with an
+unexpired canary manifest that names its model host, and a key; anything else, a
+live key without a manifest included, stops it with `provider_misconfigured` in its
+readiness receipt, so it never reports ready. A disabled worker refuses source
+fetches as well as model requests. Before AWS-08b can run, still needed: the
+canary's own approval, including whether the 7.9 release approval (milestone
+`operational-paused`) must name the canary, which is a release-manifest change; the
+provider key with its provider-side credit limit; and a worker image rebuilt from
+this series with its scans and suites.
 
 ## Proven on the platform only
 

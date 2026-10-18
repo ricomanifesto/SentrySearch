@@ -139,6 +139,7 @@ class WorkerStatus:
                     "runtime_unavailable",
                     "runtime_access_denied",
                     "worker_error",
+                    "provider_misconfigured",
                 }:
                     raise ValueError("invalid worker error code")
                 self._error = event["code"]

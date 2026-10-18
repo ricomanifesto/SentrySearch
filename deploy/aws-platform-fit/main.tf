@@ -43,11 +43,22 @@ locals {
     worker = merge(local.search_environment, {
       SENTRYRUNTIME_URL     = "https://${var.runtime_server_name}:8443"
       SENTRYRUNTIME_CA_FILE = "/run/material/runtime-ca.pem"
-      # Disabled generation scaffold: a reserved local discard port, no live key.
-      OPENROUTER_BASE_URL = "http://127.0.0.1:9"
-      OPENROUTER_API_KEY  = "disabled-local-platform-fit"
-    }, var.release_id == null ? {} : { SENTRYSEARCH_RELEASE_ID = var.release_id })
+    }, local.provider_environment, var.release_id == null ? {} : { SENTRYSEARCH_RELEASE_ID = var.release_id })
   }
+  # The worker's provider: without one, the disabled generation scaffold (a reserved
+  # local discard port, no live key); with one, the base URL and the canary manifest
+  # as values, and the key only as a secret from its exact version.
+  provider_environment = var.model_provider == null ? {
+    OPENROUTER_BASE_URL = "http://127.0.0.1:9"
+    OPENROUTER_API_KEY  = "disabled-local-platform-fit"
+    } : {
+    OPENROUTER_BASE_URL          = var.model_provider.base_url
+    SENTRYSEARCH_PROVIDER_CANARY = var.model_provider.canary_manifest
+  }
+  provider_secrets = var.model_provider == null ? [] : [{
+    name      = "OPENROUTER_API_KEY"
+    valueFrom = "${var.model_provider.key_bundle.arn}:OPENROUTER_API_KEY::${var.model_provider.key_bundle.version_id}"
+  }]
   mounts = {
     runtime = [{ sourceVolume = "material", containerPath = "/run/material", readOnly = true }]
     api = [
@@ -124,10 +135,10 @@ locals {
       stopTimeout            = role.stop
       command                = role.command
       environment            = [for key, value in local.environments[name] : { name = key, value = value }]
-      secrets = [for key in local.secret_keys[name] : {
+      secrets = concat([for key in local.secret_keys[name] : {
         name      = key
         valueFrom = "${var.environment_bundles[name].arn}:${key}::${var.environment_bundles[name].version_id}"
-      }]
+      }], name == "worker" ? local.provider_secrets : [])
       healthCheck      = { command = local.health_commands[name], interval = 30, timeout = 5, retries = 3, startPeriod = 90 }
       mountPoints      = local.mounts[name]
       portMappings     = local.ports[name]
@@ -169,7 +180,7 @@ locals {
   } }
   execution_policies = { for name in keys(local.roles) : name => {
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Sid = "RegistryToken", Effect = "Allow", Action = ["ecr:GetAuthorizationToken"], Resource = ["*"]
       },
@@ -186,7 +197,13 @@ locals {
         Resource  = [var.environment_bundles[name].arn]
         Condition = { StringEquals = { "secretsmanager:VersionId" = var.environment_bundles[name].version_id } }
       }
-    ]
+      ], name != "worker" || var.model_provider == null ? [] : [
+      {
+        Sid       = "PinnedProviderKey", Effect = "Allow", Action = ["secretsmanager:GetSecretValue"]
+        Resource  = [var.model_provider.key_bundle.arn]
+        Condition = { StringEquals = { "secretsmanager:VersionId" = var.model_provider.key_bundle.version_id } }
+      }
+    ])
   } }
 }
 

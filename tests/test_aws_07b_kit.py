@@ -29,6 +29,7 @@ from release_kits.ledger import ChainBroken, Ledger
 from release_kits.plan import AccountPlan, PlanRefused, load_plan
 from release_kits.terraform import UnexpectedPlan, check_plan
 from tests import release_kit_fixtures as fx
+from tests.provider_stand_in import stand_in_canary
 from tests.test_release_cli import write_credentials
 
 REPO = Path(__file__).resolve().parents[1]
@@ -822,6 +823,253 @@ def test_the_rendered_releases_input_has_seventeen_distinct_bundles_and_digest_p
     for image in (*release["images"].values(), release["release_tools"]["image"]):
         assert re.fullmatch(pattern, image)
     assert release["release_tools"]["sql_sha256"]["runtime_grant"] == RUNTIME_GRANT_PIN["sha256"]
+
+
+# A release that names a provider canary ----------------------------------------------
+#
+# Only an approved capped canary names a provider: init fixes its approval into the
+# release record, the custodian then accepts a provider key for that release alone,
+# and the releases step gives it to the worker. No key here is real.
+
+CANARY_HOST = "provider.example.test"
+
+
+def canary_approval(setup, *, now=None, **changes: Any) -> Path:
+    manifest = stand_in_canary(CANARY_HOST, now or aws_07b._now())
+    decided = (aws_07b._now() - aws_07b.timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    document = {"schema": aws_07b.PROVIDER_SCHEMA, "plan_sha256": setup["plan"].plan_sha256,
+                "image_bindings_sha256": hashlib.sha256(setup["bindings"].read_bytes()).hexdigest(),
+                "decided_by": "michael", "decided_at": decided,
+                "canary_id": "local-provider-stub", "canary_manifest": manifest,
+                "canary_manifest_sha256": hashlib.sha256(manifest.encode()).hexdigest(),
+                "base_url": f"https://{CANARY_HOST}/api/v1", **changes}  # fmt: skip
+    path = setup["tmp"] / "provider-approval.json"
+    path.write_text(
+        json.dumps({key: value for key, value in document.items() if value is not None})
+    )
+    return path
+
+
+def initialized_with(setup, approval: Path) -> FakeKit:
+    setup["typed"].append("init")
+    kit = setup["kit"]()
+    assert kit.init(bindings_path=setup["bindings"], risk_path=setup["risk"],
+                    runtime_checkout=setup["tmp"], terraform=Path("/fixture/terraform"),
+                    provider_path=approval) == aws_07b.EXIT_OK  # fmt: skip
+    return kit
+
+
+def provider_key_file(setup, value: str = "placeholder-provider-key") -> Path:
+    path = setup["custody"] / "provider-key" / "worker.json"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(json.dumps({"OPENROUTER_API_KEY": value}))
+    path.chmod(0o400)
+    return path
+
+
+def custodian_step(setup, kit: FakeKit) -> int:
+    setup["typed"].append("custodian")
+    return kit.run_step("custodian", chain_head=head(kit), session_path=str(setup["deployer"]),
+                        custodian=setup["custody"])  # fmt: skip
+
+
+def test_without_a_provider_approval_the_record_and_release_name_no_provider(setup):
+    kit = initialized(setup)
+    assert not {"provider", "provider_approval"} & set(kit.record())
+    run_through(setup, kit, "releases")
+    assert set(kit.receipts()["custodian"]["outputs"]["bundles"]) == set(render.BUNDLES)
+    ((_, release),) = kit.receipts()["releases"]["outputs"]["rendered"]["releases"].items()
+    assert "model_provider" not in release
+    created = setup["world"]["clients"]["secretsmanager"].created
+    assert not [name for name in created if "provider-key" in name]
+
+
+def test_init_fixes_the_provider_approval_into_the_release_record(setup):
+    approval = canary_approval(setup)
+    document = json.loads(approval.read_text())
+    kit = initialized_with(setup, approval)
+    record = kit.record()
+    assert record["provider"] == {field: document[field] for field in render.PROVIDER_FIELDS}
+    assert record["provider_approval"] == {
+        "sha256": hashlib.sha256(approval.read_bytes()).hexdigest(),
+        "decided_by": "michael", "decided_at": document["decided_at"],
+    }  # fmt: skip
+    # The operator confirms the whole canary, not its name alone.
+    said = kit.out.getvalue()  # ty: ignore[unresolved-attribute]
+    for shown in ("provider canary local-provider-stub", document["canary_manifest_sha256"],
+                  document["base_url"], json.loads(document["canary_manifest"])["not_after"],
+                  "approved by michael", f"openrouter: at most 1000 requests to {CANARY_HOST}",
+                  "stops after 20 consecutive failures"):  # fmt: skip
+        assert shown in said
+    # The record is the init receipt: what later steps read is what was fixed here.
+    (receipt,) = (kit.work / "receipts").iterdir()
+    assert json.loads(receipt.read_text())["outputs"]["provider"] == record["provider"]
+
+
+def unusable_approvals() -> list[tuple[str, Any, str]]:
+    now = aws_07b._now()
+    other = stand_in_canary(CANARY_HOST, now).replace("local-provider-stub", "another-canary")
+    expired = stand_in_canary(CANARY_HOST, now - aws_07b.timedelta(hours=13))
+    malformed = json.dumps({"schema": "sentry.provider-canary.v1"})
+
+    def manifest(text: str) -> dict[str, str]:
+        return {"canary_manifest": text,
+                "canary_manifest_sha256": hashlib.sha256(text.encode()).hexdigest()}  # fmt: skip
+
+    return [
+        ("another plan", {"plan_sha256": "0" * 64}, "for another plan"),
+        ("other images", {"image_bindings_sha256": "0" * 64}, "other images than the bindings"),
+        ("no approver", {"decided_by": " "}, "names who decided"),
+        ("decided later", {"decided_at": "2999-01-01T00:00:00Z"}, "decided_at is in the future"),
+        ("no decision time", {"decided_at": "yesterday"}, "decided_at is not a UTC time"),
+        (
+            "unnamed model host",
+            {"base_url": "https://other.example.test/api/v1"},
+            "does not name the base_url's host",
+        ),
+        ("another schema", {"schema": "sentry.risk-decision.v1"}, "not a sentry.provider-canary"),
+        ("an extra field", {"key": "x"}, "not a sentry.provider-canary"),
+        ("another hash", {"canary_manifest_sha256": "0" * 64}, "not the one the release names"),
+        ("another canary", manifest(other), "not the one the release names"),
+        ("malformed", manifest(malformed), "not a usable canary manifest"),
+        ("expired", manifest(expired), "has expired"),
+        ("plain http", {"base_url": f"http://{CANARY_HOST}/api/v1"}, "https address"),
+        ("an empty field", {"base_url": ""}, "provider names base_url, canary_id"),
+    ]
+
+
+@pytest.mark.parametrize("label, changes, reason", unusable_approvals(),
+                         ids=[case[0] for case in unusable_approvals()])  # fmt: skip
+def test_init_refuses_a_provider_approval_the_worker_would_refuse(setup, label, changes, reason):
+    approval = canary_approval(setup, **changes)
+    setup["typed"].append("init")
+    kit = setup["kit"]()
+    with pytest.raises(aws_07b.Refused, match=reason):
+        kit.init(bindings_path=setup["bindings"], risk_path=setup["risk"],
+                 runtime_checkout=setup["tmp"], terraform=Path("/fixture/terraform"),
+                 provider_path=approval)  # fmt: skip
+    assert kit.ledger.receipts() == [] and setup["typed"] == ["init"], "init asked or wrote"
+
+
+def test_init_refuses_a_provider_approval_that_is_not_json(setup):
+    approval = setup["tmp"] / "provider-approval.json"
+    approval.write_text("canary: yes")
+    setup["typed"].append("init")
+    kit = setup["kit"]()
+    with pytest.raises(aws_07b.Refused, match="not JSON"):
+        kit.init(bindings_path=setup["bindings"], risk_path=setup["risk"],
+                 runtime_checkout=setup["tmp"], terraform=Path("/fixture/terraform"),
+                 provider_path=approval)  # fmt: skip
+    assert kit.ledger.receipts() == []
+
+
+def test_the_cli_passes_a_provider_approval_to_init_only_when_given(setup):
+    seen: list[dict[str, Any]] = []
+
+    class Recording(aws_07b.Kit):
+        def init(self, **kwargs: Any) -> int:
+            seen.append(kwargs)
+            return aws_07b.EXIT_OK
+
+    base = ["init", "--plan", str(setup["plan_dir"]), "--plan-sha256", setup["hash"],
+            "--work", str(setup["tmp"] / "cli"), "--image-bindings", "b.json",
+            "--risk-decision", "r.json", "--runtime-checkout", "rt", "--terraform", "tf"]  # fmt: skip
+    assert aws_07b.main(base, kit_class=Recording) == aws_07b.EXIT_OK
+    assert aws_07b.main([*base, "--provider-canary", "p.json"], kit_class=Recording) == 0
+    assert [call["provider_path"] for call in seen] == [None, Path("p.json")]
+
+
+def test_a_provider_key_file_without_a_named_canary_is_refused_before_any_secret(setup):
+    kit = initialized(setup)
+    run_through(setup, kit, "foundation")
+    provider_key_file(setup)
+    with pytest.raises(aws_07b.Refused, match="names no provider canary"):
+        custodian_step(setup, kit)
+    assert setup["world"]["clients"]["secretsmanager"].created == {}
+    assert "custodian" not in kit.receipts()
+
+
+def test_a_named_canary_needs_its_provider_key_file(setup):
+    kit = initialized_with(setup, canary_approval(setup))
+    run_through(setup, kit, "foundation")
+    with pytest.raises(aws_07b.Refused, match="give provider-key/worker.json"):
+        custodian_step(setup, kit)
+    assert setup["world"]["clients"]["secretsmanager"].created == {}
+
+
+def test_a_canary_that_expires_before_the_custodian_step_is_refused(setup):
+    # The manifest stops two minutes after init; the custodian runs five minutes later.
+    now = aws_07b._now()
+    approval = canary_approval(setup, now=now - aws_07b.timedelta(hours=12, minutes=-2))
+    kit = initialized_with(setup, approval)
+    run_through(setup, kit, "foundation")
+    provider_key_file(setup)
+    later = setup["kit"](now=lambda: aws_07b._now() + aws_07b.timedelta(minutes=5))
+    with pytest.raises(aws_07b.Refused, match="has expired"):
+        custodian_step(setup, later)
+    assert setup["world"]["clients"]["secretsmanager"].created == {}
+
+
+@pytest.mark.parametrize("value, reason", [("disabled-local-platform-fit", "disabled placeholder"),
+                                           (" disabled-local-platform-fit\n", "disabled placeholder"),
+                                           ("   ", "an empty key")])  # fmt: skip
+def test_a_provider_key_file_holding_no_key_is_refused(setup, value, reason):
+    kit = initialized_with(setup, canary_approval(setup))
+    run_through(setup, kit, "foundation")
+    provider_key_file(setup, value=value)
+    with pytest.raises(aws_07b.Refused, match=reason):
+        custodian_step(setup, kit)
+    assert setup["world"]["clients"]["secretsmanager"].created == {}
+
+
+def test_a_canary_that_expires_before_the_releases_step_is_refused_there(setup):
+    now = aws_07b._now()
+    approval = canary_approval(setup, now=now - aws_07b.timedelta(hours=12, minutes=-2))
+    kit = initialized_with(setup, approval)
+    provider_key_file(setup)
+    run_through(setup, kit, "images")
+    later = setup["kit"](now=lambda: aws_07b._now() + aws_07b.timedelta(minutes=5))
+    setup["typed"].append("releases")
+    with pytest.raises(aws_07b.Refused, match="has expired"):
+        later.run_step("releases", chain_head=head(later), session_path=str(setup["deployer"]))
+    assert "releases" not in later.receipts()
+
+
+def test_the_validated_manifest_lists_the_workers_provider_key(setup):
+    kit = initialized_with(setup, canary_approval(setup))
+    provider_key_file(setup)
+    run_through(setup, kit, "validate")
+    done = kit.receipts()["validate"]["outputs"]
+    manifest = load_manifest(Path(done["manifest"]).read_bytes()).manifest
+    key = kit.receipts()["custodian"]["outputs"]["bundles"]["provider-key/worker"]
+    assert [item.arn for item in manifest.services.worker.secrets][-1] == key["arn"]
+    for name in ("runtime", "api"):
+        assert key["arn"] not in {item.arn for item in getattr(manifest.services, name).secrets}
+
+
+def test_a_named_canary_gives_only_the_worker_its_key_at_the_created_version(setup):
+    approval = canary_approval(setup)
+    canary = json.loads(approval.read_text())
+    kit = initialized_with(setup, approval)
+    provider_key_file(setup)
+    run_through(setup, kit, "releases")
+    created = setup["world"]["clients"]["secretsmanager"].created
+    name = render.secret_name(setup["plan"], "provider-key/worker")
+    assert json.loads(created[name][0]) == {"OPENROUTER_API_KEY": "placeholder-provider-key"}
+    bundles = kit.receipts()["custodian"]["outputs"]["bundles"]
+    assert set(bundles) == {*render.BUNDLES, "provider-key/worker"}
+    ((_, release),) = kit.receipts()["releases"]["outputs"]["rendered"]["releases"].items()
+    assert release["model_provider"] == {
+        "base_url": canary["base_url"], "canary_manifest": canary["canary_manifest"],
+        "canary_manifest_sha256": canary["canary_manifest_sha256"],
+        "key_bundle": bundles["provider-key/worker"],
+    }  # fmt: skip
+    arns = re.findall(r'"arn": "(arn:aws:secretsmanager:[^"]+)"', json.dumps(release))
+    assert len({arn for arn in arns if ":secret:rds!db-" not in arn}) == 18
+    # The key reaches the secret alone: no receipt, rendered file or transcript holds it.
+    assert "placeholder-provider-key" not in kit.out.getvalue()  # ty: ignore[unresolved-attribute]
+    for path in (*(kit.work / "receipts").iterdir(), *(kit.work / "rendered").iterdir()):
+        assert "placeholder-provider-key" not in path.read_text()
 
 
 def test_the_rendered_approval_binds_the_manifest_inside_its_window(setup):

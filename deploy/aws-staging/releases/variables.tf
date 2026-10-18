@@ -82,6 +82,14 @@ variable "releases" {
       budget_seconds = number
       runtime_bundle = object({ arn = string, version_id = string })
     }))
+    # Optional real-provider canary for this release's worker (deploy/aws-platform-fit
+    # validates it). A release with a provider is its own release key.
+    model_provider = optional(object({
+      base_url               = string
+      canary_manifest        = string
+      canary_manifest_sha256 = string
+      key_bundle             = object({ arn = string, version_id = string })
+    }))
     # The environment's first release only: each instance's RDS-managed
     # administrator secret, the owner and service passwords bootstrap sets, and
     # the bootstrap job's own CA bundle. They stay with that release for as long
@@ -126,6 +134,7 @@ variable "releases" {
         release.release_jobs.product.environment_bundle, release.release_jobs.product.material_bundle,
       release.release_tools.runtime.proof_bundle, release.release_tools.product.proof_bundle],
       release.observers == null ? [] : [release.observers.runtime_bundle],
+      release.model_provider == null ? [] : [release.model_provider.key_bundle],
       release.bootstrap == null ? [] : flatten([for name in ["runtime", "product"] : [release.bootstrap[name].credentials, release.bootstrap[name].ca_bundle]])) :
       can(regex("^arn:aws:secretsmanager:${var.region}:${var.account_id}:secret:${var.name_prefix}/[A-Za-z0-9/_+=.@-]+-[A-Za-z0-9]{6}$", bundle.arn)) &&
       can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", bundle.version_id))
@@ -139,9 +148,10 @@ variable "releases" {
         release.release_jobs.product.environment_bundle, release.release_jobs.product.material_bundle,
       release.release_tools.runtime.proof_bundle, release.release_tools.product.proof_bundle],
       release.observers == null ? [] : [release.observers.runtime_bundle],
+      release.model_provider == null ? [] : [release.model_provider.key_bundle],
       release.bootstrap == null ? [] : flatten([for name in ["runtime", "product"] : [release.bootstrap[name].credentials, release.bootstrap[name].ca_bundle]])) : bundle.arn
-    ])) == 12 + (release.observers == null ? 0 : 1) + (release.bootstrap == null ? 0 : 4)])
-    error_message = "Within a release, every service, material, owner, proof, observer, bootstrap credential and bootstrap CA bundle ARN must be distinct."
+    ])) == 12 + (release.observers == null ? 0 : 1) + (release.model_provider == null ? 0 : 1) + (release.bootstrap == null ? 0 : 4)])
+    error_message = "Within a release, every service, material, owner, proof, observer, provider key, bootstrap credential and bootstrap CA bundle ARN must be distinct."
   }
   validation {
     # A secret may hold several releases' versions, but always for the same
@@ -154,6 +164,7 @@ variable "releases" {
         [for name in ["runtime", "product"] : { arn = release.release_jobs[name].material_bundle.arn, purpose = "owner-material/${name}" }],
         [for name in ["runtime", "product"] : { arn = release.release_tools[name].proof_bundle.arn, purpose = "proof-environment/${name}" }],
         release.observers == null ? [] : [{ arn = release.observers.runtime_bundle.arn, purpose = "observer-material/runtime" }],
+        release.model_provider == null ? [] : [{ arn = release.model_provider.key_bundle.arn, purpose = "provider-key/worker" }],
         release.bootstrap == null ? [] : [for name in ["runtime", "product"] : { arn = release.bootstrap[name].credentials.arn, purpose = "bootstrap-credentials/${name}" }],
         release.bootstrap == null ? [] : [for name in ["runtime", "product"] : { arn = release.bootstrap[name].ca_bundle.arn, purpose = "bootstrap-ca/${name}" }],
       )]) : pair.arn => pair.purpose...

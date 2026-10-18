@@ -414,6 +414,11 @@ def test_the_worker_process_exits_cleanly_with_an_unread_full_stdout_pipe(tmp_pa
         key: value for key, value in os.environ.items() if not key.startswith(("AWS_", "PYTHON"))
     }
     env.update({"PYTHON_DOTENV_DISABLED": "1", "SENTRYSEARCH_RELEASE_ID": RELEASE_ID})
+    # The deployed worker's disabled provider scaffold; any provider setting the host
+    # shell carries would otherwise decide the worker's provider policy.
+    env.pop("SENTRYSEARCH_PROVIDER_CANARY", None)
+    env.update({"OPENROUTER_API_KEY": "disabled-local-platform-fit",
+                "OPENROUTER_BASE_URL": "http://127.0.0.1:9"})  # fmt: skip
     command = [sys.executable, *(["-u"] if unbuffered else []), str(FIXTURE)]
     stderr = tmp_path / "stderr.txt"
     with stderr.open("wb") as errors:
@@ -467,6 +472,10 @@ def test_worker_entrypoint_wires_receipts_from_the_environment(monkeypatch):
     monkeypatch.setattr(run_runtime_worker, "load_dotenv", lambda: None)
     monkeypatch.setattr("sys.argv", ["run_runtime_worker"])
     monkeypatch.setenv("SENTRYSEARCH_RELEASE_ID", RELEASE_ID)
+    # The deployed worker's disabled provider scaffold (the entrypoint refuses others).
+    monkeypatch.delenv("SENTRYSEARCH_PROVIDER_CANARY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "disabled-local-platform-fit")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "http://127.0.0.1:9")
     # Receipts go to the process's standard output descriptor, even when
     # sys.stdout has been replaced in-process by an object without one.
     monkeypatch.setattr("sys.stdout", io.StringIO())

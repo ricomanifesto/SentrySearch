@@ -41,6 +41,7 @@ ERROR_CODES = frozenset(
         "worker_error",
         "worker_protocol_error",
         "worker_exited",
+        "provider_misconfigured",
         "drain_deadline_exceeded",
         *(f"{phase}_deadline_exceeded" for phase in PHASES - {"unknown"}),
         "unknown",

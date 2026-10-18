@@ -1,7 +1,8 @@
 """AWS-07b: publication, apply and the first attended release, one typed step at a time.
 
     python -m release_kits.aws_07b init     --plan DIR --plan-sha256 HASH --work DIR \\
-        --image-bindings FILE --risk-decision FILE --runtime-checkout DIR --terraform BINARY
+        --image-bindings FILE --risk-decision FILE --runtime-checkout DIR --terraform BINARY \\
+        [--provider-canary FILE]
     python -m release_kits.aws_07b status   --plan DIR --plan-sha256 HASH --work DIR
     python -m release_kits.aws_07b step ID  --plan DIR --plan-sha256 HASH --work DIR \\
         [--session FILE] [--custodian DIR]
@@ -55,6 +56,7 @@ from release_kits.terraform import (
     check_plan,
     printable,
 )
+from src.execution import provider_canary
 
 KIT = "aws-07b"
 REPO = Path(__file__).resolve().parents[1]
@@ -90,6 +92,7 @@ SUBCOMMANDS = {"restore": "8", "teardown": "8", "init": None}
 RISK_SCHEMA = "sentry.risk-decision.v1"
 RESTORE_SCHEMA = "sentry.restore-approval.v1"
 TEARDOWN_SCHEMA = "sentry.teardown-approval.v1"
+PROVIDER_SCHEMA = "sentry.provider-canary-approval.v1"
 IMAGE_NAMES = {"runtime": "runtime", "search": "search", "release_tools": "release-tools"}
 
 
@@ -389,7 +392,7 @@ class Kit:
                           "receipt is not the one it names")  # fmt: skip
 
     def init(self, *, bindings_path: Path, risk_path: Path, runtime_checkout: Path,
-             terraform: Path) -> int:  # fmt: skip
+             terraform: Path, provider_path: Path | None = None) -> int:  # fmt: skip
         if self.ledger.receipts():
             raise Refused("this work directory already has receipts; use a new one")
         for parent in (self.work, *self.work.parents):
@@ -431,6 +434,23 @@ class Kit:
         if record["sources"]["search"] != record["sources"]["release_tools"]:
             # The product grant script is pinned to one commit both images carry.
             raise Refused("the Search and release-tools images were built from other commits")
+        if provider_path is not None:
+            # Only an approved capped canary names a provider; the record fixes it, and
+            # the custodian accepts a provider key for this release alone.
+            record["provider"], record["provider_approval"] = provider_approval(
+                provider_path, self.plan, record, self.now()
+            )
+            canary = json.loads(record["provider"]["canary_manifest"])
+            self.say(f"  this release names provider canary {canary['canary_id']} "
+                     f"(manifest {record['provider']['canary_manifest_sha256']}) at "
+                     f"{record['provider']['base_url']}, until {canary['not_after']}, "
+                     f"reviewed against {canary['budget_usd']} USD; approved by "
+                     f"{record['provider_approval']['decided_by']}")  # fmt: skip
+            for name, spec in sorted(canary["providers"].items()):
+                self.say(f"    {name}: at most {spec['max_requests']} requests to "
+                         f"{', '.join(spec['hosts'])}")  # fmt: skip
+            self.say(f"    stops after {canary['stop']['max_consecutive_failures']} "
+                     "consecutive failures")  # fmt: skip
         commands = [
             f"docker run --rm --pull never --network none {record['images']['release_tools']['index']} digest",
             f"git -C {REPO} show {record['sources']['search']}:src/storage/schema.py",
@@ -478,6 +498,10 @@ class Kit:
         done = self.receipts()
         record = self.record()
         if root == "releases":
+            try:
+                render.model_provider(record, self.now())
+            except ValueError as error:
+                raise Refused(str(error)) from None
             foundation = done["foundation"]["outputs"]["terraform"]
             rendered = render.releases_input(
                 self.plan,
@@ -600,8 +624,23 @@ class Kit:
     def _prepare_custodian(self, session, custodian):
         if custodian is None:
             raise Refused("the custodian step needs --custodian DIR with one JSON file per bundle")
+        try:
+            provider = render.model_provider(self.record(), self.now())
+        except ValueError as error:
+            raise Refused(str(error)) from None
+        # A provider key is given only for a release that names its canary.
+        expected = dict(render.BUNDLES)
+        key_file = custodian / f"{render.PROVIDER_BUNDLE}.json"
+        if provider is not None:
+            if not os.path.lexists(key_file):
+                raise Refused(f"this release names provider canary {provider['canary_id']}; "
+                              f"give {render.PROVIDER_BUNDLE}.json")  # fmt: skip
+            expected[render.PROVIDER_BUNDLE] = render.PROVIDER_KEYS
+        elif os.path.lexists(key_file):
+            raise Refused(f"{render.PROVIDER_BUNDLE}.json is given, but this release names no "
+                          "provider canary")  # fmt: skip
         files, values = {}, []
-        for purpose, keys in render.BUNDLES.items():
+        for purpose, keys in expected.items():
             path = custodian / f"{purpose}.json"
             raw = _private_file(path)
             try:
@@ -614,6 +653,13 @@ class Kit:
                 or not all(isinstance(value, str) and value for value in document.values())
             ):
                 raise Refused(f"{purpose}.json must hold exactly the keys {sorted(keys)}")
+            if purpose == render.PROVIDER_BUNDLE:
+                # The worker strips its key: a blank key or the placeholder is no key.
+                held = {value.strip() for value in document.values()}
+                if "" in held:
+                    raise Refused(f"{purpose}.json holds an empty key")
+                if provider_canary.SENTINEL_KEY in held:
+                    raise Refused(f"{purpose}.json holds the disabled placeholder, not a key")
             files[purpose] = raw
             values += [value for value in document.values() if len(value) >= 8]
         foundation = self.receipts()["foundation"]["outputs"]["terraform"]
@@ -627,10 +673,10 @@ class Kit:
         # token, which an existing secret does not hold, so the retry fails loudly.
         tokens = {purpose: str(uuid.uuid5(uuid.NAMESPACE_URL, f"sentry-kit:{self.plan.plan_sha256}"
                                           f"/{release}/{purpose}/{sha256(files[purpose])}"))
-                  for purpose in render.BUNDLES}  # fmt: skip
+                  for purpose in files}  # fmt: skip
         commands = [f"secretsmanager CreateSecret --name {render.secret_name(self.plan, purpose)} "
                     f"--secret-string <{purpose}.json> --client-request-token {tokens[purpose]}"
-                    for purpose in render.BUNDLES]  # fmt: skip
+                    for purpose in files]  # fmt: skip
         commands += [f"secretsmanager DescribeSecret --secret-id {admin[database]}"
                      for database in render.DATABASES]  # fmt: skip
         client = self.clients(session, "secretsmanager")
@@ -1116,6 +1162,47 @@ def risk_decision(path: Path, record: dict[str, Any], now: datetime) -> dict[str
             "retained_findings": document["retained_findings"]}  # fmt: skip
 
 
+def provider_approval(path: Path, plan: AccountPlan, record: dict[str, Any], now: datetime
+                      ) -> tuple[dict[str, str], dict[str, str]]:  # fmt: skip
+    """Michael's approval naming this release's provider canary (its id, manifest,
+    manifest hash and base URL) for this plan and these images. Without one a release
+    has no provider."""
+    raw = path.read_bytes()
+    try:
+        document = json.loads(raw)
+    except ValueError:
+        raise Refused("the provider approval is not JSON") from None
+    fields = {"schema", "plan_sha256", "image_bindings_sha256", "decided_by", "decided_at",
+              *render.PROVIDER_FIELDS}  # fmt: skip
+    if (
+        not isinstance(document, dict)
+        or set(document) != fields
+        or document["schema"] != PROVIDER_SCHEMA
+    ):
+        raise Refused(f"the provider approval is not a {PROVIDER_SCHEMA} document")
+    if document["plan_sha256"] != plan.plan_sha256:
+        raise Refused("the provider approval is for another plan")
+    # The images carry the worker's provider guard; a canary approved for other images
+    # could give a key to a worker without it.
+    if document["image_bindings_sha256"] != record["image_bindings_sha256"]:
+        raise Refused("the provider approval is about other images than the bindings name")
+    if not isinstance(document["decided_by"], str) or not document["decided_by"].strip():
+        raise Refused("the provider approval names who decided it")
+    try:
+        decided = datetime.strptime(str(document["decided_at"]), "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        raise Refused("the provider approval's decided_at is not a UTC time") from None
+    if decided.replace(tzinfo=UTC) > now:
+        raise Refused("the provider approval's decided_at is in the future")
+    try:
+        named = render.check_provider({field: document[field] for field in render.PROVIDER_FIELDS},
+                                      now)  # fmt: skip
+    except ValueError as error:
+        raise Refused(str(error)) from None
+    return named, {"sha256": sha256(raw), "decided_by": document["decided_by"],
+                   "decided_at": document["decided_at"]}  # fmt: skip
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m release_kits.aws_07b", allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1131,6 +1218,10 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument(
                 "--terraform", type=Path, required=True, help="the pinned Terraform 1.16.5 binary"
             )
+            command.add_argument(
+                "--provider-canary", type=Path,
+                help="only for a capped provider canary: the approval that names it",
+            )  # fmt: skip
         if name == "step":
             command.add_argument("id", choices=[step.id for step in STEPS])
             command.add_argument("--session")
@@ -1150,7 +1241,8 @@ def main(argv: list[str] | None = None, *, kit_class: type[Kit] = Kit, **options
         kit = kit_class(plan, args.work, **options)
         if args.command == "init":
             return kit.init(bindings_path=args.image_bindings, risk_path=args.risk_decision,
-                            runtime_checkout=args.runtime_checkout, terraform=args.terraform)  # fmt: skip
+                            runtime_checkout=args.runtime_checkout, terraform=args.terraform,
+                            provider_path=args.provider_canary)  # fmt: skip
         if args.command == "status":
             return kit.status()
         if args.command == "step":

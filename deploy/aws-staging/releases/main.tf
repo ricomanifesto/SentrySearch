@@ -36,7 +36,8 @@ module "release" {
     runtime_bundle = each.value.observers.runtime_bundle
     log_group      = module.names.log_groups["observe"]
   }
-  bootstrap = each.value.bootstrap
+  bootstrap      = each.value.bootstrap
+  model_provider = each.value.model_provider
 }
 
 locals {

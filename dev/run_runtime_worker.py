@@ -12,6 +12,7 @@ import time
 
 from dotenv import load_dotenv
 
+from src.execution import provider_canary
 from src.execution.dispatcher import dispatch_pending_reports
 from src.execution.config import runtime_endpoint_from_environment
 from src.execution.reconciler import reconcile_runtime_reports
@@ -68,9 +69,45 @@ def main() -> int:
             if release_id is None
             else ReadinessReceipts(release_id, DescriptorSink(STDOUT_FILENO))
         )
-        return WorkerSupervisor(settings, run_worker_loop, receipts=receipts).run()
+        # The worker reaches no provider, or one only through a canary manifest. A
+        # local run with a provider key supplies a canary too; only receipts depend on
+        # the release identity.
+        try:
+            provider_canary.worker_policy(os.environ)
+        except provider_canary.ProviderMisconfigured as error:
+            refuse_startup(settings, receipts, str(error))
+            return 1
+        return WorkerSupervisor(settings, run_guarded_worker_loop, receipts=receipts).run()
     except ValueError as error:
         raise SystemExit(str(error)) from error
+
+
+def refuse_startup(
+    settings: WorkerSettings, receipts: ReadinessReceipts | None, reason: str
+) -> None:
+    """A worker whose provider settings are refused never starts and never reports
+    ready: with a release identity, a starting and a stopped receipt carry
+    provider_misconfigured."""
+    logger.error("Provider settings refused (%s); the worker does not start", reason)
+    if receipts is None:
+        return
+    snapshot = {"alive": True, "ready": False, "draining": False, "phase": "starting",
+                "phase_elapsed_seconds": 0.0, "phase_budget_seconds": settings.startup_seconds,
+                "error_code": provider_canary.MISCONFIGURED}  # fmt: skip
+    receipts.observe(snapshot)
+    receipts.close({**snapshot, "alive": False, "phase": "stopped"}, timeout=1.0)
+
+
+def run_guarded_worker_loop(settings: WorkerSettings, stop: threading.Event, emit: Emit) -> int:
+    """The worker loop behind the process's provider policy, installed before any
+    application client exists (load_jobs builds the generator and the evaluator)."""
+    try:
+        provider_canary.install_worker_policy()
+    except provider_canary.ProviderMisconfigured as error:
+        logger.error("Provider settings refused (%s); the worker does not start", error)
+        emit({"event": "error", "code": provider_canary.MISCONFIGURED})
+        return 1
+    return run_worker_loop(settings, stop, emit)
 
 
 def load_jobs():

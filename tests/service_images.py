@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 import hashlib
 import json
 import os
@@ -25,6 +26,7 @@ import uuid
 import pytest
 
 from dev.tls_fixtures import create_certificates
+from tests.provider_stand_in import stand_in_canary
 
 REPO = Path(__file__).resolve().parents[1]
 # Keep aligned with the SentryRuntime development database image.
@@ -61,6 +63,9 @@ RUNTIME_GET = (
     "c.request('GET',sys.argv[1],headers={'Authorization':'Bearer '+sys.stdin.read().strip()})\n"
     "r=c.getresponse();print(r.status);print(r.read().decode())"
 )
+# A worker reaches a provider only through a canary manifest: the held-open stub is
+# named by a stand-in one at a dotted alias (tests/provider_stand_in.py).
+PROVIDER_HOST = "provider.service-images.test"
 PROVIDER_STUB = (
     "import socket\n"
     "server=socket.create_server(('0.0.0.0',9000))\n"
@@ -145,7 +150,8 @@ class Stack:
             "SENTRYRUNTIME_PRODUCER_TOKEN": self.secrets["producer"],
             "SENTRYRUNTIME_WORKER_TOKEN": self.secrets["worker"],
             "OPENROUTER_API_KEY": self.secrets["provider"],
-            "OPENROUTER_BASE_URL": "http://provider:9000/api/v1",
+            "OPENROUTER_BASE_URL": f"http://{PROVIDER_HOST}:9000/api/v1",
+            "SENTRYSEARCH_PROVIDER_CANARY": stand_in_canary(PROVIDER_HOST, datetime.now(UTC)),
         }
 
     def run(
@@ -407,7 +413,7 @@ def stack() -> Iterator[Stack]:
                 {},
                 ["python", "-c", PROVIDER_STUB],
                 detach=True,
-                options=("--network-alias", "provider"),
+                options=("--network-alias", "provider", "--network-alias", PROVIDER_HOST),
             )
             wait_for("provider stub", lambda: "listening" in logs(provider), container=provider)
             release(stack, "sentrysearch")
