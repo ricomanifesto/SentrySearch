@@ -245,11 +245,12 @@ receipt chain's current head and approved by the operator:
 
 ## Rehearsal
 
-`dev/rehearse_aws_07b.py` runs `init` and all eleven steps here, typed
-identifiers supplied by the rehearsal driver:
+`dev/rehearse_aws_07b.py` runs `init` and all eleven steps here, and then, for
+its restore leg, section 8's `restore` and `restore-verify`. The rehearsal driver
+supplies the typed identifiers:
 
-- moto 5.2.3 in server mode on loopback answers ECR, S3, Secrets Manager, STS and
-  IAM. moto does not implement ECR's layer-upload operations, so a loopback shim
+- moto 5.2.3 in server mode on loopback answers ECR, S3, Secrets Manager, STS, IAM,
+  RDS and EC2. moto does not implement ECR's layer-upload operations, so a loopback shim
   in front of it implements those four and verifies every uploaded blob's digest;
   everything else goes to moto unchanged.
 - Each Terraform step's plan half runs the pinned 1.16.5 binary with
@@ -262,6 +263,24 @@ identifiers supplied by the rehearsal driver:
   ECS and Logs fakes with the real images, the journal and lock in moto S3, and
   the operator's identity from a moto STS session of the operator role. It ends
   `held_paused` with the lock released.
+- The restore leg continues the same chain (section 8).
+  - `restore` asks moto RDS (and EC2, for the source instance's network) for a
+    point-in-time restore of the runtime database.
+  - A second PostgreSQL container then answers at the restored endpoint. Its
+    certificate comes from the source's authority, and it holds a copy of the
+    source's cluster whose owners and privileges match the source's.
+  - `restore-verify` runs its reconcile and proof jobs there through the same fakes.
+    As for every job, the fakes build the jobs' connection themselves. The restore
+    bundles are what the kit checks and stores, not what the jobs read.
+  - The releases root's restore plans are the same mocked plans, read against the
+    state the earlier applies left.
+  - The AWS-08a pitr-restore case judges each verified and unverified outcome, and
+    the restore before any verification, which it reads as missing. The
+    unverified outcomes are a lost proof receipt, another recorded migration and an
+    extra grant to the service login. The lost receipt waits out the job's
+    900-second deadline.
+  - Two refusals happen before any write: a bundle naming the source host, and an
+    expired approval. Each is checked to change nothing.
 
 ## Proven on the platform only
 
@@ -277,6 +296,7 @@ close each item:
 - Secrets Manager's version handling and the RDS-managed administrator secrets;
 - the release's ECS and Logs behaviour on Fargate (timing, listing delay), the
   RDS point-in-time restore itself, the restored endpoint, IAM accepting the
-  restore launcher document and the verification jobs' Fargate timing; the
-  `restore-verify` leg is proven locally only with in-memory stand-ins (the
-  rehearsal has no restore leg yet).
+  restore launcher document and the verification jobs' Fargate timing. Locally,
+  `restore-verify` is exercised by the kit's in-memory stand-ins and by the
+  rehearsal's restore leg against moto RDS and a PostgreSQL stand-in, never
+  against RDS.
