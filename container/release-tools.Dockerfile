@@ -1,9 +1,11 @@
 # syntax=docker/dockerfile:1
 
-# Release-tools image: guarded bootstrap, grant, proof and reconciliation jobs
+# Release-tools image: guarded bootstrap, grant, proof and reconciliation jobs, the
+# restore verification's reconcile and proof, and the operational observers
 # (docs/release-tools.md). Nonroot by default, no shell, no package manager and no
-# network fetch at run time. Each job selects one fixed command:
-#   bootstrap | grant | proof | reconcile   (digest prints the build pins)
+# network fetch at run time. Each task selects one fixed command:
+#   bootstrap | grant | proof | reconcile | rv-recon | rv-proof
+#   observe-runtime | observe-api   (digest prints the build pins)
 # Build from the repository root:
 #   docker build -f container/release-tools.Dockerfile .
 #
@@ -67,8 +69,11 @@ RUN --network=none set -eu; \
     done; \
     find /runtime-extra/usr/lib/postgresql/16/bin -mindepth 1 ! -name psql -delete; \
     rm -r /runtime-extra/usr/share/postgresql/16/man
-# Only psql is kept from the client package; its other programs are removed but
-# the package metadata stays, so scanners may overmatch them (review, not suppress).
+# Of the client package's programs in bin/, only psql is kept; the others there are
+# removed. The PGXS test programs under /usr/lib/postgresql/16/lib/pgxs/src/test
+# (isolationtester, which links libpq, pg_isolation_regress and pg_regress) are
+# retained; no release_tools job entrypoint runs them. The package metadata stays,
+# so scanners may overmatch removed files (review, not suppress).
 
 FROM ${PYTHON_IMAGE} AS python-files
 COPY --from=runtime-base /var/lib/dpkg/status.d /tmp/base-status
