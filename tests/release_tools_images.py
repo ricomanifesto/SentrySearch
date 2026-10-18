@@ -1285,7 +1285,8 @@ def test_the_forward_reconcile_on_the_same_stack_is_unchanged(stack, released):
 
 
 # RV4 (plan section 15): the predicate counts login sessions only. A fixture view that
-# shadows pg_stat_activity gives the unmodified program each row shape at once.
+# shadows pg_stat_activity gives the unmodified program each row shape at once. A view
+# cannot hold a regrole constant, so each role's OID is read when the view is queried.
 FIXTURE_SCHEMA = "rv4_fixture"
 FIXTURE_ROWS = """
     (900001, timestamptz '2026-10-18 00:00:01+00', 'sentryruntime'::name, NULL::oid,
@@ -1293,14 +1294,14 @@ FIXTURE_ROWS = """
     (900002, timestamptz '2026-10-18 00:00:02+00', 'sentryruntime', 10::oid,
      'postgres', 'psql', 'idle'),
     (900003, timestamptz '2026-10-18 00:00:03+00', 'sentryruntime',
-     'runtime_app'::regrole::oid, 'runtime_app', 'held-service', NULL),
+     (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = 'runtime_app'), 'runtime_app', 'held-service', NULL),
     (900004, timestamptz '2026-10-18 00:00:04+00', 'sentryruntime',
-     'runtime_owner'::regrole::oid, 'runtime_owner', 'held-owner', 'idle'),
+     (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = 'runtime_owner'), 'runtime_owner', 'held-owner', 'idle'),
     (900005, timestamptz '2026-10-18 00:00:05+00', 'sentryruntime',
-     'runtime_app'::regrole::oid, 'runtime_app',
+     (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = 'runtime_app'), 'runtime_app',
      'release:11111111-2222-4333-8444-555555555555:x', NULL),
     (900006, timestamptz '2026-10-18 00:00:06+00', 'sentrysearch',
-     'search_owner'::regrole::oid, 'search_owner', 'psql', 'idle')
+     (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = 'search_owner'), 'search_owner', 'psql', 'idle')
 """
 
 

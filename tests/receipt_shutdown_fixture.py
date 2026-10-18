@@ -49,5 +49,10 @@ class FillingSupervisor:
 
 
 setattr(run_runtime_worker, "WorkerSupervisor", FillingSupervisor)
+# The deployed worker's disabled provider scaffold (the worker refuses any other provider
+# setting without a canary), whichever environment runs this fixture.
+os.environ.pop("SENTRYSEARCH_PROVIDER_CANARY", None)
+os.environ.update({"OPENROUTER_API_KEY": "disabled-local-platform-fit",
+                   "OPENROUTER_BASE_URL": "http://127.0.0.1:9"})  # fmt: skip
 sys.argv = ["run_runtime_worker"]
 raise SystemExit(run_runtime_worker.main())

@@ -171,11 +171,19 @@ def test_runtime_and_api_peak_output_fits_their_buffers(stack: images.Stack):
     if destination:
         Path(destination).write_text(json.dumps(measurements, indent=2, sort_keys=True) + "\n")
     print(json.dumps(measurements, sort_keys=True))
+    # Both targets' load-independent bounds first, so that a host-rate failure below
+    # never hides them: at the recorded peak rate the buffer holds HOLD_SECONDS of
+    # this run's output per request, whatever this host's load.
     for target, result in results.items():
         assert result["requests"] > 0, result
         buffer = _mebibytes(BUFFERS[target])
-        # At this run's rate the buffer holds HOLD_SECONDS of output...
-        assert result["bytes_per_second"] * HOLD_SECONDS <= buffer, result
-        # ...and at the recorded peak rate too, whatever this host's load.
         peak = PEAK_REQUESTS_PER_SECOND[target] * result["bytes_per_request"]
         assert peak * HOLD_SECONDS <= buffer, result
+        print(f"recorded-peak bound held: {target} {PEAK_REQUESTS_PER_SECOND[target]} requests/s"
+              f" x {result['bytes_per_request']} B x {HOLD_SECONDS} s ="
+              f" {peak * HOLD_SECONDS:.0f} <= {buffer}", flush=True)  # fmt: skip
+    # Then this run's own rate: a host that answers faster than the recorded peaks
+    # fails here (AWS-F069).
+    for target, result in results.items():
+        buffer = _mebibytes(BUFFERS[target])
+        assert result["bytes_per_second"] * HOLD_SECONDS <= buffer, result
