@@ -188,6 +188,95 @@ These recommendations do not change the counts above: the 27 retained Search
 matches and the release-tools matches stay non-additive and unaccepted until
 the release owner decides.
 
+### Rebuilt at the AWS-R1 corrective head (October 18, 2026)
+
+All three images were rebuilt. Search and release-tools come from Search
+`a65c8512d98fda3abfe9d104cae4367bafa80ca0`: the worker's provider guard
+(AWS-R1-2), the producers of the missing monitoring signals (AWS-R1-3), restore
+verification with its receipt kinds (AWS-R1-4) and the release-tools
+Dockerfile's comment correction (AWS-F092). Runtime comes from Runtime
+`02a336fe295a3b8cc1dc19a5c11a958a046b8220`: its JSON events for lease expiry and
+retry exhaustion (AWS-R1-3). The test-only liblzma fixture was rebuilt once.
+These are local ARM64 identities, not registry digests, and none is accepted or
+published. Earlier builds from this round (Search `sha256:6fb4e9cc…`,
+release-tools `sha256:9372ffe5…` and Runtime `sha256:1f16de2e…`) and the
+earlier fixture `sha256:f0fdf26d…` were lost from the local image store before
+any scan was bound to them; they are not evidence identities.
+
+The archives saved at build time were re-hashed against their bindings and
+scanned offline with Trivy 0.75.0 and a database downloaded at 13:49 UTC from
+`mirror.gcr.io/aquasec/trivy-db:2`, updated `2026-10-18T07:12:07Z`. No severity
+filter, ignore-unfixed setting or suppression was used. For the first time,
+Syft 1.54.1 also produced separate CycloneDX and native SBOMs from the same
+archives. Syft's CycloneDX also lists files, so its counts are Syft's
+accounting and not comparable with Trivy's.
+
+| Image | Local index | Built from | Raw matches, database `2026-10-18T07:12:07Z` | Against October 17 | Trivy CycloneDX / Syft 1.54.1 components |
+| --- | --- | --- | --- | --- | --- |
+| Search | `sha256:7b4adb67874db5705bd56a29b3406b5eb9b7a5725f6dbd18069227ef35770291` | Search `a65c851` | 48: C0/H7/M27/L14/U0 | the same 48 tuples | 82, unchanged / 1,606 |
+| Release-tools | `sha256:614cea945cecc591941b1e21070a68556636055f3b1b169ff8cd348511f96e49` | Search `a65c851` | 63: C0/H1/M32/L30/U0 | the same 63 tuples | 29, unchanged / 1,521 |
+| Runtime | `sha256:48d23c091b85a384220361e4562bfe8d292e4a41c74a7d68eb29115ef844c579` | Runtime `02a336f` | zero | zero | 33 entries, 23 unique, unchanged / 978 |
+
+- The tuples (advisory, package, installed version, fixed version, severity)
+  equal those of the October 12 and 17 scans for all three images.
+- The three krb5 and SASL advisories all read `affected`, none with a fixed
+  version. The October 17 database had reported CVE-2026-107161 as
+  `fix_deferred`. The status field is informational and changes no disposition.
+- This ledger already names every advisory in the 48 and 63 matches, so no row
+  is added.
+- The Runtime's 23 in the earlier rows is its unique component count. Trivy's
+  CycloneDX lists 33 entries because the three binaries repeat shared modules.
+  Both counts are unchanged since October 10 and 12 (`go.mod` and `go.sum` are
+  unchanged).
+- The test-only fixture is now
+  `sha256:1b836d9dea07b88f7b39679629debcce3ed5c9470d6266dc9b0b3261600fd9a5`,
+  built from inputs unchanged since `945106e`. It is never shipped and needs no
+  disposition row.
+
+**Input delta against the previous images** (by each image's `.dockerignore`):
+
+- **Search** (`945106e..a65c851`), 14 files, +695/-28:
+  `dev/check_worker_readiness.py`, `dev/run_runtime_worker.py`,
+  `release_tools/receipt.py`, `src/api/main.py`, `src/core/openrouter_client.py`,
+  `src/core/source_snapshot.py`, `src/domain/execution.py`,
+  `src/execution/config.py`, the new `src/execution/provider_canary.py`,
+  `src/execution/readiness_receipts.py`, `src/execution/reconciler.py`,
+  `src/execution/runtime_client.py`, `src/execution/supervisor.py` and
+  `src/storage/report_service.py`.
+- **Release-tools** (`945106e..a65c851`), 5 files, +83/-13:
+  `container/release-tools.Dockerfile` (comments only), `release_tools/config.py`,
+  `release_tools/jobs.py`, `release_tools/receipt.py` and the new
+  `release_tools/sql/restore_sessions.sql`.
+- **Runtime** (`c46533b..02a336f`), 4 Go files, +95/-4:
+  `cmd/sentryruntime/main.go`, `internal/runtime/events.go`,
+  `internal/runtime/service.go` and `internal/runtime/types.go`.
+
+No base image, package, lockfile or native library changed. The provenance
+materials and SBOM components are identical.
+
+**Recheck.** The 767 added code lines in the two contexts (the release-tools
+Dockerfile's added lines are comments) add imports of `re`, `threading`, `os`,
+`json`, `httpx`, `hashlib`, `typing`, `dataclasses`, `collections.abc`,
+`datetime` and repository modules. Against the list under the October 8
+rebinding, no added line uses ctypes, cffi, sqlite3, wordexp, iconv or `ccs=`,
+glob, fnmatch, zlib, `crc32_combine`, strfmon, locale, tsearch, tdelete, dlopen,
+`LD_PRELOAD`, subprocess, lzma, tar, zip, gzip, curses, readline or
+multiprocessing. Two added lines in the certificate-expiry hook reference the
+`ssl` module (`ssl.cert_time_to_seconds` and the `ssl.SSLError` class) to read
+the already verified peer certificate from the existing httpx TLS stream. They
+add no TLS context or socket path, and no advisory in this ledger concerns
+libssl, so no disposition rests on them. One added comment mentions DNS
+resolution (prose only). Python's `re` is not libc regex, so the glibc regex U
+rows stand.
+
+Every disposition therefore carries over unchanged as an assessment of these
+identities. None is accepted, and the 27 retained Search and 54 tools matches
+stay non-additive. The October 17 recommendations (CVE-2026-107161 **N**,
+CVE-2026-107708 **N**, CVE-2026-107778 **A**) stand as recommendations for the
+release owner. The scans, SBOMs and image bindings are saved with the AWS-R1
+evidence (`r1-5/scan-1`; bindings SHA-256
+`a21338473f96cf1cbeae47a72e1018630de96962b00fcca5e8639509df231cba`).
+
 ## Result and scope
 
 The retained Trivy 0.75.0 report (database updated `2026-10-06T19:11:49Z`)
