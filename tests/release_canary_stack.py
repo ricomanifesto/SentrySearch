@@ -118,6 +118,54 @@ def docker(*args: str, check: bool = True, timeout: float = 180, stdin: str | No
     return result
 
 
+def issue_certificate(authority: Path, directory: Path, *, hostname: str) -> None:
+    """A server certificate and key for ``hostname`` signed by the authority (its ca.pem
+    and ca-key.pem) in ``authority``, written to ``directory`` as server.pem and
+    server-key.pem beside a copy of ca.pem."""
+    directory.mkdir(parents=True, exist_ok=True)
+
+    def openssl(*args: str) -> None:
+        subprocess.run(["openssl", *args], cwd=directory, check=True, capture_output=True,
+                       timeout=15)  # fmt: skip
+
+    (directory / "ca.pem").write_bytes((authority / "ca.pem").read_bytes())
+    openssl("req", "-new", "-newkey", "rsa:2048", "-nodes", "-keyout", "server-key.pem",
+            "-out", "server.csr", "-subj", "/CN=Disposable Restored Server")  # fmt: skip
+    (directory / "server.cnf").write_text(
+        "basicConstraints=CA:FALSE\n"
+        f"subjectAltName=DNS:{hostname}\n"
+        "extendedKeyUsage=serverAuth\n",
+        encoding="utf-8",
+    )
+    openssl("x509", "-req", "-in", "server.csr", "-CA", str(authority / "ca.pem"),
+            "-CAkey", str(authority / "ca-key.pem"), "-CAcreateserial", "-days", "1",
+            "-sha256", "-extfile", "server.cnf", "-out", "server.pem")  # fmt: skip
+
+
+DATABASE_PRIVILEGES = """
+SELECT string_agg(entry, ' ' ORDER BY entry) FROM (
+    SELECT d.datname || ':' || d.datdba::regrole::text || ':' || d.datallowconn::text || ':'
+           || d.datconnlimit::text || ':' || string_agg(p.item, ',' ORDER BY p.item) AS entry
+    FROM pg_database AS d
+    CROSS JOIN LATERAL (
+        SELECT a.grantor::regrole::text || '>'
+               || CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END
+               || '=' || a.privilege_type || CASE WHEN a.is_grantable THEN '*' ELSE '' END
+        FROM aclexplode(coalesce(d.datacl, acldefault('d', d.datdba))) AS a
+        UNION ALL SELECT ''
+    ) AS p(item)
+    GROUP BY d.datname, d.datdba, d.datallowconn, d.datconnlimit
+) AS rows
+"""
+
+
+def _database_level(line: str, name: str) -> bool:
+    """A pg_dump --create line setting a database's owner, settings or privileges."""
+    return line.startswith(f"ALTER DATABASE {name} ") or (
+        line.startswith(("REVOKE ", "GRANT ")) and f" ON DATABASE {name} " in line
+    )
+
+
 def stamp(moment: datetime) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -337,6 +385,68 @@ class CanaryEnvironment:
             {"postgres-ca.pem": certificates.ca.read_text()},
         )  # fmt: skip
 
+    def restored_database(self, key: str, endpoint: str) -> str:
+        """A stand-in for a point-in-time restore of ``key`` into a new instance.
+
+        A new PostgreSQL container answers at ``endpoint`` with a server certificate
+        the source database's own authority signs (a restore keeps the instance's CA),
+        and holds a copy of the source's whole cluster: its roles with their password
+        verifiers, settings and memberships, every database and their privileges
+        (the maintenance database's revoked PUBLIC access too). Returns its container.
+        """
+        source = self.database_container(key)
+        directory = self.root / f"{key}-db-restored-{len(self.containers)}"
+        issue_certificate(self.root / f"{key}-db", directory, hostname=endpoint)
+        for path in directory.iterdir():
+            path.chmod(0o644)
+        directory.chmod(0o755)
+        container = self.name(f"{key}-db-restored")
+        setup = (
+            "install -o postgres -g postgres -m 0600 /tls-source/server-key.pem"
+            " /var/lib/postgresql/server.key && install -o postgres -g postgres -m 0644"
+            " /tls-source/server.pem /var/lib/postgresql/server.crt && "
+        )
+        server = ["postgres", "-c", "ssl=on", "-c", "ssl_cert_file=/var/lib/postgresql/server.crt",
+                  "-c", "ssl_key_file=/var/lib/postgresql/server.key",
+                  "-c", "password_encryption=scram-sha-256", "-c", "log_connections=on",
+                  "-c", "log_line_prefix=%m [%p] app=%a "]  # fmt: skip
+        docker(
+            "run", "-d", "--name", container, "--network", self.network, "--network-alias", endpoint,
+            "-e", f"POSTGRES_PASSWORD={self.secrets[f'{key}:postgres']}",
+            "-e", "POSTGRES_HOST_AUTH_METHOD=scram-sha-256",
+            "-v", f"{directory}:/tls-source:ro", "--entrypoint", "sh", POSTGRES_IMAGE,
+            "-c", setup + "exec docker-entrypoint.sh " + shlex.join(server),
+        )  # fmt: skip
+        wait_for(
+            f"{key} restored database",
+            lambda: docker("exec", container, "pg_isready", "-h", "127.0.0.1", "-U", "postgres",
+                           check=False).returncode == 0
+            and "database system is ready to accept connections"
+            in self.logs(container),  # fmt: skip
+        )
+        # The new cluster's own bootstrap superuser already exists; nothing else may fail.
+        dump = docker("exec", source, "pg_dumpall", "-U", "postgres").stdout
+        lines = dump.splitlines(keepends=True)
+        assert lines.count("CREATE ROLE postgres;\n") == 1, "the dump's superuser line changed"
+        lines.remove("CREATE ROLE postgres;\n")
+        # Without --clean, pg_dumpall leaves the built-in postgres and template1 with the
+        # new cluster's own properties; their owner, settings and privileges are the
+        # source's, as a restore has them (bootstrap revoked PUBLIC from the maintenance
+        # database).
+        for name in ("postgres", "template1"):
+            created = docker("exec", source, "pg_dump", "-U", "postgres", "--create",
+                             "--schema-only", name).stdout  # fmt: skip
+            lines += [line for line in created.splitlines(keepends=True)
+                      if _database_level(line, name)]  # fmt: skip
+        docker("exec", "-i", container, "psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-U",
+               "postgres", "-d", "postgres", stdin="".join(lines))  # fmt: skip
+        # Every database's owner, connection settings and privileges, as privileges
+        # rather than ACL text (replaying a grant may reorder an equal ACL).
+        copied, held = (self.sql(name, "postgres", DATABASE_PRIVILEGES)
+                        for name in (container, source))  # fmt: skip
+        assert copied == held, f"the restored databases differ: {copied} != {held}"
+        return container
+
     def sql(self, container: str, database: str, statement: str) -> str:
         return docker(
             "exec", container, "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d",
@@ -375,9 +485,10 @@ class CanaryEnvironment:
 # Task definitions --------------------------------------------------------------------
 
 
-def _database_url(database: Database, user: str, password: str, ca: str) -> str:
+def _database_url(database: Database, user: str, password: str, ca: str, *,
+                  host: str | None = None) -> str:  # fmt: skip
     return (
-        f"postgres://{user}:{password}@{database.host}:5432/{database.name}"
+        f"postgres://{user}:{password}@{host or database.host}:5432/{database.name}"
         f"?sslmode=verify-full&sslrootcert={ca}"
     )
 
@@ -415,10 +526,13 @@ class TaskDefinitions:
     def _revisions(document: dict) -> dict[str, tuple[str, dict]]:
         """What a manifest says about each revision it names, without release or deadline."""
         found: dict[str, tuple[str, dict]] = {}
+        restored = (document.get("purpose") or {}).get("restored_endpoint")
         for job in document["jobs"]:
-            found[job["task"]["task_definition"]] = ("job", {
-                "job": {key: job[key] for key in ("id", "phase", "database")},
-            })  # fmt: skip
+            data: dict[str, Any] = {"job": {key: job[key] for key in ("id", "phase", "database")}}
+            if job["phase"] in ("rv-recon", "rv-proof"):
+                # A restore verification's jobs connect to the restored instance.
+                data["host"] = restored
+            found[job["task"]["task_definition"]] = ("job", data)
         for check in document["operational_checks"]:
             if "task" in check:
                 found[check["task"]["task_definition"]] = ("observer", {
@@ -456,6 +570,25 @@ class TaskDefinitions:
             entries[service["task_definition"]] = ("service", {
                 "service": name, "release_id": rollback["release_id"],
             })  # fmt: skip
+        conflicts = sorted(arn for arn, entry in entries.items()
+                           if self.specs.get(arn, entry) != entry)  # fmt: skip
+        if conflicts:
+            raise RevisionConflict(f"already registered with other values: {conflicts}")
+        self.specs.update(entries)
+
+    def register_restore(self, document: dict, *, not_after: datetime,
+                         budget_seconds: int = 900) -> None:  # fmt: skip
+        """Register a restore verification's two job revisions only.
+
+        Its services and checks are the current release's, registered with that
+        release; its jobs are new revisions (releases/restore.tf) under the
+        verification's own deadline, connecting to the restored endpoint.
+        """
+        release_id = document["release_id"]
+        entries = {arn: (kind, {**data, "release_id": release_id, "not_after": not_after,
+                                "budget": budget_seconds})
+                   for arn, (kind, data) in self._revisions(document).items()
+                   if kind == "job" and data["job"]["phase"] in ("rv-recon", "rv-proof")}  # fmt: skip
         conflicts = sorted(arn for arn, entry in entries.items()
                            if self.specs.get(arn, entry) != entry)  # fmt: skip
         if conflicts:
@@ -539,17 +672,19 @@ class TaskDefinitions:
             }  # fmt: skip
             return ContainerSpec(images.tools, ["bootstrap"], {**values, **metadata},
                                  database.uid, env.material[database.key])  # fmt: skip
-        principal = database.service if phase == "proof" else database.owner
+        principal = database.service if phase in ("proof", "rv-proof") else database.owner
         values = {**tools, "RELEASE_EXPECT_DATABASE": database.name,
                   "RELEASE_EXPECT_PRINCIPAL": principal}  # fmt: skip
         if phase == "grant":
             values["RELEASE_SERVICE_ROLE"] = database.service
-        if phase == "proof":
+        if phase in ("proof", "rv-proof"):
             values["RELEASE_OWNER_ROLE"] = database.owner
+        host = data.get("host") or database.host
         if database.key == "runtime":
-            values["DATABASE_URL"] = _database_url(database, principal, secret(principal), ca)
+            values["DATABASE_URL"] = _database_url(database, principal, secret(principal), ca,
+                                                   host=host)  # fmt: skip
         else:
-            values.update(_db_keys(database, principal, secret(principal)))
+            values.update(_db_keys(database, principal, secret(principal), host=host))
         return ContainerSpec(images.tools, [phase], {**values, **metadata}, database.uid,
                              env.material[database.key])  # fmt: skip
 
@@ -628,8 +763,9 @@ class TaskDefinitions:
         )  # fmt: skip
 
 
-def _db_keys(database: Database, user: str, password: str) -> dict[str, str]:
-    return {"DB_HOST": database.host, "DB_PORT": "5432", "DB_NAME": database.name,
+def _db_keys(database: Database, user: str, password: str, *,
+             host: str | None = None) -> dict[str, str]:  # fmt: skip
+    return {"DB_HOST": host or database.host, "DB_PORT": "5432", "DB_NAME": database.name,
             "DB_USER": user, "DB_PASSWORD": password}  # fmt: skip
 
 
@@ -798,6 +934,8 @@ class CanaryAws(FakeAws):
         self.appended: dict[str, list[str]] = {}
         # Job or check id -> a rewrite of its real receipt (substituted-receipt faults).
         self.rewritten: dict[str, Callable[[dict], dict]] = {}
+        # Job or check ids whose receipt line never reaches the stream (missing-receipt faults).
+        self.suppressed: set[str] = set()
 
     def _job_lines(self, group: str, stream: str) -> list[str]:
         prefix, container, task_id = stream.split("/")
@@ -827,6 +965,8 @@ class CanaryAws(FakeAws):
         ):
             raise ServiceError("ResourceNotFoundException", 400)
         lines = [message for _, message in self.canary_ecs.lines(task)]
+        if (job_id or "") in self.suppressed:
+            lines = [line for line in lines if not line.startswith(RECEIPT_MARKER + " ")]
         rewrite = self.rewritten.get(job_id or "")
         if rewrite is not None:
             lines = [rewritten_receipt(line, rewrite) for line in lines]

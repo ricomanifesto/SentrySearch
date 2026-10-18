@@ -4,7 +4,13 @@
 moto answers ECR (through a layer-upload shim), S3, Secrets Manager, STS and IAM;
 each Terraform step plans with the mocked provider (apply is not rehearsed); and
 the run step drives ``release_cli run`` through the release canary's
-container-backed ECS and Logs fakes with the built images. Start moto yourself,
+container-backed ECS and Logs fakes with the built images. The same chain then
+restores the runtime database in moto RDS (and EC2) and runs ``restore-verify``
+against a second PostgreSQL container at the restored endpoint: verified, refused
+before any write (a bundle naming the source host, an expired approval) and
+unverified (a lost proof receipt, another recorded migration, an extra grant to
+the service login), each judged by the AWS-08a pitr-restore case. The lost receipt
+waits out the job's 900-second deadline. Start moto yourself,
 from its own environment, in the staging account, so its version is pinned and
 recorded:
 
