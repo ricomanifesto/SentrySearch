@@ -34,15 +34,19 @@ the retained-code and component coverage review, any required remediation, and
 the explicit release-risk decision before staging. Existing 27 retained
 service-image matches remain a separate gate; do not add counts across images.
 
-## Current candidate: Debian's official liblzma fix (October 12, 2026)
+## Debian's official liblzma fix (October 12, 2026)
 
 The service-image recipe installs Debian's official `liblzma5 5.8.1-1+deb13u2`
 (DSA-6549-1) over the donor image's `5.8.1-1+deb13u1`, as
 [liblzma: the official Debian fix](liblzma-backport.md) describes. The local
-backport below is gone from the recipe. The current ARM64 local image is
-`sha256:5cfa136c70748bad8f6c3539921ca0a6d140154ff42930948243c85e28279f06`.
-It is not a published registry manifest, an accepted image or a production
-repair.
+backport below is gone from the recipe. The first ARM64 local image built with it
+was `sha256:5cfa136c70748bad8f6c3539921ca0a6d140154ff42930948243c85e28279f06`;
+the checks and scans in this section are that image's. The current local image,
+rebuilt from `a65c8512d98fda3abfe9d104cae4367bafa80ca0` with the same recipe and
+package, is `sha256:7b4adb67874db5705bd56a29b3406b5eb9b7a5725f6dbd18069227ef35770291`;
+the [image ledger](image-risk-dispositions.md#rebuilt-at-the-aws-r1-corrective-head-october-18-2026)
+records its scan. Neither is a published registry manifest, an accepted image or
+a production repair.
 
 - **Pinning.** The package comes from the dated `debian-security` snapshot
   `20261007T211543Z`. APT verified the archive signatures; the build also
