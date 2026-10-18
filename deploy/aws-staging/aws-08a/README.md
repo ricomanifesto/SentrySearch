@@ -86,7 +86,7 @@ last hash when it ends: keep it, as nothing else records the newest entry.
 | `certificate-rollover` | `tests/aws_08a_local.py`: renewed certificate trusted only with its authority in the bundle | local proof stands until an upgrade release rotates material |
 | `termination-grace-and-replacement` | SIGTERM drain; drain stops between phases; named-volume restart | as above; the stopped task's app container must have exited on its own (0 after a clean drain, 124 at the drain deadline), so before ECS's SIGKILL at the 60-second stop timeout, which would make it 137; the time from STOPPING to the end of execution is recorded |
 | `alert-delivery` | platform | first checks each worker metric filter with `logs:TestMetricFilter` against real receipt lines, using the patterns the AWS-07b foundation receipt recorded; then sets `alert_alarm` to ALARM after you type `alert-delivery`, then you type `received` once it arrived; it is set back to OK |
-| `pitr-restore` | platform | not closable yet: the AWS-07b `restore` command restores into a new instance, but running the reconcile and proof jobs against it needs a release whose bundles name it, which no kit builds; the case is recorded `skip` with that reason |
+| `pitr-restore` | platform | reads the AWS-07b chain and judges the latest restore attempt in it (of any result) and the latest verification written after that attempt: passes only when that verification is `restore_verified` for the attempt's instance, both jobs reached its endpoint, the proof ran the current release's program (`sql_digest`) and read its schema, and the reconcile saw no foreign session; fails when a restore has no verification or the verification disagrees in any one way; skips only when the chain has neither a restore attempt nor a verification |
 
 Platform steps that act wait for a typed confirmation first: creating the one
 report the auth and report cases observe (`submit`; it runs real generation and
@@ -108,9 +108,11 @@ simulation and CloudWatch Logs' metric-filter test.
 - `alert-delivery`: SNS email delivery to the named recipient.
 - `pitr-restore`: RDS point-in-time restore into a new instance, with the
   reconcile and proof jobs verifying its schema before any login points at it.
-  The AWS-07b `restore` command performs the restore; the verification needs a
-  release whose bundles name the restored instance, which is **not built**: this
-  case cannot pass yet.
+  The AWS-07b `restore` and `restore-verify` commands perform both; the restore,
+  the restored endpoint, IAM and Fargate are platform facts. The proof covers the
+  service login's privileges and denials and the migration state, not data
+  content; whether the engine's management sessions run as role OID 10 there is
+  not observed locally.
 - Fargate behaviour of the worker cases: task stop, ECS replacement timing and
   listing delay.
 - Rotation and rollover through Secrets Manager versions in a real upgrade

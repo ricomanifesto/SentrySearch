@@ -38,6 +38,7 @@ SQL_PINS = {
     "sql/bootstrap.sql": fx.sha("bootstrap"), "sql/runtime/service.sql": RUNTIME_GRANT_PIN["sha256"],
     "sql/runtime/proof.sql": fx.sha("runtime-proof"), "sql/product/grants.sql": fx.sha("grants"),
     "sql/product/proof.sql": fx.sha("product-proof"), "sql/reconcile.sql": fx.sha("reconcile"),
+    "sql/restore_sessions.sql": fx.sha("restore-sessions"),
 }  # fmt: skip
 
 
@@ -171,6 +172,7 @@ class FakeIam:
 class FakeSecrets:
     def __init__(self, admin: dict[str, str]) -> None:
         self.created: dict[str, tuple[str, str]] = {}
+        self.versions: dict[str, list[str]] = {}
         self.admin = admin
 
     fail_at: int | None = None
@@ -185,13 +187,23 @@ class FakeSecrets:
             raise ClientError({"Error": {"Code": "ResourceExistsException"}}, "CreateSecret")
         arn = f"arn:aws:secretsmanager:us-east-1:111122223333:secret:{Name}-AbC123"
         self.created[Name] = (SecretString, ClientRequestToken)
+        self.versions.setdefault(Name, []).append(ClientRequestToken)
         return {"ARN": arn, "Name": Name, "VersionId": ClientRequestToken}
+
+    def put_secret_value(self, *, SecretId, SecretString, ClientRequestToken):
+        self.created[SecretId] = (SecretString, ClientRequestToken)
+        self.versions.setdefault(SecretId, []).append(ClientRequestToken)
+        arn = f"arn:aws:secretsmanager:us-east-1:111122223333:secret:{SecretId}-AbC123"
+        return {"ARN": arn, "Name": SecretId, "VersionId": ClientRequestToken}
 
     def describe_secret(self, *, SecretId):
         if SecretId in self.created:
             return {
                 "ARN": f"arn:aws:secretsmanager:us-east-1:111122223333:secret:{SecretId}-AbC123",
-                "VersionIdsToStages": {self.created[SecretId][1]: ["AWSCURRENT"]},
+                "VersionIdsToStages": {
+                    token: ["AWSCURRENT"]
+                    for token in self.versions.get(SecretId, [self.created[SecretId][1]])
+                },
             }
         version = "0b9f7c1e-4d2a-4f6b-9a3e-" + fx.sha(SecretId)[:12]
         return {"ARN": SecretId, "VersionIdsToStages": {version: ["AWSCURRENT"],
@@ -241,9 +253,10 @@ class FakeKit(aws_07b.Kit):
             if run.root == "releases":
                 (key,) = variables["releases"]
                 address = f'module.release["{key}"].aws_ecs_task_definition.service["runtime"]'
-            changes = self.world.get("changes", {}).get(run.root) or [
-                {"address": address, "change": {"actions": ["create"]}}
-            ]
+            changes = self.world.get("changes", {}).get(run.root)
+            if callable(changes):
+                changes = changes(variables)
+            changes = changes or [{"address": address, "change": {"actions": ["create"]}}]
             document = {"terraform_version": "1.16.5",
                         "variables": {k: {"value": v} for k, v in variables.items()},
                         "resource_changes": changes}  # fmt: skip
@@ -267,7 +280,13 @@ class FakeKit(aws_07b.Kit):
             return self.world.get("run_result", (0, {"state": "held_paused", "reason": None}))
         if "status_result" in self.world:
             return self.world["status_result"]
-        release_id = json.loads(Path(args[args.index("--manifest") + 1]).read_text())["release_id"]
+        document = json.loads(Path(args[args.index("--manifest") + 1]).read_text())
+        release_id = document["release_id"]
+        if (document.get("purpose") or {}).get("kind") == "restore_verify":
+            return 0, {"command": "status", "release_id": release_id,
+                       "run_id": document["purpose"]["verification_id"], "lock": None,
+                       "journal": {"state": self.world.get("restore_state"), "outstanding": [],
+                                   "reason": None}}  # fmt: skip
         return 0, {"command": "status", "release_id": release_id, "lock": self.world.get("lock"),
                    "journal": {"state": "held_paused", "outstanding": [], "reason": None}}  # fmt: skip
 
@@ -302,6 +321,7 @@ def setup(tmp_path):
         if root == "releases":
             values = json.loads(Path(run.var_files[-1]).read_text())
             rendered["releases"] = values
+            world["restore_applied"] = sorted(values.get("restore_verifications") or {})
             return fx.releases_outputs(plan, values)
         return fx.services_outputs(plan)
 
@@ -1172,6 +1192,391 @@ def test_restore_goes_into_a_new_instance_and_leaves_the_original(setup):
     assert call["TargetDBInstanceIdentifier"] == "sentry-staging-runtime-db-restore-a"
     assert call["DeletionProtection"] is True and call["UseLatestRestorableTime"] is True
     assert rds.instances["sentry-staging-runtime-db"]["DBInstanceStatus"] == "available"
+
+
+# Restore verification (section 8; plan 3.1 item 5) ------------------------------------
+
+TARGET = "sentry-staging-runtime-db-restore-a"
+ENDPOINT = f"{TARGET}.abc123xyz.us-east-1.rds.amazonaws.com"
+
+
+def restored(setup, kit: FakeKit, database: str = "runtime") -> FakeRds:
+    """A completed release whose restore created the target, now available."""
+    run_through(setup, kit, "detach")
+    rds = FakeRds()
+    source = f"sentry-staging-{database}-db"
+    rds.instances[source] = {**rds.instances["sentry-staging-runtime-db"],
+                             "DBInstanceIdentifier": source}  # fmt: skip
+    setup["world"]["clients"]["rds"] = rds
+    target = f"{source}-restore-a"
+    approval = section_8_approval(setup, kit, aws_07b.RESTORE_SCHEMA, database=database,
+                                  target_identifier=target, restore_time="latest")  # fmt: skip
+    setup["typed"].append("restore")
+    assert kit.restore(chain_head=head(kit), session_path=str(setup["deployer"]),
+                       approval_path=approval) == aws_07b.EXIT_OK  # fmt: skip
+    endpoint = f"{target}.abc123xyz.us-east-1.rds.amazonaws.com"
+    rds.instances[target].update(DBInstanceStatus="available", Endpoint={"Address": endpoint})
+    return rds
+
+
+def restore_custody(setup, *, host: str = ENDPOINT, owner: str = "runtime_owner",
+                    service: str = "runtime_service", dbname: str = "runtime_db",
+                    database: str = "runtime") -> Path:  # fmt: skip
+    directory = setup["tmp"] / "restore-custody"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    for purpose, login in (("restore-owner-environment", owner),
+                           ("restore-proof-environment", service)):  # fmt: skip
+        path = directory / purpose / f"{database}.json"
+        path.parent.mkdir(exist_ok=True)
+        if path.exists():
+            path.chmod(0o600)
+        password = f"placeholder-password-{purpose[:12]}"
+        if database == "runtime":
+            url = (f"postgresql://{login}:{password}@{host}:5432/{dbname}"
+                   "?sslmode=verify-full&sslrootcert=/run/material/postgres-ca.pem")  # fmt: skip
+            document = {"DATABASE_URL": url}
+        else:
+            document = {"DB_HOST": host, "DB_PORT": "5432", "DB_NAME": dbname, "DB_USER": login,
+                        "DB_PASSWORD": password}  # fmt: skip
+        path.write_text(json.dumps(document))
+        path.chmod(0o400)
+    return directory
+
+
+def verify_approval(setup, kit, **changes) -> Path:
+    fields = {
+        "database": "runtime",
+        "target_identifier": TARGET,
+        "not_after": render.iso(aws_07b._now() + aws_07b.timedelta(hours=6)),
+        **changes,
+    }
+    return section_8_approval(setup, kit, aws_07b.RESTORE_VERIFY_SCHEMA, **fields)
+
+
+def restore_world(setup, *, state: str = "restore_verified") -> None:
+    """Plans as Terraform would make them from what was applied, and a run ending ``state``.
+
+    A plan with an entry not yet applied creates it; a plan without an entry deletes
+    what an earlier apply left; anything else changes nothing.
+    """
+    world = setup["world"]
+
+    def changes(variables):
+        wanted = sorted(variables.get("restore_verifications") or {})
+        applied = world.get("restore_applied", [])
+        addresses = [f'aws_ecs_task_definition.restore["{database}-rv-recon"]'
+                     for database in sorted(set(wanted) | set(applied))]  # fmt: skip
+        if wanted and wanted != applied:
+            world["restore_planned"] = "add"
+            return [{"address": a, "change": {"actions": ["create"]}} for a in addresses] + [
+                {"address": 'aws_iam_policy.release_launcher["restore"]',
+                 "change": {"actions": ["create"]}}]  # fmt: skip
+        if applied and not wanted:
+            world["restore_planned"] = "remove"
+            return [{"address": a, "change": {"actions": ["delete"]}} for a in addresses]
+        return [{"address": 'module.release["r0"].aws_ecs_task_definition.service["api"]',
+                 "change": {"actions": ["no-op"]}}]  # fmt: skip
+
+    world.setdefault("changes", {})["releases"] = changes
+    world["run_result"] = (0 if state == "restore_verified" else 3,
+                           {"state": state, "reason": None if state == "restore_verified"
+                            else "job_receipt_mismatch"})  # fmt: skip
+    world["restore_state"] = state
+
+
+def verify(setup, kit, approval: Path, custody: Path, *typed: str) -> int:
+    setup["typed"].extend(typed or ("restore-verify",) * 3)
+    setup["world"][
+        "arn"
+    ] = f"arn:aws:sts::111122223333:assumed-role/sentry-staging-operator/{OPERATOR}"
+    return kit.restore_verify(chain_head=head(kit), session_path=str(setup["deployer"]),
+                              operator_session_path=str(setup["operator"]),
+                              approval_path=approval, custodian=custody)  # fmt: skip
+
+
+def test_a_restored_instance_is_verified_by_its_own_jobs_and_the_entry_removed(setup):
+    kit = initialized(setup)
+    restored(setup, kit)
+    restore_world(setup)
+    world = setup["world"]
+    secrets_before = set(world["clients"]["secretsmanager"].created)
+    assert (
+        verify(setup, kit, verify_approval(setup, kit), restore_custody(setup)) == 0
+    ), kit.out.getvalue()  # ty: ignore[unresolved-attribute]
+    receipt = kit.receipts()["restore-verify"]["outputs"]
+    assert receipt["kind"] == "restore_verified" and receipt["verified"] is True
+    assert receipt["target"] == TARGET and receipt["endpoint"] == ENDPOINT
+    assert receipt["hosts"] == {"runtime-rv-recon": ENDPOINT, "runtime-rv-proof": ENDPOINT}
+    assert receipt["foreign_sessions"] == "0"
+    assert receipt["sql_digest"] == SQL_PINS["sql/runtime/proof.sql"]
+    # The two restore bundles were created; nothing else.
+    created = set(world["clients"]["secretsmanager"].created) - secrets_before
+    assert created == {
+        "sentry-staging/restore-owner-environment/runtime",
+        "sentry-staging/restore-proof-environment/runtime",
+    }
+    # The run used the restore_verify manifest, which the controller's own loader accepts.
+    validate = next(args for args in world["cli"] if args[0] == "validate" and Path(
+        args[args.index("--manifest") + 1]).name.endswith("-restore-manifest.json"))  # fmt: skip
+    document = json.loads(Path(validate[validate.index("--manifest") + 1]).read_text())
+    from release.manifest import RestoreVerifyRun, executable
+
+    manifest = executable(load_manifest(json.dumps(document).encode()))
+    assert isinstance(manifest.purpose, RestoreVerifyRun)
+    assert str(manifest.purpose.verification_id) == receipt["verification_id"]
+    assert [job.id for job in manifest.jobs] == ["runtime-rv-recon", "runtime-rv-proof"]
+    # Attached for the run, detached after; the entry removed in its own plan.
+    assert world["clients"]["iam"].attached.get("sentry-staging-operator", []) == []
+    assert world["restore_planned"] == "remove"
+    assert {"add_plan_file_sha256", "remove_plan_file_sha256"} <= set(receipt)
+    plans = {path.name.split("-", 1)[1] for path in (kit.work / "plans").iterdir()
+             if "restore" in path.name}  # fmt: skip
+    assert plans == {"restore-check.tfplan", "restore-add.tfplan", "restore-remove.tfplan"}
+
+
+@pytest.mark.parametrize("label", ["source host", "another login", "another database"])
+def test_a_restore_bundle_naming_anything_but_the_restored_endpoint_is_refused(setup, label):
+    kit = initialized(setup)
+    restored(setup, kit)
+    restore_world(setup)
+    custody = {
+        "source host": lambda: restore_custody(setup, host="sentry-staging-runtime-db.abc.example"),
+        "another login": lambda: restore_custody(setup, service="runtime_owner"),
+        "another database": lambda: restore_custody(setup, dbname="product_db"),
+    }[label]()
+    secrets_before = dict(setup["world"]["clients"]["secretsmanager"].created)
+    calls_before = list(setup["world"].get("terraform", []))
+    with pytest.raises(aws_07b.Refused):
+        verify(setup, kit, verify_approval(setup, kit), custody)
+    assert setup["world"]["clients"]["secretsmanager"].created == secrets_before
+    assert setup["world"].get("terraform", []) == calls_before
+    assert "restore-verify" not in kit.receipts()
+
+
+def test_a_verification_is_refused_unless_this_chain_restored_an_available_target(setup):
+    kit = initialized(setup)
+    rds = restored(setup, kit)
+    restore_world(setup)
+    custody = restore_custody(setup)
+    other = section_8_approval(
+        setup,
+        kit,
+        aws_07b.RESTORE_VERIFY_SCHEMA,
+        database="runtime",
+        target_identifier="sentry-staging-runtime-db-restore-b",
+        not_after=render.iso(aws_07b._now() + aws_07b.timedelta(hours=6)),
+    )
+    with pytest.raises(aws_07b.Refused, match="not the instance this chain's restore created"):
+        verify(setup, kit, other, custody)
+    rds.instances[TARGET]["DBInstanceStatus"] = "creating"
+    with pytest.raises(aws_07b.Refused, match="not available"):
+        verify(setup, kit, verify_approval(setup, kit), custody)
+    rds.instances[TARGET]["DBInstanceStatus"] = "available"
+    short = verify_approval(
+        setup, kit, not_after=render.iso(aws_07b._now() + aws_07b.timedelta(minutes=30))
+    )
+    with pytest.raises(aws_07b.Refused, match="window's hour"):
+        verify(setup, kit, short, custody)
+    assert "restore-verify" not in kit.receipts() and "rds" in setup["world"]["clients"]
+
+
+def test_a_tools_image_proving_another_program_is_refused_before_any_write(setup, monkeypatch):
+    kit = initialized(setup)
+    restored(setup, kit)
+    restore_world(setup)
+    record = kit.record()
+    record["pins"]["sql"]["sql/runtime/proof.sql"] = fx.sha("another proof program")
+    monkeypatch.setattr(kit, "record", lambda: record)
+    secrets_before = dict(setup["world"]["clients"]["secretsmanager"].created)
+    with pytest.raises(aws_07b.Refused, match="restore_proof_pin_mismatch"):
+        verify(setup, kit, verify_approval(setup, kit), restore_custody(setup))
+    assert setup["world"]["clients"]["secretsmanager"].created == secrets_before
+
+
+def test_a_run_that_does_not_end_restore_verified_is_recorded_unverified(setup):
+    kit = initialized(setup)
+    restored(setup, kit)
+    restore_world(setup, state="hold")
+    assert verify(setup, kit, verify_approval(setup, kit), restore_custody(setup)) == 3
+    _, document, _ = kit.ledger.receipts()[-1]
+    assert document["step"] == "restore-verify" and document["result"] == "held"
+    assert document["outputs"]["kind"] == "restore_unverified"
+    assert document["outputs"]["verified"] is False
+    # Detached and removed all the same: the entry exists for one verification.
+    assert setup["world"]["clients"]["iam"].attached.get("sentry-staging-operator", []) == []
+    assert setup["world"]["restore_planned"] == "remove"
+
+
+def test_a_failed_run_detaches_and_keeps_the_entry_for_its_removal(setup):
+    kit = initialized(setup)
+    restored(setup, kit)
+    restore_world(setup)
+    real = kit.release_cli
+
+    def failing(args):
+        if args[0] == "validate" and Path(args[args.index("--manifest") + 1]).name.endswith(
+            "-restore-manifest.json"
+        ):
+            return 2, {"error": "refused"}
+        return real(args)
+
+    kit.release_cli = failing  # ty: ignore[invalid-assignment]
+    assert verify(setup, kit, verify_approval(setup, kit), restore_custody(setup),
+                  "restore-verify", "restore-verify") == 3  # fmt: skip
+    _, document, _ = kit.ledger.receipts()[-1]
+    assert document["result"] == "failed" and "validate" in document["detail"]
+    assert setup["world"]["clients"]["iam"].attached.get("sentry-staging-operator", []) == []
+    assert setup["world"]["restore_planned"] == "add", "removed only after a finished run"
+
+
+def test_an_add_plan_touching_anything_else_is_never_applied():
+    from release_kits.terraform import check_restore_plan
+
+    base = {"terraform_version": "1.16.5", "variables": {}}
+    create = {"change": {"actions": ["create"]}}
+    added = check_restore_plan({**base, "resource_changes": [
+        {"address": 'aws_ecs_task_definition.restore["runtime-rv-recon"]', **create},
+        {"address": 'aws_iam_policy.release_launcher["jobs"]', "change": {"actions": ["no-op"]}},
+        {"address": 'module.release["r1"].aws_ecs_task_definition.service["api"]',
+         "change": {"actions": ["no-op"]}}]}, variables={}, adding=True)  # fmt: skip
+    assert added == {"actions": {"create": 1, "no-op": 2}}
+    for address, actions in (
+        ('module.release["r1"].aws_ecs_task_definition.tools["x"]', ["create"]),
+        ('aws_iam_policy.release_launcher["jobs"]', ["update"]),
+        ('aws_ecs_task_definition.restore["runtime-rv-recon"]', ["delete"]),
+    ):
+        with pytest.raises(UnexpectedPlan):
+            check_restore_plan({**base, "resource_changes": [
+                {"address": address, "change": {"actions": actions}}]},
+                variables={}, adding=True)  # fmt: skip
+    with pytest.raises(UnexpectedPlan, match="removes nothing"):
+        check_restore_plan({**base, "resource_changes": []}, variables={}, adding=False)
+
+
+def test_a_second_verification_of_a_database_writes_new_restore_bundle_versions(setup):
+    kit = initialized(setup)
+    restored(setup, kit)
+    restore_world(setup)
+    secrets = setup["world"]["clients"]["secretsmanager"]
+    assert verify(setup, kit, verify_approval(setup, kit), restore_custody(setup)) == 0
+    first = kit.receipts()["restore-verify"]["outputs"]["verification_id"]
+    later = render.iso(aws_07b._now() + aws_07b.timedelta(hours=5))
+    assert verify(setup, kit, verify_approval(setup, kit, not_after=later),
+                  restore_custody(setup)) == 0  # fmt: skip
+    second = kit.receipts()["restore-verify"]["outputs"]["verification_id"]
+    assert second != first
+    assert len(secrets.versions["sentry-staging/restore-owner-environment/runtime"]) == 2
+
+
+def restore_failing_validate(kit):
+    real = kit.release_cli
+
+    def failing(args):
+        name = Path(args[args.index("--manifest") + 1]).name if "--manifest" in args else ""
+        if args[0] == "validate" and name.endswith("-restore-manifest.json"):
+            return 2, {"error": "refused"}
+        return real(args)
+
+    kit.release_cli = failing
+    return real
+
+
+def test_a_product_verification_records_its_receipt_with_only_the_passwords_withheld(setup):
+    kit = initialized(setup)
+    restored(setup, kit, "product")
+    restore_world(setup)
+    target = "sentry-staging-product-db-restore-a"
+    endpoint = f"{target}.abc123xyz.us-east-1.rds.amazonaws.com"
+    custody = restore_custody(setup, host=endpoint, owner="product_owner",
+                              service="product_service", dbname="product_db",
+                              database="product")  # fmt: skip
+    approval = verify_approval(setup, kit, database="product", target_identifier=target)
+    assert (
+        verify(setup, kit, approval, custody) == 0
+    ), kit.out.getvalue()  # ty: ignore[unresolved-attribute]
+    receipt = kit.receipts()["restore-verify"]["outputs"]
+    assert receipt["kind"] == "restore_verified" and receipt["endpoint"] == endpoint
+    assert receipt["hosts"] == {"product-rv-recon": endpoint, "product-rv-proof": endpoint}
+    text = "".join(path.read_text() for path in (kit.work / "receipts").iterdir())
+    assert "placeholder-password" not in text
+
+
+def test_an_entry_an_interrupted_attempt_left_is_removed_before_a_new_verification(setup):
+    kit = initialized(setup)
+    restored(setup, kit)
+    restore_world(setup)
+    real = restore_failing_validate(kit)
+    assert verify(setup, kit, verify_approval(setup, kit), restore_custody(setup),
+                  "restore-verify", "restore-verify") == 3  # fmt: skip
+    assert setup["world"]["restore_applied"] == ["runtime"]
+    kit.release_cli = real
+    secrets = setup["world"]["clients"]["secretsmanager"]
+    written = {name: list(versions) for name, versions in secrets.versions.items()}
+    # A new verification writes nothing while that entry is applied.
+    assert verify(setup, kit, verify_approval(setup, kit), restore_custody(setup),
+                  "restore-verify") == 3  # fmt: skip
+    _, document, _ = kit.ledger.receipts()[-1]
+    assert "still applied" in document["detail"]
+    assert {name: list(versions) for name, versions in secrets.versions.items()} == written
+    # --remove-entry touches nothing while another run's policies hold the operator role.
+    iam = setup["world"]["clients"]["iam"]
+    iam.attached["sentry-staging-operator"] = [
+        "arn:aws:iam::111122223333:policy/sentry-staging-release-launcher-jobs"
+    ]
+    with pytest.raises(aws_07b.Refused, match="did not attach"):
+        kit.restore_remove(chain_head=head(kit), session_path=str(setup["deployer"]),
+                           approval_path=verify_approval(setup, kit))  # fmt: skip
+    assert setup["world"]["restore_applied"] == ["runtime"]
+    iam.attached["sentry-staging-operator"] = []
+    # It removes the entry in its own checked plan; then a verification succeeds.
+    setup["typed"].extend(["restore-remove", "restore-remove"])
+    assert kit.restore_remove(chain_head=head(kit), session_path=str(setup["deployer"]),
+                              approval_path=verify_approval(setup, kit)) == 0  # fmt: skip
+    assert setup["world"]["restore_applied"] == []
+    assert verify(setup, kit, verify_approval(setup, kit), restore_custody(setup)) == 0
+    assert kit.receipts()["restore-verify"]["outputs"]["kind"] == "restore_verified"
+
+
+def test_a_verification_refuses_before_any_write_when_its_run_could_not_succeed(setup, monkeypatch):
+    kit = initialized(setup)
+    restored(setup, kit)
+    restore_world(setup)
+    world = setup["world"]
+    secrets_before = dict(world["clients"]["secretsmanager"].created)
+    terraform_before = list(world.get("terraform", []))
+    # The release's attended set is still attached.
+    world["clients"]["iam"].attached["sentry-staging-operator"] = ["arn:aws:iam::x:policy/p"]
+    with pytest.raises(aws_07b.Refused, match="still has policies attached"):
+        verify(setup, kit, verify_approval(setup, kit), restore_custody(setup))
+    world["clients"]["iam"].attached["sentry-staging-operator"] = []
+    setup["typed"].clear()
+    # The operator session cannot hold the release window.
+    short = setup["tmp"] / "short-operator.json"
+    write_credentials(short, expires_at=render.iso(aws_07b._now()
+                                                   + aws_07b.timedelta(minutes=40)))  # fmt: skip
+    with pytest.raises(aws_07b.Refused, match="session_expires_too_soon"):
+        kit.restore_verify(chain_head=head(kit), session_path=str(setup["deployer"]),
+                           operator_session_path=str(short),
+                           approval_path=verify_approval(setup, kit),
+                           custodian=restore_custody(setup))  # fmt: skip
+    # The restore manifest would be refused (for example an expired risk decision).
+    def refused(*_args, **_kwargs):
+        raise aws_07b.ReleaseRejected("risk_expires_before_release", "risk")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(render, "restore_manifest", refused)
+        with pytest.raises(aws_07b.Refused, match="risk_expires_before_release"):
+            verify(setup, kit, verify_approval(setup, kit), restore_custody(setup))
+    setup["typed"].clear()
+    # A tools image that predates the restore programs.
+    record = kit.record()
+    del record["pins"]["sql"]["sql/restore_sessions.sql"]
+    monkeypatch.setattr(kit, "record", lambda: record)
+    with pytest.raises(aws_07b.Refused, match="predates restore verification"):
+        verify(setup, kit, verify_approval(setup, kit), restore_custody(setup))
+    setup["typed"].clear()
+    assert world["clients"]["secretsmanager"].created == secrets_before
+    assert world.get("terraform", []) == terraform_before
 
 
 # The runbook -------------------------------------------------------------------------

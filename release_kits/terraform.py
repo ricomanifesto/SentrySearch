@@ -124,3 +124,40 @@ def check_plan(document: dict[str, Any], *, root: str, variables: dict[str, Any]
     if not counts.get("create") and not counts.get("no-op"):
         raise UnexpectedPlan("the plan changes nothing a first deployment needs")
     return {"actions": counts}
+
+
+def check_restore_plan(document: dict[str, Any], *, variables: dict[str, Any],
+                       adding: bool) -> dict[str, Any]:  # fmt: skip
+    """A restore verification's own plan of the releases root: it adds the one entry's
+    resources (``adding``) or removes them, and changes nothing else."""
+    if document.get("terraform_version") != VERSION:
+        raise UnexpectedPlan(f"planned by Terraform {document.get('terraform_version')}")
+    if document.get("errored"):
+        raise UnexpectedPlan("the plan errored")
+    planned = {
+        name: entry.get("value") for name, entry in (document.get("variables") or {}).items()
+    }
+    for name, value in variables.items():
+        if planned.get(name) != value:
+            raise UnexpectedPlan(f"variable {name} is not the rendered value")
+    wanted = ["create"] if adding else ["delete"]
+    counts: dict[str, int] = {}
+    for change in document.get("resource_changes") or []:
+        actions = sorted(change.get("change", {}).get("actions") or [])
+        address = str(change.get("address"))
+        if restore_address(address):
+            if actions not in (wanted, ["no-op"]):
+                raise UnexpectedPlan(f"{address}: {actions}; this plan only "
+                                     f"{'adds' if adding else 'removes'} the verification")  # fmt: skip
+        elif address.startswith('aws_iam_policy.release_launcher["'):
+            # The attended documents other than the restore one stay as they are.
+            if actions != ["no-op"]:
+                raise UnexpectedPlan(f"{address}: {actions}; a verification changes no other "
+                                     "launcher document")  # fmt: skip
+        elif actions not in (["no-op"], ["read"]):
+            raise UnexpectedPlan(f"{address}: {actions} outside the verification's resources")
+        name = "/".join(actions)
+        counts[name] = counts.get(name, 0) + 1
+    if not counts.get(wanted[0]):
+        raise UnexpectedPlan(f"the plan {'adds' if adding else 'removes'} nothing")
+    return {"actions": counts}

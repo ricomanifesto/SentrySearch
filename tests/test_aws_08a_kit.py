@@ -8,6 +8,7 @@ socket opens and no credential is read.
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -362,6 +363,197 @@ def test_platform_cases_observe_through_the_test_identities_and_record_no_token(
                                  ("sentry-staging-runtime-no-cpu", "OK")]  # fmt: skip
     text = "".join(path.read_text() for path in (tmp_path / "ledger" / "receipts").iterdir())
     assert "token-value" not in text, "a test identity's token reached the ledger"
+
+
+RESTORED = "sentry-staging-runtime-db-restore-a"
+RESTORED_ENDPOINT = f"{RESTORED}.abc123xyz.us-east-1.rds.amazonaws.com"
+PROOF_PROGRAM = "b" * 64
+
+
+def restore_chain(tmp_path: Path, *, restore: bool = True, verification: dict | None = None,
+                  verification_result: str = "ok") -> tuple[str, Path]:  # fmt: skip
+    """An AWS-07b chain of a paused release, its restore and (optionally) its verification."""
+    work = tmp_path / "work"
+    ledger = Ledger(work / "receipts", kit="aws-07b", plan_sha256="a" * 64)
+    manifest = work / "validated-manifest.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps({
+        "release_id": "0b9f7c1e-4d2a-4f6b-9a3e-2c1d0e9f8a7b",
+        "jobs": [{"id": "runtime-proof", "expect": {"database": "runtime_db",
+                                                    "principal": "runtime_service",
+                                                    "schema": "goose:1,2,3"}}]}))  # fmt: skip
+    digest = ""
+    documents = {
+        "releases": {"rendered": {"releases": {"r0b9f7c1e": {"release_tools": {
+            "sql_sha256": {"runtime_proof": PROOF_PROGRAM}}}}}},
+        "validate": {"manifest": str(manifest),
+                     "manifest_file_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest()},
+        "run": {"run": {"state": "held_paused"}},
+    }  # fmt: skip
+    if restore:
+        documents["restore"] = {"database": "runtime", "target": RESTORED}
+    for step, outputs in documents.items():
+        digest = ledger.write(step, {"result": "ok", "outputs": outputs})
+    if verification is not None:
+        body = {"result": verification_result, "outputs": verification}
+        digest = ledger.write("restore-verify", body)
+    return digest, work
+
+
+def verified(**changes) -> dict:
+    return {"kind": "restore_verified", "verified": True, "database": "runtime",
+            "target": RESTORED, "endpoint": RESTORED_ENDPOINT,
+            "hosts": {"runtime-rv-recon": RESTORED_ENDPOINT, "runtime-rv-proof": RESTORED_ENDPOINT},
+            "sql_digest": PROOF_PROGRAM, "schema": "goose:1,2,3", "foreign_sessions": "0",
+            **changes}  # fmt: skip
+
+
+def restore_case(tmp_path: Path, **chain) -> dict:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    target = aws_08a.load_target(platform_target(tmp_path))
+    head, work = restore_chain(tmp_path, **chain)
+    target.document["aws_07b_chain_head"] = head
+    platform = aws_08a.Platform(target, http=None, clients=lambda _s: None,
+                                prompt=lambda _t: "", aws_07b=work)  # fmt: skip
+    return platform.run(next(case for case in aws_08a.CASES if case.id == "pitr-restore"))
+
+
+def test_a_verified_restore_of_this_chains_instance_passes(tmp_path):
+    observed = restore_case(tmp_path, verification=verified())
+    assert observed["ok"] is True, observed
+    assert all(observed["observed"]["checks"].values())
+
+
+@pytest.mark.parametrize("changes", [
+    {"verified": False, "kind": "restore_unverified"},
+    {"target": "sentry-staging-runtime-db-restore-b"},
+    {"endpoint": "sentry-staging-runtime-db.abc123xyz.us-east-1.rds.amazonaws.com"},
+    {"hosts": {"runtime-rv-recon": RESTORED_ENDPOINT,
+               "runtime-rv-proof": "sentry-staging-runtime-db.abc123xyz.us-east-1.rds.amazonaws.com"}},
+    {"sql_digest": "c" * 64},
+    {"schema": "goose:1,2"},
+    {"foreign_sessions": "1"},
+])  # fmt: skip
+def test_a_restore_whose_verification_disagrees_in_any_one_way_fails(tmp_path, changes):
+    assert restore_case(tmp_path, verification=verified(**changes))["ok"] is False
+
+
+def test_a_held_verification_or_none_fails_and_no_restore_at_all_skips(tmp_path):
+    held = restore_case(tmp_path / "held", verification=verified(), verification_result="held")
+    assert held["ok"] is False
+    missing = restore_case(tmp_path / "missing")
+    assert missing["ok"] is False and missing["observed"]["verification"] == "missing"
+    with pytest.raises(aws_08a.PlatformSkipped, match="no restore was requested"):
+        restore_case(tmp_path / "none", restore=False)
+
+
+def test_an_attempted_restore_that_did_not_complete_fails_rather_than_skips(tmp_path):
+    target = aws_08a.load_target(platform_target(tmp_path))
+    _head, work = restore_chain(tmp_path, restore=False)
+    ledger = Ledger(work / "receipts", kit="aws-07b", plan_sha256="a" * 64)
+    target.document["aws_07b_chain_head"] = ledger.write(
+        "restore", {"result": "failed", "detail": "the original instance is not in the account"}
+    )
+    platform = aws_08a.Platform(target, http=None, clients=lambda _s: None,
+                                prompt=lambda _t: "", aws_07b=work)  # fmt: skip
+    observed = platform.run(next(case for case in aws_08a.CASES if case.id == "pitr-restore"))
+    assert observed["ok"] is False and observed["observed"]["restore"] == "not completed"
+
+
+OTHER = "sentry-staging-runtime-db-restore-b"
+OTHER_ENDPOINT = f"{OTHER}.abc123xyz.us-east-1.rds.amazonaws.com"
+
+
+def judged(tmp_path: Path, *later: tuple[str, dict]) -> dict:
+    """pitr-restore over a chain of restore A ok and its verification, then ``later``."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    target = aws_08a.load_target(platform_target(tmp_path))
+    head, work = restore_chain(tmp_path, verification=verified())
+    ledger = Ledger(work / "receipts", kit="aws-07b", plan_sha256="a" * 64)
+    for step, body in later:
+        head = ledger.write(step, body)
+    target.document["aws_07b_chain_head"] = head
+    platform = aws_08a.Platform(target, http=None, clients=lambda _s: None,
+                                prompt=lambda _t: "", aws_07b=work)  # fmt: skip
+    return platform.run(next(case for case in aws_08a.CASES if case.id == "pitr-restore"))
+
+
+def restore_of(target: str) -> tuple[str, dict]:
+    return "restore", {"result": "ok", "outputs": {"database": "runtime", "target": target}}
+
+
+def verification_of(target: str, endpoint: str, result: str = "ok", **changes) -> tuple[str, dict]:
+    hosts = {"runtime-rv-recon": endpoint, "runtime-rv-proof": endpoint}
+    return "restore-verify", {
+        "result": result,
+        "outputs": verified(target=target, endpoint=endpoint, hosts=hosts, **changes),
+    }
+
+
+def test_a_later_failed_restore_attempt_fails_the_case_whatever_was_verified(tmp_path):
+    observed = judged(
+        tmp_path,
+        (
+            "restore",
+            {
+                "result": "failed",
+                "detail": "the original instance is no longer available",
+                "partial": {"restore_requested": OTHER},
+            },
+        ),
+    )
+    assert observed["ok"] is False
+    assert observed["observed"]["attempt_result"] == "failed"
+    assert observed["observed"]["attempt_sequence"] == 5
+    assert observed["observed"]["restore_requested"] == OTHER
+
+
+@pytest.mark.parametrize("removed", [False, True])
+def test_a_later_restore_of_the_same_target_needs_its_own_verification(tmp_path, removed):
+    later = (
+        [("restore-remove", {"result": "ok", "outputs": {"database": "runtime"}})]
+        if removed
+        else []
+    )
+    observed = judged(tmp_path, *later, restore_of(RESTORED))
+    assert observed["ok"] is False and observed["observed"]["verification"] == "missing"
+
+
+def test_a_later_restore_of_another_target_without_a_verification_is_missing_one(tmp_path):
+    observed = judged(tmp_path, restore_of(OTHER))
+    assert observed["ok"] is False and observed["observed"]["verification"] == "missing"
+
+
+def test_the_latest_attempt_and_its_own_verification_decide(tmp_path):
+    passed = judged(tmp_path / "verified", restore_of(OTHER),
+                    verification_of(OTHER, OTHER_ENDPOINT))  # fmt: skip
+    assert passed["ok"] is True, passed
+    assert (passed["observed"]["attempt_sequence"],
+            passed["observed"]["verification_sequence"]) == (5, 6)  # fmt: skip
+    held = judged(tmp_path / "held", restore_of(OTHER),
+                  verification_of(OTHER, OTHER_ENDPOINT, result="held", verified=False,
+                                  kind="restore_unverified"))  # fmt: skip
+    assert held["ok"] is False
+
+
+def test_a_later_held_verification_of_the_same_attempt_fails_it(tmp_path):
+    observed = judged(
+        tmp_path,
+        verification_of(
+            RESTORED, RESTORED_ENDPOINT, result="held", verified=False, kind="restore_unverified"
+        ),
+    )
+    assert observed["ok"] is False and observed["observed"]["verification"] == "held"
+
+
+def test_a_verification_without_any_restore_attempt_fails(tmp_path):
+    target = aws_08a.load_target(platform_target(tmp_path))
+    head, work = restore_chain(tmp_path, restore=False, verification=verified())
+    target.document["aws_07b_chain_head"] = head
+    platform = aws_08a.Platform(target, http=None, clients=lambda _s: None,
+                                prompt=lambda _t: "", aws_07b=work)  # fmt: skip
+    observed = platform.run(next(case for case in aws_08a.CASES if case.id == "pitr-restore"))
+    assert observed["ok"] is False and observed["observed"]["restore"] == "missing"
 
 
 def test_runbook_lists_every_case_and_the_platform_only_proofs():

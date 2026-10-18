@@ -137,7 +137,7 @@ The section column is the operational proposal's section each step implements.
 | `validate` | 7.9 | none | renders the manifest and approval, then `python -m release_cli validate` | both files and hashes, the CLI report |
 | `run` | 7.10 | operator | `python -m release_cli run`, then `status` | the run's state; ok only for `held_paused` with the lock released |
 | `detach` | 7.11 | deployer | detaches everything `attach` attached; runs after any `run` outcome | detached and remaining policies |
-| `restore` | 8 | deployer | a separate command: restores one database by point in time into a new instance | the new instance; schema verification pending |
+| `restore` | 8 | deployer | a separate command: restores one database by point in time into a new instance | the new instance; its schema is verified by `restore-verify` |
 | `teardown` | 8 | deployer | a separate command: scale to zero, detach, then remove the services root only | what was removed and what is kept |
 
 ### Terraform steps
@@ -201,6 +201,40 @@ receipt chain's current head and approved by the operator:
   `target_identifier` (`<prefix>-<database>-db-restore-<label>`, a new instance),
   `restore_time` (`latest` or a UTC time), `not_after`. The restore never touches
   the original instance and is created with deletion protection.
+- `sentry.restore-verify-approval.v1`: `database`, `target_identifier` (the
+  instance this chain's `restore` created) and `not_after`, the verification's
+  deadline (at least the release window's hour and at most seven days away).
+  `restore-verify --session DEPLOYER --operator-session OPERATOR --custodian DIR`
+  proves the restored instance with the release-tools jobs `rv-recon` and
+  `rv-proof` under the controller, as [Restore verification
+  runs](../../../docs/release-controller.md#restore-verification-runs) describes.
+  It refuses before any write unless the release's `run` succeeded, the operator
+  role has nothing attached, the target is `available` with its own endpoint, the
+  two custodian files
+  `restore-owner-environment/<database>.json` and
+  `restore-proof-environment/<database>.json` (owner-only, the keys of the
+  database's owner environment) name that endpoint, the database and the owner and
+  service logins, and the tools image's reconcile and proof programs are the ones
+  the current release runs (`restore_proof_pin_mismatch` otherwise), the image
+  carries the restore program (`sql/restore_sessions.sql`), and the restore manifest
+  the run needs, rendered with placeholder revisions, loads. Then, with nothing
+  written while an earlier attempt's entry is still applied (a plan of the releases
+  root's applied input finds it), it versions the two restore secrets, plans and applies `releases/` with one
+  `restore_verifications` entry (checked: only that entry's resources are
+  created), attaches the attended set and release-evidence, renders the
+  restore_verify manifest from the release's validated manifest and runs
+  `release_cli validate`, `run` and `status`, detaches, and removes the entry in
+  its own checked plan. Each plan is applied only after the identifier is typed
+  again. The receipt says `restore_verified` only when the run ended
+  `restore_verified` with its lock released; anything else is
+  `restore_unverified` (held), never a success. Only the logins' passwords are kept
+  out of the receipt. A failed attempt detaches and keeps the entry.
+  `restore-verify --remove-entry --session DEPLOYER --approval FILE` (a
+  restore-verify approval for the same database, bound to the new chain head)
+  removes it: it detaches exactly the restore-verify set when the restore document is
+  among the attached policies, refuses when anything else holds the operator role,
+  and removes the entry in its own checked plan. Then verify again with a new
+  approval.
 - `sentry.teardown-approval.v1`: `remove` naming exactly the three
   `aws_ecs_service.this[...]` addresses, `not_after`. It scales the services to
   zero, detaches every launcher policy, and destroys only the services root
@@ -241,7 +275,8 @@ close each item:
 - ECR's own layer and manifest handling (the shim stands in for it), and Fargate
   pulling the pushed digests through the endpoints;
 - Secrets Manager's version handling and the RDS-managed administrator secrets;
-- the release's ECS and Logs behaviour on Fargate (timing, listing delay), and the
-  RDS point-in-time restore itself; verifying the restored instance's schema with
-  the reconcile and proof jobs needs a release whose bundles name it, which is
-  not built yet (the AWS-08a `pitr-restore` case says so).
+- the release's ECS and Logs behaviour on Fargate (timing, listing delay), the
+  RDS point-in-time restore itself, the restored endpoint, IAM accepting the
+  restore launcher document and the verification jobs' Fargate timing; the
+  `restore-verify` leg is proven locally only with in-memory stand-ins (the
+  rehearsal has no restore leg yet).

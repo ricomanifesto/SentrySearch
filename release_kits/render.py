@@ -451,3 +451,102 @@ def approval(plan: AccountPlan, document: dict[str, Any]) -> dict[str, Any]:
     }  # fmt: skip
     load_approval(json.dumps(rendered).encode())
     return rendered
+
+
+# Restore verification (deploy/aws-staging/releases/restore.tf, docs/release-controller.md) ---
+
+RESTORE_BUNDLES = ("restore-owner-environment", "restore-proof-environment")
+
+
+def restore_bundle_keys(database: str) -> tuple[str, ...]:
+    """A restore bundle holds the same keys as the database's owner environment."""
+    return BUNDLES[f"owner-environment/{database}"]
+
+
+def restore_pins(record: dict[str, Any], releases: dict[str, Any],
+                 database: str) -> dict[str, str]:  # fmt: skip
+    """The reconcile and proof program digests a verification pins: the tools image's
+    report, which must be the programs the current release's definitions run.
+
+    ValueError (``restore_proof_pin_mismatch``) otherwise: the verification would prove
+    another inventory than the release did.
+    """
+    tools = releases["releases"][release_key(record["release_id"])]["release_tools"]
+    sql = record["pins"]["sql"]
+    pinned = {"reconcile": sql[SQL["reconcile"]], "proof": sql[SQL[f"{database}_proof"]]}
+    current = {"reconcile": tools["sql_sha256"]["reconcile"],
+               "proof": tools["sql_sha256"][f"{database}_proof"]}  # fmt: skip
+    if pinned != current:
+        raise ValueError("restore_proof_pin_mismatch: the tools image's reconcile or proof "
+                         "program is not the one the current release runs")  # fmt: skip
+    return pinned
+
+
+def restore_entry(record: dict[str, Any], releases: dict[str, Any], database: str, *,
+                  instance: str, not_after: datetime,
+                  bundles: dict[str, dict[str, str]]) -> dict[str, Any]:  # fmt: skip
+    """The releases root's ``restore_verifications`` entry for one database: the current
+    release's release-tools image, its digest report and the two restore bundles."""
+    tools = releases["releases"][release_key(record["release_id"])]["release_tools"]
+    pinned = restore_pins(record, releases, database)
+    return {
+        "database": database, "instance_identifier": instance, "not_after": iso(not_after),
+        "budget_seconds": TOOLS_BUDGET_SECONDS, "image": tools["image"],
+        "tools_sha256": record["pins"]["tools_sha256"], "sql_sha256": pinned,
+        "owner_bundle": bundles[f"restore-owner-environment/{database}"],
+        "proof_bundle": bundles[f"restore-proof-environment/{database}"],
+    }  # fmt: skip
+
+
+def restore_manifest(current: dict[str, Any], restore: dict[str, Any], *, database: str,
+                     instance: str, endpoint: str, verification_id: str,
+                     bundles: dict[str, dict[str, str]], plan_sha256: str,
+                     not_before: datetime, session_expires: datetime,
+                     not_after: datetime) -> dict[str, Any]:  # fmt: skip
+    """A restore_verify manifest of the current release's validated manifest.
+
+    The release, services, images, rollback descriptor and checks are the current
+    release's, unchanged. Only the window, the purpose, the plan hash and the two jobs
+    are new: the restore definitions the releases root reported, the restore bundle
+    with the database's owner CA bundle, and the current release's own proof
+    expectation and program digest, read on the restored endpoint.
+    """
+    document = json.loads(json.dumps(current))
+    expires = min(not_before + WINDOW_LENGTH, session_expires - timedelta(minutes=10), not_after)
+    document["window"] = {"not_before": iso(not_before), "expires_at": iso(expires), **WINDOW}
+    document["plan_sha256"] = plan_sha256
+    document["purpose"] = {
+        "kind": "restore_verify", "database": database, "restored_instance": instance,
+        "restored_endpoint": endpoint, "verification_id": verification_id,
+        "not_after": iso(not_after),
+    }  # fmt: skip
+    jobs = {job["id"]: job for job in current["jobs"]}
+    proof, migrate = jobs[f"{database}-proof"], jobs[f"{database}-migrate"]
+    shared = {"database": proof["expect"]["database"], "schema": proof["expect"]["schema"],
+              "host": endpoint}  # fmt: skip
+    expectations = {
+        "rv-recon": {**shared, "principal": migrate["expect"]["principal"],
+                     "release_sessions": "0", "owner_sessions": "0", "foreign_sessions": "0"},
+        # The program the releases root fixed into the proof definition.
+        "rv-proof": {**shared, "principal": proof["expect"]["principal"],
+                     "sql_digest": restore["jobs"][f"{database}-rv-proof"]["expect"]["sql_digest"]},
+    }  # fmt: skip
+    purposes = {"rv-recon": "restore-owner-environment", "rv-proof": "restore-proof-environment"}
+    reported = restore["jobs"]
+    document["jobs"] = [{
+        "id": f"{database}-{kind}", "phase": kind, "database": database,
+        "task": {
+            "task_definition": reported[f"{database}-{kind}"]["task_definition"],
+            "task_role": reported[f"{database}-{kind}"]["task_role"],
+            "execution_role": reported[f"{database}-{kind}"]["execution_role"],
+            "secrets": [bundles[f"{purposes[kind]}/{database}"],
+                        bundles[f"owner-material/{database}"]],
+            "security_groups": proof["task"]["security_groups"],
+            "containers": [{"name": "init", "image": "search"},
+                           {"name": kind, "image": "release_tools"}],
+        },
+        "deadline_seconds": JOB_DEADLINE_SECONDS, "stop_grace_seconds": STOP_GRACE_SECONDS,
+        "receipt_schema": "sentry.release-tools.job.v1", "expect": expectations[kind],
+    } for kind in ("rv-recon", "rv-proof")]  # fmt: skip
+    load_manifest(json.dumps(document).encode())  # the controller's own refusal, first
+    return document

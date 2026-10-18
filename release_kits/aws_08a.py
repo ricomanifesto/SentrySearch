@@ -603,16 +603,18 @@ class Platform:
         return self._receipts()
 
     def _receipts(self) -> dict[str, dict[str, Any]]:
+        """The AWS-07b chain's successful receipts by step."""
+        return self._chain().completed()
+
+    def _chain(self) -> Ledger:
         """The AWS-07b chain for this plan, ending at the head the target names."""
         if self.aws_07b is None:
             raise PlatformSkipped("needs the AWS-07b work directory")
-        from release_kits.ledger import Ledger
-
         chain = Ledger(self.aws_07b / "receipts", kit="aws-07b",
                        plan_sha256=str(self.target.document.get("plan_sha256")))  # fmt: skip
         if chain.head()[1] != self.target.document.get("aws_07b_chain_head"):
             raise Refused("the AWS-07b receipts do not end at the target's aws_07b_chain_head")
-        return chain.completed()
+        return chain
 
     def _tls(self, case: Case) -> dict[str, Any]:
         run = self._receipts().get("run")
@@ -799,15 +801,89 @@ class Platform:
                                        "replacement": replaced[0] if replaced else None}}  # fmt: skip
 
     def _restore(self, case: Case) -> dict[str, Any]:
-        restored = self._receipts().get("restore")
-        if restored is None:
-            raise PlatformSkipped("needs an AWS-07b restore receipt (python -m "
-                                  "release_kits.aws_07b restore)")  # fmt: skip
-        # The restore itself is the 07b receipt. Verifying the new instance's schema with
-        # the reconcile and proof jobs needs a release whose bundles name that instance;
-        # no kit builds one yet, so this case cannot pass and says so.
-        raise PlatformSkipped("the restored instance's schema verification is not built: it "
-                              "needs a release whose bundles name the restored instance")  # fmt: skip
+        """The latest restore attempt in the chain decides, with the latest verification
+        written after it.
+
+        Skipped only when the chain has neither a restore attempt nor a verification. A
+        latest attempt that is not ``ok`` fails whatever came before or after it; a
+        verification without any attempt fails. For an ``ok`` attempt only the
+        restore-verify receipts later in the chain count, and the latest of those must
+        be verified for that attempt's instance: both jobs reached its endpoint, the
+        proof ran the current release's program and read its schema, and the reconcile
+        saw no foreign session. An earlier verification never counts, even when a later
+        restore repeats its target.
+        """
+        done = self._receipts()
+        every = [document for _, document, _ in self._chain().receipts()]
+        attempts = [document for document in every if document["step"] == "restore"]
+        verifications = [document for document in every if document["step"] == "restore-verify"]
+        if not attempts and not verifications:
+            raise PlatformSkipped("no restore was requested: the chain has no restore receipt "
+                                  "(python -m release_kits.aws_07b restore, then "
+                                  "restore-verify)")  # fmt: skip
+        if not attempts:
+            return {"ok": False, "observed": {"restore": "missing",
+                                              "verifications": len(verifications)}}  # fmt: skip
+        attempt = attempts[-1]
+        chosen = {"attempt_sequence": attempt["sequence"], "attempt_result": attempt["result"]}
+        if attempt["result"] != "ok":
+            partial = attempt.get("partial") or {}
+            return {"ok": False, "observed": {
+                **chosen, "restore": "not completed", "detail": attempt.get("detail"),
+                "restore_requested": partial.get("restore_requested")}}  # fmt: skip
+        target = attempt["outputs"]["target"]
+        later = [document for document in verifications
+                 if document["sequence"] > attempt["sequence"]]  # fmt: skip
+        if not later:
+            return {"ok": False, "observed": {**chosen, "restore_target": target,
+                                              "verification": "missing"}}  # fmt: skip
+        latest = later[-1]
+        chosen["verification_sequence"] = latest["sequence"]
+        outputs = latest.get("outputs") or latest.get("partial") or {}
+        database = outputs.get("database")
+        endpoint = str(outputs.get("endpoint") or "")
+        expected = self._current_proof(done, database)
+        hosts = outputs.get("hosts") or {}
+        checks = {
+            "verified": latest["result"] == "ok" and outputs.get("verified") is True
+            and outputs.get("kind") == "restore_verified",
+            "same_target": outputs.get("target") == target,
+            "endpoint_of_target": endpoint.startswith(f"{target}."),
+            "hosts_are_the_endpoint": sorted(hosts) == sorted(
+                f"{database}-{kind}" for kind in ("rv-recon", "rv-proof"))
+            and set(hosts.values()) == {endpoint},
+            "same_proof_program": expected is not None
+            and outputs.get("sql_digest") == expected["sql_digest"],
+            "same_schema": expected is not None and outputs.get("schema") == expected["schema"],
+            "no_foreign_session": outputs.get("foreign_sessions") == "0",
+        }  # fmt: skip
+        return {"ok": all(checks.values()),
+                "observed": {**chosen, "restore_target": target,
+                             "verification": latest["result"], "kind": outputs.get("kind"),
+                             "checks": checks}}  # fmt: skip
+
+    def _current_proof(self, done: dict[str, dict[str, Any]],
+                       database: Any) -> dict[str, str] | None:  # fmt: skip
+        """The current release's proof program digest and schema for one database, from
+        the releases receipt and the hash-checked validated manifest; None if unknown."""
+        if database not in ("runtime", "product") or "validate" not in done:
+            return None
+        validated = done["validate"]["outputs"]
+        try:
+            raw = Path(validated["manifest"]).read_bytes()
+        except (OSError, KeyError):
+            return None
+        if sha256(raw) != validated.get("manifest_file_sha256"):
+            return None
+        manifest = json.loads(raw)
+        proof = next((job for job in manifest["jobs"] if job["id"] == f"{database}-proof"), None)
+        # Its releases key: r plus the release UUID's first eight hex digits.
+        release = (done["releases"]["outputs"]["rendered"]["releases"]
+                   .get("r" + manifest["release_id"][:8]) or {})  # fmt: skip
+        digest = (release.get("release_tools") or {}).get("sql_sha256", {}).get(f"{database}_proof")
+        if proof is None or digest is None:
+            return None
+        return {"sql_digest": digest, "schema": proof["expect"]["schema"]}
 
 
 # Each workload role's own object actions under reports/ (deploy/aws-platform-fit/main.tf).

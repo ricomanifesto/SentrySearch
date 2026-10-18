@@ -8,6 +8,8 @@
         [--session FILE] [--custodian DIR]
     python -m release_kits.aws_07b restore  --plan DIR --plan-sha256 HASH --work DIR \\
         --session FILE --approval FILE
+    python -m release_kits.aws_07b restore-verify --plan DIR --plan-sha256 HASH --work DIR \\
+        --session FILE --operator-session FILE --approval FILE --custodian DIR
     python -m release_kits.aws_07b teardown --plan DIR --plan-sha256 HASH --work DIR \\
         --session FILE --approval FILE
 
@@ -16,7 +18,7 @@ step prints its exact commands and the plan hash, waits for the operator to type
 its identifier, runs, and writes a receipt chained to the previous one; a step
 runs only after the step before it has a successful receipt. Terraform steps type
 the identifier a second time, after the plan file is checked, to apply exactly
-that file. Restore and teardown (section 8) are separate commands that refuse
+that file. Restore, restore-verify and teardown (section 8) are separate commands that refuse
 without their own approval document bound to this plan and this receipt chain.
 Exit codes: 0 done, 2 refused before anything ran, 3 the step ran and failed or
 held (its receipt says why).
@@ -39,6 +41,7 @@ import sys
 import time
 from typing import Any, Callable, TextIO
 import uuid
+from urllib.parse import urlsplit
 
 from dev.assemble_account_plan import canonical
 from botocore.exceptions import ClientError
@@ -54,7 +57,9 @@ from release_kits.terraform import (
     RootRun,
     UnexpectedPlan,
     check_plan,
+    check_restore_plan,
     printable,
+    restore_address,
 )
 from src.execution import provider_canary
 
@@ -88,9 +93,10 @@ STEPS = (
     Step("run", "7.10", "python -m release_cli run, then status", "operator"),
     Step("detach", "7.11", "detach the bootstrap launcher and the attended set", "deployer"),
 )  # fmt: skip
-SUBCOMMANDS = {"restore": "8", "teardown": "8", "init": None}
+SUBCOMMANDS = {"restore": "8", "restore-verify": "8", "teardown": "8", "init": None}
 RISK_SCHEMA = "sentry.risk-decision.v1"
 RESTORE_SCHEMA = "sentry.restore-approval.v1"
+RESTORE_VERIFY_SCHEMA = "sentry.restore-verify-approval.v1"
 TEARDOWN_SCHEMA = "sentry.teardown-approval.v1"
 PROVIDER_SCHEMA = "sentry.provider-canary-approval.v1"
 IMAGE_NAMES = {"runtime": "runtime", "search": "search", "release_tools": "release-tools"}
@@ -983,12 +989,448 @@ class Kit:
             return {"approval_sha256": approval_sha256, "database": database, "source": source,
                     "target": created["DBInstanceIdentifier"],
                     "target_status": created.get("DBInstanceStatus"),
-                    # Nothing here runs the reconcile and proof jobs against the new
-                    # instance: that needs bundles naming it, which no kit builds yet.
-                    "schema_verification": "not run: needs a release whose bundles name the "
-                                           "restored instance (not built)"}  # fmt: skip
+                    # The reconcile and proof jobs run against the new instance only
+                    # through restore-verify, once it is available.
+                    "schema_verification": "not run here: python -m release_kits.aws_07b "
+                                           "restore-verify"}  # fmt: skip
 
         return self._finish(step, commands, typed, action, session)
+
+    def _restore_custody(self, custodian: Path, database: str, endpoint: str,
+                         logins: dict[str, str], dbname: str) -> dict[str, bytes]:  # fmt: skip
+        """The two restore bundles as the custodian wrote them, refused unless each names
+        the restored endpoint, its database and the login its job expects."""
+        keys = render.restore_bundle_keys(database)
+        files: dict[str, bytes] = {}
+        for purpose, login in zip(render.RESTORE_BUNDLES, (logins["owner"], logins["service"])):
+            name = f"{purpose}/{database}"
+            raw = _private_file(custodian / f"{name}.json")
+            try:
+                document = json.loads(raw)
+            except ValueError:
+                raise Refused(f"{name}.json is not JSON") from None
+            if (
+                not isinstance(document, dict)
+                or set(document) != set(keys)
+                or not all(isinstance(value, str) and value for value in document.values())
+            ):
+                raise Refused(f"{name}.json must hold exactly the keys {sorted(keys)}")
+            if "DATABASE_URL" in document:
+                parts = urlsplit(document["DATABASE_URL"])
+                host, user, named = parts.hostname, parts.username, parts.path.lstrip("/")
+            else:
+                host, user, named = document["DB_HOST"], document["DB_USER"], document["DB_NAME"]
+            if host != endpoint:
+                raise Refused(f"{name}.json names another host than the restored endpoint "
+                              f"{endpoint}; nothing was written")  # fmt: skip
+            if user != login or named != dbname:
+                raise Refused(f"{name}.json must name the {login} login on {dbname}")
+            files[name] = raw
+        return files
+
+    def restore_verify(self, *, session_path: str | None, operator_session_path: str | None,
+                       approval_path: Path, custodian: Path | None,
+                       chain_head: str | None = None) -> int:  # fmt: skip
+        """Section 8: prove a restored instance with the reconcile and proof jobs.
+
+        Refused before any write unless the approval, the chain, the restored instance,
+        the two restore bundles, the tools image's programs, an empty operator role and the
+        restore manifest the run will need (rendered with placeholder revisions) agree.
+        Then, with nothing written while an earlier attempt's entry is still applied (a
+        plan of the releases root's applied input finds it; ``--remove-entry`` removes
+        it): the restore bundles' versions, the releases root with this one entry, the
+        attended set, release_cli validate, run and status, detach, and the entry removed
+        again in its own checked plan. The receipt says restore_verified only when the run
+        ended restore_verified; anything else is restore_unverified.
+        """
+        step = Step("restore-verify", "8", "verify a restored instance with the reconcile and "
+                    "proof jobs", "deployer")  # fmt: skip
+        self.check_head(chain_head)
+        approval, approval_sha256 = self._approval(approval_path, RESTORE_VERIFY_SCHEMA)
+        if custodian is None or operator_session_path is None:
+            raise Refused("restore-verify needs --custodian DIR with the two restore bundles and "
+                          "--operator-session FILE")  # fmt: skip
+        database = approval.get("database")
+        if database not in render.DATABASES:
+            raise Refused("the approval names no database of this environment")
+        source = f"{self.plan.name_prefix}-{database}-db"
+        target = str(approval.get("target_identifier"))
+        if not (target.startswith(f"{source}-restore-")
+                and restore_label_valid(target.removeprefix(f"{source}-restore-"))):  # fmt: skip
+            raise Refused(f"the target must be an instance named {source}-restore-<label>")
+        done = self.receipts()
+        if "run" not in done:
+            raise Refused("a verification proves the current release's database: its run "
+                          "step has not succeeded")  # fmt: skip
+        if done.get("restore", {}).get("outputs", {}).get("target") != target:
+            raise Refused(f"{target} is not the instance this chain's restore created")
+        validated = done["validate"]["outputs"]
+        try:
+            raw = Path(validated["manifest"]).read_bytes()
+        except OSError:
+            raise Refused("the current release's validated manifest is missing") from None
+        if sha256(raw) != validated["manifest_file_sha256"]:
+            raise Refused("the current release's manifest changed after validation")
+        current = json.loads(raw)
+        not_after = datetime.strptime(str(approval["not_after"]),
+                                      "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)  # fmt: skip
+        # The entry's deadline is the approval's: it must leave the release window's hour
+        # and stay within the seven days the releases root accepts.
+        if not_after < self.now() + timedelta(seconds=render.WINDOW["total_seconds"]):
+            raise Refused("the approval leaves less than the release window's hour")
+        if not_after > self.now() + timedelta(days=7):
+            raise Refused("the approval's deadline is more than seven days away")
+        record = self.record()
+        applied = done["releases"]["outputs"]["rendered"]
+        session = self.session(step, session_path)
+        operator = self.session(Step("restore-verify", "8", "operator", "operator"),
+                                operator_session_path)  # fmt: skip
+        rds = self.clients(session, "rds")
+        instances = {item["DBInstanceIdentifier"]: item
+                     for item in rds.describe_db_instances()["DBInstances"]}  # fmt: skip
+        restored = instances.get(target)
+        if source not in instances or restored is None:
+            raise Refused(f"{source} and {target} must both be in the account")
+        if restored.get("DBInstanceStatus") != "available":
+            raise Refused(f"{target} is {restored.get('DBInstanceStatus')}, not available")
+        endpoint = str((restored.get("Endpoint") or {}).get("Address") or "")
+        if not endpoint.startswith(f"{target}."):
+            raise Refused(f"{target} reports no endpoint of its own")
+        jobs = {job["id"]: job for job in current["jobs"]}
+        logins = {"owner": jobs[f"{database}-migrate"]["expect"]["principal"],
+                  "service": jobs[f"{database}-proof"]["expect"]["principal"]}  # fmt: skip
+        files = self._restore_custody(custodian, database, endpoint, logins,
+                                      jobs[f"{database}-proof"]["expect"]["database"])  # fmt: skip
+        try:
+            pins = render.restore_pins(record, applied, database)
+        except ValueError as error:
+            raise Refused(str(error)) from None
+        if "sql/restore_sessions.sql" not in record["pins"]["sql"]:
+            raise Refused("this chain's release-tools image predates restore verification: its "
+                          "digest report has no sql/restore_sessions.sql")  # fmt: skip
+        # One verification id and one token per secret, fixed by the approval.
+        verification_id = str(uuid.uuid5(uuid.NAMESPACE_URL,
+                                         f"sentry-kit:{self.plan.plan_sha256}/{approval_sha256}"))  # fmt: skip
+        role = f"{self.plan.name_prefix}-operator"
+        iam = self.clients(session, "iam")
+        if attached(iam, role):
+            raise Refused("the operator role still has policies attached; detach them (the "
+                          "release's detach step) before a verification")  # fmt: skip
+        # The manifest the run will need, rendered now with placeholder revisions, so its
+        # own refusals (an expired risk decision, a window the sessions cannot hold) come
+        # before any write.
+        self._restore_preview(current, database, target, endpoint, verification_id, pins,
+                              operator, not_after)  # fmt: skip
+        tokens = {name: str(uuid.uuid5(uuid.NAMESPACE_URL, f"sentry-kit:{self.plan.plan_sha256}/"
+                                       f"{verification_id}/{name}/{sha256(raw)}"))
+                  for name, raw in files.items()}  # fmt: skip
+        commands = ["terraform plan releases/ unchanged (no earlier verification's entry left)"]
+        commands += [f"secretsmanager CreateSecret --name {render.secret_name(self.plan, name)} "
+                    f"--secret-string <{name}.json> --client-request-token {tokens[name]}"
+                    for name in files]  # fmt: skip
+        commands += [
+            f"terraform plan and apply releases/ with restore_verifications.{database} "
+            f"(instance {target}, endpoint {endpoint}, until {render.iso(not_after)})",
+            f"iam AttachRolePolicy --role-name {role} (the attended set and release-evidence)",
+            f"release_cli validate, run and status: restore_verify {verification_id}",
+            f"iam DetachRolePolicy --role-name {role} (everything attached here)",
+            f"terraform plan and apply releases/ without restore_verifications.{database}",
+        ]  # fmt: skip
+        typed = self.confirm(step.id, f"verify {target} as {database}")
+        secrets = self.clients(session, "secretsmanager")
+
+        def action() -> dict[str, Any]:
+            outputs: dict[str, Any] = {"approval_sha256": approval_sha256, "database": database,
+                                       "target": target, "endpoint": endpoint,
+                                       "verification_id": verification_id}  # fmt: skip
+            self.partial.update(outputs)
+            # Nothing is written while an earlier attempt's entry is still applied.
+            stranded = self._stranded_restore(step, session, applied)
+            if stranded:
+                raise StepFailed(f"an earlier verification's entry is still applied ({len(stranded)} "
+                                 "resources); remove it with restore-verify --remove-entry, then "
+                                 "verify again; nothing was written")  # fmt: skip
+            if attached(iam, role):
+                raise StepFailed("the operator role has policies attached; nothing was written")
+            bundles = dict(done["custodian"]["outputs"]["bundles"])
+            for name, raw in files.items():
+                bundles[name] = self._secret_version(secrets, render.secret_name(self.plan, name),
+                                                     raw, tokens[name])  # fmt: skip
+            self.partial["bundles"] = {name: bundles[name] for name in files}
+            entry = render.restore_entry(record, applied, database, instance=target,
+                                         not_after=not_after, bundles=bundles)  # fmt: skip
+            added = self._restore_plan(step, session, {**applied, "restore_verifications":
+                                                       {database: entry}}, adding=True)  # fmt: skip
+            terraform = added["terraform"]
+            reported = (terraform.get("restore_verifications") or {}).get(database)
+            if reported is None or reported.get("release_id") != record["release_id"]:
+                raise StepFailed("the releases root reports no verification of the current "
+                                 "release")  # fmt: skip
+            outputs["add_plan_file_sha256"] = added["plan_file_sha256"]
+            names = render.attended_policies(self.plan, terraform)
+            if names["bootstrap"]:
+                # Only a first deployment keeps a bootstrap launcher; none is ever attached here.
+                self.partial["bootstrap_launcher"] = "rendered, not attached"
+            arns = sorted(render.policy_arn(self.plan, name)
+                          for name in names["attended"] + names["evidence"])  # fmt: skip
+            try:
+                for arn in arns:
+                    iam.attach_role_policy(RoleName=role, PolicyArn=arn)
+                if sorted(attached(iam, role)) != arns:
+                    raise StepFailed("the operator role's policies are not exactly the set")
+                self.partial["attached"] = arns
+                outputs.update(self._restore_run(current, reported, database, target, endpoint,
+                                                 verification_id, bundles, operator,
+                                                 added["plan_file_sha256"], not_after))  # fmt: skip
+            except BaseException:
+                self._detach_restore(iam, role, arns, strict=False)
+                raise
+            self._detach_restore(iam, role, arns, strict=True)
+            removed = self._restore_plan(step, session, applied, adding=False)
+            outputs["remove_plan_file_sha256"] = removed["plan_file_sha256"]
+            if outputs["verified"] is not True:
+                outputs["_held"] = (f"restore_unverified: the run ended {outputs['run_state']} "
+                                    f"({outputs['run_reason']})")  # fmt: skip
+            return outputs
+
+        # Only the logins' passwords are secret: the endpoint, database and login names are
+        # the receipt's own evidence.
+        return self._finish(step, commands, typed, action, session, _restore_passwords(files))
+
+    def _restore_preview(self, current: dict[str, Any], database: str, target: str,
+                         endpoint: str, verification_id: str, pins: dict[str, str],
+                         operator: sessions.Session, not_after: datetime) -> None:  # fmt: skip
+        """Render the restore_verify manifest and approval with placeholder revisions and
+        bundles; Refused when the controller's own loader would refuse them."""
+        account, region, prefix = self.plan.account_id, self.plan.region, self.plan.name_prefix
+        proof = next(job for job in current["jobs"] if job["id"] == f"{database}-proof")
+        families = {"rv-recon": "restore-reconcile", "rv-proof": "restore-proof"}
+        placeholder = {"jobs": {f"{database}-{kind}": {
+            "task_definition": f"arn:aws:ecs:{region}:{account}:task-definition/"
+                               f"{prefix}-{family}-{database}:1",
+            "task_role": proof["task"]["task_role"],
+            "execution_role": f"arn:aws:iam::{account}:role/{prefix}-{database}-{kind}-execution",
+            "expect": {"sql_digest": pins["proof"]},
+        } for kind, family in families.items()}}  # fmt: skip
+        done = self.receipts()
+        bundles = dict(done["custodian"]["outputs"]["bundles"])
+        for purpose in render.RESTORE_BUNDLES:
+            bundles[f"{purpose}/{database}"] = {
+                "arn": f"arn:aws:secretsmanager:{region}:{account}:secret:{prefix}/{purpose}/"
+                       f"{database}-AAAAAA", "version_id": str(uuid.UUID(int=0)),
+            }  # fmt: skip
+        expires = datetime.strptime(operator.describe()["expires_at"],
+                                    "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)  # fmt: skip
+        # The session loader already requires an hour and ten minutes of lifetime, so
+        # the window (ending ten minutes before the session) holds the release's hour.
+        try:
+            document = render.restore_manifest(
+                current, placeholder, database=database, instance=target, endpoint=endpoint,
+                verification_id=verification_id, bundles=bundles, plan_sha256="0" * 64,
+                not_before=self.now() - timedelta(minutes=1), session_expires=expires,
+                not_after=not_after,
+            )  # fmt: skip
+            render.approval(self.plan, document)
+        except (ReleaseRejected, ValueError) as error:
+            raise Refused(f"the restore manifest would be refused: {error}") from None
+
+    def _stranded_restore(self, step: Step, session: sessions.Session,
+                          applied: dict[str, Any]) -> list[str]:  # fmt: skip
+        """The restore resources an earlier attempt left applied: a plan of the releases
+        root's applied input deletes them. Any other change fails the step."""
+        _run, document = self._plan_releases(step, session, applied, "restore-check")
+        stranded, other = [], []
+        for change in document.get("resource_changes") or []:
+            actions = sorted(change.get("change", {}).get("actions") or [])
+            address = str(change.get("address"))
+            if actions in (["no-op"], ["read"]):
+                continue
+            if restore_address(address) and actions == ["delete"]:
+                stranded.append(address)
+            else:
+                other.append(f"{address}: {actions}")
+        if other:
+            raise StepFailed(f"the releases root would change outside a verification: {other[:3]}")
+        return stranded
+
+    def restore_remove(self, *, session_path: str | None, approval_path: Path,
+                       chain_head: str | None = None) -> int:  # fmt: skip
+        """Section 8: remove a verification's entry that an interrupted attempt left applied.
+
+        Bound to a restore-verify approval for the same database and this chain head. It
+        detaches exactly the set restore-verify attaches, if any of it is attached, then
+        removes the entry in its own checked plan (deletes of the restore resources only),
+        applied after the identifier is typed again. The revisions stay registered.
+        """
+        step = Step("restore-remove", "8", "remove a verification's entry from releases/",
+                    "deployer")  # fmt: skip
+        self.check_head(chain_head)
+        approval, approval_sha256 = self._approval(approval_path, RESTORE_VERIFY_SCHEMA)
+        database = approval.get("database")
+        if database not in render.DATABASES:
+            raise Refused("the approval names no database of this environment")
+        done = self.receipts()
+        if "run" not in done:
+            raise Refused("this chain has no release whose verification could be removed")
+        applied = done["releases"]["outputs"]["rendered"]
+        session = self.session(step, session_path)
+        iam = self.clients(session, "iam")
+        role = f"{self.plan.name_prefix}-operator"
+        named = render.attended_policies(self.plan, {
+            "release_launcher_policies": {
+                **done["releases"]["outputs"]["terraform"]["release_launcher_policies"],
+                "restore": {}}})  # fmt: skip
+        arns = sorted(render.policy_arn(self.plan, name)
+                      for name in named["attended"] + named["evidence"])  # fmt: skip
+        held = attached(iam, role)
+        document = render.policy_arn(self.plan, f"{self.plan.name_prefix}-release-launcher-restore")
+        if held and document not in held:
+            # Attached without the restore document: another run holds the operator role.
+            raise Refused("the operator role holds policies restore-verify did not attach; "
+                          "nothing is detached or removed while another run may use them")  # fmt: skip
+        commands = [
+            f"iam DetachRolePolicy --role-name {role} (any of {len(arns)} attached here)",
+            f"terraform plan and apply releases/ without restore_verifications.{database}",
+        ]
+        typed = self.confirm(step.id, f"remove the {database} verification's entry")
+
+        def action() -> dict[str, Any]:
+            self._detach_restore(iam, role, arns, strict=True)
+            removed = self._restore_plan(step, session, applied, adding=False)
+            return {"approval_sha256": approval_sha256, "database": database,
+                    "remove_plan_file_sha256": removed["plan_file_sha256"],
+                    "plan_summary": removed["plan_summary"],
+                    "detached": self.partial.get("detached")}  # fmt: skip
+
+        return self._finish(step, commands, typed, action, session)
+
+    def _detach_restore(self, iam: Any, role: str, arns: list[str], *, strict: bool) -> None:
+        """Detach what restore-verify attached. After a failure this is best effort and
+        the failure stands; otherwise anything left attached fails the step, and the
+        entry stays until it is detached (IAM refuses to delete an attached policy)."""
+        try:
+            for arn in arns:
+                if arn in attached(iam, role):
+                    iam.detach_role_policy(RoleName=role, PolicyArn=arn)
+            left = sorted(set(attached(iam, role)) & set(arns))
+        except Exception:
+            if strict:
+                raise
+            self.partial["detached"] = "unconfirmed"
+            return
+        self.partial["detached"] = not left
+        if left and strict:
+            raise StepFailed(f"still attached: {left}; the entry stays until they are detached")
+
+    def _secret_version(self, client: Any, name: str, raw: bytes, token: str) -> dict[str, str]:
+        """Create the secret, or a retry's version of it; ours only if it holds the token."""
+        try:
+            answer = client.create_secret(Name=name, SecretString=raw.decode(),
+                                          ClientRequestToken=token)  # fmt: skip
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") != "ResourceExistsException":
+                raise
+            described = client.describe_secret(SecretId=name)
+            if token in (described.get("VersionIdsToStages") or {}):
+                answer = {"ARN": described["ARN"], "VersionId": token}
+            else:
+                # A later verification of the same database: a new version of the secret.
+                answer = client.put_secret_value(SecretId=name, SecretString=raw.decode(),
+                                                 ClientRequestToken=token)  # fmt: skip
+        if answer.get("VersionId") != token:
+            raise StepFailed(f"{name}: the version is not the requested one")
+        return {"arn": answer["ARN"], "version_id": answer["VersionId"]}
+
+    def _restore_plan(self, step: Step, session: sessions.Session, rendered: dict[str, Any], *,
+                      adding: bool) -> dict[str, Any]:  # fmt: skip
+        """Plan, check and apply the releases root with or without the one entry."""
+        label = "restore-add" if adding else "restore-remove"
+        run, document = self._plan_releases(step, session, rendered, label)
+        summary = check_restore_plan(document, adding=adding,
+                                     variables={**self.plan.inputs["releases"], **rendered})  # fmt: skip
+        checked = _hash_file(run.plan_file)
+        self.partial[f"{label}_plan_file_sha256"] = checked
+        self.say(f"Plan file checked: {summary['actions']} (SHA-256 {checked})")
+        self.confirm(step.id, f"apply exactly this plan file ({label})")
+        if _hash_file(run.plan_file) != checked:
+            raise StepFailed("the plan file changed after it was checked")
+        terraform = self.terraform_apply(step, run, session)
+        return {"plan_file_sha256": checked, "plan_summary": summary, "terraform": terraform}
+
+    def _plan_releases(self, step: Step, session: sessions.Session, rendered: dict[str, Any],
+                       label: str) -> tuple[RootRun, dict[str, Any]]:  # fmt: skip
+        """Init, plan and show the releases root for these rendered variables."""
+        directory = self.work / "rendered"
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        sequence = len(self.ledger.receipts())
+        account = directory / f"{sequence:03d}-{label}.account.tfvars.json"
+        account.write_text(
+            json.dumps(self.plan.inputs["releases"], indent=2, sort_keys=True) + "\n"
+        )
+        path = directory / f"{sequence:03d}-{label}.tfvars.json"
+        path.write_text(json.dumps(rendered, indent=2, sort_keys=True) + "\n")
+        self.refuse_auto_tfvars("releases")
+        state = self.work / "state"
+        backend = render.backend(self.plan, "releases", str(state / "bootstrap.tfstate"))
+        plans = self.work / "plans"
+        plans.mkdir(parents=True, exist_ok=True, mode=0o700)
+        run = RootRun("releases", self.terraform_directory("releases"), backend, (account, path),
+                      plans / f"{sequence:03d}-{label}.tfplan", self.plugin_dir())  # fmt: skip
+        for args in (run.init(), run.plan(), run.show()):
+            result = self.terraform(run, args, session)
+            self.log(step.id, args, result)
+            if result.returncode:
+                raise StepFailed(f"terraform {args[0]} exited {result.returncode}")
+        return run, json.loads(result.stdout)
+
+    def _restore_run(self, current: dict[str, Any], reported: dict[str, Any], database: str,
+                     target: str, endpoint: str, verification_id: str,
+                     bundles: dict[str, dict[str, str]], operator: sessions.Session,
+                     plan_sha256: str, not_after: datetime) -> dict[str, Any]:  # fmt: skip
+        """Render and validate the restore_verify manifest, then run it and read its status."""
+        expires = datetime.strptime(operator.describe()["expires_at"],
+                                    "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)  # fmt: skip
+        document = render.restore_manifest(
+            current, reported, database=database, instance=target, endpoint=endpoint,
+            verification_id=verification_id, bundles=bundles, plan_sha256=plan_sha256,
+            not_before=self.now() - timedelta(minutes=1), session_expires=expires,
+            not_after=not_after,
+        )  # fmt: skip
+        approval = render.approval(self.plan, document)
+        directory = self.work / "rendered"
+        sequence = len(self.ledger.receipts())
+        manifest_path = directory / f"{sequence:03d}-restore-manifest.json"
+        approval_path = directory / f"{sequence:03d}-restore-approval.json"
+        for path, content in ((manifest_path, document), (approval_path, approval)):
+            with path.open("x") as stream:
+                stream.write(json.dumps(content, indent=2) + "\n")
+        common = ["--manifest", str(manifest_path)]
+        code, report = self.release_cli(["validate", *common, "--approval", str(approval_path)])
+        if code or report.get("manifest_sha256") != approval["manifest_sha256"]:
+            raise StepFailed(f"release_cli validate exited {code}")
+        run_code, run = self.release_cli(["run", *common, "--approval", str(approval_path),
+                                          "--credentials", str(operator.path)])  # fmt: skip
+        status_code, status = self.release_cli(["status", *common,
+                                                "--credentials", str(operator.path)])  # fmt: skip
+        expect = {job["id"]: job["expect"] for job in document["jobs"]}
+        problem = status_problem(status_code, status, document["release_id"],
+                                 state="restore_verified", run_id=verification_id)  # fmt: skip
+        verified = run_code == 0 and run.get("state") == "restore_verified" and problem is None
+        return {
+            "kind": "restore_verified" if verified else "restore_unverified",
+            "verified": verified, "manifest": str(manifest_path),
+            "manifest_sha256": approval["manifest_sha256"],
+            "run_state": run.get("state"), "run_reason": run.get("reason"),
+            "run_exit": run_code, "status_exit": status_code, "status": status,
+            "status_problem": problem,
+            "expectations": "hosts, schema, sql_digest and foreign_sessions are what the "
+                            "manifest required; the controller accepted each job only on an "
+                            "exact receipt match, so they were observed only when verified",
+            "hosts": {job: values["host"] for job, values in expect.items()},
+            "foreign_sessions": expect[f"{database}-rv-recon"]["foreign_sessions"],
+            "schema": expect[f"{database}-rv-proof"]["schema"],
+            "sql_digest": expect[f"{database}-rv-proof"]["sql_digest"],
+        }  # fmt: skip
 
     def teardown(self, *, session_path: str | None, approval_path: Path,
                  chain_head: str | None = None) -> int:  # fmt: skip
@@ -1104,9 +1546,30 @@ class Kit:
         return EXIT_OK
 
 
-def status_problem(code: int, summary: dict[str, Any], release_id: str) -> str | None:
-    """Why a ``release_cli status`` answer does not prove this release ended held_paused
-    with nothing outstanding and the environment lock released; None when it does.
+def _restore_passwords(files: dict[str, bytes]) -> tuple[str, ...]:
+    """The login passwords in the restore bundles, the only secret values they hold."""
+    found = []
+    for raw in files.values():
+        document = json.loads(raw)
+        if "DATABASE_URL" in document:
+            found.append(urlsplit(document["DATABASE_URL"]).password or "")
+            found.append(document["DATABASE_URL"])
+        else:
+            found.append(document["DB_PASSWORD"])
+    return tuple(value for value in found if value)
+
+
+def status_problem(
+    code: int,
+    summary: dict[str, Any],
+    release_id: str,
+    *,
+    state: str = "held_paused",
+    run_id: str | None = None,
+) -> str | None:
+    """Why a ``release_cli status`` answer does not prove this release (or, with
+    ``run_id``, this restore verification of it) ended in ``state`` with nothing
+    outstanding and the environment lock released; None when it does.
 
     A refusal, an unparseable answer or a missing field is never read as an absent
     lock or a finished run.
@@ -1116,9 +1579,11 @@ def status_problem(code: int, summary: dict[str, Any], release_id: str) -> str |
         return f"release_cli status exited {code} ({reason}): nothing about the lock is known"
     if summary.get("command") != "status" or summary.get("release_id") != release_id:
         return "release_cli status did not answer for this release"
+    if run_id is not None and summary.get("run_id") != run_id:
+        return "release_cli status did not answer for this verification"
     journal = summary.get("journal")
-    if not isinstance(journal, dict) or journal.get("state") != "held_paused":
-        return "the journal does not show held_paused"
+    if not isinstance(journal, dict) or journal.get("state") != state:
+        return f"the journal does not show {state}"
     if journal.get("outstanding") != []:
         return "the journal still has outstanding intents"
     if "lock" not in summary:
@@ -1240,7 +1705,7 @@ def provider_approval(path: Path, plan: AccountPlan, record: dict[str, Any], now
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m release_kits.aws_07b", allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("init", "status", "step", "restore", "teardown"):
+    for name in ("init", "status", "step", "restore", "restore-verify", "teardown"):
         command = commands.add_parser(name, allow_abbrev=False)
         command.add_argument("--plan", type=Path, required=True)
         command.add_argument("--plan-sha256", required=True)
@@ -1260,10 +1725,15 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("id", choices=[step.id for step in STEPS])
             command.add_argument("--session")
             command.add_argument("--custodian", type=Path)
-        if name in ("restore", "teardown"):
+        if name in ("restore", "restore-verify", "teardown"):
             command.add_argument("--session", required=True)
             command.add_argument("--approval", type=Path, required=True)
-        if name in ("step", "restore", "teardown"):
+        if name == "restore-verify":
+            command.add_argument("--operator-session")
+            command.add_argument("--custodian", type=Path)
+            command.add_argument("--remove-entry", action="store_true",
+                                 help="only remove an interrupted verification's entry")  # fmt: skip
+        if name in ("step", "restore", "restore-verify", "teardown"):
             command.add_argument("--chain-head", help="the receipt hash the last step printed")
     return parser
 
@@ -1285,6 +1755,14 @@ def main(argv: list[str] | None = None, *, kit_class: type[Kit] = Kit, **options
         if args.command == "restore":
             return kit.restore(session_path=args.session, approval_path=args.approval,
                                chain_head=args.chain_head)  # fmt: skip
+        if args.command == "restore-verify" and args.remove_entry:
+            return kit.restore_remove(session_path=args.session, approval_path=args.approval,
+                                      chain_head=args.chain_head)  # fmt: skip
+        if args.command == "restore-verify":
+            return kit.restore_verify(session_path=args.session,
+                                      operator_session_path=args.operator_session,
+                                      approval_path=args.approval, custodian=args.custodian,
+                                      chain_head=args.chain_head)  # fmt: skip
         return kit.teardown(session_path=args.session, approval_path=args.approval,
                             chain_head=args.chain_head)  # fmt: skip
     except (PlanRefused, ChainBroken, Refused, oci.PushRefused, ReleaseRejected) as error:

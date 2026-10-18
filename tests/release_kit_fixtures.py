@@ -127,6 +127,45 @@ def releases_outputs(plan, rendered: dict[str, Any], revision: int = 1) -> dict[
         },
     }  # fmt: skip
     groups = rendered["observer_security_group_ids"]
+    # A restore verification's entry renders its two definitions, its own execution
+    # roles and the restore launcher document (deploy/aws-staging/releases/restore.tf).
+    restores = {}
+    for database, entry in (rendered.get("restore_verifications") or {}).items():
+        ids = identities[database]
+        task_role = f"arn:aws:iam::{account}:role/{roles[f'{database}-release-task']}"
+        families = {"rv-recon": "restore-reconcile", "rv-proof": "restore-proof"}
+        restores[database] = {
+            "release_id": release["release_id"],
+            "instance_identifier": entry["instance_identifier"],
+            "not_after": entry["not_after"],
+            "budget_seconds": entry["budget_seconds"],
+            "image": entry["image"],
+            "tools_sha256": entry["tools_sha256"],
+            "jobs": {
+                f"{database}-{kind}": {
+                    "task_definition": family(f"{family_name}-{database}"),
+                    "task_role": task_role,
+                    "execution_role": f"arn:aws:iam::{account}:role/{prefix}-{database}-{kind}-execution",
+                    "receipt_stream": (
+                        f"arn:aws:logs:{region}:{account}:log-group:/{prefix}/"
+                        f"{database}-release:log-stream:{database}-{kind}/{kind}/*"
+                    ),
+                    "expect": {
+                        "database": ids["database"],
+                        "principal": ids["owner"] if kind == "rv-recon" else ids["service"],
+                        **(
+                            {"sql_digest": entry["sql_sha256"]["proof"]}
+                            if kind == "rv-proof"
+                            else {}
+                        ),
+                    },
+                }
+                for kind, family_name in families.items()
+            },
+        }
+    launchers = ("jobs", "services", "receipts", "tasks", "observe") + (
+        ("restore",) if restores else ()
+    )
     return {
         "releases": {key: {
             "release_id": release["release_id"], "slot": "current",
@@ -152,9 +191,8 @@ def releases_outputs(plan, rendered: dict[str, Any], revision: int = 1) -> dict[
         "rollback_release": None,
         "current_service_task_definitions": {name: definitions[name]
                                              for name in ("runtime", "api", "worker")},
-        "release_launcher_policies": {name: {"Version": "2012-10-17"}
-                                      for name in ("jobs", "services", "receipts", "tasks",
-                                                   "observe")},
+        "release_launcher_policies": {name: {"Version": "2012-10-17"} for name in launchers},
+        "restore_verifications": restores,
         "release_launcher_bootstrap_policy": {"Version": "2012-10-17"},
         "observer_networks": {"runtime-observe": [groups["runtime"]],
                               "api-observe": [groups["api"]]},
