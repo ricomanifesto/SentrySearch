@@ -176,7 +176,11 @@ class RollbackKit(Kit):
         failed_input = json.loads(failed_release_input.read_bytes())
         if set(failed_input) != {render.release_key(failed.release_id)}:
             raise Refused("the failed release input is not exactly the failed release's entry")
+        # The prior release's worker canary as its own init record names it; render,
+        # validate and run hold every later link to it.
+        prior_provider = prior_canary(prior["init"]["outputs"])
         record.update(
+            prior_provider_canary=prior_provider,
             release_id=str(uuid.uuid4()), prior_release_id=prior_manifest["release_id"],
             prior_manifest_sha256=load_manifest(json.dumps(prior_manifest).encode()).sha256,
             failed_manifest=str(failed_manifest.resolve()), failed_manifest_sha256=sha256(failed_raw),
@@ -185,7 +189,11 @@ class RollbackKit(Kit):
         )  # fmt: skip
         commands = [f"read {prior_work}/receipts (AWS-07b chain for plan {self.plan.plan_sha256})",
                     f"read {failed_manifest} (release {failed.release_id})",
-                    f"read {decision} (decided by {decided['authorized_by']})"]  # fmt: skip
+                    f"read {decision} (decided by {decided['authorized_by']})",
+                    "prior release's " + (
+                        "worker: no provider" if prior_provider is None else
+                        f"worker provider canary {prior_provider['canary_id']}, manifest "
+                        f"{prior_provider['canary_manifest_sha256']}")]  # fmt: skip
         for command in commands:
             self.say(f"  {command}")
         typed = self.confirm("init", "fix this rollback's record")
@@ -269,6 +277,13 @@ class RollbackKit(Kit):
                                      plan_sha256=replan["plan_file_sha256"],
                                      not_before=self.now() - aws_07b.timedelta(minutes=1))  # fmt: skip
         approval = render.approval(self.plan, document)
+        # The retained release is never changed to make a rollback pass: its registered
+        # definitions, and its worker's canary and key version, are the prior's own.
+        prior_key = render.release_key(record["prior_release_id"])
+        before = prior["releases"]["outputs"]["terraform"]["releases"][prior_key]
+        if release["definitions_sha256"] != before["definitions_sha256"]:
+            raise Refused("the re-plan changed the prior release's registered definitions")
+        binding = self._prior_binding(prior, document)
         directory = self.work / "rendered"
         sequence = len(self.ledger.receipts())
         paths = {
@@ -276,7 +291,8 @@ class RollbackKit(Kit):
         }
         commands = [f"write {paths['manifest']} (rollback {document['release_id']} of "
                     f"{record['decision']['failed_release_id']}, manifest "
-                    f"{approval['manifest_sha256']})", f"write {paths['approval']}"]  # fmt: skip
+                    f"{approval['manifest_sha256']})", f"write {paths['approval']}",
+                    render.describe_provider(binding)]  # fmt: skip
 
         def action() -> dict[str, Any]:
             for name, content in (("manifest", document), ("approval", approval)):
@@ -285,12 +301,50 @@ class RollbackKit(Kit):
             return {name: str(path) for name, path in paths.items()} | {
                 "manifest_sha256": approval["manifest_sha256"],
                 **{f"{name}_file_sha256": aws_07b._hash_file(path) for name, path in paths.items()},
+                "provider_canary": binding,
             }
 
         return commands, action, ()
 
-    def _prepare_validate(self, _session, _custodian):
+    def _prior_binding(self, prior: dict[str, dict[str, Any]],
+                       document: dict[str, Any]) -> dict[str, str] | None:  # fmt: skip
+        """The prior release's worker canary as its record, releases input, custody and
+        this rollback's manifest all name it, unchanged since this rollback's init, and
+        outlasting this rollback's window; or None when none names one."""
+        record = prior["init"]["outputs"]
+        rendered = prior["releases"]["outputs"]["rendered"]["releases"]
+        try:
+            binding = render.provider_binding(
+                self.plan, record, prior["custodian"]["outputs"]["bundles"],
+                rendered[render.release_key(record["release_id"])], document, self.now(),
+            )  # fmt: skip
+        except ValueError as error:
+            raise Refused(f"the prior release's provider: {error}") from None
+        except (KeyError, TypeError):
+            raise Refused("the prior release's receipts do not carry its provider links") from None
+        named = None if binding is None else prior_canary(record)
+        if named != self.record().get("prior_provider_canary"):
+            raise Refused("the prior release's provider canary is not the one this rollback's "
+                          "init recorded")  # fmt: skip
+        return binding
+
+    def _rendered_binding(self) -> tuple[dict[str, Any], dict[str, str] | None]:
+        """The render receipt's files and canary, checked again against the prior release
+        before release_cli is given them."""
         done = self.receipts()["render"]["outputs"]
+        try:
+            raw = Path(done["manifest"]).read_bytes()
+        except OSError:
+            raise Refused("the rendered rollback manifest is missing") from None
+        if sha256(raw) != done["manifest_file_sha256"]:
+            raise Refused("the rollback manifest changed after it was rendered")
+        binding = self._prior_binding(self.prior(), json.loads(raw))
+        if binding != done.get("provider_canary"):
+            raise Refused("the render receipt's provider canary is not the prior release's")
+        return done, binding
+
+    def _prepare_validate(self, _session, _custodian):
+        done, binding = self._rendered_binding()
         args = ["validate", "--manifest", done["manifest"], "--approval", done["approval"]]
 
         def action() -> dict[str, Any]:
@@ -301,12 +355,16 @@ class RollbackKit(Kit):
                 or (report.get("manifest_sha256") != done["manifest_sha256"])
             ):
                 raise StepFailed(f"release_cli validate exited {code}")
-            return {"report": report}
+            return {"report": report, "provider_canary": binding}
 
-        return ["python -m release_cli " + shlex.join(args)], action, ()
+        return (
+            [render.describe_provider(binding), "python -m release_cli " + shlex.join(args)],
+            action,
+            (),
+        )
 
     def _prepare_run(self, session, _custodian):
-        done = self.receipts()["render"]["outputs"]
+        done, binding = self._rendered_binding()
         decision = self.record()["decision"]
         args = ["run", "--manifest", done["manifest"], "--approval", done["approval"],
                 "--credentials", str(session.path), "--failed-session", decision["failed_session"],
@@ -319,12 +377,16 @@ class RollbackKit(Kit):
                 if aws_07b._hash_file(Path(done[name])) != done[f"{name}_file_sha256"]:
                     raise StepFailed(f"the {name} changed after it was rendered")
             code, report = self.release_cli(args)
-            outputs: dict[str, Any] = {"run_exit": code, "run": report}
+            outputs: dict[str, Any] = {"run_exit": code, "run": report, "provider_canary": binding}
             if code != 0 or report.get("state") != "held_paused":
                 outputs["_held"] = f"release_cli run exited {code}: {report.get('reason')}"
             return outputs
 
-        return ["python -m release_cli " + shlex.join(args)], action, ()
+        return (
+            [render.describe_provider(binding), "python -m release_cli " + shlex.join(args)],
+            action,
+            (),
+        )
 
     def _prepare_check(self, session, _custodian):
         done = self.receipts()["render"]["outputs"]
@@ -377,6 +439,16 @@ class RollbackKit(Kit):
             return outputs
 
         return commands, action, ()
+
+
+def prior_canary(record: dict[str, Any]) -> dict[str, str] | None:
+    """A release record's named canary and its approval, as fixed at its init."""
+    named = record.get("provider")
+    if named is None:
+        return None
+    return {"canary_id": named["canary_id"],
+            "canary_manifest_sha256": named["canary_manifest_sha256"],
+            "approval_sha256": record["provider_approval"]["sha256"]}  # fmt: skip
 
 
 def cluster_tasks(ecs: Any, cluster: str) -> list[dict[str, Any]]:

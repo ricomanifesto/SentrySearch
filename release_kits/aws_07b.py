@@ -791,6 +791,9 @@ class Kit:
         document = render.manifest(self.plan, record, done, not_before=self.now()
                                    - timedelta(minutes=1), session_expires=expires)  # fmt: skip
         approval = render.approval(self.plan, document)
+        # Refused before anything is written unless every link names the same canary,
+        # or none does, and a named canary outlasts the window.
+        binding = self._provider_binding(record, done, document)
         directory = self.work / "rendered"
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         sequence = len(self.ledger.receipts())
@@ -799,6 +802,7 @@ class Kit:
         args = ["validate", "--manifest", str(manifest_path), "--approval", str(approval_path)]
         commands = [f"write {manifest_path} (release {document['release_id']}, manifest "
                     f"{approval['manifest_sha256']})", f"write {approval_path}",
+                    render.describe_provider(binding),
                     "python -m release_cli " + shlex.join(args)]  # fmt: skip
 
         def action() -> dict[str, Any]:
@@ -811,18 +815,46 @@ class Kit:
             return {"manifest": str(manifest_path), "approval": str(approval_path),
                     "manifest_sha256": approval["manifest_sha256"],
                     "manifest_file_sha256": _hash_file(manifest_path),
-                    "approval_file_sha256": _hash_file(approval_path), "report": report}  # fmt: skip
+                    "approval_file_sha256": _hash_file(approval_path), "report": report,
+                    "provider_canary": binding}  # fmt: skip
 
         return commands, action, ()
 
+    def _provider_binding(self, record: dict[str, Any], done: dict[str, dict[str, Any]],
+                          document: dict[str, Any]) -> dict[str, str] | None:  # fmt: skip
+        """The worker's provider canary as the record, the releases input, custody and the
+        manifest all name it, or None when none does; refused otherwise."""
+        rendered = done["releases"]["outputs"]["rendered"]["releases"]
+        try:
+            return render.provider_binding(
+                self.plan, record, done["custodian"]["outputs"]["bundles"],
+                rendered[render.release_key(record["release_id"])], document, self.now(),
+            )  # fmt: skip
+        except ValueError as error:
+            raise Refused(str(error)) from None
+        except (KeyError, TypeError):
+            raise Refused("the receipts do not carry the release's provider links") from None
+
     def _prepare_run(self, session, _custodian):
-        done = self.receipts()["validate"]["outputs"]
-        if session.describe() != self.receipts()["session"]["outputs"]["session"]:
+        receipts = self.receipts()
+        done = receipts["validate"]["outputs"]
+        if session.describe() != receipts["session"]["outputs"]["session"]:
             raise Refused("this is not the session the session step checked")
+        try:
+            raw = Path(done["manifest"]).read_bytes()
+        except OSError:
+            raise Refused("the validated manifest is missing") from None
+        if sha256(raw) != done["manifest_file_sha256"]:
+            raise Refused("the manifest changed after validation")
+        # The canary is checked again at run time, against the validated manifest's window.
+        binding = self._provider_binding(self.record(), receipts, json.loads(raw))
+        if binding != done.get("provider_canary"):
+            raise Refused("the worker's provider canary is not the one validation recorded")
         common = ["--manifest", done["manifest"]]
         run = ["run", *common, "--approval", done["approval"], "--credentials", str(session.path)]
         status = ["status", *common, "--credentials", str(session.path)]
-        commands = ["python -m release_cli " + shlex.join(run),
+        commands = [render.describe_provider(binding),
+                    "python -m release_cli " + shlex.join(run),
                     "python -m release_cli " + shlex.join(status)]  # fmt: skip
 
         def action() -> dict[str, Any]:
@@ -833,7 +865,8 @@ class Kit:
             code, report = self.release_cli(run)
             status_code, summary = self.release_cli(status)
             outputs: dict[str, Any] = {"run_exit": code, "run": report,
-                                       "status_exit": status_code, "status": summary}  # fmt: skip
+                                       "status_exit": status_code, "status": summary,
+                                       "provider_canary": binding}  # fmt: skip
             if code != 0 or report.get("state") != "held_paused":
                 outputs["_held"] = f"release_cli run exited {code}: {report.get('reason')}"
             elif problem := status_problem(status_code, summary, release_id):

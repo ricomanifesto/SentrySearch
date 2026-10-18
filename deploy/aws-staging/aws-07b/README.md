@@ -95,6 +95,28 @@ the whole canary before you confirm, and fixes it into the record. Without it a
 release has no provider: the worker keeps the disabled scaffold and the custodian
 step refuses a provider key.
 
+That document is the release's provider approval. `validate` (7.9) refuses before
+writing anything unless the record's canary, the releases input's
+`model_provider`, the custodian's `provider-key/worker` bundle and the last of the
+worker's secrets in the rendered manifest all name the same canary and key version
+(or none names a provider), and unless the canary's `not_after` is strictly later
+than the manifest window's end. `run` (7.10) checks the same against the validated
+manifest before `release_cli` runs. Both show, among the commands you confirm,
+"worker provider canary `<id>`, manifest `<sha256>`, key version `<id>`" or
+"worker: no provider", and their receipts record `provider_canary` (with the
+approval's SHA-256) or null. The controller's own approval is unchanged: schema 1,
+milestone `operational-paused`, bound to the manifest, whose worker task definition
+carries the canary and the key's exact version.
+
+Reusing an approval document is only for re-initializing an abandoned attempt
+within the separately approved live scope; it never permits running or spending
+again. The canary's caps are not a pooled spending cap: request counts
+live in one worker process and start from zero when a task restarts or is
+replaced, simultaneous workers each count alone, and `budget_usd` is a review
+figure no transport enforces. The provider key's own credit limit and usage
+alerts, and the separately approved live scope, are the cost controls; a repeated
+or concurrent live release under one approval is a separate decision.
+
 Exit codes: `0` done, `2` refused before anything ran (nothing written), `3`
 the step ran and failed or held (its receipt says why).
 

@@ -10,7 +10,7 @@ kit writes it, so a value the controller would refuse is refused here first.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 import json
 import re
 from typing import Any
@@ -158,6 +158,55 @@ def check_provider(named: Any, now: datetime) -> dict[str, str]:
     return {field: named[field] for field in PROVIDER_FIELDS}
 
 
+def provider_binding(plan: AccountPlan, record: dict[str, Any], bundles: dict[str, dict[str, str]],
+                     rendered_release: dict[str, Any], document: dict[str, Any],
+                     now: datetime) -> dict[str, str] | None:  # fmt: skip
+    """The worker's provider canary as every link of the chain names it, or None when no
+    link names one. ValueError when the record, the releases input, custody and the
+    manifest disagree, or the canary ends at or before the manifest window's end."""
+    canary = model_provider(record, now)
+    rendered = rendered_release.get("model_provider")
+    held = bundles.get(PROVIDER_BUNDLE)
+    worker = document["services"]["worker"]["secrets"]
+    key_prefix = f":secret:{secret_name(plan, PROVIDER_BUNDLE)}-"
+    if canary is None:
+        if rendered is not None:
+            raise ValueError("the releases input names a provider the release record does not")
+        if held is not None:
+            raise ValueError("custody holds a provider key, but the release names no canary")
+        if any(key_prefix in secret["arn"] for secret in worker):
+            raise ValueError("the worker reads a provider key, but the release names no canary")
+        return None
+    if rendered is None or {field: rendered.get(field) for field in
+                            ("base_url", "canary_manifest", "canary_manifest_sha256")} != {
+            field: canary[field] for field in ("base_url", "canary_manifest",
+                                               "canary_manifest_sha256")}:  # fmt: skip
+        raise ValueError("the releases input's provider is not the release record's canary")
+    if held is None:
+        raise ValueError("custody holds no provider key for the release's canary")
+    if rendered.get("key_bundle") != held:
+        raise ValueError("the releases input reads another provider key than custody created")
+    if not worker or worker[-1] != held:
+        raise ValueError("the manifest's worker secrets do not end with the provider key")
+    not_after = provider_canary.load(json.loads(canary["canary_manifest"])).not_after
+    window_end = datetime.strptime(document["window"]["expires_at"], "%Y-%m-%dT%H:%M:%SZ")
+    if not not_after > window_end.replace(tzinfo=UTC):
+        raise ValueError("the canary ends at or before the release window does")
+    return {"canary_id": canary["canary_id"],
+            "canary_manifest_sha256": canary["canary_manifest_sha256"],
+            "key_version_id": held["version_id"],
+            "approval_sha256": record["provider_approval"]["sha256"]}  # fmt: skip
+
+
+def describe_provider(binding: dict[str, str] | None) -> str:
+    if binding is None:
+        return "worker: no provider"
+    return (
+        f"worker provider canary {binding['canary_id']}, manifest "
+        f"{binding['canary_manifest_sha256']}, key version {binding['key_version_id']}"
+    )
+
+
 def releases_input(plan: AccountPlan, record: dict[str, Any], foundation: dict[str, Any],
                    bundles: dict[str, dict[str, str]], admin: dict[str, dict[str, str]],
                    pushed: dict[str, str], now: datetime) -> dict[str, Any]:  # fmt: skip
@@ -285,8 +334,9 @@ def manifest(plan: AccountPlan, record: dict[str, Any], receipts: dict[str, dict
     app = {"runtime": "runtime", "api": "search", "worker": "search"}
     secrets = {name: [bundles[f"environment/{name}"], bundles[f"material/{name}"]]
                for name in ("runtime", "api", "worker")}  # fmt: skip
-    if record.get("provider") is not None:
-        # The worker's task definition also reads its provider key.
+    if record.get("provider") is not None and PROVIDER_BUNDLE in bundles:
+        # The worker's task definition also reads its provider key; a named canary
+        # whose key custody does not hold is refused by provider_binding.
         secrets["worker"].append(bundles[PROVIDER_BUNDLE])
     document["services"] = {
         name: _task(plan, release, name, f"{name}-task", f"{name}-execution", secrets[name],

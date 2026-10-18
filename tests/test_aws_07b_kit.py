@@ -1407,3 +1407,174 @@ def test_the_role_and_revision_keys_the_kit_reads_are_the_modules_own():
     assert "${local.tools_jobs[key].database}-${local.tools_jobs[key].role}-execution" in source
     tools = (REPO / "deploy" / "aws-platform-fit" / "tools.tf").read_text()
     assert 'role = "recon"' in tools and 'role = "grant"' in tools and 'role = "proof"' in tools
+
+
+# The provider canary at validate and run (7.9, 7.10) ------------------------------------
+
+
+def validate_and_run(setup, kit: FakeKit) -> None:
+    run_through(setup, kit, "run")
+
+
+def forged(monkeypatch, kit: FakeKit, change) -> None:
+    """Receipts as a later step reads them, with one link altered."""
+    import copy
+
+    receipts = kit.receipts
+
+    def altered() -> dict[str, dict[str, Any]]:
+        done = copy.deepcopy(receipts())
+        change(done)
+        return done
+
+    monkeypatch.setattr(kit, "receipts", altered)
+
+
+def refused_at_validate(setup, kit: FakeKit, reason: str) -> None:
+    calls = list(setup["world"].get("cli", []))
+    written = sorted((kit.work / "rendered").glob("*-manifest.json"))
+    setup["typed"].append("validate")
+    with pytest.raises(aws_07b.Refused, match=reason):
+        kit.run_step("validate", chain_head=head(kit))
+    assert setup["world"].get("cli", []) == calls, "release_cli ran"
+    assert sorted((kit.work / "rendered").glob("*-manifest.json")) == written, "a file was written"
+    assert "validate" not in kit.receipts()
+
+
+def test_a_named_canary_is_bound_through_validate_and_run_and_shown_to_the_operator(setup):
+    approval = canary_approval(setup)
+    kit = initialized_with(setup, approval)
+    provider_key_file(setup)
+    validate_and_run(setup, kit)
+    done = kit.receipts()
+    key = done["custodian"]["outputs"]["bundles"]["provider-key/worker"]
+    canary = json.loads(approval.read_text())
+    expected = {"canary_id": "local-provider-stub",
+                "canary_manifest_sha256": canary["canary_manifest_sha256"],
+                "key_version_id": key["version_id"],
+                "approval_sha256": hashlib.sha256(approval.read_bytes()).hexdigest()}  # fmt: skip
+    shown = (f"worker provider canary local-provider-stub, manifest "
+             f"{canary['canary_manifest_sha256']}, key version {key['version_id']}")  # fmt: skip
+    for step in ("validate", "run"):
+        assert done[step]["outputs"]["provider_canary"] == expected
+        assert shown in done[step]["commands"], step
+    # The approval fixed at init is the one the run names, through an unbroken chain from
+    # the init receipt to the run receipt at its head.
+    assert kit.record()["provider_approval"]["sha256"] == expected["approval_sha256"]
+    chain = kit.ledger.receipts()
+    assert chain[0][1]["step"] == "init" and chain[-1][1]["step"] == "run"
+    assert kit.ledger.head()[1] == chain[-1][2]
+    # The key itself reaches no receipt and no output, validate and run included.
+    assert "placeholder-provider-key" not in kit.out.getvalue()  # ty: ignore[unresolved-attribute]
+    for path in (kit.work / "receipts").iterdir():
+        assert "placeholder-provider-key" not in path.read_text()
+
+
+def test_a_release_without_a_canary_records_no_provider_and_unchanged_documents(setup):
+    kit = initialized(setup)
+    validate_and_run(setup, kit)
+    done = kit.receipts()
+    for step in ("validate", "run"):
+        assert done[step]["outputs"]["provider_canary"] is None
+        assert "worker: no provider" in done[step]["commands"]
+    document = json.loads(Path(done["validate"]["outputs"]["manifest"]).read_text())
+    bundles = done["custodian"]["outputs"]["bundles"]
+    # Every service reads exactly its environment and material bundles, as before.
+    for name in ("runtime", "api", "worker"):
+        assert document["services"][name]["secrets"] == [bundles[f"environment/{name}"],
+                                                         bundles[f"material/{name}"]]  # fmt: skip
+    approval = json.loads(Path(done["validate"]["outputs"]["approval"]).read_text())
+    assert set(approval) == {"schema_version", "kind", "release_id", "manifest_sha256",
+                             "environment", "account_id", "region", "milestone", "approved_by",
+                             "not_before", "not_after"}  # fmt: skip
+    assert approval["schema_version"] == 1 and approval["milestone"] == "operational-paused"
+    load_manifest(json.dumps(document).encode())
+    load_approval(json.dumps(approval).encode())
+
+
+def test_a_releases_input_naming_another_manifest_is_refused_at_validate(setup, monkeypatch):
+    kit = initialized_with(setup, canary_approval(setup))
+    provider_key_file(setup)
+    run_through(setup, kit, "session")
+
+    def change(done):
+        for release in done["releases"]["outputs"]["rendered"]["releases"].values():
+            release["model_provider"]["canary_manifest_sha256"] = "0" * 64
+
+    forged(monkeypatch, kit, change)
+    refused_at_validate(setup, kit, "releases input's provider is not the release record's")
+
+
+def test_custody_without_the_named_canarys_key_is_refused_at_validate(setup, monkeypatch):
+    kit = initialized_with(setup, canary_approval(setup))
+    provider_key_file(setup)
+    run_through(setup, kit, "session")
+    forged(monkeypatch, kit,
+           lambda done: done["custodian"]["outputs"]["bundles"].pop("provider-key/worker"))  # fmt: skip
+    refused_at_validate(setup, kit, "custody holds no provider key")
+
+
+def test_a_provider_key_in_custody_without_a_named_canary_is_refused_at_validate(
+    setup, monkeypatch
+):
+    kit = initialized(setup)
+    run_through(setup, kit, "session")
+    key = {"arn": "arn:aws:secretsmanager:us-east-1:111122223333:secret:"
+                  "sentry-staging/provider-key/worker-AbC123",
+           "version_id": "0b9f7c1e-4d2a-4f6b-9a3e-000000000000"}  # fmt: skip
+    forged(monkeypatch, kit,
+           lambda done: done["custodian"]["outputs"]["bundles"].update({"provider-key/worker": key}))  # fmt: skip
+    refused_at_validate(setup, kit, "custody holds a provider key, but the release names no canary")
+
+
+def test_a_canary_ending_before_the_release_window_is_refused_at_validate(setup):
+    # The canary stops two hours from now; the validated window runs about four.
+    now = aws_07b._now()
+    kit = initialized_with(setup, canary_approval(setup, now=now - aws_07b.timedelta(hours=10)))
+    provider_key_file(setup)
+    run_through(setup, kit, "session")
+    refused_at_validate(setup, kit, "ends at or before the release window")
+
+
+def test_a_canary_ending_exactly_at_the_window_end_is_refused(setup):
+    # Validate at a fixed clock: the window ends at not_before + 4 h = fixed + 3 h 59 min.
+    fixed = aws_07b._now() + aws_07b.timedelta(minutes=1)
+    window_end = fixed - aws_07b.timedelta(minutes=1) + render.WINDOW_LENGTH
+    kit = initialized_with(
+        setup, canary_approval(setup, now=window_end - aws_07b.timedelta(hours=12))
+    )
+    provider_key_file(setup)
+    run_through(setup, kit, "session")
+    later = setup["kit"](now=lambda: fixed)
+    refused_at_validate(setup, later, "ends at or before the release window")
+
+
+def test_a_canary_that_changes_after_validation_is_refused_at_run(setup, monkeypatch):
+    kit = initialized_with(setup, canary_approval(setup))
+    provider_key_file(setup)
+    run_through(setup, kit, "validate")
+
+    def change(done):
+        done["validate"]["outputs"]["provider_canary"]["key_version_id"] = "another-version"
+
+    forged(monkeypatch, kit, change)
+    calls = list(setup["world"].get("cli", []))
+    setup["typed"].append("run")
+    with pytest.raises(aws_07b.Refused, match="not the one validation recorded"):
+        kit.run_step("run", chain_head=head(kit), session_path=str(setup["operator"]))
+    assert setup["world"].get("cli", []) == calls and "run" not in kit.receipts()
+
+
+def test_a_canary_ending_one_second_after_the_window_end_validates(setup):
+    fixed = aws_07b._now() + aws_07b.timedelta(minutes=1)
+    window_end = fixed - aws_07b.timedelta(minutes=1) + render.WINDOW_LENGTH
+    after = window_end + aws_07b.timedelta(seconds=1) - aws_07b.timedelta(hours=12)
+    kit = initialized_with(setup, canary_approval(setup, now=after))
+    provider_key_file(setup)
+    run_through(setup, kit, "session")
+    later = setup["kit"](now=lambda: fixed)
+    setup["typed"].append("validate")
+    assert later.run_step("validate", chain_head=head(later)) == aws_07b.EXIT_OK
+    assert later.receipts()["validate"]["outputs"]["provider_canary"]["canary_id"] == (
+        "local-provider-stub"
+    )

@@ -35,8 +35,11 @@ from tests.release_fakes import FakeClock, FakeEcs, FakeEvidence, FakeLogs, Fake
 from tests.test_aws_07b_kit import (  # noqa: F401
     OPERATOR,
     FakeIam,
+    canary_approval,
     initialized,
+    initialized_with,
     no_sockets,
+    provider_key_file,
     run_through,
     setup,
     terraform_version,
@@ -165,6 +168,7 @@ class FakeRollbackKit(rollback.RollbackKit):
         return rig.clients(session.credentials, "us-east-1").client(service)
 
     def release_cli(self, args):
+        self.world.setdefault("cli", []).append(list(args))
         out = io.StringIO()
         rig: Rig = self.world["rig"]
         if args[0] == "validate":
@@ -185,8 +189,13 @@ REPLAN_CHANGES = [
 ]  # fmt: skip
 
 
-def rollback_world(setup) -> tuple[dict[str, Any], dict, dict, Path, Path, Path]:
-    kit = initialized(setup)
+def rollback_world(setup, canary_now=None,
+                   provider: bool = False) -> tuple[dict[str, Any], dict, dict, Path, Path, Path]:  # fmt: skip
+    if provider:
+        kit = initialized_with(setup, canary_approval(setup, now=canary_now))
+        provider_key_file(setup)
+    else:
+        kit = initialized(setup)
     run_through(setup, kit, "detach")
     done = kit.receipts()
     prior = json.loads(Path(done["validate"]["outputs"]["manifest"]).read_text())
@@ -234,9 +243,10 @@ def prior_head(setup) -> str | None:
                   plan_sha256=setup["hash"]).head()[1]  # fmt: skip
 
 
-def rollback_kit(setup, world) -> FakeRollbackKit:
+def rollback_kit(setup, world, **options: Any) -> FakeRollbackKit:
     return FakeRollbackKit(setup["plan"], setup["tmp"] / "rollback-work", world=world,
-                           out=io.StringIO(), prompt=lambda _text: setup["typed"].pop(0))  # fmt: skip
+                           out=io.StringIO(), prompt=lambda _text: setup["typed"].pop(0),
+                           **options)  # fmt: skip
 
 
 def test_the_rollback_kit_restores_the_prior_pair_and_proves_no_failed_writer_runs(setup):
@@ -468,3 +478,243 @@ def test_the_check_fails_when_ecs_cannot_describe_a_listed_task(setup, monkeypat
     assert kit.run_step("check", session_path=operator, chain_head=kit.ledger.head()[1]) == 3
     failed, _ = kit.ledger.head()
     assert failed is not None and "could not describe" in failed["detail"]
+
+
+# The prior release's provider canary through a rollback (R1-C2) -------------------------
+
+
+def rollback_until(setup, world, failed_path, failed_input, decision, last: str,
+                   **options: Any) -> FakeRollbackKit:  # fmt: skip
+    """A rollback begun and run through ``last``; the fake records each CLI call."""
+    kit = rollback_kit(setup, world, **options)
+    setup["typed"].append("init")
+    assert kit.begin(prior_work=setup["tmp"] / "work", failed_manifest=failed_path,
+                     failed_release_input=failed_input, decision=decision,
+                     prior_chain_head=prior_head(setup)) == 0  # fmt: skip
+    deployer, operator = str(setup["deployer"]), str(setup["operator"])
+    for step, session, typed in (("replan", deployer, 2), ("attach", deployer, 1),
+                                 ("render", None, 1), ("validate", None, 1),
+                                 ("run", operator, 1)):  # fmt: skip
+        if step == "run":
+            document = json.loads(Path(kit.receipts()["render"]["outputs"]["manifest"]).read_text())
+            world["rig"].configure(document)
+            world["arn"] = (
+                f"arn:aws:sts::111122223333:assumed-role/sentry-staging-operator/{OPERATOR}"
+            )
+        setup["typed"].extend([step] * typed)
+        assert (
+            kit.run_step(step, session_path=session, chain_head=kit.ledger.head()[1]) == 0
+        ), kit.out.getvalue()  # ty: ignore[unresolved-attribute]
+        if step == last:
+            return kit
+    return kit
+
+
+def prior_binding(setup) -> dict[str, str]:
+    from release_kits.ledger import Ledger
+
+    chain = Ledger(setup["tmp"] / "work" / "receipts", kit="aws-07b", plan_sha256=setup["hash"])
+    done = {document["step"]: document for _, document, _ in chain.receipts()}
+    return done["validate"]["outputs"]["provider_canary"]
+
+
+def test_a_rollback_keeps_the_prior_releases_canary_key_and_registered_worker(setup):
+    world, prior, _failed, failed_path, failed_input, decision = rollback_world(
+        setup, provider=True
+    )
+    kit = rollback_until(setup, world, failed_path, failed_input, decision, "run")
+    expected = prior_binding(setup)
+    assert expected is not None and expected["canary_id"] == "local-provider-stub"
+    done = kit.receipts()
+    for step in ("render", "validate", "run"):
+        assert done[step]["outputs"]["provider_canary"] == expected, step
+        assert render.describe_provider(expected) in done[step]["commands"], step
+    document = json.loads(Path(done["render"]["outputs"]["manifest"]).read_text())
+    worker = document["services"]["worker"]
+    assert worker["task_definition"] == prior["services"]["worker"]["task_definition"]
+    assert worker["secrets"][-1]["version_id"] == expected["key_version_id"]
+    assert worker["secrets"] == prior["services"]["worker"]["secrets"]
+    assert kit.record()["prior_provider_canary"] == {
+        key: expected[key] for key in ("canary_id", "canary_manifest_sha256", "approval_sha256")
+    }
+    # The retained release itself is unchanged: its registered definitions are the prior's.
+    prior_key = render.release_key(kit.record()["prior_release_id"])
+    replanned = done["replan"]["outputs"]["terraform"]["releases"][prior_key]
+    assert (
+        replanned["definitions_sha256"]
+        == world["replanned"]["releases"][prior_key]["definitions_sha256"]
+        == kit.prior()["releases"]["outputs"]["terraform"]["releases"][prior_key][
+            "definitions_sha256"
+        ]
+    )
+
+
+def test_a_rollback_of_a_release_without_a_canary_records_no_provider(setup):
+    world, _prior, _failed, failed_path, failed_input, decision = rollback_world(setup)
+    kit = rollback_until(setup, world, failed_path, failed_input, decision, "run")
+    done = kit.receipts()
+    assert kit.record()["prior_provider_canary"] is None
+    for step in ("render", "validate", "run"):
+        assert done[step]["outputs"]["provider_canary"] is None
+        assert "worker: no provider" in done[step]["commands"]
+    for name in ("manifest", "approval"):
+        assert "provider-key" not in Path(done["render"]["outputs"][name]).read_text()
+
+
+def refused_at_render(setup, kit: FakeRollbackKit, reason: str) -> None:
+    written = sorted((kit.work / "rendered").glob("*-manifest.json"))
+    setup["typed"].append("render")
+    with pytest.raises(rollback.Refused, match=reason):
+        kit.run_step("render", chain_head=kit.ledger.head()[1])
+    assert sorted((kit.work / "rendered").glob("*-manifest.json")) == written, "a file was written"
+    assert "render" not in kit.receipts() and kit.world.get("cli", []) == []
+
+
+def test_a_prior_canary_ending_before_the_rollback_window_is_refused_at_render(setup):
+    # The prior canary stops five hours from now; a rollback rendered two hours from now
+    # would run until about six.
+    now = aws_07b_now()
+    world, _prior, _failed, failed_path, failed_input, decision = rollback_world(
+        setup, canary_now=now - rollback.aws_07b.timedelta(hours=7), provider=True)  # fmt: skip
+    begun_kit = rollback_until(setup, world, failed_path, failed_input, decision, "attach")
+    later = rollback_kit(setup, world, now=lambda: now + rollback.aws_07b.timedelta(hours=2))
+    assert later.ledger.head() == begun_kit.ledger.head()
+    refused_at_render(setup, later, "ends at or before the release window")
+
+
+def forged_prior(monkeypatch, kit: FakeRollbackKit, change) -> None:
+    prior = kit.prior
+
+    def altered() -> dict[str, dict[str, Any]]:
+        done = copy.deepcopy(prior())
+        change(done)
+        return done
+
+    monkeypatch.setattr(kit, "prior", altered)
+
+
+def test_a_prior_releases_input_naming_another_manifest_is_refused_at_render(setup, monkeypatch):
+    world, _prior, _failed, failed_path, failed_input, decision = rollback_world(
+        setup, provider=True
+    )
+    kit = rollback_until(setup, world, failed_path, failed_input, decision, "attach")
+
+    def change(done):
+        for release in done["releases"]["outputs"]["rendered"]["releases"].values():
+            release["model_provider"]["canary_manifest_sha256"] = "0" * 64
+
+    forged_prior(monkeypatch, kit, change)
+    refused_at_render(setup, kit, "releases input's provider is not the release record's")
+
+
+def test_a_prior_custody_without_the_canarys_key_is_refused_at_render(setup, monkeypatch):
+    world, _prior, _failed, failed_path, failed_input, decision = rollback_world(
+        setup, provider=True
+    )
+    kit = rollback_until(setup, world, failed_path, failed_input, decision, "attach")
+    forged_prior(monkeypatch, kit,
+                 lambda done: done["custodian"]["outputs"]["bundles"].pop("provider-key/worker"))  # fmt: skip
+    refused_at_render(setup, kit, "custody holds no provider key")
+
+
+def forged_render(monkeypatch, kit: FakeRollbackKit) -> None:
+    receipts = kit.receipts
+
+    def altered() -> dict[str, dict[str, Any]]:
+        done = copy.deepcopy(receipts())
+        done["render"]["outputs"]["provider_canary"]["key_version_id"] = "another-version"
+        return done
+
+    monkeypatch.setattr(kit, "receipts", altered)
+
+
+def test_a_forged_render_receipt_is_refused_at_validate_before_release_cli(setup, monkeypatch):
+    world, _prior, _failed, failed_path, failed_input, decision = rollback_world(
+        setup, provider=True
+    )
+    kit = rollback_until(setup, world, failed_path, failed_input, decision, "render")
+    forged_render(monkeypatch, kit)
+    setup["typed"].append("validate")
+    with pytest.raises(rollback.Refused, match="render receipt's provider canary"):
+        kit.run_step("validate", chain_head=kit.ledger.head()[1])
+    assert world.get("cli", []) == [] and "validate" not in kit.receipts()
+
+
+def test_a_forged_render_receipt_is_refused_at_run_before_release_cli(setup, monkeypatch):
+    world, _prior, _failed, failed_path, failed_input, decision = rollback_world(
+        setup, provider=True
+    )
+    kit = rollback_until(setup, world, failed_path, failed_input, decision, "validate")
+    assert [call[0] for call in world["cli"]] == ["validate"]
+    forged_render(monkeypatch, kit)
+    world["arn"] = f"arn:aws:sts::111122223333:assumed-role/sentry-staging-operator/{OPERATOR}"
+    setup["typed"].append("run")
+    with pytest.raises(rollback.Refused, match="render receipt's provider canary"):
+        kit.run_step("run", session_path=str(setup["operator"]), chain_head=kit.ledger.head()[1])
+    assert [call[0] for call in world["cli"]] == ["validate"], "release_cli run was invoked"
+    assert not [document for _, document, _ in kit.ledger.receipts() if document["step"] == "run"]
+
+
+def aws_07b_now():
+    return rollback.aws_07b._now()
+
+
+def test_a_replan_receipt_naming_other_prior_definitions_is_refused_at_render(setup, monkeypatch):
+    world, _prior, _failed, failed_path, failed_input, decision = rollback_world(
+        setup, provider=True
+    )
+    kit = rollback_until(setup, world, failed_path, failed_input, decision, "attach")
+    receipts = kit.receipts
+
+    def altered() -> dict[str, dict[str, Any]]:
+        done = copy.deepcopy(receipts())
+        for release in done["replan"]["outputs"]["terraform"]["releases"].values():
+            release["definitions_sha256"] = "0" * 64
+        return done
+
+    monkeypatch.setattr(kit, "receipts", altered)
+    refused_at_render(setup, kit, "changed the prior release's registered definitions")
+
+
+def test_a_rollback_without_a_canary_writes_exactly_what_the_unchanged_builders_render(setup):
+    # At a fixed clock the rendered files are the rollback manifest builder's and the
+    # approval renderer's output, byte for byte: the provider checks add nothing to them.
+    fixed = aws_07b_now()
+    world, _prior, failed, failed_path, failed_input, decision = rollback_world(setup)
+    kit = rollback_until(setup, world, failed_path, failed_input, decision, "render",
+                         now=lambda: fixed)  # fmt: skip
+    done = kit.receipts()
+    prior = kit.prior()
+    replan = done["replan"]["outputs"]
+    release = replan["terraform"]["releases"][render.release_key(kit.record()["prior_release_id"])]
+    prior_manifest = json.loads(Path(prior["validate"]["outputs"]["manifest"]).read_text())
+    document = rollback.rollback_manifest(
+        setup["plan"], kit.record(), prior, prior_manifest, failed, release,
+        plan_sha256=replan["plan_file_sha256"],
+        not_before=fixed - rollback.aws_07b.timedelta(minutes=1),
+    )  # fmt: skip
+    rendered = done["render"]["outputs"]
+    assert Path(rendered["manifest"]).read_text() == json.dumps(document, indent=2) + "\n"
+    approval = render.approval(setup["plan"], document)
+    assert Path(rendered["approval"]).read_text() == json.dumps(approval, indent=2) + "\n"
+    assert rendered["provider_canary"] is None
+
+
+@pytest.mark.parametrize("seconds, refused", [(0, True), (1, False)])
+def test_a_prior_canary_must_end_strictly_after_the_rollback_window(setup, seconds, refused):
+    # Render at a fixed clock two hours on: its window ends at fixed - 1 min + 4 h.
+    fixed = aws_07b_now() + rollback.aws_07b.timedelta(hours=2)
+    window_end = fixed - rollback.aws_07b.timedelta(minutes=1) + render.WINDOW_LENGTH
+    ends = window_end + rollback.aws_07b.timedelta(seconds=seconds)
+    world, _prior, _failed, failed_path, failed_input, decision = rollback_world(
+        setup, canary_now=ends - rollback.aws_07b.timedelta(hours=12), provider=True)  # fmt: skip
+    rollback_until(setup, world, failed_path, failed_input, decision, "attach")
+    later = rollback_kit(setup, world, now=lambda: fixed)
+    if refused:
+        refused_at_render(setup, later, "ends at or before the release window")
+        return
+    setup["typed"].append("render")
+    assert later.run_step("render", chain_head=later.ledger.head()[1]) == 0
+    assert later.receipts()["render"]["outputs"]["provider_canary"]["canary_id"] == (
+        "local-provider-stub"
+    )

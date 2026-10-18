@@ -73,6 +73,19 @@ deadline they were planned with, the run holds at its first job and a rollback
 needs a new release key planned from the prior pair's images, a separate
 approval.
 
+A retained release keeps its worker's provider canary. `init` records the prior
+release's canary (its id, manifest hash and approval hash), or none, from that
+release's own AWS-07b record, and shows its id and manifest hash. `render` refuses before writing
+anything unless the prior record, its releases input, its custody and the rollback
+manifest's worker secrets still name that canary and key version, the re-plan left
+the prior release's `definitions_sha256` unchanged, and the canary's `not_after` is
+strictly later than the rollback window's end. `validate` and `run` check the
+render receipt's `provider_canary` against the prior release again before
+`release_cli` is given the files, and the confirmations and receipts name it as in
+AWS-07b. A canary that ends first stops the rollback at `render`; no retained
+release, deadline or budget is changed to make it pass, and a new release key with
+its own canary is a separate approval.
+
 ## Proven on the platform only
 
 - The re-plan against the real releases state (the slot swap as a real plan,
