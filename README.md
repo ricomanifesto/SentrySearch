@@ -9,7 +9,7 @@
 
 SentrySearch researches a malware family, attack tool, or exposed technology and saves the result as a source-backed threat profile.
 
-**[Open SentrySearch](https://sentry-search.vercel.app)**
+**[Open SentrySearch](https://sentrysearch.ricomanifesto.com)**
 
 ## What You Can Do
 
