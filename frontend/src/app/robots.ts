@@ -18,7 +18,7 @@ export default function robots(): MetadataRoute.Robots {
         "/settings",
       ],
     },
-    sitemap: "https://sentry-search.vercel.app/sitemap.xml",
-    host: "https://sentry-search.vercel.app",
+    sitemap: "https://sentrysearch.ricomanifesto.com/sitemap.xml",
+    host: "https://sentrysearch.ricomanifesto.com",
   };
 }

@@ -129,6 +129,7 @@ app.add_middleware(
         "http://localhost:3000",
         "http://localhost:3003",
         "https://sentry-search.vercel.app",
+        "https://sentrysearch.ricomanifesto.com",
     ],
     allow_origin_regex=r"https://[a-zA-Z0-9-]+\.vercel\.app",
     allow_credentials=True,

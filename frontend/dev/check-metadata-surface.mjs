@@ -16,17 +16,17 @@ const expectations = [
   {
     name: 'uses the live application URL as metadata base',
     source: layout,
-    pattern: /metadataBase:\s*new URL\("https:\/\/sentry-search\.vercel\.app"\)/,
+    pattern: /metadataBase:\s*new URL\("https:\/\/sentrysearch\.ricomanifesto\.com"\)/,
   },
   {
     name: 'uses the live application URL as canonical',
     source: layout,
-    pattern: /alternates:\s*\{[\s\S]*canonical:\s*"https:\/\/sentry-search\.vercel\.app\/"[\s\S]*\}/,
+    pattern: /alternates:\s*\{[\s\S]*canonical:\s*"https:\/\/sentrysearch\.ricomanifesto\.com\/"[\s\S]*\}/,
   },
   {
     name: 'uses the live application URL in Open Graph metadata',
     source: layout,
-    pattern: /openGraph:\s*\{[\s\S]*url:\s*"https:\/\/sentry-search\.vercel\.app\/"[\s\S]*\}/,
+    pattern: /openGraph:\s*\{[\s\S]*url:\s*"https:\/\/sentrysearch\.ricomanifesto\.com\/"[\s\S]*\}/,
   },
   {
     name: 'links metadata authorship to Michael Rico',
@@ -61,7 +61,7 @@ const expectations = [
   {
     name: 'serves an origin-level crawler policy',
     source: robots,
-    pattern: /sitemap:\s*['"]https:\/\/sentry-search\.vercel\.app\/sitemap\.xml['"]/,
+    pattern: /sitemap:\s*['"]https:\/\/sentrysearch\.ricomanifesto\.com\/sitemap\.xml['"]/,
   },
   {
     name: 'allows the public sample route',
@@ -76,12 +76,12 @@ const expectations = [
   {
     name: 'includes the public landing page in the sitemap',
     source: sitemap,
-    pattern: /url:\s*['"]https:\/\/sentry-search\.vercel\.app\/['"]/,
+    pattern: /url:\s*['"]https:\/\/sentrysearch\.ricomanifesto\.com\/['"]/,
   },
   {
     name: 'includes the public sample in the sitemap',
     source: sitemap,
-    pattern: /url:\s*['"]https:\/\/sentry-search\.vercel\.app\/sample['"]/,
+    pattern: /url:\s*['"]https:\/\/sentrysearch\.ricomanifesto\.com\/sample['"]/,
   },
 ];
 

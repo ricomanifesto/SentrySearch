@@ -30,6 +30,35 @@ def read_text(relative_path: str) -> str:
     return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize(
+    ("origin", "status"),
+    [
+        ("https://sentrysearch.ricomanifesto.com", 200),
+        ("https://sentry-search.vercel.app", 200),
+        ("https://sentrysearch.ricomanifesto.com.example.org", 400),
+    ],
+)
+def test_production_origin_preflights(origin, status):
+    async def preflight():
+        async with AsyncClient(
+            transport=ASGITransport(app=api_main.app), base_url="http://test"
+        ) as client:
+            return await client.options(
+                "/api/reports",
+                headers={
+                    "Origin": origin,
+                    "Access-Control-Request-Method": "GET",
+                    "Access-Control-Request-Headers": "authorization,content-type",
+                },
+            )
+
+    response = asyncio.run(preflight())
+    assert response.status_code == status
+    assert response.headers.get("access-control-allow-origin") == (
+        origin if status == 200 else None
+    )
+
+
 def test_configure_local_environment_sets_harmless_defaults(monkeypatch):
     defaults = {
         "DB_HOST": "localhost",

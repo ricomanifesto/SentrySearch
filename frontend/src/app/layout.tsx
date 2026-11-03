@@ -11,7 +11,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://sentry-search.vercel.app"),
+  metadataBase: new URL("https://sentrysearch.ricomanifesto.com"),
   title: "SentrySearch | Threat Intelligence Research Workspace",
   description: "SentrySearch turns scattered threat research into source-backed security profiles for malware, attack tools, and targeted technologies, with persistent reports, report-library search, and detection guidance in one workspace.",
   keywords: ["threat intelligence", "cybersecurity", "AI", "malware analysis", "security research"],
@@ -19,7 +19,7 @@ export const metadata: Metadata = {
   creator: "Michael Rico",
   publisher: "Rico Manifesto",
   alternates: {
-    canonical: "https://sentry-search.vercel.app/",
+    canonical: "https://sentrysearch.ricomanifesto.com/",
   },
   robots: {
     index: true,
@@ -28,7 +28,7 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     locale: "en_US",
-    url: "https://sentry-search.vercel.app/",
+    url: "https://sentrysearch.ricomanifesto.com/",
     title: "SentrySearch | Threat Intelligence Research Workspace",
     description: "SentrySearch turns scattered threat research into source-backed security profiles, persistent reports, report-library search, and detection guidance.",
     siteName: "SentrySearch",
@@ -53,7 +53,7 @@ const structuredData = {
   "@context": "https://schema.org",
   "@type": "WebApplication",
   name: "SentrySearch",
-  url: "https://sentry-search.vercel.app/",
+  url: "https://sentrysearch.ricomanifesto.com/",
   description:
     "SentrySearch turns scattered threat research into source-backed security profiles for malware, attack tools, and targeted technologies, with persistent reports, report-library search, and detection guidance in one workspace.",
   applicationCategory: "SecurityApplication",
