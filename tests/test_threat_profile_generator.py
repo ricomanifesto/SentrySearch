@@ -3,9 +3,11 @@ import json
 from threading import Barrier
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
+from src.core.openrouter_client import ModelClient
 from src.core.section_validator import SectionValidator
 from src.core.parallel_section_validator import ParallelSectionValidator
 from src.core.markdown_generator import generate_markdown
@@ -18,6 +20,7 @@ from src.core.threat_profile_schema import (
     EmbeddedEvidenceCorrection,
     ThreatProfile,
     attest_profile_sources,
+    parse_embedded_evidence_correction,
     parse_threat_profile_response,
 )
 from src.core.source_ledger import CLAIM_CLASS_SELECTORS
@@ -113,6 +116,31 @@ def test_evidence_correction_schema_requires_each_claim_class(threat_profile_dat
         incomplete.pop(field)
         with pytest.raises(ValidationError):
             EmbeddedEvidenceCorrection.model_validate(incomplete)
+
+
+@pytest.mark.parametrize(
+    ("item", "field", "value", "error_type"),
+    [
+        ("riskFactor", "evidenceRole", "direct", "literal_error"),
+        ("riskFactor", "claimField", "risk", "extra_forbidden"),
+        ("forensicArtifact", "claimField", "name", "literal_error"),
+        ("detectionIndicator", "claimField", "description", "literal_error"),
+        ("mitigationAction", "claimField", "remediation", "literal_error"),
+    ],
+)
+def test_evidence_correction_rejects_invented_labels(
+    threat_profile_data, item, field, value, error_type
+):
+    correction = generated_evidence_correction(generated_embedded_profile(threat_profile_data))
+    correction[item][field] = value
+    response = SimpleNamespace(content=[SimpleNamespace(type="text", text=json.dumps(correction))])
+
+    with pytest.raises(ValidationError) as exc:
+        parse_embedded_evidence_correction(response)
+
+    assert [(error["loc"], error["type"]) for error in exc.value.errors()] == [
+        ((item, field), error_type)
+    ]
 
 
 def test_structured_profile_defaults_absent_optional_references(threat_profile_data):
@@ -910,6 +938,66 @@ def test_generation_retries_one_invalid_embedded_item_without_weakening_attestat
     assert aggregate_response.usage.output_tokens == 44
     assert aggregate_response.usage.web_search_calls == 1
     assert aggregate_response.usage.total_tokens == 67
+
+
+def test_generation_sends_canonical_evidence_correction_schema_in_json_mode(
+    monkeypatch, threat_profile_data
+):
+    source_url = "https://research.vendor-security.com/report"
+    profile = generated_embedded_profile(threat_profile_data)
+    profile["webSearchSources"]["primarySources"][0].update(
+        {"url": source_url, "domain": "research.vendor-security.com"}
+    )
+    profile["referencesAndIntelligenceSharing"]["sources"][0]["url"] = source_url
+    profile["operationalGuidance"]["communityResources"][0]["url"] = source_url
+    correction = generated_evidence_correction(profile)
+    profile["threatIntelligence"]["riskAssessment"]["riskFactors"][0]["supportingEvidence"] = []
+
+    payloads = iter((profile, correction))
+    requests = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": json.dumps(next(payloads))},
+                    }
+                ]
+            },
+        )
+
+    client = ModelClient(api_key="test-key", transport=httpx.MockTransport(respond))
+    monkeypatch.setattr("src.core.threat_profile_generator.create_model_client", lambda: client)
+    generator = ThreatProfileGenerator(enable_tracing=False, enable_metrics=False)
+    generator.enable_quality_control = False
+    research_response = SimpleNamespace(
+        content=[SimpleNamespace(type="text", text="Attested threat research")],
+        web_search_sources=[{"url": source_url, "title": "Vendor report"}],
+        usage=SimpleNamespace(),
+    )
+    monkeypatch.setattr(generator, "_research_evidence", lambda _tool_name: research_response)
+
+    result = generator.get_threat_intelligence("Example Threat")
+
+    assert result["evidenceAdmissibility"]["status"] == "passed"
+    assert result["threatIntelligence"]["riskAssessment"]["riskFactors"] == ["Remote access"]
+    assert len(requests) == 2
+    correction_request = requests[1]
+    assert correction_request["response_format"] == {"type": "json_object"}
+    correction_text = correction_request["messages"][0]["content"][0]["text"]
+    _, marker, schema_and_catalog = correction_text.partition(
+        "\nBEGIN EVIDENCE CORRECTION JSON SCHEMA\n"
+    )
+    assert marker, "JSON mode must send the canonical correction schema in the model prompt"
+    schema_text, end_marker, _ = schema_and_catalog.partition(
+        "\nEND EVIDENCE CORRECTION JSON SCHEMA\n"
+    )
+    assert end_marker
+    assert json.loads(schema_text) == EmbeddedEvidenceCorrection.model_json_schema()
 
 
 def test_generation_discards_legacy_claim_when_embedded_class_coverage_remains(
