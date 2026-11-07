@@ -61,7 +61,7 @@ and the existing JSONB columns stay populated during this transition.
 | Object | Contents |
 | --- | --- |
 | `reports.reader_state_version`, `eligible_for_judgment`, `eligible_for_acceptance`, `eligible_for_handoff` | Derived reader state alongside `review_status` |
-| `report_sources` | Cited primary sources with snapshot fingerprint and source purpose |
+| `report_sources` | Cited primary sources: identity, display fields, snapshot fingerprint and capture metadata, source purpose |
 | `report_claims` | One row per high-risk claim: stable `claim_id`, class, field, `ordinal` (the legacy `claimIndex`), value, evidence role |
 | `report_claim_support` | Verbatim support excerpt per claim and source, with snapshot SHA-256 and verification state |
 | `report_indicator_observations` | Deterministic infrastructure decisions, linked to a claim when one survives |

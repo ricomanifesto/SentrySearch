@@ -200,3 +200,16 @@ def test_revision_two_only_adds_objects():
             line for line in statement.splitlines() if not line.strip().startswith("--")
         ).strip()
         assert " ".join(code.upper().split()).startswith(allowed), code
+
+
+def test_source_rows_keep_every_reader_field():
+    profile = build_threat_profile_data()
+
+    [source] = profile_rows(profile).sources
+
+    assert source["access_date"] == "2026-08-11"
+    assert source["relevance_score"] == "High"
+    assert source["content_type"] == "Report"
+    assert source["key_findings"] == "Observed behavior and mitigations."
+    assert source["snapshot_captured_at"] == "2026-08-15T12:00:00+00:00"
+    assert source["snapshot_final_url"] is None
