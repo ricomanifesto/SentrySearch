@@ -26,12 +26,18 @@ class SourceSnapshotError(ValueError):
     """Raised when a source cannot be captured within the safety boundary."""
 
 
+class _TextLimitReached(Exception):
+    """Stops parsing once the retained text prefix can no longer change."""
+
+
 class _VisibleTextParser(HTMLParser):
     """Extract human-visible text without accepting document instructions."""
 
-    def __init__(self) -> None:
+    def __init__(self, text_limit: int | None = None) -> None:
         super().__init__(convert_charrefs=True)
         self._ignored_depth = 0
+        self._text_limit = text_limit
+        self._text_length = -1
         self.parts: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -45,19 +51,33 @@ class _VisibleTextParser(HTMLParser):
     def handle_data(self, data: str) -> None:
         if not self._ignored_depth and data.strip():
             self.parts.append(data)
+            if self._text_limit is not None:
+                # Parts are joined by one space and never merge, so later data
+                # cannot change text already past the limit.
+                self._text_length += 1 + len(_normalized_text(data))
+                if self._text_length >= self._text_limit:
+                    raise _TextLimitReached
 
 
 def _normalized_text(value: str) -> str:
     return " ".join(value.split())
 
 
-def visible_source_text(value: str) -> str:
-    """Normalize HTML text using the same parser as captured evidence."""
+def visible_source_text(value: str, *, limit: int | None = None) -> str:
+    """Normalize HTML text using the same parser as captured evidence.
 
-    parser = _VisibleTextParser()
-    parser.feed(value)
-    parser.close()
-    return _normalized_text(" ".join(parser.parts))
+    With ``limit``, return only the first ``limit`` characters, and stop parsing
+    as soon as they are final instead of parsing the rest of the document.
+    """
+
+    parser = _VisibleTextParser(limit)
+    try:
+        parser.feed(value)
+        parser.close()
+    except _TextLimitReached:
+        pass
+    text = _normalized_text(" ".join(parser.parts))
+    return text if limit is None else text[:limit]
 
 
 def _github_raw_url(url: str) -> str:
@@ -115,7 +135,7 @@ def _response_text(response: httpx.Response, body: bytes) -> str:
     encoding = response.encoding or "utf-8"
     decoded = body.decode(encoding, errors="replace")
     if "html" in content_type or "<html" in decoded[:500].casefold():
-        decoded = visible_source_text(decoded)
+        decoded = visible_source_text(decoded, limit=MAX_SNAPSHOT_TEXT)
     return _normalized_text(decoded)[:MAX_SNAPSHOT_TEXT]
 
 

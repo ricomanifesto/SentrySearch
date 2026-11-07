@@ -3,10 +3,13 @@ import socket
 
 import httpx
 
+from src.core import source_snapshot
 from src.core.source_snapshot import (
     MAX_SNAPSHOT_BYTES,
+    MAX_SNAPSHOT_TEXT,
     capture_source_snapshot,
     capture_source_snapshots,
+    visible_source_text,
 )
 
 
@@ -36,6 +39,42 @@ def test_source_snapshot_captures_visible_text_and_fingerprint(monkeypatch):
     assert snapshot["text"] == "Observed Noodle RAT behavior."
     assert len(snapshot["sha256"]) == 64
     assert snapshot["pageAge"] == "2026-08-14"
+
+
+LONG_HTML = (
+    "<html><body>"
+    + "".join(
+        f"<p>Note {index}: 3<5 &amp; x<y&#93;</p><script>no {index}</script><!-- c -->"
+        f"<svg><text>hidden</text></svg>\u00a0tail&notanentity; {index}<br>"
+        for index in range(3000)
+    )
+    + "</body></html>"
+)
+
+
+def test_limited_visible_text_is_the_full_extraction_prefix():
+    full = visible_source_text(LONG_HTML)
+
+    for limit in (0, 1, 17, 1000, MAX_SNAPSHOT_TEXT, len(full) - 1, len(full), len(full) + 1):
+        assert visible_source_text(LONG_HTML, limit=limit) == full[:limit]
+
+
+def test_limited_visible_text_stops_parsing_once_the_prefix_is_final(monkeypatch):
+    seen = []
+    handle_data = source_snapshot._VisibleTextParser.handle_data
+
+    def counting(parser, data):
+        seen.append(data)
+        handle_data(parser, data)
+
+    monkeypatch.setattr(source_snapshot._VisibleTextParser, "handle_data", counting)
+    visible_source_text(LONG_HTML)
+    full_count = len(seen)
+    seen.clear()
+
+    visible_source_text(LONG_HTML, limit=1000)
+
+    assert 0 < len(seen) < full_count / 10
 
 
 def test_owned_snapshot_clients_share_one_verification_context(monkeypatch):
