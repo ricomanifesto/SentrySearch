@@ -3,13 +3,29 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 import json
 import logging
 import re
 from typing import Any, Iterable, Mapping
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 from src.core.generation_failures import EvidenceCoverageError
+from src.core.profile_tables import (
+    CLAIM_FIELDS,
+    AttributionRow,
+    ClaimRow,
+    ClaimSupportRow,
+    ProfileTables,
+    flatten,
+    item_text,
+    render,
+    resolve_selector,
+    with_attribution,
+    with_claims,
+    write_back,
+)
+from src.core.source_urls import canonical_source_url
 from src.domain.reports import (
     ClaimAttributionStatus,
     EvidenceAdmissibilityStatus,
@@ -43,32 +59,10 @@ CLAIM_CLASS_SECTIONS = {
     "detection_indicator": "detectionAndMitigation",
     "mitigation_action": "mitigationAndResponse",
 }
-CLAIM_CLASS_SELECTORS = {
-    "threat_activity": {
-        "riskFactors": ("threatIntelligence", "riskAssessment", "riskFactors"),
-    },
-    "forensic_artifact": {
-        "fileSystemArtifacts": ("forensicArtifacts", "fileSystemArtifacts"),
-        "registryArtifacts": ("forensicArtifacts", "registryArtifacts"),
-        "networkArtifacts": ("forensicArtifacts", "networkArtifacts"),
-        "memoryArtifacts": ("forensicArtifacts", "memoryArtifacts"),
-        "logArtifacts": ("forensicArtifacts", "logArtifacts"),
-    },
-    "detection_indicator": {
-        "hashes": ("detectionAndMitigation", "iocs", "hashes"),
-        "domains": ("detectionAndMitigation", "iocs", "domains"),
-        "ips": ("detectionAndMitigation", "iocs", "ips"),
-        "urls": ("detectionAndMitigation", "iocs", "urls"),
-        "filenames": ("detectionAndMitigation", "iocs", "filenames"),
-        "behavioralIndicators": ("detectionAndMitigation", "behavioralIndicators"),
-    },
-    "mitigation_action": {
-        "preventiveMeasures": ("mitigationAndResponse", "preventiveMeasures"),
-        "detectionMethods": ("mitigationAndResponse", "detectionMethods"),
-        "responseActions": ("mitigationAndResponse", "responseActions"),
-        "recoveryGuidance": ("mitigationAndResponse", "recoveryGuidance"),
-    },
-}
+# Derived from the single claim-field table so every consumer shares one order.
+CLAIM_CLASS_SELECTORS: dict[str, dict[str, tuple[str, ...]]] = {}
+for _claim_class, _claim_field, _field_path in CLAIM_FIELDS:
+    CLAIM_CLASS_SELECTORS.setdefault(_claim_class, {})[_claim_field] = _field_path
 
 
 _MARKDOWN_LINK = re.compile(r"\]\((https?://[^)\s]+)\)")
@@ -139,13 +133,10 @@ def _bounded_support_excerpt(claim: str, excerpt: str) -> str:
 
 
 def _normalized_http_url(value: object) -> str:
-    candidate = str(value or "").strip()
-    parsed = urlsplit(candidate)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    url = canonical_source_url(value)
+    if not url:
         raise SourceLedgerError("Source ledger contains a non-HTTP URL")
-    return urlunsplit(
-        (parsed.scheme.lower(), parsed.netloc.lower(), parsed.path or "", parsed.query, "")
-    )
+    return url
 
 
 def canonical_source_urls(sources: Iterable[Mapping[str, Any]]) -> tuple[str, ...]:
@@ -179,91 +170,72 @@ def attach_source_ids(sources: Iterable[Mapping[str, Any]]) -> list[dict[str, An
     return identified
 
 
-def _selected_claim_value(profile: Mapping[str, Any], claim: Mapping[str, Any]) -> str:
-    claim_class = str(claim.get("claimClass") or "")
-    claim_field = str(claim.get("claimField") or "")
-    claim_index = claim.get("claimIndex")
-    field_path = CLAIM_CLASS_SELECTORS.get(claim_class, {}).get(claim_field)
-    if field_path is None or isinstance(claim_index, bool) or not isinstance(claim_index, int):
+def _selected_claim_text(tables: ProfileTables, record: AttributionRow) -> str:
+    row = resolve_selector(tables, record.claim_class, record.claim_field, record.claim_index)
+    if row is None:
         raise SourceLedgerError("Current claim attribution selector is invalid")
-
-    selected: Any = profile
-    for field_name in field_path:
-        if not isinstance(selected, Mapping):
-            raise SourceLedgerError("Current claim attribution selector is invalid")
-        selected = selected.get(field_name)
-    if not isinstance(selected, list) or claim_index < 0 or claim_index >= len(selected):
-        raise SourceLedgerError("Current claim attribution selector is invalid")
-    claim_text = str(selected[claim_index] or "").strip()
+    claim_text = item_text(row.raw)
     if not claim_text:
         raise SourceLedgerError("Current claim attribution selector is invalid")
     return claim_text
 
 
-def materialize_claim_attribution(profile: dict[str, Any]) -> None:
-    """Copy model-selected structured values into the reader-visible claim map."""
+# -- table transforms ---------------------------------------------------------
 
-    attribution = profile.get("claimAttribution")
-    if not isinstance(attribution, dict) or attribution.get("schemaVersion") not in {"3", "4", "5"}:
-        return
-    claims = attribution.get("claims")
-    if not isinstance(claims, list):
+
+def attribute_claim_text(tables: ProfileTables) -> ProfileTables:
+    """Copy each selected structured value into its attribution record."""
+
+    if not tables.has_attribution_mapping or tables.schema_version not in {"3", "4", "5"}:
+        return tables
+    if not tables.attribution_listed:
         raise SourceLedgerError("Current claim attribution selector is invalid")
-    for claim in claims:
-        if not isinstance(claim, dict):
+    attributions = []
+    for record in tables.attributions:
+        if not record.valid:
             raise SourceLedgerError("Current claim attribution selector is invalid")
-        claim["claim"] = _selected_claim_value(profile, claim)
+        raw = dict(record.raw)
+        raw["claim"] = _selected_claim_text(tables, record)
+        attributions.append(replace(record, raw=raw))
+    return replace(tables, attributions=tuple(attributions))
 
 
-def materialize_embedded_claim_evidence(
-    profile: dict[str, Any],
-    evidence_sources: Iterable[Mapping[str, Any]] = (),
+def derive_embedded_attribution(
+    tables: ProfileTables,
     *,
     require_complete_classes: bool = False,
-) -> None:
-    """Derive schema-5 attribution and verify support against captured source text."""
+) -> tuple[ProfileTables, EvidenceCoverageError | None]:
+    """Derive schema-5 attribution and verify support against captured snapshots.
 
-    claims: list[dict[str, Any]] = []
-    embedded_count = 0
-    findings: list[str] = []
-    discarded_findings: list[str] = []
-    discarded_count = 0
-    selected_lists: list[tuple[str, str, list[Any]]] = []
-    snapshots_by_id: dict[str, tuple[str, str]] = {}
-    for source in evidence_sources:
-        source_id = str(source.get("sourceId") or "").strip()
-        snapshot = source.get("contentSnapshot")
-        if not source_id or not isinstance(snapshot, Mapping):
-            continue
-        snapshot_text = str(snapshot.get("text") or "")
-        snapshot_sha256 = str(snapshot.get("sha256") or "").strip()
-        if snapshot.get("status") == "captured" and snapshot_text and snapshot_sha256:
-            snapshots_by_id[source_id] = (snapshot_text, snapshot_sha256)
+    Returns the gated tables and, when coverage is incomplete, the typed error
+    the caller raises. Surviving claims keep their ``claim_id``; ``ordinal``
+    becomes their position in the surviving list.
+    """
 
-    for claim_class, fields in CLAIM_CLASS_SELECTORS.items():
-        for claim_field, field_path in fields.items():
-            selected: Any = profile
-            for field_name in field_path:
-                if not isinstance(selected, Mapping):
-                    selected = None
-                    break
-                selected = selected.get(field_name)
-            if not isinstance(selected, list):
-                continue
-            selected_lists.append((claim_class, claim_field, selected))
-            for item in selected:
-                if isinstance(item, Mapping):
-                    embedded_count += 1
-
-    if embedded_count == 0 and isinstance(profile.get("claimAttribution"), Mapping):
+    snapshots_by_id = {
+        source.source_id: source.captured_snapshot
+        for source in tables.sources
+        if source.source_id and source.captured_snapshot is not None
+    }
+    embedded_count = sum(1 for row in tables.claims if row.embedded)
+    if embedded_count == 0 and tables.has_attribution_mapping:
         # Retained test and compatibility payloads can still supply the legacy
         # parallel ledger during the bounded migration window above.
-        return
-    for claim_class, claim_field, values in selected_lists:
-        normalized_values: list[str] = []
-        for claim_index, item in enumerate(values):
-            if not isinstance(item, Mapping):
-                value = str(item or "").strip()
+        return tables, None
+
+    kept: list[ClaimRow] = []
+    records: list[tuple[str | None, dict[str, Any]]] = []
+    support_rows: list[ClaimSupportRow] = []
+    discarded_findings: list[str] = []
+    discarded_count = 0
+    for claim_class, claim_field, _ in CLAIM_FIELDS:
+        if claim_field not in tables.present_fields:
+            continue
+        surviving = 0
+        for row in tables.field_rows(claim_field):
+            claim_index = row.ordinal
+            if not row.embedded:
+                value = item_text(row.raw)
                 if value:
                     if embedded_count:
                         discarded_findings.append(
@@ -271,17 +243,13 @@ def materialize_embedded_claim_evidence(
                         )
                         discarded_count += 1
                     else:
-                        normalized_values.append(value)
+                        kept.append(replace(row, raw=value))
+                        surviving += 1
                 continue
-            value = str(item.get("value") or "").strip()
-            role = str(item.get("evidenceRole") or "").strip()
-            raw_source_ids = item.get("sourceIds")
-            source_ids = (
-                [str(source_id).strip() for source_id in raw_source_ids if str(source_id).strip()]
-                if isinstance(raw_source_ids, list)
-                else []
-            )
-            raw_support = item.get("supportingEvidence")
+            value = row.value
+            role = row.evidence_role
+            source_ids = list(row.source_ids)
+            raw_support = row.raw.get("supportingEvidence")
             supports = raw_support if isinstance(raw_support, list) else []
             verified_support: list[dict[str, str]] = []
             support_ids: list[str] = []
@@ -339,24 +307,42 @@ def materialize_embedded_claim_evidence(
                 discarded_findings.extend(item_findings)
                 discarded_count += 1
                 continue
-            normalized_values.append(value)
-            claims.append(
-                {
-                    "claimClass": claim_class,
-                    "claim": value,
-                    "claimField": claim_field,
-                    "claimIndex": len(normalized_values) - 1,
-                    "evidenceRole": role,
-                    "sourceIds": source_ids,
-                    "supportingEvidence": verified_support,
-                }
+            kept.append(replace(row, raw=value))
+            surviving += 1
+            attribution_id = f"A{len(records) + 1}"
+            support_rows.extend(
+                ClaimSupportRow(
+                    owner_id=attribution_id,
+                    position=position,
+                    source_id=support["sourceId"],
+                    excerpt=support["excerpt"],
+                    snapshot_sha256=support["snapshotSha256"],
+                    verified=True,
+                    anchor_ok=True,
+                )
+                for position, support in enumerate(verified_support)
             )
-        values[:] = normalized_values
+            records.append(
+                (
+                    row.claim_id,
+                    {
+                        "claimClass": claim_class,
+                        "claim": value,
+                        "claimField": claim_field,
+                        "claimIndex": surviving - 1,
+                        "evidenceRole": role,
+                        "sourceIds": source_ids,
+                        "supportingEvidence": verified_support,
+                    },
+                )
+            )
 
-    if not claims:
+    gated = with_claims(tables, kept)
+    findings: list[str] = []
+    if not records:
         findings.append("No high-risk item carried embedded evidence.")
     if discarded_findings or require_complete_classes:
-        observed_classes = {str(claim.get("claimClass") or "") for claim in claims}
+        observed_classes = {record["claimClass"] for _, record in records}
         missing_classes = sorted(HIGH_RISK_CLAIM_CLASSES - observed_classes)
         if missing_classes:
             findings.extend(discarded_findings)
@@ -378,74 +364,72 @@ def materialize_embedded_claim_evidence(
             "blockingFindings": findings,
             "summary": {"safetyFindings": 0, "coverageFindings": len(findings)},
         }
-        profile["evidenceAdmissibility"] = assessment
-        raise EvidenceCoverageError(
+        document = dict(gated.document)
+        document["evidenceAdmissibility"] = assessment
+        return gated.with_document(document), EvidenceCoverageError(
             "Generated report has incomplete embedded high-risk evidence",
             findings=findings,
             assessment=assessment,
         )
 
-    profile["claimAttribution"] = {
-        "schemaVersion": CLAIM_ATTRIBUTION_SCHEMA_VERSION,
-        "generationShape": CLAIM_ATTRIBUTION_GENERATION_SHAPE,
-        "claims": claims,
-    }
+    return (
+        with_attribution(
+            gated,
+            {
+                "schemaVersion": CLAIM_ATTRIBUTION_SCHEMA_VERSION,
+                "generationShape": CLAIM_ATTRIBUTION_GENERATION_SHAPE,
+            },
+            records,
+            support_rows,
+        ),
+        None,
+    )
 
 
-def materialize_cited_sources(
-    profile: dict[str, Any],
-    evidence_sources: Iterable[Mapping[str, Any]],
-    *,
-    access_date: str,
-) -> None:
+def cite_sources(tables: ProfileTables, *, access_date: str) -> ProfileTables:
     """Build every reader-visible source surface from cited attested evidence."""
 
-    web = profile.get("webSearchSources")
-    attribution = profile.get("claimAttribution")
-    if not isinstance(web, dict) or not isinstance(attribution, Mapping):
+    document = deepcopy(tables.document)
+    web = document.get("webSearchSources")
+    if not isinstance(web, dict) or not tables.has_attribution_mapping:
         raise SourceLedgerError("Current claim attribution source ledger is invalid")
-    claims = attribution.get("claims")
-    if not isinstance(web.get("primarySources"), list) or not isinstance(claims, list):
+    if not isinstance(web.get("primarySources"), list) or not tables.attribution_listed:
         raise SourceLedgerError("Current claim attribution source ledger is invalid")
 
-    evidence_records = [source for source in evidence_sources if isinstance(source, Mapping)]
     cited_ids: list[str] = []
-    for claim in claims:
-        if not isinstance(claim, Mapping):
+    for record in tables.attributions:
+        if not record.valid:
             continue
-        for source_id in claim.get("sourceIds") or []:
+        for source_id in record.get("sourceIds") or []:
             normalized_id = str(source_id).strip()
             if normalized_id and normalized_id not in cited_ids:
                 cited_ids.append(normalized_id)
 
     cited_set = set(cited_ids)
     primary_sources: list[dict[str, Any]] = []
-    for evidence in evidence_records:
-        source_id = str(evidence.get("sourceId") or "").strip()
-        if source_id not in cited_set:
+    for source in tables.sources:
+        if source.source_id not in cited_set:
             continue
-        url = _normalized_http_url(evidence.get("url"))
+        url = _normalized_http_url(source.url)
         hostname = (urlsplit(url).hostname or "").lower()
-        snapshot = evidence.get("contentSnapshot")
-        snapshot = snapshot if isinstance(snapshot, Mapping) else {}
         source_record: dict[str, Any] = {
-            "sourceId": source_id,
+            "sourceId": source.source_id,
             "url": url,
-            "title": str(evidence.get("title") or hostname or "Unknown source"),
+            "title": str(source.title or hostname or "Unknown source"),
             "domain": hostname,
-            "accessDate": str(evidence.get("accessDate") or access_date),
-            "relevanceScore": str(evidence.get("relevanceScore") or "Unknown"),
-            "contentType": str(evidence.get("contentType") or "Web source"),
-            "keyFindings": str(
-                evidence.get("keyFindings") or "No separate finding summary recorded"
-            ),
+            "accessDate": str(source.access_date or access_date),
+            "relevanceScore": str(source.relevance_score or "Unknown"),
+            "contentType": str(source.content_type or "Web source"),
+            "keyFindings": str(source.key_findings or "No separate finding summary recorded"),
         }
+        snapshot = source.record.get("contentSnapshot")
+        snapshot = snapshot if isinstance(snapshot, Mapping) else {}
         optional_snapshot_fields = {
             "evidenceSnapshotStatus": snapshot.get("status"),
             "evidenceSnapshotSha256": snapshot.get("sha256"),
             "evidenceSnapshotCapturedAt": snapshot.get("capturedAt"),
             "evidenceSnapshotFinalUrl": snapshot.get("finalUrl"),
-            "evidencePageAge": evidence.get("evidencePageAge"),
+            "evidencePageAge": source.evidence_page_age,
         }
         source_record.update(
             {
@@ -457,7 +441,7 @@ def materialize_cited_sources(
         primary_sources.append(source_record)
 
     web["primarySources"] = primary_sources
-    references = profile.get("referencesAndIntelligenceSharing")
+    references = document.get("referencesAndIntelligenceSharing")
     if not isinstance(references, dict):
         raise SourceLedgerError("Current references source ledger is invalid")
     references["sources"] = [
@@ -469,7 +453,7 @@ def materialize_cited_sources(
         }
         for source in primary_sources
     ]
-    operations = profile.get("operationalGuidance")
+    operations = document.get("operationalGuidance")
     if isinstance(operations, dict):
         operations["communityResources"] = [
             {
@@ -480,25 +464,24 @@ def materialize_cited_sources(
             }
             for source in primary_sources
         ]
+    return tables.with_document(document)
 
 
-def claim_attribution_status(
-    profile: Mapping[str, Any] | None,
+def attribution_status(
+    tables: ProfileTables,
 ) -> tuple[ClaimAttributionStatus, str | None]:
-    """Classify attribution without inventing claim links for legacy records."""
+    """Classify attribution over the flat relations."""
 
-    if not isinstance(profile, Mapping) or "claimAttribution" not in profile:
+    if not tables.attribution_key_present:
         return ClaimAttributionStatus.LEGACY, None
-    attribution = profile.get("claimAttribution")
-    if not isinstance(attribution, Mapping):
+    if not tables.has_attribution_mapping:
         return ClaimAttributionStatus.UNATTRIBUTED, None
-    version = str(attribution.get("schemaVersion") or "").strip() or None
-    sources = profile.get("webSearchSources")
+    version = str(tables.schema_version or "").strip() or None
+    sources = tables.document.get("webSearchSources")
     primary_sources = sources.get("primarySources") if isinstance(sources, Mapping) else None
-    claims = attribution.get("claims")
     if version not in SUPPORTED_CLAIM_ATTRIBUTION_VERSIONS:
         return ClaimAttributionStatus.UNATTRIBUTED, version
-    if not isinstance(primary_sources, list) or not isinstance(claims, list):
+    if not isinstance(primary_sources, list) or not tables.attribution_listed:
         return ClaimAttributionStatus.UNATTRIBUTED, version
     known_ids = {
         str(source.get("sourceId") or "").strip()
@@ -514,31 +497,31 @@ def claim_attribution_status(
     }
     observed_classes: set[str] = set()
     observed_selectors: list[tuple[str, str, int]] = []
-    for claim in claims:
-        if not isinstance(claim, Mapping):
+    for record in tables.attributions:
+        if not record.valid:
             return ClaimAttributionStatus.UNATTRIBUTED, version
-        claim_text = str(claim.get("claim") or "").strip()
-        source_ids = claim.get("sourceIds")
-        if not claim_text or not isinstance(source_ids, list):
+        claim_text = record.claim_text
+        source_ids = record.source_ids
+        if not claim_text or source_ids is None:
             return ClaimAttributionStatus.UNATTRIBUTED, version
-        evidence_role = str(claim.get("evidenceRole") or "")
+        evidence_role = record.evidence_role
+        claim_class = record.claim_class
         if version in {"4", "5"}:
             if evidence_role == "direct_evidence" and not source_ids:
                 return ClaimAttributionStatus.UNATTRIBUTED, version
             if evidence_role == "general_practice" and (
-                claim.get("claimClass") != "mitigation_action" or source_ids
+                record.get("claimClass") != "mitigation_action" or source_ids
             ):
                 return ClaimAttributionStatus.UNATTRIBUTED, version
             if evidence_role not in {"direct_evidence", "general_practice"}:
                 return ClaimAttributionStatus.UNATTRIBUTED, version
         elif not source_ids:
             return ClaimAttributionStatus.UNATTRIBUTED, version
-        if any(str(source_id) not in known_ids for source_id in source_ids):
+        if any(source_id not in known_ids for source_id in source_ids):
             return ClaimAttributionStatus.UNATTRIBUTED, version
-        claim_class = str(claim.get("claimClass") or "")
         if version == "5":
-            supports = claim.get("supportingEvidence")
-            if not isinstance(supports, list):
+            supports = record.supports
+            if supports is None:
                 return ClaimAttributionStatus.UNATTRIBUTED, version
             support_ids = [
                 str(support.get("sourceId") or "").strip()
@@ -555,29 +538,21 @@ def claim_attribution_status(
                 for support in supports
             ):
                 return ClaimAttributionStatus.UNATTRIBUTED, version
-            if evidence_role == "direct_evidence" and support_ids != [
-                str(source_id) for source_id in source_ids
-            ]:
+            if evidence_role == "direct_evidence" and support_ids != list(source_ids):
                 return ClaimAttributionStatus.UNATTRIBUTED, version
             if evidence_role == "general_practice" and supports:
                 return ClaimAttributionStatus.UNATTRIBUTED, version
         if version in {"3", "4", CLAIM_ATTRIBUTION_SCHEMA_VERSION}:
             try:
-                selected_claim = _selected_claim_value(profile, claim)
+                selected_claim = _selected_claim_text(tables, record)
             except SourceLedgerError:
                 return ClaimAttributionStatus.UNATTRIBUTED, version
             if claim_text != selected_claim:
                 return ClaimAttributionStatus.UNATTRIBUTED, version
-            observed_selectors.append(
-                (
-                    claim_class,
-                    str(claim.get("claimField") or ""),
-                    int(claim.get("claimIndex")),
-                )
-            )
+            observed_selectors.append((claim_class, record.claim_field, int(record.claim_index)))
         else:
             section_name = CLAIM_CLASS_SECTIONS.get(claim_class)
-            section = profile.get(section_name) if section_name else None
+            section = render(tables).get(section_name) if section_name else None
             if not isinstance(section, Mapping):
                 return ClaimAttributionStatus.UNATTRIBUTED, version
             section_text = json.dumps(section, sort_keys=True).casefold()
@@ -587,33 +562,78 @@ def claim_attribution_status(
     if not HIGH_RISK_CLAIM_CLASSES.issubset(observed_classes):
         return ClaimAttributionStatus.UNATTRIBUTED, version
     if version in {"4", CLAIM_ATTRIBUTION_SCHEMA_VERSION}:
-        expected_selectors: list[tuple[str, str, int]] = []
-        for expected_class, fields in CLAIM_CLASS_SELECTORS.items():
-            for field_name, field_path in fields.items():
-                selected: Any = profile
-                for path_item in field_path:
-                    if not isinstance(selected, Mapping):
-                        selected = None
-                        break
-                    selected = selected.get(path_item)
-                if not isinstance(selected, list):
-                    continue
-                expected_selectors.extend(
-                    (expected_class, field_name, index)
-                    for index, value in enumerate(selected)
-                    if str(value or "").strip()
-                )
+        expected_selectors = [
+            (row.claim_class, row.claim_field, row.ordinal)
+            for row in tables.claims
+            if item_text(row.raw)
+        ]
         if sorted(observed_selectors) != sorted(expected_selectors):
             return ClaimAttributionStatus.UNATTRIBUTED, version
     return ClaimAttributionStatus.ATTRIBUTED, version
 
 
+def require_consistent_attribution(tables: ProfileTables) -> None:
+    """Fail closed when a new profile lacks the versioned high-risk evidence map."""
+
+    status, _ = attribution_status(tables)
+    if status is not ClaimAttributionStatus.ATTRIBUTED:
+        raise SourceLedgerError("Report claim attribution is inconsistent")
+
+
+# -- dictionary adapters ------------------------------------------------------
+
+
+def materialize_claim_attribution(profile: dict[str, Any]) -> None:
+    """Copy model-selected structured values into the reader-visible claim map."""
+
+    write_back(profile, render(attribute_claim_text(flatten(profile))))
+
+
+def materialize_embedded_claim_evidence(
+    profile: dict[str, Any],
+    evidence_sources: Iterable[Mapping[str, Any]] = (),
+    *,
+    require_complete_classes: bool = False,
+) -> None:
+    """Derive schema-5 attribution and verify support against captured source text."""
+
+    tables, error = derive_embedded_attribution(
+        flatten(profile, evidence_sources),
+        require_complete_classes=require_complete_classes,
+    )
+    write_back(profile, render(tables))
+    if error is not None:
+        raise error
+
+
+def materialize_cited_sources(
+    profile: dict[str, Any],
+    evidence_sources: Iterable[Mapping[str, Any]],
+    *,
+    access_date: str,
+) -> None:
+    """Build every reader-visible source surface from cited attested evidence."""
+
+    write_back(
+        profile,
+        render(cite_sources(flatten(profile, evidence_sources), access_date=access_date)),
+    )
+
+
+def claim_attribution_status(
+    profile: Mapping[str, Any] | None,
+) -> tuple[ClaimAttributionStatus, str | None]:
+    """Classify attribution without inventing claim links for legacy records."""
+
+    if not isinstance(profile, Mapping):
+        return ClaimAttributionStatus.LEGACY, None
+    return attribution_status(flatten(profile))
+
+
 def assert_claim_attribution_consistent(profile: Mapping[str, Any]) -> None:
     """Fail closed when a new profile lacks the versioned high-risk evidence map."""
 
-    status, _ = claim_attribution_status(profile)
-    if status is not ClaimAttributionStatus.ATTRIBUTED:
-        raise SourceLedgerError("Report claim attribution is inconsistent")
+    require_consistent_attribution(flatten(profile))
 
 
 def canonicalize_profile_sources(profile: Mapping[str, Any]) -> tuple[dict[str, Any], list[dict]]:
