@@ -10,11 +10,14 @@ from contextvars import ContextVar
 from datetime import datetime
 import logging
 from threading import Lock
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Iterable, Optional
 from dataclasses import dataclass, asdict
 import uuid
 
+from src.core.generation_run import GenerationRun
 from src.core.openrouter_client import DEFAULT_MODEL
+from src.domain.model_calls import ModelCall, usage_totals
+from src.domain.model_routes import ModelRoutePurpose
 
 logger = logging.getLogger(__name__)
 
@@ -358,47 +361,12 @@ class PerformanceTracker:
         """Calculate costs based on token usage and pricing"""
         if not self.current_metrics:
             return
+        apply_costs(self.current_metrics)
 
-        model = self.current_metrics.model
-        pricing = self.PRICING.get(
-            model,
-            self.PRICING[DEFAULT_MODEL],
-        )
+    def write(self, metrics: APIMetrics) -> None:
+        """Append one projected metrics record to the JSONL sink."""
 
-        long_context = self.current_metrics.input_tokens > self.LONG_CONTEXT_THRESHOLD
-        input_rate = pricing["long_input"] if long_context else pricing["input"]
-        output_rate = pricing["long_output"] if long_context else pricing["output"]
-        cache_write_rate = pricing["long_cache_write"] if long_context else pricing["cache_write"]
-        cache_read_rate = pricing["long_cache_read"] if long_context else pricing["cache_read"]
-        uncached_input_tokens = max(
-            0,
-            self.current_metrics.input_tokens
-            - self.current_metrics.cached_tokens
-            - self.current_metrics.cache_write_tokens,
-        )
-
-        self.current_metrics.input_cost = (uncached_input_tokens / 1_000_000) * input_rate
-        self.current_metrics.output_cost = (
-            self.current_metrics.output_tokens / 1_000_000
-        ) * output_rate
-        self.current_metrics.cache_read_cost = (
-            self.current_metrics.cached_tokens / 1_000_000
-        ) * cache_read_rate
-        self.current_metrics.cache_write_cost = (
-            self.current_metrics.cache_write_tokens / 1_000_000
-        ) * cache_write_rate
-        self.current_metrics.web_search_cost = (
-            self.current_metrics.web_search_calls / 1_000
-        ) * pricing["web_search_per_1k_calls"]
-
-        # Total cost
-        self.current_metrics.total_cost = (
-            self.current_metrics.input_cost
-            + self.current_metrics.output_cost
-            + self.current_metrics.cache_write_cost
-            + self.current_metrics.cache_read_cost
-            + self.current_metrics.web_search_cost
-        )
+        self._save_metrics(metrics)
 
     def _save_metrics(self, metrics: APIMetrics):
         """Save metrics to the log file"""
@@ -522,3 +490,95 @@ class PerformanceTracker:
             "avg_source_count": sum(m.source_count for m in metrics) / count,
             "avg_web_search_calls": sum(m.web_search_calls for m in metrics) / count,
         }
+
+
+def apply_costs(metrics: APIMetrics) -> APIMetrics:
+    """Price one metrics record from its token usage; returns the same record."""
+
+    pricing = PerformanceTracker.PRICING.get(
+        metrics.model,
+        PerformanceTracker.PRICING[DEFAULT_MODEL],
+    )
+    long_context = metrics.input_tokens > PerformanceTracker.LONG_CONTEXT_THRESHOLD
+    input_rate = pricing["long_input"] if long_context else pricing["input"]
+    output_rate = pricing["long_output"] if long_context else pricing["output"]
+    cache_write_rate = pricing["long_cache_write"] if long_context else pricing["cache_write"]
+    cache_read_rate = pricing["long_cache_read"] if long_context else pricing["cache_read"]
+    uncached_input_tokens = max(
+        0,
+        metrics.input_tokens - metrics.cached_tokens - metrics.cache_write_tokens,
+    )
+
+    metrics.input_cost = (uncached_input_tokens / 1_000_000) * input_rate
+    metrics.output_cost = (metrics.output_tokens / 1_000_000) * output_rate
+    metrics.cache_read_cost = (metrics.cached_tokens / 1_000_000) * cache_read_rate
+    metrics.cache_write_cost = (metrics.cache_write_tokens / 1_000_000) * cache_write_rate
+    metrics.web_search_cost = (metrics.web_search_calls / 1_000) * pricing[
+        "web_search_per_1k_calls"
+    ]
+    metrics.total_cost = (
+        metrics.input_cost
+        + metrics.output_cost
+        + metrics.cache_write_cost
+        + metrics.cache_read_cost
+        + metrics.web_search_cost
+    )
+    return metrics
+
+
+GENERATION_PURPOSES = (ModelRoutePurpose.RESEARCH, ModelRoutePurpose.SYNTHESIS)
+
+
+def project_metrics(run: GenerationRun, calls: Iterable[ModelCall]) -> APIMetrics:
+    """The JSONL metrics record for one generation, computed after it ends.
+
+    Usage is the research and synthesis calls' provider-reported usage; the
+    evaluation calls are priced separately and never counted here.
+    """
+
+    start_time = run.metrics_started_clock
+    metrics = APIMetrics(
+        request_id=run.metrics_request_id,
+        timestamp=run.metrics_timestamp,
+        query=run.tool_name,
+        model=run.model,
+        prompt_type=run.prompt_type,
+        start_time=start_time,
+        end_time=0.0,
+        latency_ms=0,
+        input_tokens=0,
+        output_tokens=0,
+        input_cost=0.0,
+        output_cost=0.0,
+        cache_enabled=run.cache_enabled,
+        prompt_size_chars=run.prompt_size_chars,
+    )
+    if run.api_ended_clock is not None:
+        totals = usage_totals(calls, GENERATION_PURPOSES)
+        metrics.end_time = run.api_ended_clock
+        metrics.latency_ms = int((run.api_ended_clock - start_time) * 1000)
+        time_to_first_token = run.api_ended_clock - (run.api_started_clock or start_time)
+        if time_to_first_token:
+            metrics.time_to_first_token_ms = int(time_to_first_token * 1000)
+        metrics.input_tokens = totals["input_tokens"]
+        metrics.output_tokens = totals["output_tokens"]
+        metrics.cached_tokens = totals["cached_tokens"]
+        metrics.cache_write_tokens = totals["cache_write_tokens"]
+        metrics.reasoning_tokens = totals["reasoning_tokens"]
+        metrics.total_tokens = totals["total_tokens"]
+        metrics.cache_hit = bool(metrics.cached_tokens)
+        metrics.web_search_calls = totals["web_search_calls"]
+        metrics.source_count = run.source_count
+    if run.contract_valid:
+        metrics.json_parsed = True
+        metrics.schema_valid = True
+        metrics.source_attested = True
+    if run.error is not None and run.error_clock is not None:
+        metrics.end_time = run.error_clock
+        metrics.latency_ms = int((run.error_clock - start_time) * 1000)
+        metrics.response_valid = False
+        metrics.error_message = run.error
+    if metrics.end_time == 0.0:
+        metrics.end_time = run.completed_clock or time.time()
+        metrics.latency_ms = int((metrics.end_time - start_time) * 1000)
+    return apply_costs(metrics)

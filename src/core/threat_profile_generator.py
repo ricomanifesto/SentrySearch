@@ -22,8 +22,10 @@ from datetime import datetime
 import time
 from pydantic import ValidationError
 from src.core.parallel_section_validator import ParallelSectionValidator
-from src.core.trace_exporter import get_trace_exporter
-from src.core.performance_metrics import PerformanceTracker
+from src.core.generation_run import GenerationRun
+from src.core.trace_exporter import get_trace_exporter, project_trace
+from src.core.performance_metrics import PerformanceTracker, project_metrics
+from src.domain.model_calls import ModelCall
 from src.core.threat_profile_schema import (
     EmbeddedEvidenceCorrection,
     ThreatProfile,
@@ -515,6 +517,7 @@ class ThreatProfileGenerator(RetryingModelRequests):
         self.client = create_model_client()
         self.validator = ParallelSectionValidator(self.client)
         self.enable_quality_control = True
+        self.calls: list[ModelCall] = []
 
         # Initialize performance metrics tracking
         self.enable_metrics = enable_metrics
@@ -531,6 +534,43 @@ class ThreatProfileGenerator(RetryingModelRequests):
             logger.debug(f"Trace exporter initialized, export directory: {trace_export_dir}")
         else:
             self.trace_exporter = None
+
+    def _begin_call_log(self) -> list[ModelCall]:
+        """Give this run its own call log on the shared client."""
+
+        self.calls = []
+        bind = getattr(getattr(self, "client", None), "bind_call_log", None)
+        if callable(bind):
+            bind(self.calls)
+        return self.calls
+
+    def _export_observability(
+        self, run: GenerationRun, calls: list[ModelCall]
+    ) -> dict[str, object] | None:
+        """Project the finished run into the optional metrics and trace sinks."""
+
+        tracker = getattr(self, "performance_tracker", None)
+        if getattr(self, "enable_metrics", False) and tracker is not None:
+            metrics = project_metrics(run, calls)
+            tracker.write(metrics)
+            logger.debug(
+                "Request completed - Latency: %sms, Cost: $%.4f",
+                metrics.latency_ms,
+                metrics.total_cost,
+            )
+        exporter = getattr(self, "trace_exporter", None)
+        if not getattr(self, "enable_tracing", False) or exporter is None:
+            return None
+        try:
+            trace_file = exporter.export(project_trace(run))
+        except Exception as trace_error:
+            # Trace export never fails the main process.
+            logger.warning("Trace export failed: %s", trace_error)
+            return None
+        logger.debug("Trace exported to %s", trace_file)
+        if not run.completed_profile:
+            return None
+        return {"trace_id": run.run_id, "trace_file": trace_file, "export_enabled": True}
 
     def _route_provenance(
         self,
@@ -700,28 +740,17 @@ Return a compact but technically dense evidence dossier. Include concrete findin
         def emit_validation_progress(progress: float, message: str) -> None:
             emit_progress(progress, GenerationStage.VALIDATING, message)
 
-        # Start trace
-        trace_id = None
-        if self.enable_tracing and self.trace_exporter:
-            trace_id = self.trace_exporter.start_trace(tool_name)
-            self.trace_exporter.log_stage_start("initialization")
+        calls = self._begin_call_log()
+        run = GenerationRun(tool_name=tool_name, model=resolve_synthesis_model_name())
+        run.start_stage("initialization")
 
         try:
             emit_progress(0.1, GenerationStage.QUEUED, "Initializing research...")
 
             logger.debug(f"Starting threat intelligence generation for: {tool_name}")
 
-            if self.enable_tracing and self.trace_exporter:
-                self.trace_exporter.log_stage_end("initialization")
-
-            # Start performance tracking
-            if self.enable_metrics and self.performance_tracker:
-                self.performance_tracker.start_request(
-                    query=tool_name,
-                    model=resolve_synthesis_model_name(),
-                    prompt_type="threat_intel_main",
-                    cache_enabled=True,
-                )
+            run.end_stage("initialization")
+            run.start_metrics()
 
             emit_progress(
                 0.2,
@@ -731,10 +760,8 @@ Return a compact but technically dense evidence dossier. Include concrete findin
 
             logger.debug("Sending isolated web research request to OpenRouter...")
 
-            if self.enable_tracing and self.trace_exporter:
-                self.trace_exporter.log_stage_start("web_search")
-
-            api_start_time = time.time()
+            run.start_stage("web_search")
+            run.api_started_clock = time.time()
             research_response = self._research_evidence(tool_name)
             research_text = "\n".join(
                 str(getattr(block, "text", "")).strip()
@@ -832,9 +859,7 @@ Return a compact but technically dense evidence dossier. Include concrete findin
                 withheld_source_count=withheld_source_count,
             )
 
-            # Record prompt details for metrics
-            if self.enable_metrics and self.performance_tracker:
-                self.performance_tracker.record_prompt_details(prompt, cache_enabled=True)
+            run.prompt_size_chars = len(prompt)
 
             logger.debug("Sending isolated structured synthesis request to OpenRouter...")
             logger.debug(f"Prompt size: {len(prompt)} characters")
@@ -1062,14 +1087,8 @@ Return a compact but technically dense evidence dossier. Include concrete findin
                     ),
                 )
 
-            # Record API response metrics
-            if self.enable_metrics and self.performance_tracker:
-                api_end_time = time.time()
-                time_to_first_token = api_end_time - api_start_time  # Approximate
-                self.performance_tracker.record_api_response(
-                    response,
-                    time_to_first_token=time_to_first_token,
-                )
+            run.api_ended_clock = time.time()
+            run.source_count = len(response.web_search_sources or [])
 
             # Extract initial web search sources from the main response
             initial_sources = self.validator._extract_web_search_sources_from_response(
@@ -1078,21 +1097,15 @@ Return a compact but technically dense evidence dossier. Include concrete findin
             self.validator.web_search_sources.extend(initial_sources)
             logger.debug(f"Captured {len(initial_sources)} initial web search sources")
 
-            if self.enable_metrics and self.performance_tracker:
-                self.performance_tracker.record_contract_result(
-                    schema_valid=True,
-                    source_attested=True,
-                )
-
-            if self.enable_tracing and self.trace_exporter:
-                self.trace_exporter.log_model_tool_events(response.tool_events)
-                self.trace_exporter.log_stage_end(
-                    "web_search",
-                    source_count=len(response.web_search_sources),
-                    tool_event_count=len(response.tool_events),
-                    response_id=response.response_id,
-                    model=response.model,
-                )
+            run.contract_valid = True
+            run.tool_events = list(response.tool_events)
+            run.end_stage(
+                "web_search",
+                source_count=len(response.web_search_sources),
+                tool_event_count=len(response.tool_events),
+                response_id=response.response_id,
+                model=response.model,
+            )
 
             logger.debug(
                 "Structured generation successful. "
@@ -1108,8 +1121,7 @@ Return a compact but technically dense evidence dossier. Include concrete findin
                     "Running quality validation...",
                 )
 
-                if self.enable_tracing and self.trace_exporter:
-                    self.trace_exporter.log_stage_start("quality_validation")
+                run.start_stage("quality_validation")
 
                 # Validate the complete profile
                 validation_results = self.validator.validate_complete_profile(
@@ -1130,9 +1142,8 @@ Return a compact but technically dense evidence dossier. Include concrete findin
                 assess_profile_evidence(json_data, response.web_search_sources)
                 assert_claim_attribution_consistent(json_data)
 
-                if self.enable_tracing and self.trace_exporter:
-                    self.trace_exporter.log_quality_metrics(validation_results)
-                    self.trace_exporter.log_stage_end("quality_validation")
+                run.quality_metrics = validation_results
+                run.end_stage("quality_validation")
 
                 # The validator owns iterative enhancement and returns its final
                 # assessment, so no second improvement pass is needed here.
@@ -1144,45 +1155,13 @@ Return a compact but technically dense evidence dossier. Include concrete findin
 
             emit_progress(1.0, GenerationStage.FINALIZING, "Analysis complete!")
 
-            # Complete performance tracking
-            if self.enable_metrics and self.performance_tracker:
-                metrics = self.performance_tracker.finish_request()
-                if metrics:
-                    logger.debug(
-                        f"Request completed - Latency: {metrics.latency_ms}ms, Cost: ${metrics.total_cost:.4f}"
-                    )
-
-            # Complete trace and export
-            if self.enable_tracing and self.trace_exporter:
-                try:
-                    # Log comprehensive trace data
-                    self.trace_exporter.log_threat_characteristics(
-                        json_data.get("coreMetadata", {})
-                    )
-                    self.trace_exporter.log_final_guidance(json_data.get("final_guidance", ""))
-
-                    # Log web search sources if available
-                    if (
-                        hasattr(self.validator, "web_search_sources")
-                        and self.validator.web_search_sources
-                    ):
-                        self.trace_exporter.log_web_search_sources(
-                            self.validator.web_search_sources
-                        )
-
-                    # Complete and export trace
-                    trace_file = self.trace_exporter.complete_trace(json_data)
-                    logger.debug(f"Trace exported to {trace_file}")
-
-                    # Add trace metadata to response
-                    json_data["_trace_metadata"] = {
-                        "trace_id": trace_id,
-                        "trace_file": trace_file,
-                        "export_enabled": True,
-                    }
-                except Exception as trace_error:
-                    logger.warning("Trace export failed: %s", trace_error)
-                    # Don't fail the main process for trace export errors
+            run.core_metadata = json_data.get("coreMetadata", {})
+            run.final_guidance = json_data.get("final_guidance", "")
+            run.validator_sources = list(getattr(self.validator, "web_search_sources", None) or [])
+            run.complete(profile=True)
+            trace_metadata = self._export_observability(run, calls)
+            if trace_metadata is not None:
+                json_data["_trace_metadata"] = trace_metadata
 
             json_data["_research_route"] = self._route_provenance(
                 ModelRoutePurpose.RESEARCH,
@@ -1202,20 +1181,9 @@ Return a compact but technically dense evidence dossier. Include concrete findin
         except Exception as e:
             logger.exception("Threat profile generation failed: %s", e)
 
-            # Record error in performance metrics
-            if self.enable_metrics and self.performance_tracker:
-                self.performance_tracker.record_error(e)
-                self.performance_tracker.finish_request()
-
-            # Log error to trace if available
-            if self.enable_tracing and self.trace_exporter:
-                try:
-                    self.trace_exporter.log_error(str(e), "main_process")
-                    # Try to complete trace even on error
-                    error_trace_file = self.trace_exporter.complete_trace()
-                    logger.debug(f"Error trace exported to {error_trace_file}")
-                except Exception as trace_error:
-                    logger.warning("Failed to export error trace: %s", trace_error)
+            run.fail(e)
+            run.complete(profile=False)
+            self._export_observability(run, calls)
 
             emit_progress(1.0, GenerationStage.FAILED, "Analysis failed")
             raise
