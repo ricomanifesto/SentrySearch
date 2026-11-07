@@ -38,6 +38,39 @@ def test_source_snapshot_captures_visible_text_and_fingerprint(monkeypatch):
     assert snapshot["pageAge"] == "2026-08-14"
 
 
+def test_owned_snapshot_clients_share_one_verification_context(monkeypatch):
+    monkeypatch.setattr("src.core.source_snapshot.socket.getaddrinfo", _public_dns)
+    monkeypatch.setattr("src.core.tls._context", None)
+    built = []
+    create_ssl_context = httpx.create_ssl_context
+    monkeypatch.setattr(
+        "src.core.tls.httpx.create_ssl_context",
+        lambda: built.append(create_ssl_context()) or built[-1],
+    )
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "text/plain"}, text="Observed.", request=request
+        )
+
+    verify_contexts = []
+    client = httpx.Client
+
+    def owned_client(**kwargs):
+        verify_contexts.append(kwargs["verify"])
+        return client(**kwargs, transport=httpx.MockTransport(handle))
+
+    monkeypatch.setattr("src.core.source_snapshot.httpx.Client", owned_client)
+
+    enriched = capture_source_snapshots(
+        [{"sourceId": f"S{index}", "url": f"https://s{index}.example.test/r"} for index in range(4)]
+    )
+
+    assert [item["contentSnapshot"]["status"] for item in enriched] == ["captured"] * 4
+    assert len(built) == 1
+    assert verify_contexts == [built[0]] * 4
+
+
 def test_source_snapshot_rejects_non_public_resolution(monkeypatch):
     monkeypatch.setattr(
         "src.core.source_snapshot.socket.getaddrinfo",

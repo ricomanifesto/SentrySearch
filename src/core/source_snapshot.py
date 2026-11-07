@@ -13,6 +13,8 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 
+from src.core.tls import default_verify_context
+
 MAX_SNAPSHOT_SOURCES = 12
 MAX_SNAPSHOT_BYTES = 1_048_576
 MAX_SNAPSHOT_TEXT = 12_000
@@ -131,6 +133,7 @@ def capture_source_snapshot(
     active_client = client or httpx.Client(
         follow_redirects=False,
         timeout=httpx.Timeout(6.0, connect=2.0),
+        verify=default_verify_context(),
         headers={
             "User-Agent": (
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
