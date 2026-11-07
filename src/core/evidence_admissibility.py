@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from enum import StrEnum
 from ipaddress import IPv4Network, IPv6Network, ip_address, ip_network
 import re
@@ -14,7 +15,23 @@ from src.core.generation_failures import (
     EvidenceCoverageError,
     EvidenceGateError,
 )
-from src.core.source_ledger import CLAIM_CLASS_SELECTORS
+from src.core.profile_tables import (
+    CLAIM_FIELDS,
+    INDICATOR_FIELDS,
+    AttributionRow,
+    ClaimRow,
+    Finding,
+    IndicatorObservation,
+    ProfileTables,
+    SourceRow,
+    flatten,
+    item_text,
+    iter_prose,
+    prose,
+    render,
+    with_claims,
+    write_back,
+)
 from src.core.promotion_content import has_promotion_marker
 from src.domain.reports import EvidenceAdmissibilityStatus
 
@@ -201,24 +218,21 @@ def _host_is_reserved_example(hostname: str) -> bool:
     return any(host == value or host.endswith(f".{value}") for value in _RESERVED_EXAMPLE_HOSTS)
 
 
-def _source_observation(source: Mapping[str, Any]) -> dict[str, Any]:
-    url = str(source.get("url") or "").strip()
-    title = str(source.get("title") or "Unknown source").strip()
-    parsed = urlsplit(url)
-    hostname = (parsed.hostname or "").casefold()
+def _classify_source(source: SourceRow) -> SourceRow:
+    """Decide one source's purpose from its URL, title, and captured content."""
+
+    url = source.url.strip()
+    title = (source.title or "Unknown source").strip()
+    hostname = (urlsplit(url).hostname or "").casefold()
     url_text = url.casefold()
     title_text = title.casefold()
-    snapshot = source.get("contentSnapshot")
-    snapshot = snapshot if isinstance(snapshot, Mapping) else {}
-    snapshot_status = str(snapshot.get("status") or "unavailable").strip()
-    snapshot_text = str(snapshot.get("text") or "").casefold()
-    snapshot_sha256 = str(snapshot.get("sha256") or "").strip() or None
-    page_age = str(snapshot.get("pageAge") or source.get("page_age") or "").strip() or None
+    snapshot_status = (source.snapshot_status or "unavailable").strip()
+    snapshot_text = source.snapshot_text.casefold()
     operational_markers = {
         marker for marker in _OPERATIONAL_TEXT_MARKERS if marker in f"{title_text} {snapshot_text}"
     }
 
-    if contains_virtual_event_promotion(source):
+    if source.promotion or contains_virtual_event_promotion(source.record):
         purpose = SourcePurpose.EXCLUDED_NON_OPERATIONAL
         disposition = EvidenceDisposition.EXCLUDED
         rule_id = "source.virtual-event-promotion"
@@ -240,7 +254,7 @@ def _source_observation(source: Mapping[str, Any]) -> dict[str, Any]:
         disposition = EvidenceDisposition.CONTEXT_REQUIRED
         rule_id = "source.special-use-reference"
         reason = "Special-use address documentation provides context, not threat-specific evidence."
-    elif snapshot_status != "captured" or not snapshot_text or not snapshot_sha256:
+    elif snapshot_status != "captured" or not snapshot_text or not source.snapshot_sha256:
         purpose = SourcePurpose.CONTEXT_ONLY
         disposition = EvidenceDisposition.CONTEXT_REQUIRED
         rule_id = "source.intent-unverified"
@@ -255,20 +269,50 @@ def _source_observation(source: Mapping[str, Any]) -> dict[str, Any]:
         disposition = EvidenceDisposition.ADMITTED
         rule_id = "source.captured-operational-content"
         reason = "Captured source content passed deterministic non-operational intent checks."
+    return replace(
+        source,
+        promotion=purpose is SourcePurpose.EXCLUDED_NON_OPERATIONAL
+        and rule_id == "source.virtual-event-promotion",
+        purpose=purpose.value,
+        disposition=disposition.value,
+        rule_id=rule_id,
+        reason=reason,
+    )
 
+
+def classify_sources(
+    sources: Iterable[SourceRow | Mapping[str, Any]],
+) -> tuple[SourceRow, ...]:
+    """Classify each source once; already-classified rows are reused as-is."""
+
+    rows = (
+        source if isinstance(source, SourceRow) else SourceRow.from_record(source)
+        for source in sources
+        if isinstance(source, (SourceRow, Mapping))
+    )
+    return tuple(row if row.purpose is not None else _classify_source(row) for row in rows)
+
+
+def source_observation(source: SourceRow) -> dict[str, Any]:
+    """Project one classified source row into the published observation record."""
+
+    if source.purpose is None:
+        source = _classify_source(source)
+    hostname = (urlsplit(source.url.strip()).hostname or "").casefold()
+    page_age = str(source.snapshot_page_age or source.page_age or "").strip() or None
     return {
-        "sourceId": str(source.get("sourceId") or source.get("source_id") or "").strip(),
-        "title": title,
-        "url": url,
+        "sourceId": source.source_id,
+        "title": (source.title or "Unknown source").strip(),
+        "url": source.url.strip(),
         "domain": hostname,
-        "purpose": purpose.value,
-        "disposition": disposition.value,
-        "reason": reason,
-        "ruleId": rule_id,
-        "snapshotStatus": snapshot_status,
-        "snapshotSha256": snapshot_sha256,
-        "snapshotCapturedAt": snapshot.get("capturedAt"),
-        "snapshotFinalUrl": snapshot.get("finalUrl"),
+        "purpose": source.purpose,
+        "disposition": source.disposition,
+        "reason": source.reason,
+        "ruleId": source.rule_id,
+        "snapshotStatus": (source.snapshot_status or "unavailable").strip(),
+        "snapshotSha256": source.snapshot_sha256 or None,
+        "snapshotCapturedAt": source.snapshot_captured_at,
+        "snapshotFinalUrl": source.snapshot_final_url,
         "pageAge": page_age,
     }
 
@@ -281,7 +325,7 @@ def classify_research_sources(
     classified: list[dict[str, Any]] = []
     for source in sources:
         item = deepcopy(dict(source))
-        observation = _source_observation(item)
+        observation = source_observation(_classify_source(SourceRow.from_record(item)))
         item.update(
             {
                 "evidencePurpose": observation["purpose"],
@@ -304,7 +348,7 @@ def research_source_observations(
 ) -> list[dict[str, Any]]:
     """Publish the deterministic source-intent record without model inference."""
 
-    return [_source_observation(source) for source in sources]
+    return [source_observation(row) for row in classify_sources(sources)]
 
 
 def _network_candidates(value: str) -> list[IPv4Network | IPv6Network]:
@@ -444,57 +488,56 @@ def _classify_indicator(
     )
 
 
+def quarantine_indicators(
+    tables: ProfileTables,
+) -> tuple[ProfileTables, tuple[IndicatorObservation, ...]]:
+    """Remove malformed or reserved IOC values before they enter the operational ledger."""
+
+    kept: list[ClaimRow] = []
+    observations: list[IndicatorObservation] = []
+    for row in tables.claims:
+        if row.claim_field not in INDICATOR_FIELDS:
+            kept.append(row)
+            continue
+        raw = row.raw
+        value = str(raw.get("value") if isinstance(raw, Mapping) else raw or "").strip()
+        disposition, reason, rule_id = _classify_indicator(row.claim_field, value)
+        if disposition is not EvidenceDisposition.REJECTED:
+            kept.append(row)
+            continue
+        observations.append(
+            IndicatorObservation(
+                claim_id=row.claim_id,
+                field=row.claim_field,
+                ordinal=row.ordinal,
+                value=value,
+                disposition=EvidenceDisposition.EXCLUDED.value,
+                reason=f"Removed before operational reuse. {reason}",
+                rule_id=rule_id,
+            )
+        )
+    order = {claim_field: position for position, claim_field in enumerate(INDICATOR_FIELDS)}
+    observations.sort(key=lambda item: (order[item.field], item.ordinal))
+    return with_claims(tables, kept), tuple(observations)
+
+
 def quarantine_rejected_indicator_items(profile: dict[str, Any]) -> list[dict[str, Any]]:
     """Remove malformed or reserved IOC values before they enter the operational ledger."""
 
-    detection = profile.get("detectionAndMitigation")
-    iocs = detection.get("iocs") if isinstance(detection, dict) else None
-    if not isinstance(iocs, dict):
-        return []
-
-    observations: list[dict[str, Any]] = []
-    for claim_field in ("hashes", "domains", "ips", "urls", "filenames"):
-        values = iocs.get(claim_field)
-        if not isinstance(values, list):
-            continue
-        retained: list[Any] = []
-        for claim_index, item in enumerate(values):
-            value = str(item.get("value") if isinstance(item, Mapping) else item or "").strip()
-            disposition, reason, rule_id = _classify_indicator(claim_field, value)
-            if disposition is not EvidenceDisposition.REJECTED:
-                retained.append(item)
-                continue
-            observations.append(
-                {
-                    "claimField": claim_field,
-                    "claimIndex": claim_index,
-                    "value": value,
-                    "disposition": EvidenceDisposition.EXCLUDED.value,
-                    "reason": f"Removed before operational reuse. {reason}",
-                    "ruleId": rule_id,
-                }
-            )
-        values[:] = retained
-    return observations
+    tables, observations = quarantine_indicators(flatten(profile))
+    write_back(profile, render(tables))
+    return [observation.to_dict() for observation in observations]
 
 
-def _selected_values(profile: Mapping[str, Any]) -> list[tuple[str, str, int, str]]:
-    selected_values: list[tuple[str, str, int, str]] = []
-    for claim_class, fields in CLAIM_CLASS_SELECTORS.items():
-        for claim_field, field_path in fields.items():
-            selected: Any = profile
-            for field_name in field_path:
-                if not isinstance(selected, Mapping):
-                    selected = None
-                    break
-                selected = selected.get(field_name)
-            if not isinstance(selected, list):
-                continue
-            for claim_index, raw_value in enumerate(selected):
-                value = str(raw_value or "").strip()
-                if value:
-                    selected_values.append((claim_class, claim_field, claim_index, value))
-    return selected_values
+def _expected_values(tables: ProfileTables) -> list[tuple[str, str, int, str]]:
+    """Every non-empty claim in field order: (class, field, ordinal, value)."""
+
+    return [
+        (row.claim_class, row.claim_field, row.ordinal, value)
+        for _, claim_field, _ in CLAIM_FIELDS
+        for row in tables.field_rows(claim_field)
+        if (value := item_text(row.raw))
+    ]
 
 
 def _unique(values: Iterable[str]) -> list[str]:
@@ -509,41 +552,24 @@ def _profile_strings(
 ) -> Iterable[tuple[str, str]]:
     """Yield reader-visible profile strings without rescanning source metadata."""
 
-    if isinstance(value, Mapping):
-        for key, child in value.items():
-            if key == "evidenceAdmissibility":
-                continue
-            if (
-                not include_sources
-                and path == "profile"
-                and key
-                in {
-                    "claimAttribution",
-                    "references",
-                    "webSearchSources",
-                }
-            ):
-                continue
-            yield from _profile_strings(child, f"{path}.{key}", include_sources=include_sources)
-        return
-    if isinstance(value, list):
-        for index, child in enumerate(value):
-            yield from _profile_strings(child, f"{path}[{index}]", include_sources=include_sources)
-        return
-    if isinstance(value, str) and value.strip():
-        yield path, value
+    for row in iter_prose(value, path, include_sources=include_sources):
+        yield row.path, row.text
 
 
-def assess_profile_evidence(
-    profile: dict[str, Any],
-    research_sources: Iterable[Mapping[str, Any]],
+def assess_tables(
+    tables: ProfileTables,
     *,
     excluded_indicator_observations: Iterable[Mapping[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Attach an application-owned safety record and fail closed on unsafe evidence."""
+) -> tuple[ProfileTables, dict[str, Any], tuple[Finding, ...], EvidenceGateError | None]:
+    """Build the application-owned safety record over the flat relations.
 
-    classified_sources = classify_research_sources(research_sources)
-    source_observations = research_source_observations(classified_sources)
+    Returns the tables with the assessment attached, the assessment, typed
+    findings, and the error the caller raises when the gate fails.
+    """
+
+    sources = classify_sources(tables.sources)
+    tables = tables.with_sources(sources)
+    source_observations = [source_observation(source) for source in sources]
     sources_by_id = {
         observation["sourceId"]: observation
         for observation in source_observations
@@ -551,36 +577,36 @@ def assess_profile_evidence(
     }
     coverage_findings: list[str] = []
     safety_findings: list[str] = [
-        f"{path} contains an excluded virtual-event promotion."
-        for path, text in _profile_strings(profile, include_sources=True)
-        if contains_virtual_event_promotion(text)
+        f"{row.path} contains an excluded virtual-event promotion."
+        for row in prose(tables, include_sources=True)
+        if contains_virtual_event_promotion(row.text)
     ]
 
-    attribution = profile.get("claimAttribution")
-    claims = attribution.get("claims") if isinstance(attribution, Mapping) else None
-    if not isinstance(attribution, Mapping) or attribution.get("schemaVersion") != "5":
+    records = tables.attributions
+    if not tables.has_attribution_mapping or tables.schema_version != "5":
         coverage_findings.append("Operational claim coverage does not use attribution schema 5.")
-        claims = []
-    if not isinstance(claims, list):
+        records = ()
+    elif not tables.attribution_listed:
         coverage_findings.append("Operational claim coverage is missing.")
-        claims = []
+        records = ()
 
-    expected_values = _selected_values(profile)
-    claims_by_selector: dict[tuple[str, str, int], list[Mapping[str, Any]]] = {}
-    for claim in claims:
-        if not isinstance(claim, Mapping):
+    expected_values = _expected_values(tables)
+    claims_by_selector: dict[tuple[str, str, int], list[AttributionRow]] = {}
+    for record in records:
+        if not record.valid:
             coverage_findings.append("Operational claim coverage contains an invalid record.")
             continue
+        claim_index = record.claim_index
         selector = (
-            str(claim.get("claimClass") or ""),
-            str(claim.get("claimField") or ""),
-            int(claim.get("claimIndex")) if isinstance(claim.get("claimIndex"), int) else -1,
+            record.claim_class,
+            record.claim_field,
+            int(claim_index) if isinstance(claim_index, int) else -1,
         )
-        claims_by_selector.setdefault(selector, []).append(claim)
+        claims_by_selector.setdefault(selector, []).append(record)
 
-        role = str(claim.get("evidenceRole") or "")
-        source_ids = [str(value) for value in claim.get("sourceIds") or []]
-        supports = claim.get("supportingEvidence")
+        role = record.evidence_role
+        source_ids = [str(value) for value in record.get("sourceIds") or []]
+        supports = record.get("supportingEvidence")
         if role == "general_practice":
             if selector[0] != "mitigation_action" or source_ids:
                 coverage_findings.append(
@@ -631,7 +657,7 @@ def assess_profile_evidence(
             )
 
     if excluded_indicator_observations is None:
-        previous = profile.get("evidenceAdmissibility")
+        previous = tables.document.get("evidenceAdmissibility")
         previous_observations = (
             previous.get("indicatorObservations") if isinstance(previous, Mapping) else []
         )
@@ -644,28 +670,29 @@ def assess_profile_evidence(
     indicator_observations: list[dict[str, Any]] = [
         dict(observation) for observation in excluded_indicator_observations
     ]
-    indicator_fields = {"hashes", "domains", "ips", "urls", "filenames"}
     for _, claim_field, claim_index, value in expected_values:
-        if claim_field not in indicator_fields:
+        if claim_field not in INDICATOR_FIELDS:
             continue
         disposition, reason, rule_id = _classify_indicator(claim_field, value)
-        observation = {
-            "claimField": claim_field,
-            "claimIndex": claim_index,
-            "value": value,
-            "disposition": disposition.value,
-            "reason": reason,
-            "ruleId": rule_id,
-        }
-        indicator_observations.append(observation)
+        indicator_observations.append(
+            IndicatorObservation(
+                claim_id=None,
+                field=claim_field,
+                ordinal=claim_index,
+                value=value,
+                disposition=disposition.value,
+                reason=reason,
+                rule_id=rule_id,
+            ).to_dict()
+        )
         if disposition is EvidenceDisposition.REJECTED:
             safety_findings.append(f"{claim_field}[{claim_index}] was rejected: {reason}")
 
     observed_indicator_keys = {
         (observation["value"], observation["ruleId"]) for observation in indicator_observations
     }
-    for path, text in _profile_strings(profile):
-        for value in _IPV4_TOKEN.findall(text):
+    for row in prose(tables):
+        for value in _IPV4_TOKEN.findall(row.text):
             disposition, reason, rule_id = _classify_ip(value)
             observation_key = (value, rule_id)
             if (
@@ -674,23 +701,25 @@ def assess_profile_evidence(
             ):
                 continue
             observed_indicator_keys.add(observation_key)
+            field_path = row.path.removeprefix("profile.")
             indicator_observations.append(
-                {
-                    "claimField": path.removeprefix("profile."),
-                    "claimIndex": 0,
-                    "value": value,
-                    "disposition": disposition.value,
-                    "reason": reason,
-                    "ruleId": rule_id,
-                }
+                IndicatorObservation(
+                    claim_id=None,
+                    field=field_path,
+                    ordinal=0,
+                    value=value,
+                    disposition=disposition.value,
+                    reason=reason,
+                    rule_id=rule_id,
+                ).to_dict()
             )
             if disposition is EvidenceDisposition.REJECTED:
                 safety_findings.append(
-                    f"{path.removeprefix('profile.')} contains rejected infrastructure "
-                    f"{value}: {reason}"
+                    f"{field_path} contains rejected infrastructure {value}: {reason}"
                 )
 
-    web = profile.get("webSearchSources")
+    document = deepcopy(tables.document)
+    web = document.get("webSearchSources")
     primary_sources = web.get("primarySources") if isinstance(web, dict) else None
     if isinstance(primary_sources, list):
         for source in primary_sources:
@@ -764,19 +793,42 @@ def assess_profile_evidence(
             "coverageFindings": len(coverage_findings),
         },
     }
-    profile["evidenceAdmissibility"] = assessment
+    document["evidenceAdmissibility"] = assessment
+    findings = (
+        *(Finding("safety", "", "", message) for message in safety_findings),
+        *(Finding("coverage", "", "", message) for message in coverage_findings),
+    )
+    error: EvidenceGateError | None = None
     if safety_findings:
-        raise EvidenceAdmissibilityError(
+        error = EvidenceAdmissibilityError(
             "Generated report contains evidence that is unsafe for operational use",
             findings=blocking_findings,
             assessment=assessment,
         )
-    if coverage_findings:
-        raise EvidenceCoverageError(
+    elif coverage_findings:
+        error = EvidenceCoverageError(
             "Generated report has incomplete high-risk claim coverage",
             findings=coverage_findings,
             assessment=assessment,
         )
+    return tables.with_document(document), assessment, findings, error
+
+
+def assess_profile_evidence(
+    profile: dict[str, Any],
+    research_sources: Iterable[Mapping[str, Any] | SourceRow],
+    *,
+    excluded_indicator_observations: Iterable[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Attach an application-owned safety record and fail closed on unsafe evidence."""
+
+    tables, assessment, _, error = assess_tables(
+        flatten(profile, research_sources),
+        excluded_indicator_observations=excluded_indicator_observations,
+    )
+    write_back(profile, render(tables))
+    if error is not None:
+        raise error
     return assessment
 
 

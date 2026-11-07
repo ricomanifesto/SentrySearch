@@ -45,6 +45,7 @@ from src.core.source_ledger import (
 from src.core.evidence_admissibility import assert_no_virtual_event_promotions
 from src.core.report_content_policy import load_checked_report
 from src.domain.model_routes import generation_fallback_state
+from src.domain.threat_classification import classify_category_text, classify_tool_name
 
 from .database import db_manager
 from .models import Report, ReportDispositionEvent, ReportRuntimeDispatch
@@ -204,31 +205,7 @@ class ReportStorageService:
         raw_category = cls._structured_category_value(threat_data)
         if raw_category is None:
             return None
-        category_from_data = raw_category.lower()
-        category_patterns = (
-            (("remote access", " rat"), ("malware", "remote_access_trojan")),
-            (
-                ("post-exploitation", "post exploitation", "framework"),
-                ("malware", "post_exploitation_framework"),
-            ),
-            (("ransomware",), ("malware", "ransomware")),
-            (("backdoor",), ("malware", "backdoor")),
-            (("trojan",), ("malware", "trojan")),
-            (("botnet",), ("malware", "botnet")),
-            (("downloader", "loader"), ("malware", "loader")),
-            (("apt",), ("malware", "apt_malware")),
-            (("malware",), ("malware", "malware")),
-            (("threat actor", "threat group"), ("threat_group", "threat_actor")),
-            (("security tool",), ("legitimate_software", "security_tool")),
-            (
-                ("software", "technology", "platform"),
-                ("legitimate_software", "legitimate_software"),
-            ),
-        )
-        for markers, classification in category_patterns:
-            if any(marker in f" {category_from_data}" for marker in markers):
-                return classification
-        return None
+        return classify_category_text(raw_category)
 
     def resolve_classification(
         self,
@@ -452,248 +429,13 @@ class ReportStorageService:
         if not tool_name:
             return ("unknown", "unknown")
 
-        tool_lower = tool_name.lower().strip()
-
         structured_classification = self._categorize_structured_threat_data(threat_data)
         if structured_classification is not None:
             return structured_classification
 
-        # Malware signatures (common malware families and indicators)
-        malware_indicators = [
-            "ransomware",
-            "trojan",
-            "backdoor",
-            "rat",
-            "rootkit",
-            "spyware",
-            "adware",
-            "worm",
-            "virus",
-            "botnet",
-            "cryptominer",
-            "stealer",
-            "loader",
-            "dropper",
-            "shadowpad",
-            "cobalt strike",
-            "meterpreter",
-            "empire",
-            "mimikatz",
-            "lazarus",
-            "apt",
-            "carbanak",
-            "emotet",
-            "trickbot",
-            "ryuk",
-            "conti",
-            "lockbit",
-            "stealc",
-            "bumblebee",
-            "redline",
-            "azorult",
-            "formbook",
-            "agent tesla",
-            "nanocore",
-            "njrat",
-            "darkcomet",
-            "poison ivy",
-            "blackrat",
-        ]
-
-        # Legitimate software indicators
-        legitimate_indicators = [
-            "windows",
-            "microsoft",
-            "office",
-            "outlook",
-            "excel",
-            "word",
-            "powershell",
-            "cmd",
-            "notepad",
-            "explorer",
-            "chrome",
-            "firefox",
-            "safari",
-            "adobe",
-            "java",
-            "python",
-            "nodejs",
-            "git",
-            "docker",
-            "kubernetes",
-            "jenkins",
-            "sharepoint",
-            "exchange",
-            "active directory",
-            "ldap",
-            "ssh",
-            "ftp",
-            "sftp",
-            "vmware",
-            "virtualbox",
-            "hyper-v",
-            "citrix",
-            "remote desktop",
-            "vnc",
-            "teamviewer",
-            "anydesk",
-            "logmein",
-            "webex",
-            "zoom",
-            "slack",
-            "teams",
-            "sap",
-            "oracle",
-            "mysql",
-            "postgresql",
-            "mongodb",
-            "redis",
-            "elasticsearch",
-            "apache",
-            "nginx",
-            "iis",
-            "tomcat",
-            "node",
-            "express",
-            "react",
-            "angular",
-            "get-aduser",
-            "nltest",
-            "net user",
-            "whoami",
-            "ipconfig",
-            "netstat",
-            "ping",
-            "tracert",
-            "nslookup",
-            "runas",
-            "tasklist",
-            "services",
-        ]
-
-        # Threat group indicators
-        threat_group_indicators = [
-            "lazarus",
-            "apt1",
-            "apt28",
-            "apt29",
-            "apt34",
-            "apt40",
-            "fancy bear",
-            "cozy bear",
-            "carbanak",
-            "fin7",
-            "fin8",
-            "wizard spider",
-            "sandworm",
-            "turla",
-            "equation group",
-            "darkhydrus",
-            "mustang panda",
-            "kimsuky",
-        ]
-
-        # Check for malware indicators
-        for indicator in malware_indicators:
-            if indicator in tool_lower:
-                # Determine specific malware type
-                if any(word in tool_lower for word in ["ransomware", "ryuk", "conti", "lockbit"]):
-                    return ("malware", "ransomware")
-                elif any(word in tool_lower for word in ["rat", "backdoor", "remote access"]):
-                    return ("malware", "remote_access_trojan")
-                elif any(word in tool_lower for word in ["trojan", "stealer", "stealc", "redline"]):
-                    return ("malware", "trojan")
-                elif any(word in tool_lower for word in ["apt", "advanced persistent"]):
-                    return ("malware", "apt_malware")
-                elif any(word in tool_lower for word in ["botnet", "bot"]):
-                    return ("malware", "botnet")
-                elif any(
-                    word in tool_lower for word in ["framework", "cobalt", "empire", "meterpreter"]
-                ):
-                    return ("malware", "post_exploitation_framework")
-                else:
-                    return ("malware", "malware")
-
-        # Check for threat group indicators
-        for indicator in threat_group_indicators:
-            if indicator in tool_lower:
-                return ("threat_group", "threat_actor")
-
-        # Check for legitimate software indicators
-        for indicator in legitimate_indicators:
-            if indicator in tool_lower:
-                # Determine specific legitimate software type
-                if any(
-                    word in tool_lower
-                    for word in [
-                        "windows",
-                        "cmd",
-                        "powershell",
-                        "net ",
-                        "runas",
-                        "nltest",
-                        "get-aduser",
-                    ]
-                ):
-                    return ("legitimate_software", "system_administration")
-                elif any(
-                    word in tool_lower
-                    for word in ["office", "word", "excel", "outlook", "sharepoint"]
-                ):
-                    return ("legitimate_software", "productivity_software")
-                elif any(word in tool_lower for word in ["chrome", "firefox", "safari", "browser"]):
-                    return ("legitimate_software", "web_browser")
-                elif any(
-                    word in tool_lower
-                    for word in ["ssh", "ftp", "remote", "vnc", "teamviewer", "anydesk"]
-                ):
-                    return ("legitimate_software", "remote_access")
-                elif any(
-                    word in tool_lower
-                    for word in ["vmware", "docker", "kubernetes", "virtualization"]
-                ):
-                    return ("legitimate_software", "virtualization")
-                elif any(word in tool_lower for word in ["apache", "nginx", "iis", "server"]):
-                    return ("legitimate_software", "server_software")
-                else:
-                    return ("legitimate_software", "legitimate_software")
-
-        # If we have threat data, use it for better categorization
-        if threat_data:
-            core_metadata = threat_data.get("coreMetadata")
-            if not isinstance(core_metadata, dict):
-                core_metadata = {}
-            raw_category = core_metadata.get("category")
-            category_from_data = raw_category.lower() if isinstance(raw_category, str) else ""
-
-            if category_from_data:
-                category_patterns = (
-                    (("remote access", " rat"), ("malware", "remote_access_trojan")),
-                    (
-                        ("post-exploitation", "post exploitation", "framework"),
-                        ("malware", "post_exploitation_framework"),
-                    ),
-                    (("ransomware",), ("malware", "ransomware")),
-                    (("backdoor",), ("malware", "backdoor")),
-                    (("trojan",), ("malware", "trojan")),
-                    (("botnet",), ("malware", "botnet")),
-                    (("downloader", "loader"), ("malware", "loader")),
-                    (("apt",), ("malware", "apt_malware")),
-                    (("malware",), ("malware", "malware")),
-                    (("threat actor", "threat group"), ("threat_group", "threat_actor")),
-                    (("security tool",), ("legitimate_software", "security_tool")),
-                    (
-                        ("software", "technology", "platform"),
-                        ("legitimate_software", "legitimate_software"),
-                    ),
-                )
-                for markers, classification in category_patterns:
-                    if any(marker in f" {category_from_data}" for marker in markers):
-                        return classification
-
-        # Default to unknown if no clear categorization
-        return ("unknown", "unknown")
+        # A structured category that no rule maps cannot match on a second
+        # pass either, so the tool name is the only remaining signal.
+        return classify_tool_name(tool_name) or ("unknown", "unknown")
 
     def reconcile_reader_state(self, *, session: Session | None = None) -> Dict[str, int]:
         """Backfill queryable review state and explicit classification provenance."""

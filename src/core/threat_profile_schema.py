@@ -7,34 +7,24 @@ import logging
 import re
 from copy import deepcopy
 from typing import Any, Literal
-from urllib.parse import parse_qsl, urlencode, urlsplit
+from urllib.parse import urlsplit
 
 from json_repair import repair_json
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from src.core.evidence_admissibility import contains_virtual_event_promotion
+from src.core.profile_tables import (
+    ProfileTables,
+    flatten,
+    render,
+    resolve_lists,
+    with_claims,
+    write_back,
+)
+from src.core.source_urls import attestation_match_key
 
 logger = logging.getLogger(__name__)
 
 _INVALID_JSON_ESCAPE = re.compile(r'\\(?!["\\/bfnrt]|u[0-9a-fA-F]{4})')
-
-_EMBEDDED_EVIDENCE_PATHS = (
-    ("threatIntelligence", "riskAssessment", "riskFactors"),
-    ("forensicArtifacts", "fileSystemArtifacts"),
-    ("forensicArtifacts", "registryArtifacts"),
-    ("forensicArtifacts", "networkArtifacts"),
-    ("forensicArtifacts", "memoryArtifacts"),
-    ("forensicArtifacts", "logArtifacts"),
-    ("detectionAndMitigation", "iocs", "hashes"),
-    ("detectionAndMitigation", "iocs", "domains"),
-    ("detectionAndMitigation", "iocs", "ips"),
-    ("detectionAndMitigation", "iocs", "urls"),
-    ("detectionAndMitigation", "iocs", "filenames"),
-    ("detectionAndMitigation", "behavioralIndicators"),
-    ("mitigationAndResponse", "preventiveMeasures"),
-    ("mitigationAndResponse", "detectionMethods"),
-    ("mitigationAndResponse", "responseActions"),
-    ("mitigationAndResponse", "recoveryGuidance"),
-)
 
 _PLAIN_STRING_LIST_PATHS = (
     ("toolOverview", "knownAliases"),
@@ -60,27 +50,12 @@ _EVIDENCE_WRAPPER_KEYS = {
 }
 
 
-def _lists_at_path(value: Any, path: tuple[str, ...]) -> list[list[Any]]:
-    """Resolve plain-list paths, including list-item wildcards."""
-
-    values = [value]
-    for key in path:
-        resolved: list[Any] = []
-        for candidate in values:
-            if key == "*" and isinstance(candidate, list):
-                resolved.extend(candidate)
-            elif isinstance(candidate, dict) and key in candidate:
-                resolved.append(candidate[key])
-        values = resolved
-    return [candidate for candidate in values if isinstance(candidate, list)]
-
-
 def _unwrap_evidence_objects_from_plain_lists(profile: dict[str, Any]) -> int:
     """Restore non-claim string arrays when a model over-applies evidence wrappers."""
 
     unwrapped = 0
     for path in _PLAIN_STRING_LIST_PATHS:
-        for values in _lists_at_path(profile, path):
+        for values in resolve_lists(profile, path):
             for index, item in enumerate(values):
                 if (
                     isinstance(item, dict)
@@ -146,54 +121,42 @@ def _load_model_json(text: str) -> dict[str, Any]:
     return payload
 
 
+def _embedded_item_is_complete(item: Any) -> bool:
+    """Whether a generated claim item carries the complete evidence it asserts."""
+
+    if not isinstance(item, dict):
+        return True
+    role = item.get("evidenceRole")
+    source_ids = item.get("sourceIds")
+    support = item.get("supportingEvidence")
+    if role == "direct_evidence":
+        support_ids = (
+            [entry.get("sourceId") for entry in support]
+            if isinstance(support, list) and all(isinstance(entry, dict) for entry in support)
+            else []
+        )
+        excerpts_complete = isinstance(support, list) and all(
+            str(entry.get("excerpt") or "").strip() for entry in support if isinstance(entry, dict)
+        )
+        return (
+            isinstance(source_ids, list)
+            and bool(source_ids)
+            and support_ids == source_ids
+            and excerpts_complete
+        )
+    if role == "general_practice" and (source_ids or support):
+        return False
+    return True
+
+
 def _drop_incomplete_embedded_evidence(profile: dict[str, Any]) -> int:
     """Remove model claims that lack the complete evidence identity they assert."""
 
-    dropped = 0
-    for path in _EMBEDDED_EVIDENCE_PATHS:
-        value: Any = profile
-        for key in path:
-            if not isinstance(value, dict):
-                value = None
-                break
-            value = value.get(key)
-        if not isinstance(value, list):
-            continue
-
-        retained: list[Any] = []
-        for item in value:
-            if not isinstance(item, dict):
-                retained.append(item)
-                continue
-            role = item.get("evidenceRole")
-            source_ids = item.get("sourceIds")
-            support = item.get("supportingEvidence")
-            if role == "direct_evidence":
-                support_ids = (
-                    [entry.get("sourceId") for entry in support]
-                    if isinstance(support, list)
-                    and all(isinstance(entry, dict) for entry in support)
-                    else []
-                )
-                excerpts_complete = isinstance(support, list) and all(
-                    str(entry.get("excerpt") or "").strip()
-                    for entry in support
-                    if isinstance(entry, dict)
-                )
-                complete = (
-                    isinstance(source_ids, list)
-                    and bool(source_ids)
-                    and support_ids == source_ids
-                    and excerpts_complete
-                )
-                if not complete:
-                    dropped += 1
-                    continue
-            elif role == "general_practice" and (source_ids or support):
-                dropped += 1
-                continue
-            retained.append(item)
-        value[:] = retained
+    tables = flatten(profile)
+    kept = [row for row in tables.claims if _embedded_item_is_complete(row.raw)]
+    dropped = len(tables.claims) - len(kept)
+    if dropped:
+        write_back(profile, render(with_claims(tables, kept)))
     return dropped
 
 
@@ -659,37 +622,36 @@ def parse_embedded_evidence_correction(response: Any) -> dict[str, Any]:
     return correction.model_dump(mode="json", by_alias=True)
 
 
-def attest_profile_sources(
-    profile: dict[str, Any], web_search_sources: list[dict[str, Any]]
-) -> None:
+def attest_sources(tables: ProfileTables) -> ProfileTables:
     """Reject profile URLs that were not returned by the hosted web-search tool."""
 
     excluded_promotion_urls = {
-        _normalize_url(str(source.get("url", "")))
-        for source in web_search_sources
-        if contains_virtual_event_promotion(source)
+        attestation_match_key(source.url)
+        for source in tables.sources
+        if contains_virtual_event_promotion(source.record)
     }
     evidence_url_pairs = [
-        (str(source.get("url", "")).strip(), normalized)
-        for source in web_search_sources
-        if (normalized := _normalize_url(str(source.get("url", ""))))
+        (source.url.strip(), normalized)
+        for source in tables.sources
+        if (normalized := attestation_match_key(source.url))
     ]
     evidence_urls = {normalized for _, normalized in evidence_url_pairs}
     if not evidence_urls:
         raise ValueError("OpenRouter web search returned no source evidence")
 
+    document = deepcopy(tables.document)
     claimed_sources = _prune_unavailable_source_records(
-        profile["webSearchSources"]["primarySources"]
+        document["webSearchSources"]["primarySources"]
     )
     claimed_references = _prune_unavailable_source_records(
-        profile["referencesAndIntelligenceSharing"]["sources"]
+        document["referencesAndIntelligenceSharing"]["sources"]
     )
     claimed_community_resources = _prune_unavailable_source_records(
-        profile["operationalGuidance"]["communityResources"]
+        document["operationalGuidance"]["communityResources"]
     )
-    profile["webSearchSources"]["primarySources"] = claimed_sources
-    profile["referencesAndIntelligenceSharing"]["sources"] = claimed_references
-    profile["operationalGuidance"]["communityResources"] = claimed_community_resources
+    document["webSearchSources"]["primarySources"] = claimed_sources
+    document["referencesAndIntelligenceSharing"]["sources"] = claimed_references
+    document["operationalGuidance"]["communityResources"] = claimed_community_resources
 
     if not claimed_sources:
         raise ValueError("Threat profile requires at least one attested primary source")
@@ -702,14 +664,14 @@ def attest_profile_sources(
         *claimed_community_resources,
     ]:
         raw_url = str(source.get("url", ""))
-        normalized = _normalize_url(raw_url)
+        normalized = attestation_match_key(raw_url)
         if not normalized:
             raise ValueError(f"Threat profile included an invalid source URL: {raw_url!r}")
         if normalized not in evidence_urls:
             replacement = _resolve_unique_attested_descendant(raw_url, evidence_url_pairs)
             if replacement:
                 source["url"] = replacement
-                normalized = _normalize_url(replacement)
+                normalized = attestation_match_key(replacement)
         if normalized in excluded_promotion_urls:
             raise ValueError("Threat profile cites an excluded virtual-event promotion")
         claimed_urls.add(normalized)
@@ -732,13 +694,14 @@ def attest_profile_sources(
             )
 
     evidence_ids_by_url = {
-        normalized: str(source.get("sourceId") or "").strip()
-        for source in web_search_sources
-        if (normalized := _normalize_url(str(source.get("url", ""))))
+        normalized: source.source_id
+        for source in tables.sources
+        if (normalized := attestation_match_key(source.url))
     }
     for source in claimed_sources:
-        normalized = _normalize_url(str(source.get("url", "")))
-        canonical_source_id = evidence_ids_by_url.get(normalized)
+        canonical_source_id = evidence_ids_by_url.get(
+            attestation_match_key(str(source.get("url", "")))
+        )
         if not canonical_source_id:
             raise ValueError("Threat profile source ID does not match its attested URL")
         source["sourceId"] = canonical_source_id
@@ -747,11 +710,9 @@ def attest_profile_sources(
     if any(not source_id for source_id in source_ids) or len(set(source_ids)) != len(source_ids):
         raise ValueError("Threat profile primary source IDs must be non-empty and unique")
 
-    attribution = profile.get("claimAttribution")
-    claims = attribution.get("claims") if isinstance(attribution, dict) else None
-    if not isinstance(attribution, dict) or attribution.get("schemaVersion") != "5":
+    if not tables.has_attribution_mapping or tables.schema_version != "5":
         raise ValueError("Threat profile claim attribution must use schema version 5")
-    if not isinstance(claims, list):
+    if not tables.attribution_listed:
         raise ValueError("Threat profile claim attribution is incomplete")
     required_classes = {
         "threat_activity",
@@ -761,9 +722,10 @@ def attest_profile_sources(
     }
     observed_classes: set[str] = set()
     known_source_ids = set(source_ids)
-    for claim in claims:
-        if not isinstance(claim, dict):
+    for record in tables.attributions:
+        if not isinstance(record.raw, dict):
             raise ValueError("Threat profile claim attribution contains an invalid claim")
+        claim = record.raw
         observed_classes.add(str(claim.get("claimClass") or ""))
         cited_ids = claim.get("sourceIds")
         supporting_evidence = claim.get("supportingEvidence")
@@ -785,6 +747,16 @@ def attest_profile_sources(
             raise ValueError("Threat profile claim attribution references an unknown source ID")
     if not required_classes.issubset(observed_classes):
         raise ValueError("Threat profile claim attribution is missing a high-risk claim class")
+    return tables.with_document(document)
+
+
+def attest_profile_sources(
+    profile: dict[str, Any], web_search_sources: list[dict[str, Any]]
+) -> None:
+    """Reject profile URLs that were not returned by the hosted web-search tool."""
+
+    # A failed attestation leaves the profile unchanged; it is all-or-nothing.
+    write_back(profile, render(attest_sources(flatten(profile, web_search_sources))))
 
 
 def _prune_unavailable_source_records(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -819,19 +791,6 @@ def _resolve_unique_attested_descendant(
 
 
 def _normalize_url(value: str) -> str:
-    value = value.strip()
-    if not value:
-        return ""
-    parts = urlsplit(value)
-    if parts.scheme not in {"http", "https"} or not parts.netloc:
-        return ""
-    path = parts.path.rstrip("/") or "/"
-    query = urlencode(
-        sorted(
-            (key, item)
-            for key, item in parse_qsl(parts.query, keep_blank_values=True)
-            if not key.lower().startswith("utm_") and key.lower() not in {"fbclid", "gclid"}
-        )
-    )
-    suffix = f"?{query}" if query else ""
-    return f"{parts.netloc.lower()}{path}{suffix}"
+    """Attestation comparison key; kept for callers of the historical name."""
+
+    return attestation_match_key(value)
