@@ -4,12 +4,10 @@ import remarkGfm from 'remark-gfm';
 
 import { getSafeExternalUrl } from './report-links';
 import { reportHeadingId } from '@/lib/report-content';
-import { applyClaimAttributions } from '@/lib/claim-attribution';
-import type { ClaimAttributionEntry } from '@/lib/api-contracts';
 
 type ReportNarrativeProps = {
+  /** Rendered by the backend, including each high-risk claim's source anchor. */
   markdown: string;
-  claimAttributions?: ClaimAttributionEntry[];
 };
 
 function safeNarrativeUrl(value: string | undefined): string | null {
@@ -17,8 +15,7 @@ function safeNarrativeUrl(value: string | undefined): string | null {
   return getSafeExternalUrl(value);
 }
 
-export function ReportNarrative({ markdown, claimAttributions }: ReportNarrativeProps) {
-  const attributedMarkdown = applyClaimAttributions(markdown, claimAttributions);
+export function ReportNarrative({ markdown }: ReportNarrativeProps) {
   const headingText = (children: ReactNode): string => (
     Array.isArray(children) ? children.join('') : String(children ?? '')
   );
@@ -99,7 +96,7 @@ export function ReportNarrative({ markdown, claimAttributions }: ReportNarrative
           strong: ({ children }) => <strong className="font-semibold text-zinc-950">{children}</strong>,
         }}
       >
-        {attributedMarkdown}
+        {markdown}
       </ReactMarkdown>
     </div>
   );

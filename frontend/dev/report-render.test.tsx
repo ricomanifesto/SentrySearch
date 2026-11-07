@@ -104,17 +104,9 @@ test('renders structured source evidence as inspectable links', () => {
 });
 
 test('links explicit claim attribution to source identity without duplicating the ledger', () => {
+  // The backend renderer places each claim's citation beside the claim it supports.
   const narrative = renderToStaticMarkup(
-    <ReportNarrative
-      markdown="## Detection\n\nUnexpected service creation"
-      claimAttributions={[
-        {
-          claim_class: 'detection_indicator',
-          claim: 'Unexpected service creation',
-          source_ids: ['S1'],
-        },
-      ]}
-    />,
+    <ReportNarrative markdown="## Detection\n\n- Unexpected service creation [S1](#source-S1)" />,
   );
   const sources = renderToStaticMarkup(
     <SourceEvidence
@@ -242,16 +234,7 @@ test('names indicators quarantined before operational reuse', () => {
 
 test('places forensic-artifact citations outside inline code', () => {
   const narrative = renderToStaticMarkup(
-    <ReportNarrative
-      markdown="## Forensic artifacts\n\nObserved `payload.dll` in the injected process."
-      claimAttributions={[
-        {
-          claim_class: 'forensic_artifact',
-          claim: 'payload.dll',
-          source_ids: ['S1'],
-        },
-      ]}
-    />,
+    <ReportNarrative markdown={'## Forensic artifacts\n\n- `payload.dll` [S1](#source-S1)'} />,
   );
 
   assert.match(narrative, /<code[^>]*>payload\.dll<\/code> <a href="#source-S1"/);
@@ -268,13 +251,6 @@ test('does not inject claim citations into fenced detection rules', () => {
         'Image: payload.dll',
         '```',
       ].join('\n')}
-      claimAttributions={[
-        {
-          claim_class: 'forensic_artifact',
-          claim: 'payload.dll',
-          source_ids: ['S1'],
-        },
-      ]}
     />,
   );
 
@@ -288,21 +264,9 @@ test('attributes overlapping claims once without rescanning inserted citations',
       markdown={[
         '## Forensic artifacts',
         '',
-        '- `Process hollowing and injection artifacts`',
-        '- Process hollowing and injection',
+        '- `Process hollowing and injection artifacts` [S8](#source-S8)',
+        '- Process hollowing and injection [S8](#source-S8)',
       ].join('\n')}
-      claimAttributions={[
-        {
-          claim_class: 'forensic_artifact',
-          claim: 'Process hollowing and injection artifacts',
-          source_ids: ['S8'],
-        },
-        {
-          claim_class: 'detection_indicator',
-          claim: 'Process hollowing and injection',
-          source_ids: ['S8'],
-        },
-      ]}
     />,
   );
 
@@ -313,6 +277,14 @@ test('attributes overlapping claims once without rescanning inserted citations',
   );
   assert.match(narrative, /<li[^>]*>Process hollowing and injection <a href="#source-S8"/);
   assert.doesNotMatch(narrative, /<code[^>]*>[^<]*\[S8\]/);
+});
+
+test('renders the narrative as stored without adding citations of its own', () => {
+  const markdown = '## Detection\n\n- Unexpected service creation';
+  const narrative = renderToStaticMarkup(<ReportNarrative markdown={markdown} />);
+
+  assert.doesNotMatch(narrative, /href="#source-/);
+  assert.match(narrative, /<li[^>]*>Unexpected service creation<\/li>/);
 });
 
 test('labels canonical sample evidence as a captured snapshot', () => {

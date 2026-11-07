@@ -19,7 +19,7 @@ from src.core.markdown_generator import generate_markdown
 from src.core.threat_profile_generator import ThreatProfileGenerator
 from src.core.threat_profile_schema import attest_profile_sources
 from src.core.source_ledger import canonicalize_profile_sources
-from src.storage.models import Report, ReportDispositionEvent
+from src.storage.models import ReportArtifact, Report, ReportDispositionEvent
 from src.storage.report_service import ReportStorageService
 from tests.test_evidence_admissibility import OPERATIONAL_SOURCE as EVIDENCE_SOURCE
 
@@ -545,6 +545,15 @@ def retained_storage(monkeypatch):
             user_id="reader",
             status="completed",
             markdown_s3_key=f"{report_id}.md",
+            # The policy decision recorded when each artifact was written.
+            artifacts=[
+                ReportArtifact(
+                    kind="markdown",
+                    s3_key=f"{report_id}.md",
+                    policy_status="allowed",
+                    policy_version=1,
+                )
+            ],
         )
         for report_id in ["clean", "blocked"]
     ]
@@ -577,7 +586,9 @@ def retained_storage(monkeypatch):
 @pytest.mark.parametrize("marker_field", ["markdown", "search_tags", "historical_disposition"])
 def test_stored_policy_markers_are_excluded_from_collections(monkeypatch, endpoint, marker_field):
     service, session, reports = retained_storage(monkeypatch)
-    if marker_field != "markdown":
+    if marker_field == "markdown":
+        reports[1].artifacts[0].policy_status = "excluded"
+    else:
         service.s3_manager.download_content.side_effect = None
         service.s3_manager.download_content.return_value = "Security analysis"
         if marker_field == "search_tags":
@@ -631,9 +642,8 @@ def test_stored_policy_markers_are_excluded_from_collections(monkeypatch, endpoi
     assert "markdown_content" not in serialized
     assert "clean.md" not in serialized
     assert "blocked.md" not in serialized
-    assert service.s3_manager.download_content.call_count == (
-        2 if marker_field == "markdown" else 1
-    )
+    # Collections use the stored artifact decision and never read objects.
+    service.s3_manager.download_content.assert_not_called()
     assert [report.to_dict() for report in reports] == original
     session.commit.assert_not_called()
 
@@ -652,14 +662,17 @@ def test_retained_s3_only_marker_is_checked_by_detail_without_duplicate_download
 
 
 def test_retained_s3_failure_never_counts_as_policy_admission(monkeypatch):
-    service, session, _ = retained_storage(monkeypatch)
+    service, session, reports = retained_storage(monkeypatch)
+    # Reconciliation could not read this artifact, so its decision is unknown.
+    reports[1].artifacts[0].policy_status = "unknown"
     service.s3_manager.download_content.side_effect = RuntimeError("Object unavailable")
     user = AuthenticatedUser(user_id="reader", email="reader@example.com", metadata={})
-    with pytest.raises(HTTPException) as error:
-        asyncio.run(
-            api_main.search_reports(api_main.SearchFilters(), api_main.PaginationParams(), user)
-        )
-    assert error.value.status_code == 500
+    response = asyncio.run(
+        api_main.search_reports(api_main.SearchFilters(), api_main.PaginationParams(), user)
+    )
+    assert [report.id for report in response["reports"]] == ["clean"]
+    assert response["pagination"]["excluded_on_page"] == 1
+    service.s3_manager.download_content.assert_not_called()
     session.commit.assert_not_called()
 
 

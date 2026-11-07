@@ -71,10 +71,7 @@ export default function SampleReport() {
         <div className="fade-up fade-up-2 mt-10 grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start">
           <section className="order-last min-w-0 rounded-xl border border-zinc-200 bg-white p-6 sm:p-8 lg:order-first">
             <p className="text-base font-semibold text-zinc-950">Intelligence narrative</p>
-            <ReportNarrative
-              markdown={SAMPLE_REPORT.markdown_content ?? ''}
-              claimAttributions={SAMPLE_REPORT.claim_attributions}
-            />
+            <ReportNarrative markdown={SAMPLE_REPORT.markdown_content ?? ''} />
           </section>
           <aside className="order-first rounded-xl border border-zinc-200 bg-white p-5 lg:order-last lg:sticky lg:top-24">
             <SourceEvidence

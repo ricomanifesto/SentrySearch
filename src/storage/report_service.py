@@ -45,6 +45,7 @@ from src.core.source_ledger import (
 )
 from src.core.evidence_admissibility import assert_no_virtual_event_promotions
 from src.core.report_content_policy import (
+    ARTIFACT_POLICY_ALLOWED,
     ARTIFACT_POLICY_UNKNOWN,
     ARTIFACT_POLICY_VERSION,
     artifact_policy_status,
@@ -65,6 +66,7 @@ from .models import (
     ReportRuntimeDispatch,
     ReportSourceObservationRow,
     ReportSourceRow,
+    ReportTag,
 )
 from .profile_rows import ProfileRows, content_address, profile_rows
 from .s3_manager import s3_manager
@@ -181,6 +183,47 @@ class ReportStorageService:
         model.findings = [ReportFindingRow(**row) for row in rows.findings]
 
     @staticmethod
+    def _row_snapshot(report: Report) -> Dict[str, list[Dict[str, Any]]]:
+        """Plain column dictionaries for the detail projection's evidence rows."""
+
+        def columns(rows: Any) -> list[Dict[str, Any]]:
+            return [
+                {
+                    column.key: getattr(row, column.key)
+                    for column in row.__table__.columns
+                    if column.key != "report_id"
+                }
+                for row in rows or []
+            ]
+
+        model = cast(Any, report)
+        return {
+            "sources": columns(model.profile_sources),
+            "claims": columns(model.profile_claims),
+            "claim_support": columns(model.claim_support),
+            "indicator_observations": columns(model.indicator_observations),
+            "source_observations": columns(model.source_observations),
+            "findings": columns(model.findings),
+        }
+
+    @staticmethod
+    def _write_tags(report: Report, search_tags: Any) -> None:
+        """Keep ``report_tags`` equal to the report's search tags."""
+
+        model = cast(Any, report)
+        wanted = list(
+            dict.fromkeys(
+                str(tag).strip()[:100]
+                for tag in (search_tags if isinstance(search_tags, list) else [])
+                if str(tag).strip()
+            )
+        )
+        current = {tag.tag: tag for tag in (model.tags or [])}
+        if list(current) == wanted:
+            return
+        model.tags = [current.get(tag) or ReportTag(tag=tag) for tag in wanted]
+
+    @staticmethod
     def _write_artifact(
         report: Report,
         kind: str,
@@ -268,8 +311,17 @@ class ReportStorageService:
             ]
             current_event = current_events[-1] if current_events else None
             report_dict = report.to_dict()
-            # Policy projection needs retained content even for metadata-only reads.
+            # Detail and download still read the object; collections use the
+            # stored artifact policy decision instead.
             report_dict["_markdown_s3_key"] = report.markdown_s3_key
+            report_dict["_markdown_policy_status"] = next(
+                (
+                    artifact.policy_status
+                    for artifact in (getattr(report, "artifacts", None) or [])
+                    if artifact.kind == "markdown" and artifact.s3_key == report.markdown_s3_key
+                ),
+                None,
+            )
             report_dict["analyst_disposition"] = (
                 current_event.disposition
                 if current_event is not None
@@ -435,29 +487,35 @@ class ReportStorageService:
                 )
             )
         if filters.eligible_for_handoff:
-            expressions.extend(
-                [
-                    Report.status == ReportStatus.COMPLETED.value,
-                    Report.quality_score.isnot(None),
-                    or_(
-                        Report.evaluation_status == EvaluationStatus.COMPLETED.value,
-                        and_(
-                            Report.evaluation_status.is_(None),
-                            Report.quality_score.isnot(None),
-                        ),
-                        and_(
-                            Report.evaluation_status == EvaluationStatus.UNRECORDED.value,
-                            Report.quality_score.isnot(None),
-                        ),
-                    ),
-                    Report.evidence_admissibility_status
-                    == EvidenceAdmissibilityStatus.PASSED.value,
-                    latest_disposition == AnalystDisposition.ACCEPTED.value,
-                ]
-            )
+            # Stored at write time by the domain rules; never re-encoded here.
+            expressions.append(Report.eligible_for_handoff.is_(True))
+        # The stored content-policy decision replaces per-read object downloads.
+        expressions.append(ReportStorageService._content_policy_allows())
         if filters.created_after:
             expressions.append(Report.created_at >= filters.created_after)
         return tuple(expressions)
+
+    @staticmethod
+    def _content_policy_allows():
+        """Withhold rows whose current Markdown has no ``allowed`` policy decision.
+
+        ``excluded``, ``unknown`` (unreadable at reconciliation), and a missing
+        decision for the current key all fail closed; reconciliation re-reads
+        ``unknown`` artifacts.
+        """
+
+        return or_(
+            Report.markdown_s3_key.is_(None),
+            select(ReportArtifact.report_id)
+            .where(
+                ReportArtifact.report_id == Report.id,
+                ReportArtifact.kind == "markdown",
+                ReportArtifact.s3_key == Report.markdown_s3_key,
+                ReportArtifact.policy_status == ARTIFACT_POLICY_ALLOWED,
+            )
+            .correlate(Report)
+            .exists(),
+        )
 
     @staticmethod
     def _coerce_report_filters(
@@ -664,6 +722,7 @@ class ReportStorageService:
                     ) != len(rows.findings):
                         summary["profile_row_updates"] += 1
                     self._write_profile_rows(report, rows)
+                    self._write_tags(report, report.search_tags)
                     summary["artifact_policy_updates"] += self._reconcile_artifacts(
                         report, read_artifacts=read_artifacts
                     )
@@ -825,6 +884,7 @@ class ReportStorageService:
                         else None
                     ),
                 )
+                self._write_tags(report, report.search_tags)
 
                 session.add(report)
                 session.commit()
@@ -1029,6 +1089,7 @@ class ReportStorageService:
                         else None
                     ),
                 )
+                self._write_tags(report, report.search_tags)
 
                 session.commit()
                 logger.info(f"Report finalized successfully: {report_id}")
@@ -1549,6 +1610,7 @@ class ReportStorageService:
                     return None
 
                 report_dict = self._attach_disposition_state(session, [report])[0]
+                report_dict["_rows"] = self._row_snapshot(report)
                 # Load content from S3 if requested
                 if include_content:
                     if report.markdown_s3_key:
@@ -1848,9 +1910,7 @@ class ReportStorageService:
                         Report.generation_route,
                         Report.synthesis_route,
                         Report.evaluation_status,
-                        Report.quality_assessment,
-                        Report.web_sources,
-                        Report.threat_data,
+                        Report.review_status,
                         Report.evidence_admissibility_status,
                         Report.generation_error_code,
                         Report.generation_failure_stage,
@@ -1880,10 +1940,8 @@ class ReportStorageService:
                                 float(row.quality_score) if row.quality_score is not None else None
                             ),
                         ),
-                        quality_assessment=row.quality_assessment,
-                        source_count=self._source_count_from_values(
-                            row.web_sources,
-                            row.threat_data,
+                        review_status=(
+                            ReviewStatus(row.review_status) if row.review_status else None
                         ),
                         evidence_admissibility_status=EvidenceAdmissibilityStatus(
                             row.evidence_admissibility_status
@@ -1951,27 +2009,24 @@ class ReportStorageService:
             raise
 
     def get_popular_tags(self, limit: int = 50, user_id: Optional[str] = None) -> List[str]:
-        """Get most popular tags"""
+        """Most frequent tags, counted in SQL over ``report_tags``."""
         try:
             with self.db_manager.get_session() as session:
-                # For now, return unique values from search_tags arrays
-                # In a production system, you'd want proper tag frequency counting
-                query = session.query(Report.search_tags).filter(Report.search_tags.isnot(None))
+                frequency = func.count(ReportTag.id)
+                query = (
+                    session.query(ReportTag.tag, frequency)
+                    .join(Report, Report.id == ReportTag.report_id)
+                    .filter(self._content_policy_allows())
+                )
                 if user_id:
                     query = query.filter(Report.user_id == user_id)
-
-                results = query.all()
-
-                all_tags = []
-                for result in results:
-                    if result[0]:  # search_tags is a list
-                        all_tags.extend(result[0])
-
-                # Count frequency and return most popular
-                from collections import Counter
-
-                tag_counts = Counter(all_tags)
-                return [tag for tag, count in tag_counts.most_common(limit)]
+                rows = (
+                    query.group_by(ReportTag.tag)
+                    .order_by(frequency.desc(), ReportTag.tag.asc())
+                    .limit(limit)
+                    .all()
+                )
+                return [tag for tag, _count in rows]
 
         except Exception as e:
             logger.error(f"Error getting popular tags: {e}")
@@ -2004,7 +2059,7 @@ class ReportStorageService:
             with self.db_manager.get_session() as session:
                 from sqlalchemy import func
 
-                quality_filter = [Report.quality_score.isnot(None)]
+                quality_filter = [Report.quality_score.isnot(None), self._content_policy_allows()]
                 if user_id:
                     quality_filter.append(Report.user_id == user_id)
 
@@ -2013,24 +2068,35 @@ class ReportStorageService:
                     session.query(func.avg(Report.quality_score)).filter(*quality_filter).scalar()
                 )
 
-                # Get distribution buckets
-                quality_scores = session.query(Report.quality_score).filter(*quality_filter).all()
-
-                scores = [float(score[0]) for score in quality_scores if score[0] is not None]
-
-                # Create distribution buckets
+                # One aggregate row: width_bucket assigns 0-5 scores to five
+                # unit buckets; 5.00 falls in the overflow bucket and joins 4-5.
+                bucket = func.width_bucket(Report.quality_score, 0, 5, 5)
+                counts = (
+                    session.query(
+                        func.count().filter(bucket == 1),
+                        func.count().filter(bucket == 2),
+                        func.count().filter(bucket == 3),
+                        func.count().filter(bucket == 4),
+                        func.count().filter(bucket.in_([5, 6])),
+                        func.count(),
+                    )
+                    .filter(*quality_filter)
+                    .all()
+                )
+                values = [int(value or 0) for value in counts[0]] if counts else [0] * 6
                 buckets = {
-                    "0.0-1.0": len([s for s in scores if 0.0 <= s < 1.0]),
-                    "1.0-2.0": len([s for s in scores if 1.0 <= s < 2.0]),
-                    "2.0-3.0": len([s for s in scores if 2.0 <= s < 3.0]),
-                    "3.0-4.0": len([s for s in scores if 3.0 <= s < 4.0]),
-                    "4.0-5.0": len([s for s in scores if 4.0 <= s <= 5.0]),
+                    "0.0-1.0": values[0],
+                    "1.0-2.0": values[1],
+                    "2.0-3.0": values[2],
+                    "3.0-4.0": values[3],
+                    "4.0-5.0": values[4],
                 }
+                total_scored = values[5]
 
                 return {
                     "average": float(avg_quality) if avg_quality is not None else None,
                     "distribution": buckets,
-                    "total_scored": len(scores),
+                    "total_scored": total_scored,
                 }
 
         except Exception as e:

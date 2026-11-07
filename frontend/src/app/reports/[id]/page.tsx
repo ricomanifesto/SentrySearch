@@ -849,10 +849,7 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
           <section id="intelligence-narrative" className="order-last min-w-0 scroll-mt-6 border-t border-zinc-200 pt-6 lg:order-first">
             <p className="text-base font-semibold text-zinc-950">Intelligence narrative</p>
             {report.markdown_content ? (
-              <ReportNarrative
-                markdown={contentParts.narrative}
-                claimAttributions={report.claim_attributions}
-              />
+              <ReportNarrative markdown={contentParts.narrative} />
             ) : (
               <div className="mt-4 rounded-lg border border-dashed border-zinc-300 px-5 py-8 text-center">
                 <p className="text-sm font-medium text-zinc-950">Narrative unavailable</p>

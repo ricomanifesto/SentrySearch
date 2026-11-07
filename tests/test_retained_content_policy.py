@@ -316,39 +316,28 @@ def test_expired_request_never_submits_even_when_capacity_is_free(monkeypatch):
         reader.close()
 
 
-def test_collection_object_reads_are_bounded_nonblocking_and_keep_order(monkeypatch):
-    from src.storage.retained_content import RetainedContentReader
-
-    reader = RetainedContentReader(max_workers=4, timeout_seconds=2)
-    monkeypatch.setattr(api, "retained_content_reader", reader)
+def test_collection_projection_reads_no_objects_and_keeps_order(monkeypatch):
     service = Mock()
-    rows = [{**collection_report(str(i)), "_markdown_s3_key": f"{i // 2}.md"} for i in range(100)]
-    calls = []
-
-    def load(key):
-        calls.append(key)
-        sleep(0.01)
-        return "[Virtual Event] Briefing" if key == "2.md" else "Security events"
-
-    service.s3_manager.download_content.side_effect = load
+    # Two rows share the excluded object; its decision was stored at write time.
+    rows = [
+        {
+            **collection_report(str(i)),
+            "_markdown_s3_key": f"{i // 2}.md",
+            "_markdown_policy_status": "excluded" if i // 2 == 2 else "allowed",
+        }
+        for i in range(100)
+    ]
+    service.s3_manager.download_content.side_effect = AssertionError("no object reads")
     monkeypatch.setattr(api, "report_service", service)
     original = deepcopy(rows)
 
-    async def scenario():
-        task = asyncio.create_task(api.report_collection_fields(rows))
-        await asyncio.sleep(0.03)
-        assert not task.done()
-        projected, excluded = await task
-        assert excluded == 2
-        assert [fields["id"] for _, fields in projected] == [
-            str(i) for i in range(100) if i not in {4, 5}
-        ]
+    projected, excluded = asyncio.run(api.report_collection_fields(rows))
 
-    try:
-        asyncio.run(scenario())
-    finally:
-        reader.close()
-    assert len(calls) == 50
+    assert excluded == 2
+    assert [fields["id"] for _, fields in projected] == [
+        str(i) for i in range(100) if i not in {4, 5}
+    ]
+    service.s3_manager.download_content.assert_not_called()
     assert rows == original
 
 

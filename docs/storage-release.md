@@ -99,6 +99,16 @@ backfill). It recomputes every artifact whose stored version is older, plus any
 `unknown` result. Reader-state rule changes work the same way through
 `READER_STATE_VERSION` in `src/domain/reports.py`.
 
+### Reads from rows and stored columns
+
+- **Collections:** list, search, count, the analytics and dashboard endpoints, and handoff export filter on the stored columns and on `report_artifacts.policy_status` in SQL. They never download report objects and never recompute review state. A row whose current Markdown has no `allowed` decision is withheld; that includes `excluded`, `unknown`, and a decision recorded for a different object key. Run the release (or the reconciliation command) with artifact credentials so retained Markdown resolves to `allowed` or `excluded` rather than staying `unknown`.
+- **`eligible_for_handoff` filter:** reads the stored column. The SQL re-encoding of the eligibility rules is removed.
+- **Popular tags:** counted with `GROUP BY` over `report_tags`. Writers keep `report_tags` equal to each report's search tags, and the reconciliation backfills it for retained reports.
+- **Quality-score buckets:** computed with `width_bucket` in one aggregate query.
+- **Analytics records:** select scalar columns only, including the stored `review_status`.
+- **Report detail:** projects the source rail, claim links, and evidence observations and findings from the row tables. `threat_data` remains a rendered artifact for the inspection panel. The detail and download paths still read the Markdown object, because they return it.
+- **Citations:** the Markdown renderer places each attributed high-risk claim's citation (`[S1](#source-S1)`, or **General practice**) beside the claim. The reader no longer re-attaches citations by text search. Retained Markdown rendered before this change keeps its stored text without inline citations; the source rail and claim ledger are unchanged.
+
 ## Database configuration
 
 - `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` construct a structured
