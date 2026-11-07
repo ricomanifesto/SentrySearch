@@ -1,6 +1,8 @@
 """Explicit integration suite; run with dev/check_runtime_consistency.py."""
 
 import io
+from pathlib import Path
+import json
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -38,6 +40,18 @@ def reports():
     service = ReportStorageService()
     service.db_manager = manager
     objects: dict[str, bytes] = {}
+    service.s3_manager = _object_store(objects)
+    try:
+        yield service, objects
+    finally:
+        engine.dispose()
+        with admin.connect() as connection:
+            connection.execute(text(f'DROP DATABASE "{name}" WITH (FORCE)'))
+        admin.dispose()
+
+
+def _object_store(objects: dict[str, bytes]) -> S3StorageManager:
+    """In-memory artifacts; proofs never reach a real object store."""
 
     class Client:
         def put_object(self, **kwargs):
@@ -51,14 +65,7 @@ def reports():
     store = S3StorageManager()
     store._initialized = True
     store.s3_client = cast(Any, Client())
-    service.s3_manager = store
-    try:
-        yield service, objects
-    finally:
-        engine.dispose()
-        with admin.connect() as connection:
-            connection.execute(text(f'DROP DATABASE "{name}" WITH (FORCE)'))
-        admin.dispose()
+    return store
 
 
 @pytest.fixture
@@ -629,6 +636,8 @@ def deadline_evaluator_worker(settings, stop, emit):
     manager.SessionLocal = sessionmaker(bind=manager.engine, expire_on_commit=False)
     service = ReportStorageService()
     service.db_manager = manager
+    saved = json.loads(Path(os.environ["SENTRYSEARCH_TEST_OBJECTS"]).read_text())
+    service.s3_manager = _object_store({key: body.encode() for key, body in saved.items()})
 
     def unexpected_generation(*_args):
         raise AssertionError("saved-evidence recovery must not generate")
@@ -651,7 +660,7 @@ def deadline_evaluator_worker(settings, stop, emit):
 
 
 def test_evaluation_deadline_leaves_a_recoverable_product_lease(
-    reports, artifact, runtime_clients, monkeypatch
+    reports, artifact, runtime_clients, monkeypatch, tmp_path
 ):
     from types import SimpleNamespace
     from src.api import main as api
@@ -671,6 +680,11 @@ def test_evaluation_deadline_leaves_a_recoverable_product_lease(
     service.finalize_report(report_id, artifact, generation_lease=lease)
     runtime.complete(run.run_id, run.lease_owner, run.lease_version, {"report_id": report_id})
     monkeypatch.setenv("SENTRYSEARCH_TEST_PRODUCT_URL", str(service.db_manager.engine.url))
+    saved_objects = tmp_path / "objects.json"
+    saved_objects.write_text(
+        json.dumps({key: bytes(body).decode() for key, body in _objects.items()})
+    )
+    monkeypatch.setenv("SENTRYSEARCH_TEST_OBJECTS", str(saved_objects))
     supervisor = WorkerSupervisor(
         WorkerSettings(once=True, evaluation_seconds=0.5), deadline_evaluator_worker
     )

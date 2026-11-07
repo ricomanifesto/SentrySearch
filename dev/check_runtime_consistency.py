@@ -88,6 +88,9 @@ def main() -> None:
             env["PYTHON_DOTENV_DISABLED"] = "1"
             env["ENVIRONMENT"] = "test"
             env["AWS_EC2_METADATA_DISABLED"] = "true"
+            # Never resolve the operator's shared AWS profile in a proof.
+            env["AWS_SHARED_CREDENTIALS_FILE"] = os.devnull
+            env["AWS_CONFIG_FILE"] = os.devnull
             env["SENTRYSEARCH_TEST_PG_BIN"] = str(pg_bin)
             env["SENTRYSEARCH_EXECUTION_MODE"] = "runtime"
             env["DATABASE_URL"] = f"postgres://postgres@/postgres?host={pg_socket}&sslmode=disable"
