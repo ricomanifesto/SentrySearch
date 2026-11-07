@@ -1,5 +1,6 @@
 """Explicit integration suite; run with dev/check_runtime_consistency.py."""
 
+import io
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -41,6 +42,11 @@ def reports():
     class Client:
         def put_object(self, **kwargs):
             objects[kwargs["Key"]] = kwargs["Body"]
+
+        def get_object(self, **kwargs):
+            # Evaluation reads saved Markdown back for the content policy check.
+            body = objects[kwargs["Key"]]
+            return {"Body": io.BytesIO(body if isinstance(body, bytes) else body.encode())}
 
     store = S3StorageManager()
     store._initialized = True
