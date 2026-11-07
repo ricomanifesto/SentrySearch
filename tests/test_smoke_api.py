@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import os
 import uuid
 from types import SimpleNamespace
@@ -1429,7 +1430,24 @@ def test_route_performance_separates_primary_fallback_and_legacy_reports():
     ]
 
     comparison = api_main.build_route_performance(records)
+    uncertainty_keys = ("quality_half_width", "quality_interval", "distinguishable_from")
+    uncertainty = [{key: route.pop(key) for key in uncertainty_keys} for route in comparison]
 
+    single_report_width = math.sqrt(math.log(40) / 2) * 5
+    assert uncertainty == [
+        {
+            "quality_half_width": pytest.approx(single_report_width),
+            "quality_interval": [0.0, 5.0],
+            "distinguishable_from": [],
+        },
+        {
+            "quality_half_width": pytest.approx(single_report_width),
+            "quality_interval": [0.0, 5.0],
+            "distinguishable_from": [],
+        },
+        {"quality_half_width": None, "quality_interval": None, "distinguishable_from": []},
+        {"quality_half_width": None, "quality_interval": None, "distinguishable_from": []},
+    ]
     assert comparison == [
         {
             "route": "primary",

@@ -7,7 +7,8 @@ import { DashboardBriefingSignals } from '../src/components/DashboardBriefingSig
 import { ReviewStatusBanner } from '../src/components/report/ReviewStatusBanner';
 import { AnalystDispositionPanel } from '../src/components/report/AnalystDispositionPanel';
 import { NavigationSessionActions } from '../src/components/layout/Navigation';
-import type { AnalyticsDashboard, ExportConfig, SearchFilters } from '../src/lib/api-contracts';
+import type { AnalyticsDashboard, ExportConfig, RoutePerformance, SearchFilters } from '../src/lib/api-contracts';
+import { getRouteQualityPresentation } from '../src/lib/route-quality';
 import { getReportSectionLinks, splitReportContent } from '../src/lib/report-content';
 import { getReviewAttentionSummary } from '../src/lib/review-attention';
 import { getGenerationFailurePresentation } from '../src/lib/generation-failure';
@@ -590,4 +591,68 @@ test('activity API preserves scan completeness alongside real events', async () 
   } finally {
     api.getDashboardAnalytics = original;
   }
+});
+
+const routeQualityLabels = {
+  primary: 'Requested synthesis route',
+  fallback: 'Fallback synthesis route',
+  legacy_aggregate: 'Legacy aggregate route',
+  unrecorded: 'Legacy / unrecorded',
+} as const;
+
+function routePerformance(overrides: Partial<RoutePerformance> & Pick<RoutePerformance, 'route'>): RoutePerformance {
+  return {
+    report_count: 0,
+    scored_report_count: 0,
+    runtime_recorded_count: 0,
+    avg_quality_score: null,
+    avg_processing_time_ms: null,
+    quality_half_width: null,
+    quality_interval: null,
+    distinguishable_from: [],
+    ...overrides,
+  };
+}
+
+test('route quality shows the 95% half-width beside the average in native points', () => {
+  const primary = routePerformance({
+    route: 'primary', report_count: 20, scored_report_count: 20, avg_quality_score: 4, quality_half_width: 1.5186, quality_interval: [2.4814, 5],
+  });
+
+  const presentation = getRouteQualityPresentation(primary, [primary], routeQualityLabels);
+
+  assert.equal(presentation.summary, '4.00 ± 1.52 average content quality');
+  assert.equal(presentation.indistinguishableNote, null);
+});
+
+test('route quality notes scored routes it cannot be distinguished from at 95%', () => {
+  const primary = routePerformance({
+    route: 'primary', scored_report_count: 20, avg_quality_score: 4, quality_half_width: 1.52, quality_interval: [2.48, 5],
+  });
+  const fallback = routePerformance({
+    route: 'fallback', scored_report_count: 20, avg_quality_score: 3, quality_half_width: 1.52, quality_interval: [1.48, 4.52],
+  });
+  const unscored = routePerformance({ route: 'legacy_aggregate', report_count: 3 });
+  const routes = [primary, fallback, unscored];
+
+  assert.equal(
+    getRouteQualityPresentation(primary, routes, routeQualityLabels).indistinguishableNote,
+    'Not distinguishable from fallback synthesis route at 95% confidence',
+  );
+  assert.deepEqual(getRouteQualityPresentation(unscored, routes, routeQualityLabels), {
+    summary: 'Content quality not scored',
+    indistinguishableNote: null,
+  });
+});
+
+test('route quality omits the note once intervals separate', () => {
+  const primary = routePerformance({
+    route: 'primary', scored_report_count: 185, avg_quality_score: 4.5, quality_half_width: 0.5, quality_interval: [4, 5], distinguishable_from: ['fallback'],
+  });
+  const fallback = routePerformance({
+    route: 'fallback', scored_report_count: 185, avg_quality_score: 3, quality_half_width: 0.5, quality_interval: [2.5, 3.5], distinguishable_from: ['primary'],
+  });
+
+  assert.equal(getRouteQualityPresentation(primary, [primary, fallback], routeQualityLabels).indistinguishableNote, null);
+  assert.equal(getRouteQualityPresentation(fallback, [primary, fallback], routeQualityLabels).summary, '3.00 ± 0.50 average content quality');
 });

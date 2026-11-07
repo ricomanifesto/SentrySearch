@@ -247,6 +247,23 @@ export interface AnalyticsDashboard {
   }>;
 }
 
+export type GenerationRoute = 'primary' | 'fallback' | 'legacy_aggregate' | 'unrecorded';
+
+export interface RoutePerformance {
+  route: GenerationRoute;
+  report_count: number;
+  scored_report_count: number;
+  runtime_recorded_count: number;
+  avg_quality_score: number | null;
+  avg_processing_time_ms: number | null;
+  /** Two-sided 95% Hoeffding half-width in native 0-5 points; null when unscored. */
+  quality_half_width: number | null;
+  /** [low, high] clipped to the native 0-5 range; null when unscored. */
+  quality_interval: [number, number] | null;
+  /** Other routes whose 95% intervals do not overlap this route's interval. */
+  distinguishable_from: GenerationRoute[];
+}
+
 export interface AnalyticsData {
   overview: {
     total_reports: number;
@@ -273,14 +290,7 @@ export interface AnalyticsData {
     quality_score_distribution: Array<{ range: string; count: number; percentage: number }>;
     processing_time_trends: Array<{ date: string; avg_time_ms: number }>;
   };
-  route_performance: Array<{
-    route: 'primary' | 'fallback' | 'legacy_aggregate' | 'unrecorded';
-    report_count: number;
-    scored_report_count: number;
-    runtime_recorded_count: number;
-    avg_quality_score: number | null;
-    avg_processing_time_ms: number | null;
-  }>;
+  route_performance: RoutePerformance[];
   generation_failure_breakdown: Array<{
     error_code: GenerationErrorCode;
     report_count: number;

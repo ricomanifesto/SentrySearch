@@ -111,6 +111,14 @@ const expectations = [
     pattern: /avg_quality_score == null[\s\S]*Content quality not scored[\s\S]*avg_processing_time_ms == null[\s\S]*Runtime not recorded/,
   },
   {
+    name: 'shows per-route quality uncertainty from the analytics read model',
+    pattern: /getRouteQualityPresentation\(route, routePerformance, routeLabels\)[\s\S]*quality\.summary[\s\S]*quality\.indistinguishableNote/,
+  },
+  {
+    name: 'explains the route quality interval and its ranking limit',
+    pattern: /95% sample-size interval on the 0–5 quality scale[\s\S]*cannot be ranked/,
+  },
+  {
     name: 'marks fallback-built reports in recent activity',
     pattern: /generation_route_scope === 'legacy_aggregate'[\s\S]*Legacy aggregate route[\s\S]*generation_route_scope === 'synthesis'[\s\S]*generation_used_fallback === true[\s\S]*Fallback synthesis route/,
   },
