@@ -59,6 +59,30 @@ def test_limited_visible_text_is_the_full_extraction_prefix():
         assert visible_source_text(LONG_HTML, limit=limit) == full[:limit]
 
 
+def test_captured_html_text_matches_a_full_extraction_at_the_word_boundary(monkeypatch):
+    """A separator at the last retained position stays, as it would after full extraction."""
+
+    monkeypatch.setattr("src.core.source_snapshot.socket.getaddrinfo", _public_dns)
+    first = "a" * (MAX_SNAPSHOT_TEXT - 1)
+    html = f"<html><body><p>{first}</p><p>{'b' * 50}</p></body></html>"
+    full = visible_source_text(html)
+    assert full[MAX_SNAPSHOT_TEXT - 1] == " "
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "text/html"}, text=html, request=request
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        snapshot = capture_source_snapshot(
+            {"url": "https://security.example.test/report"},
+            client=client,
+            now=datetime(2026, 8, 15, tzinfo=UTC),
+        )
+
+    assert snapshot["text"] == full[:MAX_SNAPSHOT_TEXT]
+
+
 def test_limited_visible_text_stops_parsing_once_the_prefix_is_final(monkeypatch):
     seen = []
     handle_data = source_snapshot._VisibleTextParser.handle_data

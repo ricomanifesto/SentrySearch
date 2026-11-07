@@ -135,7 +135,9 @@ def _response_text(response: httpx.Response, body: bytes) -> str:
     encoding = response.encoding or "utf-8"
     decoded = body.decode(encoding, errors="replace")
     if "html" in content_type or "<html" in decoded[:500].casefold():
-        decoded = visible_source_text(decoded, limit=MAX_SNAPSHOT_TEXT)
+        # One extra character keeps a separator at the last retained position:
+        # normalizing an exact-length prefix would strip it.
+        decoded = visible_source_text(decoded, limit=MAX_SNAPSHOT_TEXT + 1)
     return _normalized_text(decoded)[:MAX_SNAPSHOT_TEXT]
 
 
