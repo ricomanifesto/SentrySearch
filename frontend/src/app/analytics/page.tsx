@@ -8,6 +8,7 @@ import { api, type GenerationErrorCode } from '@/lib/api';
 import { formatProcessingTime, formatRelativeTime } from '@/lib/utils';
 import { AuthGuard } from '@/components/AuthGuard';
 import { getAnalystDispositionClasses, getAnalystDispositionLabel } from '@/lib/analyst-disposition';
+import { getRouteQualityPresentation } from '@/lib/route-quality';
 
 const timeRangeOptions = [
   { value: '7d', label: 'Last 7 days' },
@@ -181,24 +182,35 @@ export default function AnalyticsPage() {
               Compare completed reports by the synthesis route that authored them. Older aggregate provenance stays separate rather than implying an unrecorded role.
             </p>
             <div className="mt-5 grid gap-x-8 gap-y-5 md:grid-cols-2 xl:grid-cols-4">
-              {routePerformance.map((route) => (
-                <dl key={route.route} className="min-w-0 border-t border-zinc-200 pt-4">
-                  <dt className="text-sm font-medium text-zinc-700">{routeLabels[route.route]}</dt>
-                  <dd className="mt-1 text-2xl font-semibold text-zinc-950">{route.report_count}</dd>
-                  <dd className="mt-2 text-sm leading-6 text-zinc-500">
-                    {route.avg_quality_score == null
-                      ? 'Content quality not scored'
-                      : `${route.avg_quality_score.toFixed(2)} average content quality`}
-                    {` · ${route.scored_report_count}/${route.report_count} scored`}
-                    <br />
-                    {route.avg_processing_time_ms == null
-                      ? 'Runtime not recorded'
-                      : `${formatProcessingTime(route.avg_processing_time_ms)} average runtime`}
-                    {` · ${route.runtime_recorded_count}/${route.report_count} recorded`}
-                  </dd>
-                </dl>
-              ))}
+              {routePerformance.map((route) => {
+                const quality = getRouteQualityPresentation(route, routePerformance, routeLabels);
+                return (
+                  <dl key={route.route} className="min-w-0 border-t border-zinc-200 pt-4">
+                    <dt className="text-sm font-medium text-zinc-700">{routeLabels[route.route]}</dt>
+                    <dd className="mt-1 text-2xl font-semibold text-zinc-950">{route.report_count}</dd>
+                    <dd className="mt-2 text-sm leading-6 text-zinc-500">
+                      {route.avg_quality_score == null
+                        ? 'Content quality not scored'
+                        : quality.summary}
+                      {` · ${route.scored_report_count}/${route.report_count} scored`}
+                      <br />
+                      {route.avg_processing_time_ms == null
+                        ? 'Runtime not recorded'
+                        : `${formatProcessingTime(route.avg_processing_time_ms)} average runtime`}
+                      {` · ${route.runtime_recorded_count}/${route.report_count} recorded`}
+                    </dd>
+                    {quality.indistinguishableNote && (
+                      <dd data-route-quality-note className="mt-1 text-sm leading-6 text-zinc-500">
+                        {quality.indistinguishableNote}
+                      </dd>
+                    )}
+                  </dl>
+                );
+              })}
             </div>
+            <p className="mt-4 text-sm leading-6 text-zinc-500">
+              ± is the 95% sample-size interval on the 0–5 quality scale. Routes whose intervals overlap cannot be ranked from this window.
+            </p>
           </section>
 
           <section
