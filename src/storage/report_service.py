@@ -9,7 +9,9 @@ import hashlib
 import json
 import uuid
 from contextlib import nullcontext
+from psycopg.errors import LockNotAvailable
 from sqlalchemy import and_, asc, desc, func, or_, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from src.domain.execution import EVALUATION_LEASE_SECONDS, GenerationLease, GenerationLeaseLost
@@ -603,11 +605,12 @@ class ReportStorageService:
             # stays excluded from handoff and is retried by the next reconciliation.
             return ARTIFACT_POLICY_UNKNOWN
 
-    def _reconcile_artifacts(self, report: Any, *, read_artifacts: bool) -> int:
-        """Bring artifact rows to the current policy version; returns rows changed."""
+    @staticmethod
+    def _stale_artifact_kinds(report: Any) -> List[tuple[str, str]]:
+        """Artifact kinds whose row is missing, outdated, or ``unknown`` for the current key."""
 
-        changed = 0
         current = {artifact.kind: artifact for artifact in (report.artifacts or [])}
+        stale = []
         for kind, key in (("markdown", report.markdown_s3_key), ("trace", report.trace_s3_key)):
             if not key:
                 continue
@@ -619,14 +622,96 @@ class ReportStorageService:
                 and artifact.policy_status != ARTIFACT_POLICY_UNKNOWN
             ):
                 continue
+            stale.append((kind, key))
+        return stale
+
+    def _reconcile_artifacts(self, report: Any, markdown_policy: Dict[str, str]) -> int:
+        """Bring artifact rows to the current policy version; returns rows changed.
+
+        ``markdown_policy`` maps an object key to the policy read for it. A key
+        without an entry, such as one published after the read, records
+        ``unknown`` and is retried by the next reconciliation.
+        """
+
+        stale = self._stale_artifact_kinds(report)
+        for kind, key in stale:
             status = (
-                self._artifact_policy_from_storage(key)
-                if read_artifacts and kind == "markdown"
+                markdown_policy.get(key, ARTIFACT_POLICY_UNKNOWN)
+                if kind == "markdown"
                 else ARTIFACT_POLICY_UNKNOWN
             )
             self._write_artifact(report, kind, key, None, policy_status=status)
-            changed += 1
-        return changed
+        return len(stale)
+
+    def _read_markdown_policy(self, report: Any, *, read_artifacts: bool) -> Dict[str, str]:
+        """Read the stale Markdown object, if any, for its content policy."""
+
+        if not read_artifacts:
+            return {}
+        return {
+            key: self._artifact_policy_from_storage(key)
+            for kind, key in self._stale_artifact_kinds(report)
+            if kind == "markdown"
+        }
+
+    def _reconcile_report(self, report: Any, summary: Dict[str, int]) -> None:
+        """Recompute one report's derived columns and evidence rows from its stored JSONB."""
+
+        old_classification = (
+            report.category,
+            report.threat_type,
+            report.classification_status,
+        )
+        category, threat_type, classification_status = self.resolve_classification(
+            tool_name=report.tool_name,
+            threat_data=report.threat_data,
+            stored_category=report.category,
+            stored_threat_type=report.threat_type,
+            stored_status=report.classification_status,
+            legacy=True,
+        )
+        report.category = category
+        report.threat_type = threat_type
+        report.classification_status = classification_status.value
+        if old_classification != (
+            report.category,
+            report.threat_type,
+            report.classification_status,
+        ):
+            summary["classification_updates"] += 1
+
+        old_attribution = (
+            report.claim_attribution_status,
+            report.claim_attribution_version,
+        )
+        attribution_status, attribution_version = claim_attribution_status(report.threat_data)
+        report.claim_attribution_status = attribution_status.value
+        report.claim_attribution_version = attribution_version
+        if old_attribution != (
+            report.claim_attribution_status,
+            report.claim_attribution_version,
+        ):
+            summary["claim_attribution_updates"] += 1
+
+        if (
+            report.evidence_admissibility_status == EvidenceAdmissibilityStatus.PASSED.value
+            and attribution_version != CLAIM_ATTRIBUTION_SCHEMA_VERSION
+        ):
+            report.evidence_admissibility_status = EvidenceAdmissibilityStatus.UNASSESSED.value
+            summary["evidence_contract_updates"] += 1
+
+        previous_review_status = report.review_status
+        self._refresh_review_status(report)
+        if previous_review_status != report.review_status:
+            summary["review_updates"] += 1
+
+        rows = profile_rows(report.threat_data, report.web_sources, report.evidence_admissibility)
+        if len(report.profile_claims or []) != len(rows.claims) or len(
+            report.findings or []
+        ) != len(rows.findings):
+            summary["profile_row_updates"] += 1
+        self._write_profile_rows(report, rows)
+        self._write_tags(report, report.search_tags)
 
     def reconcile_reader_state(
         self,
@@ -636,10 +721,17 @@ class ReportStorageService:
     ) -> Dict[str, int]:
         """Backfill reader state, classification, flat evidence rows, and artifact policy.
 
-        Runs inside the release transaction (or one admin session). It takes no
-        row locks: releases run with writers drained. Artifact reads for the
-        content policy happen while no row lock is held, and an unavailable
-        artifact client records ``unknown`` instead of failing.
+        With ``session``, this is the release backfill: it runs inside the release
+        transaction, takes no row locks, and relies on writers being drained.
+
+        Without ``session``, this is the online reconciliation used by the admin
+        endpoint while writers may be active. Each report is reread under its row
+        lock and committed on its own, so a concurrent writer is either finished
+        before the reread or waits for the reconciliation. A report still locked
+        after the lock-wait limit is skipped and counted in ``locked_report_skips``.
+
+        Artifact reads for the content policy never run while a row lock is held,
+        and an unavailable artifact client records ``unknown`` instead of failing.
         """
 
         summary = {
@@ -651,90 +743,67 @@ class ReportStorageService:
             "artifact_policy_updates": 0,
         }
         try:
-            with (
-                nullcontext(session) if session is not None else self.db_manager.get_session()
-            ) as session:
-                # The release transaction owns backfill and version publication.
-                # Admin reconciliation remains explicit, never a startup scan.
-                reports = session.query(Report).yield_per(250)
-                for row_number, row in enumerate(reports, start=1):
-                    # Legacy declarative models expose Column types to static
-                    # checkers; ORM instances carry the corresponding values.
-                    report = cast(Any, row)
-                    old_classification = (
-                        report.category,
-                        report.threat_type,
-                        report.classification_status,
-                    )
-                    category, threat_type, classification_status = self.resolve_classification(
-                        tool_name=report.tool_name,
-                        threat_data=report.threat_data,
-                        stored_category=report.category,
-                        stored_threat_type=report.threat_type,
-                        stored_status=report.classification_status,
-                        legacy=True,
-                    )
-                    report.category = category
-                    report.threat_type = threat_type
-                    report.classification_status = classification_status.value
-                    if old_classification != (
-                        report.category,
-                        report.threat_type,
-                        report.classification_status,
-                    ):
-                        summary["classification_updates"] += 1
-
-                    old_attribution = (
-                        report.claim_attribution_status,
-                        report.claim_attribution_version,
-                    )
-                    attribution_status, attribution_version = claim_attribution_status(
-                        report.threat_data
-                    )
-                    report.claim_attribution_status = attribution_status.value
-                    report.claim_attribution_version = attribution_version
-                    if old_attribution != (
-                        report.claim_attribution_status,
-                        report.claim_attribution_version,
-                    ):
-                        summary["claim_attribution_updates"] += 1
-
-                    if (
-                        report.evidence_admissibility_status
-                        == EvidenceAdmissibilityStatus.PASSED.value
-                        and attribution_version != CLAIM_ATTRIBUTION_SCHEMA_VERSION
-                    ):
-                        report.evidence_admissibility_status = (
-                            EvidenceAdmissibilityStatus.UNASSESSED.value
-                        )
-                        summary["evidence_contract_updates"] += 1
-
-                    previous_review_status = report.review_status
-                    self._refresh_review_status(report)
-                    if previous_review_status != report.review_status:
-                        summary["review_updates"] += 1
-
-                    rows = profile_rows(
-                        report.threat_data, report.web_sources, report.evidence_admissibility
-                    )
-                    if len(report.profile_claims or []) != len(rows.claims) or len(
-                        report.findings or []
-                    ) != len(rows.findings):
-                        summary["profile_row_updates"] += 1
-                    self._write_profile_rows(report, rows)
-                    self._write_tags(report, report.search_tags)
-                    summary["artifact_policy_updates"] += self._reconcile_artifacts(
-                        report, read_artifacts=read_artifacts
-                    )
-                    if row_number % 250 == 0:
-                        session.flush()
-
-                session.flush()
+            if session is None:
+                summary["locked_report_skips"] = 0
+                self._reconcile_online(summary, read_artifacts=read_artifacts)
+            else:
+                self._reconcile_drained(session, summary, read_artifacts=read_artifacts)
             logger.info("Reader-state reconciliation complete: %s", summary)
             return summary
         except Exception:
             logger.error("Reader-state reconciliation failed")
             raise
+
+    def _reconcile_drained(
+        self, session: Session, summary: Dict[str, int], *, read_artifacts: bool
+    ) -> None:
+        # The release transaction owns backfill and version publication.
+        reports = session.query(Report).yield_per(250)
+        for row_number, row in enumerate(reports, start=1):
+            # Legacy declarative models expose Column types to static
+            # checkers; ORM instances carry the corresponding values.
+            report = cast(Any, row)
+            self._reconcile_report(report, summary)
+            summary["artifact_policy_updates"] += self._reconcile_artifacts(
+                report, self._read_markdown_policy(report, read_artifacts=read_artifacts)
+            )
+            if row_number % 250 == 0:
+                session.flush()
+        session.flush()
+
+    def _reconcile_online(self, summary: Dict[str, int], *, read_artifacts: bool) -> None:
+        with self.db_manager.get_session() as session:
+            report_ids = session.scalars(select(Report.id).order_by(Report.id)).all()
+
+        for report_id in report_ids:
+            # 1. Find a stale Markdown object, then read it with no session open.
+            with self.db_manager.get_session() as session:
+                report = session.get(Report, report_id)
+                if report is None:
+                    continue
+                stale_keys = [
+                    key
+                    for kind, key in self._stale_artifact_kinds(cast(Any, report))
+                    if kind == "markdown" and read_artifacts
+                ]
+            markdown_policy = {key: self._artifact_policy_from_storage(key) for key in stale_keys}
+
+            # 2. Under the row lock: reread and recompute from committed data.
+            try:
+                with self.db_manager.get_session() as session:
+                    report = self._locked_report(session, str(report_id))
+                    if report is None:
+                        continue
+                    self._reconcile_report(report, summary)
+                    summary["artifact_policy_updates"] += self._reconcile_artifacts(
+                        report, markdown_policy
+                    )
+                    session.commit()
+            except OperationalError as exc:
+                if not isinstance(exc.orig, LockNotAvailable):
+                    raise
+                summary["locked_report_skips"] += 1
+                logger.warning("Reconciliation skipped a report held by another writer")
 
     def update_existing_categorizations(self) -> int:
         """Compatibility wrapper for the admin categorization endpoint."""

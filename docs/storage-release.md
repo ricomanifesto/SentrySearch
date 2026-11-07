@@ -62,7 +62,7 @@ and the existing JSONB columns stay populated during this transition.
 | --- | --- |
 | `reports.reader_state_version`, `eligible_for_judgment`, `eligible_for_acceptance`, `eligible_for_handoff` | Derived reader state alongside `review_status` |
 | `report_sources` | Cited primary sources: identity, display fields, snapshot fingerprint and capture metadata, source purpose |
-| `report_claims` | One row per high-risk claim: stable `claim_id`, class, field, `ordinal` (the legacy `claimIndex`), value, evidence role |
+| `report_claims` | One row per high-risk claim: stable `claim_id`, class, field, `ordinal` (the legacy `claimIndex`), value, evidence role, and the attribution record's explicit `source_ids` (kept even when a retained schema 2–4 record has no support excerpt) |
 | `report_claim_support` | Verbatim support excerpt per claim and source, with snapshot SHA-256 and verification state |
 | `report_indicator_observations` | Deterministic infrastructure decisions, linked to a claim when one survives |
 | `report_source_observations` | Every researched source's purpose decision, including named exclusions |
@@ -85,6 +85,47 @@ compute its content policy. The backfill takes no row locks, because the release
 runs with writers drained. If the artifact client is unavailable in the release
 process, the artifact is recorded as `policy_status = 'unknown'` rather than
 failing the release.
+
+The admin categorization endpoint runs the same reconciliation online, while
+writers may be active. It never relies on draining. Each report is reread under
+its row lock and committed on its own, so a concurrent finalization or evaluation
+either commits before the reread or waits for that report's reconciliation; its
+rows are never replaced with a projection of older JSONB. A stale Markdown object
+is read with no session open, and the result is recorded only if that object is
+still the report's current Markdown when the lock is held. A report still locked
+after the application's 3-second lock-wait limit is skipped and counted as
+`locked_report_skips` in the logged summary; run the endpoint again to cover it.
+
+### Revision 2 privileges
+
+Role provisioning stays a deployment task; the migration does not grant or revoke
+anything. In the same maintenance window, after the release command and before the
+read-only check, the schema owner grants the application role access to the new
+tables. On Supabase, tables the owner creates in `public` also inherit default
+privileges for the Data API roles (`anon`, `authenticated`). Only the application
+role reads these tables, so revoke those privileges in the same step:
+
+```sql
+GRANT SELECT, INSERT, UPDATE, DELETE ON report_sources, report_claims,
+  report_claim_support, report_indicator_observations, report_source_observations,
+  report_findings, report_artifacts TO <application role>;
+REVOKE ALL ON report_sources, report_claims, report_claim_support,
+  report_indicator_observations, report_source_observations, report_findings,
+  report_artifacts FROM anon, authenticated;
+```
+
+Omit the `REVOKE` where those roles do not exist. This read-only query lists any
+product table the Data API roles can still read; expect no rows:
+
+```sql
+SELECT c.relname, r.rolname
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_roles r ON r.rolname IN ('anon', 'authenticated')
+WHERE n.nspname = 'public' AND c.relkind = 'r'
+  AND (c.relname LIKE 'report%' OR c.relname = 'sentrysearch_schema_migrations')
+  AND has_table_privilege(r.oid, c.oid, 'SELECT');
+```
 
 ### Content policy versioning
 

@@ -60,8 +60,18 @@ def profile_rows(
 
     roles: dict[str, str] = {}
     owners: dict[str, str] = {}
+    links: dict[str, list[str]] = {}
     for record in tables.attributions:
-        if record.claim_id is None or record.claim_id in roles:
+        if record.claim_id is None:
+            continue
+        # Explicit IDs stand on their own: schemas 2-4 may cite without excerpts.
+        cited = links.setdefault(record.claim_id, [])
+        cited.extend(
+            source_id
+            for source_id in dict.fromkeys(record.source_ids or ())
+            if source_id and source_id not in cited
+        )
+        if record.claim_id in roles:
             continue
         roles[record.claim_id] = record.evidence_role or ""
         owners[record.attribution_id] = record.claim_id
@@ -75,6 +85,7 @@ def profile_rows(
             "ordinal": row.ordinal,
             "value": item_text(row.raw),
             "evidence_role": roles.get(row.claim_id) or None,
+            "source_ids": links.get(row.claim_id, []),
         }
         for position, row in enumerate(
             row
@@ -264,7 +275,7 @@ def render_claims(
                 "claimField": value(row, "claim_field"),
                 "claimIndex": value(row, "ordinal"),
                 "evidenceRole": value(row, "evidence_role"),
-                "sourceIds": [value(support, "source_id") for support in supports],
+                "sourceIds": list(value(row, "source_ids") or []),
                 "supportingEvidence": [
                     {
                         "sourceId": value(support, "source_id"),

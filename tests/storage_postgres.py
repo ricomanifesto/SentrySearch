@@ -304,6 +304,13 @@ def test_revision_one_database_upgrades_and_backfills_rows_from_jsonb(database):
         ).all()
         assert len(claims) == 10
         assert claims[0] == ("riskFactors", 0, "Remote access", "direct_evidence")
+        assert conn.execute(
+            text(
+                "SELECT source_ids FROM report_claims WHERE report_id=:id "
+                "AND evidence_role='direct_evidence' ORDER BY position LIMIT 1"
+            ),
+            {"id": report_id},
+        ).scalar() == ["S1"]
         assert (
             conn.execute(
                 text("SELECT count(*) FROM report_claim_support WHERE report_id=:id AND verified"),
@@ -494,3 +501,250 @@ def datetime_epoch():
     from datetime import datetime, timezone
 
     return datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+class _ObjectStore:
+    """In-memory artifact client: what is put can be read back."""
+
+    def __init__(self):
+        self.objects: dict[str, bytes] = {}
+
+    def put_object(self, **kwargs):
+        self.objects[kwargs["Key"]] = kwargs["Body"]
+
+    def get_object(self, **kwargs):
+        import io
+
+        return {"Body": io.BytesIO(self.objects[kwargs["Key"]])}
+
+
+def _service_with_store(database):
+    from typing import Any, cast
+
+    from src.storage.s3_manager import S3StorageManager
+
+    service = ReportStorageService()
+    service.db_manager = database
+    store = S3StorageManager()
+    store._initialized = True
+    store.s3_client = cast(Any, _ObjectStore())
+    service.s3_manager = store
+    return service
+
+
+def _finalized_report_data(report_id: str) -> dict:
+    from src.core.markdown_generator import generate_markdown
+    from src.core.source_ledger import canonicalize_profile_sources
+    from tests.conftest import build_threat_profile_data
+
+    profile, sources = canonicalize_profile_sources(
+        build_threat_profile_data("https://research.vendor-security.com/report")
+    )
+    profile["evidenceAdmissibility"] = {"schemaVersion": "1", "status": "passed"}
+    return {
+        "id": report_id,
+        "tool_name": "Example",
+        "threat_data": profile,
+        "web_sources": sources,
+        "markdown_content": generate_markdown(profile),
+        "evaluation_status": "completed",
+        "quality_score": 4.5,
+        "quality_assessment": {
+            "overall_score": 4.5,
+            "summary": {"passed_sections": 3, "failed_sections": 0},
+        },
+    }
+
+
+def _evidence_state(database, report_id: str):
+    with database.engine.connect() as conn:
+        return conn.execute(
+            text(
+                "SELECT status, review_status, eligible_for_acceptance, "
+                "(SELECT count(*) FROM report_claims c WHERE c.report_id=r.id), "
+                "(SELECT count(*) FROM report_sources s WHERE s.report_id=r.id), "
+                "(SELECT s3_key = r.markdown_s3_key FROM report_artifacts a "
+                " WHERE a.report_id=r.id AND kind='markdown'), "
+                "(SELECT policy_status FROM report_artifacts a "
+                " WHERE a.report_id=r.id AND kind='markdown') "
+                "FROM reports r WHERE id=:id"
+            ),
+            {"id": report_id},
+        ).one()
+
+
+def _wait_for_lock_waiter(database, timeout: float = 10.0) -> bool:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with database.engine.connect() as conn:
+            waiting = conn.execute(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                )
+            ).scalar()
+        if waiting:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_online_reconciliation_waits_for_finalization_and_keeps_its_rows(database, monkeypatch):
+    """The admin reconciliation must not replace a concurrently finalized report's rows."""
+
+    import threading
+
+    database.migrate_schema()
+    service = _service_with_store(database)
+    report_id = str(uuid.uuid4())
+    service.create_pending_report(report_id, "Example", user_id="owner")
+
+    holding_lock, release_writer = threading.Event(), threading.Event()
+    original_write_artifact = ReportStorageService._write_artifact
+
+    def pause_before_commit(report, kind, *args, **kwargs):
+        original_write_artifact(report, kind, *args, **kwargs)
+        if kind == "trace":
+            # The writer holds the report lock with its rows staged.
+            holding_lock.set()
+            assert release_writer.wait(timeout=30)
+
+    monkeypatch.setattr(ReportStorageService, "_write_artifact", staticmethod(pause_before_commit))
+    errors: list[BaseException] = []
+
+    def run(target):
+        try:
+            target()
+        except BaseException as exc:  # surfaced by the assertion below
+            errors.append(exc)
+
+    writer = threading.Thread(
+        target=run,
+        args=(lambda: service.finalize_report(report_id, _finalized_report_data(report_id)),),
+    )
+    writer.start()
+    assert holding_lock.wait(timeout=30)
+
+    reconciler = threading.Thread(target=run, args=(service.update_existing_categorizations,))
+    reconciler.start()
+    # The reconciler queues behind the writer's lock (or, unfixed, behind its own update).
+    _wait_for_lock_waiter(database)
+    release_writer.set()
+    writer.join(timeout=30)
+    reconciler.join(timeout=30)
+
+    assert not writer.is_alive() and not reconciler.is_alive()
+    assert errors == []
+    assert _evidence_state(database, report_id) == (
+        "completed",
+        "reviewable",
+        True,
+        10,
+        1,
+        True,
+        "allowed",
+    )
+
+
+def test_online_reconciliation_never_applies_a_stale_artifact_read(database, monkeypatch):
+    """A policy read for one object must not be recorded for a newer object."""
+
+    database.migrate_schema()
+    service = _service_with_store(database)
+    report_id = str(uuid.uuid4())
+    data = _finalized_report_data(report_id)
+    service.store_report(dict(data), user_id="owner")
+    with database.engine.begin() as conn:
+        # As left by a release that ran without an artifact client.
+        conn.execute(
+            text("UPDATE report_artifacts SET policy_status='unknown' WHERE report_id=:id"),
+            {"id": report_id},
+        )
+    assert service.begin_report_evaluation(report_id, user_id="owner") is True
+    lease = service.claim_report_evaluation(report_id, user_id="owner")
+    assert lease is not None
+
+    original_download = service.s3_manager.download_content
+    replaced: list[str] = []
+
+    def download_then_replace(key):
+        content = original_download(key)
+        if not replaced:
+            # An evaluator publishes new Markdown while no reconciliation lock is held.
+            assert service.complete_report_evaluation(
+                report_id,
+                evaluation_lease=lease,
+                quality_assessment=data["quality_assessment"],
+                evaluation_route={"requested_model": "fixture"},
+                threat_data=data["threat_data"],
+                markdown_content=data["markdown_content"] + "\nRevised.\n",
+            )
+            replaced.append(key)
+        return content
+
+    monkeypatch.setattr(service.s3_manager, "download_content", download_then_replace)
+    service.update_existing_categorizations()
+
+    assert replaced, "the reconciliation did not read the retained artifact"
+    state = _evidence_state(database, report_id)
+    assert state[5] is True  # the artifact row describes the current object
+    assert state[6] == "allowed"
+    with database.engine.connect() as conn:
+        assert (
+            conn.execute(
+                text("SELECT markdown_s3_key FROM reports WHERE id=:id"), {"id": report_id}
+            ).scalar()
+            != replaced[0]
+        )
+
+
+def test_online_reconciliation_resolves_unknown_artifacts_and_backfills_rows(database):
+    database.migrate_schema()
+    service = _service_with_store(database)
+    report_id = str(uuid.uuid4())
+    service.store_report(_finalized_report_data(report_id), user_id="owner")
+    with database.engine.begin() as conn:
+        conn.execute(
+            text("UPDATE report_artifacts SET policy_status='unknown' WHERE report_id=:id"),
+            {"id": report_id},
+        )
+        conn.execute(text("DELETE FROM report_claims WHERE report_id=:id"), {"id": report_id})
+
+    service.update_existing_categorizations()
+
+    assert _evidence_state(database, report_id)[3:] == (10, 1, True, "allowed")
+
+
+def test_online_reconciliation_skips_a_report_locked_past_the_wait_limit(database):
+    database.migrate_schema()
+    service = _service_with_store(database)
+    locked_id, free_id = str(uuid.uuid4()), str(uuid.uuid4())
+    for report_id in (locked_id, free_id):
+        service.store_report(_finalized_report_data(report_id), user_id="owner")
+    with database.engine.begin() as conn:
+        conn.execute(text("DELETE FROM report_claims"))
+
+    impatient = DatabaseManager.__new__(DatabaseManager)
+    impatient.engine = create_engine(
+        database.engine.url,
+        hide_parameters=True,
+        connect_args={"options": "-c lock_timeout=200"},
+    )
+    impatient.SessionLocal = sessionmaker(bind=impatient.engine)
+    service.db_manager = impatient
+    try:
+        with database.engine.connect() as holder:
+            transaction = holder.begin()
+            holder.execute(
+                text("SELECT id FROM reports WHERE id=:id FOR UPDATE"), {"id": locked_id}
+            )
+            summary = service.reconcile_reader_state()
+            transaction.rollback()
+    finally:
+        impatient.engine.dispose()
+
+    assert summary["locked_report_skips"] == 1
+    assert _evidence_state(database, locked_id)[3] == 0
+    assert _evidence_state(database, free_id)[3] == 10
