@@ -15,7 +15,7 @@ from sqlalchemy import (
     String,
     Text,
 )
-from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
 from datetime import datetime
@@ -108,6 +108,13 @@ class Report(Base):
     generation_retryable = Column(Boolean)
     generation_failure = Column(JSONB)
     review_status = Column(String(30), default="needs_evaluation", index=True)
+    # Derived reader state, computed by src.domain.reports at write time inside
+    # the writing transaction and filtered in SQL. Older versions are recomputed
+    # by the reconciliation command.
+    reader_state_version = Column(Integer)
+    eligible_for_judgment = Column(Boolean)
+    eligible_for_acceptance = Column(Boolean)
+    eligible_for_handoff = Column(Boolean, index=True)
 
     # Flags and metadata
     is_flagged = Column(Boolean, default=False)
@@ -117,6 +124,57 @@ class Report(Base):
     # Search optimization
     search_tags = Column(JSONB)  # Array of searchable tags
     content_preview = Column(Text)
+
+    # Flat evidence relations projected from the profile at write time. Writers
+    # assign whole collections on the already-locked row; the unit of work
+    # replaces the previous rows in the same transaction.
+    profile_sources = relationship(
+        "ReportSourceRow",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ReportSourceRow.position",
+    )
+    profile_claims = relationship(
+        "ReportClaimRow",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ReportClaimRow.position",
+    )
+    claim_support = relationship(
+        "ReportClaimSupportRow",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="(ReportClaimSupportRow.claim_id, ReportClaimSupportRow.position)",
+    )
+    indicator_observations = relationship(
+        "ReportIndicatorObservationRow",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ReportIndicatorObservationRow.position",
+    )
+    source_observations = relationship(
+        "ReportSourceObservationRow",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ReportSourceObservationRow.position",
+    )
+    findings = relationship(
+        "ReportFindingRow",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ReportFindingRow.position",
+    )
+    artifacts = relationship(
+        "ReportArtifact",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ReportArtifact.kind",
+    )
+    disposition_events = relationship(
+        "ReportDispositionEvent",
+        viewonly=True,
+        order_by="(ReportDispositionEvent.created_at, ReportDispositionEvent.id)",
+    )
 
     def to_dict(self):
         """Convert model to dictionary for API responses"""
@@ -230,3 +288,125 @@ class ReportTag(Base):
     report_id = Column(UUID(as_uuid=True), nullable=False)
     tag = Column(String(100), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+def _report_fk() -> Column:
+    return Column(
+        UUID(as_uuid=True),
+        ForeignKey("reports.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+
+class ReportSourceRow(Base):
+    """One cited primary source in the report's reader-visible ledger."""
+
+    __tablename__ = "report_sources"
+
+    report_id = _report_fk()
+    source_id = Column(String(20), primary_key=True)
+    position = Column(Integer, nullable=False)
+    url = Column(Text, nullable=False)
+    domain = Column(String(255))
+    title = Column(Text)
+    snapshot_status = Column(String(20))
+    snapshot_sha256 = Column(String(64))
+    page_age = Column(Text)
+    purpose = Column(String(40))
+    disposition = Column(String(30))
+    rule_id = Column(String(80))
+    reason = Column(Text)
+
+
+class ReportClaimRow(Base):
+    """One high-risk claim. ``ordinal`` is its position in the stored list."""
+
+    __tablename__ = "report_claims"
+
+    report_id = _report_fk()
+    claim_id = Column(String(20), primary_key=True)
+    position = Column(Integer, nullable=False)
+    claim_class = Column(String(40), nullable=False)
+    claim_field = Column(String(40), nullable=False)
+    ordinal = Column(Integer, nullable=False)
+    value = Column(Text, nullable=False)
+    evidence_role = Column(String(30))
+
+
+class ReportClaimSupportRow(Base):
+    """One verbatim support excerpt for one claim."""
+
+    __tablename__ = "report_claim_support"
+
+    report_id = _report_fk()
+    claim_id = Column(String(20), primary_key=True)
+    position = Column(Integer, primary_key=True)
+    source_id = Column(String(20), nullable=False)
+    excerpt = Column(Text, nullable=False)
+    verified = Column(Boolean)
+    anchor_ok = Column(Boolean)
+    snapshot_sha256 = Column(String(64))
+
+
+class ReportIndicatorObservationRow(Base):
+    """One deterministic infrastructure decision from the evidence assessment."""
+
+    __tablename__ = "report_indicator_observations"
+
+    report_id = _report_fk()
+    position = Column(Integer, primary_key=True)
+    claim_id = Column(String(20))
+    field = Column(Text, nullable=False)
+    ordinal = Column(Integer)
+    value = Column(Text, nullable=False)
+    disposition = Column(String(30), nullable=False)
+    rule_id = Column(String(80))
+    reason = Column(Text)
+
+
+class ReportSourceObservationRow(Base):
+    """One researched source's purpose decision, including named exclusions."""
+
+    __tablename__ = "report_source_observations"
+
+    report_id = _report_fk()
+    position = Column(Integer, primary_key=True)
+    source_id = Column(String(20))
+    title = Column(Text)
+    url = Column(Text)
+    domain = Column(String(255))
+    purpose = Column(String(40))
+    disposition = Column(String(30))
+    rule_id = Column(String(80))
+    reason = Column(Text)
+    snapshot_status = Column(String(20))
+    snapshot_sha256 = Column(String(64))
+    page_age = Column(Text)
+
+
+class ReportFindingRow(Base):
+    """One blocking gate finding; ``kind`` is ``safety`` or ``coverage``."""
+
+    __tablename__ = "report_findings"
+
+    report_id = _report_fk()
+    position = Column(Integer, primary_key=True)
+    kind = Column(String(20), nullable=False)
+    rule_id = Column(String(80))
+    selector = Column(Text)
+    message = Column(Text, nullable=False)
+
+
+class ReportArtifact(Base):
+    """The current published object of one kind and its content-policy decision."""
+
+    __tablename__ = "report_artifacts"
+    __table_args__ = (Index("ix_report_artifacts_policy", "kind", "policy_status"),)
+
+    report_id = _report_fk()
+    kind = Column(String(20), primary_key=True)
+    sha256 = Column(String(64))
+    s3_key = Column(String(500), nullable=False)
+    policy_status = Column(String(20), nullable=False)
+    policy_version = Column(Integer, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

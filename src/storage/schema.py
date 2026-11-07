@@ -1,5 +1,6 @@
 """Product release migration and read-only application compatibility gate."""
 
+from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 
@@ -8,27 +9,70 @@ from sqlalchemy.orm import Session
 
 from .models import Base
 
-SCHEMA_VERSION = 1
 MIGRATION_LOCK = 7392051801
-MIGRATION_SQL = Path(__file__).with_name("migrations") / "001_release.sql"
+MIGRATIONS_DIR = Path(__file__).with_name("migrations")
+
+
+@dataclass(frozen=True)
+class Revision:
+    """One applied-once SQL file. Applied SQL is never edited; append a revision."""
+
+    version: int
+    filename: str
+
+    @property
+    def path(self) -> Path:
+        return MIGRATIONS_DIR / self.filename
+
+    @property
+    def checksum(self) -> str:
+        return hashlib.sha256(self.path.read_bytes()).hexdigest()
+
+    def statements(self) -> list[str]:
+        # Revisions contain simple DDL only: no procedural SQL and no semicolons
+        # inside literals. A revision that needs either must add explicit steps.
+        return [statement for statement in self.path.read_text().split(";") if statement.strip()]
+
+
+REVISIONS: tuple[Revision, ...] = (
+    Revision(1, "001_release.sql"),
+    Revision(2, "002_profile_rows.sql"),
+)
+SCHEMA_VERSION = REVISIONS[-1].version
+# Retained for callers that referenced the baseline file directly.
+MIGRATION_SQL = REVISIONS[0].path
+
+
+def _expected_revisions() -> list[tuple[int, str]]:
+    return [(revision.version, revision.checksum) for revision in REVISIONS]
 
 
 def _revision() -> tuple[int, str]:
-    return SCHEMA_VERSION, hashlib.sha256(MIGRATION_SQL.read_bytes()).hexdigest()
+    """The newest supported revision and its checksum."""
+
+    return REVISIONS[-1].version, REVISIONS[-1].checksum
 
 
 def _check_columns(connection: Connection) -> None:
     # No row reads or ORM materialization. Checks the columns the running binary
-    # actually queries, not just a version marker left behind by a broken schema.
+    # actually queries on every mapped table, not just a version marker.
     for table in Base.metadata.sorted_tables:
         connection.execute(table.select().limit(0))
 
 
+def _applied(connection: Connection) -> list[tuple[int, str]]:
+    return [
+        (int(version), str(checksum))
+        for version, checksum in connection.execute(
+            text("SELECT version, checksum FROM sentrysearch_schema_migrations ORDER BY version")
+        ).all()
+    ]
+
+
 def _check_revision(connection: Connection) -> None:
-    rows = connection.execute(
-        text("SELECT version, checksum FROM sentrysearch_schema_migrations ORDER BY version")
-    ).all()
-    if rows != [_revision()]:
+    # Strict: exactly the supported sequence. Missing, unknown, newer, or
+    # changed revisions all fail closed.
+    if _applied(connection) != _expected_revisions():
         raise RuntimeError("Unsupported storage schema")
 
 
@@ -45,6 +89,15 @@ def require_schema(engine: Engine) -> None:
         raise RuntimeError(
             "Storage schema unavailable or incompatible; run the release check"
         ) from None
+
+
+def _pending_revisions(applied: list[tuple[int, str]]) -> list[Revision]:
+    """Return revisions still to apply; the applied set must be an exact prefix."""
+
+    expected = _expected_revisions()
+    if applied != expected[: len(applied)]:
+        raise RuntimeError("Applied storage revisions are unknown, newer, or changed")
+    return list(REVISIONS[len(applied) :])
 
 
 def migrate(engine: Engine) -> None:
@@ -68,26 +121,25 @@ def migrate(engine: Engine) -> None:
                     "applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
                 )
             )
-            versions = connection.execute(
-                text("SELECT version FROM sentrysearch_schema_migrations")
-            ).all()
-            if not versions:
-                # This baseline contains simple DDL only, no procedural SQL or
-                # semicolons inside literals. Future revisions need explicit steps.
-                for statement in MIGRATION_SQL.read_text().split(";"):
-                    if statement.strip():
+            pending = _pending_revisions(_applied(connection))
+            if pending:
+                # DDL for every pending revision, one reconciliation backfill,
+                # and every version marker share this transaction.
+                for revision in pending:
+                    for statement in revision.statements():
                         connection.execute(text(statement))
                 with Session(bind=connection) as session:
                     ReportStorageService().reconcile_reader_state(session=session)
                     session.flush()
                 _check_columns(connection)
-                version, checksum = _revision()
-                connection.execute(
-                    text(
-                        "INSERT INTO sentrysearch_schema_migrations(version, checksum) VALUES (:version, :checksum)"
-                    ),
-                    {"version": version, "checksum": checksum},
-                )
+                for revision in pending:
+                    connection.execute(
+                        text(
+                            "INSERT INTO sentrysearch_schema_migrations(version, checksum) "
+                            "VALUES (:version, :checksum)"
+                        ),
+                        {"version": revision.version, "checksum": revision.checksum},
+                    )
             _check_revision(connection)
             _check_columns(connection)
     except Exception:

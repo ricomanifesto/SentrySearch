@@ -14,6 +14,14 @@ from src.storage.database import DatabaseManager
 from src.storage.models import Report
 from src.storage.report_service import ReportStorageService
 
+# The restricted application role's grants; docs/storage-release.md lists them.
+APP_TABLES = (
+    "reports, report_runtime_dispatches, report_disposition_events, report_searches, "
+    "report_tags, report_sources, report_claims, report_claim_support, "
+    "report_indicator_observations, report_source_observations, report_findings, "
+    "report_artifacts"
+)
+
 
 @pytest.fixture
 def database():
@@ -43,7 +51,7 @@ def test_empty_database_is_unready_then_migrated_once(database, monkeypatch):
     with database.engine.begin() as conn:
         assert conn.execute(
             text("SELECT version FROM sentrysearch_schema_migrations")
-        ).scalars().all() == [1]
+        ).scalars().all() == [1, 2]
     monkeypatch.setattr(
         ReportStorageService,
         "reconcile_reader_state",
@@ -74,9 +82,15 @@ def test_failed_backfill_rolls_back_schema_and_version(database, monkeypatch, ca
     "drift",
     [
         "DELETE FROM sentrysearch_schema_migrations",
-        "UPDATE sentrysearch_schema_migrations SET version=2",
+        "DELETE FROM sentrysearch_schema_migrations WHERE version=2",
+        "UPDATE sentrysearch_schema_migrations SET version=3 WHERE version=2",
+        "INSERT INTO sentrysearch_schema_migrations(version, checksum) VALUES (3, 'future')",
         "UPDATE sentrysearch_schema_migrations SET checksum='changed'",
+        "UPDATE sentrysearch_schema_migrations SET checksum='changed' WHERE version=2",
         "ALTER TABLE reports DROP COLUMN content_preview",
+        "ALTER TABLE reports DROP COLUMN eligible_for_handoff",
+        "ALTER TABLE report_claims DROP COLUMN value",
+        "DROP TABLE report_artifacts",
     ],
 )
 def test_missing_future_or_drifted_schema_is_unready_without_repair(database, drift):
@@ -126,13 +140,13 @@ def test_backfill_spans_batches_and_failed_release_preserves_existing_rows(datab
 def test_future_schema_migration_refused(database):
     database.migrate_schema()
     with database.engine.begin() as conn:
-        conn.execute(text("UPDATE sentrysearch_schema_migrations SET version=2"))
+        conn.execute(text("UPDATE sentrysearch_schema_migrations SET version=3 WHERE version=2"))
     with pytest.raises(RuntimeError):
         database.migrate_schema()
     with database.engine.connect() as conn:
-        assert (
-            conn.execute(text("SELECT version FROM sentrysearch_schema_migrations")).scalar() == 2
-        )
+        assert conn.execute(
+            text("SELECT version FROM sentrysearch_schema_migrations ORDER BY version")
+        ).scalars().all() == [1, 3]
 
 
 def test_concurrent_release_lock_fails_without_waiting(database):
@@ -152,11 +166,7 @@ def test_application_role_can_check_and_write_but_not_migrate(database):
     with database.engine.begin() as conn:
         conn.execute(text(f'CREATE ROLE "{role}" LOGIN'))
         conn.execute(text(f'GRANT USAGE ON SCHEMA public TO "{role}"'))
-        conn.execute(
-            text(
-                f'GRANT SELECT, INSERT, UPDATE, DELETE ON reports, report_runtime_dispatches, report_disposition_events, report_searches, report_tags TO "{role}"'
-            )
-        )
+        conn.execute(text(f'GRANT SELECT, INSERT, UPDATE, DELETE ON {APP_TABLES} TO "{role}"'))
         conn.execute(text(f'GRANT SELECT ON sentrysearch_schema_migrations TO "{role}"'))
     app = DatabaseManager.__new__(DatabaseManager)
     app.engine = create_engine(database.engine.url.set(username=role))
@@ -215,3 +225,187 @@ def test_release_cli_in_separate_process(database):
         subprocess.run([*command, "--check"], env=env, capture_output=True, timeout=15).returncode
         == 0
     )
+
+
+def _apply_revision_one_only(database) -> None:
+    from src.storage.schema import REVISIONS
+
+    baseline = REVISIONS[0]
+    with database.engine.begin() as conn:
+        for statement in baseline.statements():
+            conn.execute(text(statement))
+        conn.execute(
+            text(
+                "CREATE TABLE sentrysearch_schema_migrations (version INTEGER PRIMARY KEY, "
+                "checksum VARCHAR(64) NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
+            )
+        )
+        conn.execute(
+            text("INSERT INTO sentrysearch_schema_migrations(version, checksum) VALUES (1, :c)"),
+            {"c": baseline.checksum},
+        )
+
+
+def test_revision_one_database_upgrades_and_backfills_rows_from_jsonb(database):
+    import json
+
+    from tests.conftest import build_threat_profile_data
+
+    _apply_revision_one_only(database)
+    assert database.check_schema() is False
+    profile = build_threat_profile_data("https://research.vendor-security.com/report")
+    profile["evidenceAdmissibility"] = {
+        "schemaVersion": "1",
+        "status": "blocked",
+        "sourceObservations": [{"sourceId": "S1", "purpose": "operational"}],
+        "indicatorObservations": [
+            {
+                "claimField": "filenames",
+                "claimIndex": 0,
+                "value": "example.exe",
+                "disposition": "admitted",
+                "ruleId": "indicator.source-coverage-only",
+            }
+        ],
+        "blockingFindings": ["Unsafe finding.", "Coverage finding."],
+        "summary": {"safetyFindings": 1, "coverageFindings": 1},
+    }
+    report_id = uuid.uuid4()
+    with database.engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO reports(id, tool_name, status, threat_data, web_sources, "
+                "evidence_admissibility, markdown_s3_key, evaluation_status, quality_score) "
+                "VALUES (:id, 'Retained', 'completed', CAST(:td AS JSONB), CAST(:ws AS JSONB), "
+                "CAST(:ea AS JSONB), :key, 'completed', 4.0)"
+            ),
+            {
+                "id": report_id,
+                "td": json.dumps(profile),
+                "ws": json.dumps(profile["webSearchSources"]["primarySources"]),
+                "ea": json.dumps(profile["evidenceAdmissibility"]),
+                "key": f"reports/{report_id}/artifacts/{'b' * 64}.md",
+            },
+        )
+
+    database.migrate_schema()
+
+    assert database.check_schema() is True
+    with database.engine.connect() as conn:
+        assert conn.execute(
+            text("SELECT version FROM sentrysearch_schema_migrations ORDER BY version")
+        ).scalars().all() == [1, 2]
+        claims = conn.execute(
+            text(
+                "SELECT claim_field, ordinal, value, evidence_role FROM report_claims "
+                "WHERE report_id=:id ORDER BY position"
+            ),
+            {"id": report_id},
+        ).all()
+        assert len(claims) == 10
+        assert claims[0] == ("riskFactors", 0, "Remote access", "direct_evidence")
+        assert (
+            conn.execute(
+                text("SELECT count(*) FROM report_claim_support WHERE report_id=:id AND verified"),
+                {"id": report_id},
+            ).scalar()
+            == 8
+        )
+        assert conn.execute(
+            text("SELECT kind FROM report_findings WHERE report_id=:id ORDER BY position"),
+            {"id": report_id},
+        ).scalars().all() == ["safety", "coverage"]
+        assert (
+            conn.execute(
+                text(
+                    "SELECT claim_id IS NOT NULL FROM report_indicator_observations "
+                    "WHERE report_id=:id"
+                ),
+                {"id": report_id},
+            ).scalar()
+            is True
+        )
+        # No artifact client in the release process: unknown, never a failed release.
+        assert conn.execute(
+            text(
+                "SELECT sha256, policy_status, policy_version FROM report_artifacts "
+                "WHERE report_id=:id AND kind='markdown'"
+            ),
+            {"id": report_id},
+        ).one() == ("b" * 64, "unknown", 1)
+        assert conn.execute(
+            text(
+                "SELECT reader_state_version, eligible_for_judgment, eligible_for_acceptance, "
+                "eligible_for_handoff FROM reports WHERE id=:id"
+            ),
+            {"id": report_id},
+        ).one() == (1, True, False, False)
+
+
+def test_writers_dual_write_rows_and_reader_state_in_their_transactions(database):
+    from typing import Any, cast
+
+    from src.core.markdown_generator import generate_markdown
+    from src.core.source_ledger import canonicalize_profile_sources
+    from src.storage.s3_manager import S3StorageManager
+    from tests.conftest import build_threat_profile_data
+
+    database.migrate_schema()
+    service = ReportStorageService()
+    service.db_manager = database
+
+    class Client:
+        def put_object(self, **kwargs):
+            return None
+
+    store = S3StorageManager()
+    store._initialized = True
+    store.s3_client = cast(Any, Client())
+    service.s3_manager = store
+
+    profile, sources = canonicalize_profile_sources(
+        build_threat_profile_data("https://research.vendor-security.com/report")
+    )
+    profile["evidenceAdmissibility"] = {"schemaVersion": "1", "status": "passed"}
+    report_id = str(uuid.uuid4())
+    report_data = {
+        "id": report_id,
+        "tool_name": "Example",
+        "threat_data": profile,
+        "web_sources": sources,
+        "markdown_content": generate_markdown(profile),
+        "evaluation_status": "completed",
+        "quality_score": 4.5,
+        "quality_assessment": {
+            "overall_score": 4.5,
+            "summary": {"passed_sections": 3, "failed_sections": 0},
+        },
+    }
+    service.store_report(report_data, user_id="owner")
+    service.store_report(dict(report_data, id=str(uuid.uuid4())), user_id="owner")
+
+    def state():
+        with database.engine.connect() as conn:
+            return conn.execute(
+                text(
+                    "SELECT review_status, eligible_for_acceptance, eligible_for_handoff, "
+                    "(SELECT count(*) FROM report_claims c WHERE c.report_id=r.id), "
+                    "(SELECT policy_status FROM report_artifacts a "
+                    " WHERE a.report_id=r.id AND kind='markdown') "
+                    "FROM reports r WHERE id=:id"
+                ),
+                {"id": report_id},
+            ).one()
+
+    assert state() == ("reviewable", True, False, 10, "allowed")
+    service.append_report_disposition(
+        report_id,
+        disposition="accepted",
+        note=None,
+        reviewer_user_id="owner",
+        owner_user_id="owner",
+    )
+    assert state() == ("reviewable", True, True, 10, "allowed")
+    assert service.begin_report_evaluation(report_id, user_id="owner") is True
+    # A new evaluation vintage has no judgment: handoff is withdrawn atomically.
+    assert state()[2] is False

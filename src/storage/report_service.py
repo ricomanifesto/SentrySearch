@@ -28,9 +28,10 @@ from src.domain.reports import (
     ReportStatus,
     ReviewStatus,
     SortOrder,
+    READER_STATE_VERSION,
     coerce_evaluation_status,
     derive_generation_route_scope,
-    derive_review_status,
+    derive_reader_state,
     evaluation_conflict_count,
     is_judgment_eligible,
     is_reuse_eligible,
@@ -43,12 +44,29 @@ from src.core.source_ledger import (
     claim_attribution_status,
 )
 from src.core.evidence_admissibility import assert_no_virtual_event_promotions
-from src.core.report_content_policy import load_checked_report
+from src.core.report_content_policy import (
+    ARTIFACT_POLICY_UNKNOWN,
+    ARTIFACT_POLICY_VERSION,
+    artifact_policy_status,
+    load_checked_report,
+)
 from src.domain.model_routes import generation_fallback_state
 from src.domain.threat_classification import classify_category_text, classify_tool_name
 
 from .database import db_manager
-from .models import Report, ReportDispositionEvent, ReportRuntimeDispatch
+from .models import (
+    Report,
+    ReportArtifact,
+    ReportClaimRow,
+    ReportClaimSupportRow,
+    ReportDispositionEvent,
+    ReportFindingRow,
+    ReportIndicatorObservationRow,
+    ReportRuntimeDispatch,
+    ReportSourceObservationRow,
+    ReportSourceRow,
+)
+from .profile_rows import ProfileRows, content_address, profile_rows
 from .s3_manager import s3_manager
 
 logger = logging.getLogger(__name__)
@@ -103,10 +121,32 @@ class ReportStorageService:
     def _source_count(cls, report: Report) -> int:
         return cls._source_count_from_values(report.web_sources, report.threat_data)
 
-    @classmethod
-    def _refresh_review_status(cls, report: Report) -> ReviewStatus:
+    @staticmethod
+    def _current_disposition(report: Report) -> AnalystDisposition:
+        """The latest judgment on the report's current evaluation vintage."""
+
         model = cast(Any, report)
-        status = derive_review_status(
+        current_attempt = int(model.evaluation_attempts or 0)
+        events = [
+            event
+            for event in (getattr(report, "disposition_events", None) or [])
+            if event.evaluation_attempt == current_attempt
+        ]
+        return (
+            AnalystDisposition(events[-1].disposition) if events else AnalystDisposition.UNREVIEWED
+        )
+
+    @classmethod
+    def _refresh_review_status(
+        cls,
+        report: Report,
+        *,
+        analyst_disposition: AnalystDisposition | None = None,
+    ) -> ReviewStatus:
+        """Recompute every stored reader-state column inside the writing transaction."""
+
+        model = cast(Any, report)
+        state = derive_reader_state(
             report_status=model.status or ReportStatus.COMPLETED.value,
             evaluation_status=model.evaluation_status,
             quality_score=(float(model.quality_score) if model.quality_score is not None else None),
@@ -115,9 +155,67 @@ class ReportStorageService:
             evidence_admissibility_status=(
                 model.evidence_admissibility_status or EvidenceAdmissibilityStatus.UNASSESSED.value
             ),
+            analyst_disposition=analyst_disposition or cls._current_disposition(report),
         )
-        model.review_status = status.value
-        return status
+        model.review_status = state.review_status.value
+        model.eligible_for_judgment = state.eligible_for_judgment
+        model.eligible_for_acceptance = state.eligible_for_acceptance
+        model.eligible_for_handoff = state.eligible_for_handoff
+        model.reader_state_version = state.version
+        return state.review_status
+
+    @staticmethod
+    def _write_profile_rows(report: Report, rows: ProfileRows) -> None:
+        """Replace the report's flat evidence rows; the caller holds the row lock."""
+
+        model = cast(Any, report)
+        model.profile_sources = [ReportSourceRow(**row) for row in rows.sources]
+        model.profile_claims = [ReportClaimRow(**row) for row in rows.claims]
+        model.claim_support = [ReportClaimSupportRow(**row) for row in rows.claim_support]
+        model.indicator_observations = [
+            ReportIndicatorObservationRow(**row) for row in rows.indicator_observations
+        ]
+        model.source_observations = [
+            ReportSourceObservationRow(**row) for row in rows.source_observations
+        ]
+        model.findings = [ReportFindingRow(**row) for row in rows.findings]
+
+    @staticmethod
+    def _write_artifact(
+        report: Report,
+        kind: str,
+        s3_key: str | None,
+        content: str | None,
+        *,
+        policy_status: str | None = None,
+    ) -> None:
+        """Record the current object of one kind with its content-policy decision."""
+
+        if not s3_key:
+            return
+        model = cast(Any, report)
+        sha256 = content_address(s3_key) or (
+            hashlib.sha256(content.encode("utf-8")).hexdigest() if content is not None else None
+        )
+        status = policy_status or artifact_policy_status(content)
+        existing = next(
+            (artifact for artifact in (model.artifacts or []) if artifact.kind == kind), None
+        )
+        if existing is None:
+            model.artifacts.append(
+                ReportArtifact(
+                    kind=kind,
+                    s3_key=s3_key,
+                    sha256=sha256,
+                    policy_status=status,
+                    policy_version=ARTIFACT_POLICY_VERSION,
+                )
+            )
+            return
+        existing.s3_key = s3_key
+        existing.sha256 = sha256
+        existing.policy_status = status
+        existing.policy_version = ARTIFACT_POLICY_VERSION
 
     @staticmethod
     def _latest_disposition_expression():
@@ -437,14 +535,62 @@ class ReportStorageService:
         # pass either, so the tool name is the only remaining signal.
         return classify_tool_name(tool_name) or ("unknown", "unknown")
 
-    def reconcile_reader_state(self, *, session: Session | None = None) -> Dict[str, int]:
-        """Backfill queryable review state and explicit classification provenance."""
+    def _artifact_policy_from_storage(self, s3_key: str) -> str:
+        """Read one stored object for the content policy; never fail the caller."""
+
+        try:
+            return artifact_policy_status(self.s3_manager.download_content(s3_key))
+        except Exception:
+            # An unavailable artifact client must not fail a release. ``unknown``
+            # stays excluded from handoff and is retried by the next reconciliation.
+            return ARTIFACT_POLICY_UNKNOWN
+
+    def _reconcile_artifacts(self, report: Any, *, read_artifacts: bool) -> int:
+        """Bring artifact rows to the current policy version; returns rows changed."""
+
+        changed = 0
+        current = {artifact.kind: artifact for artifact in (report.artifacts or [])}
+        for kind, key in (("markdown", report.markdown_s3_key), ("trace", report.trace_s3_key)):
+            if not key:
+                continue
+            artifact = current.get(kind)
+            if (
+                artifact is not None
+                and artifact.s3_key == key
+                and artifact.policy_version == ARTIFACT_POLICY_VERSION
+                and artifact.policy_status != ARTIFACT_POLICY_UNKNOWN
+            ):
+                continue
+            status = (
+                self._artifact_policy_from_storage(key)
+                if read_artifacts and kind == "markdown"
+                else ARTIFACT_POLICY_UNKNOWN
+            )
+            self._write_artifact(report, kind, key, None, policy_status=status)
+            changed += 1
+        return changed
+
+    def reconcile_reader_state(
+        self,
+        *,
+        session: Session | None = None,
+        read_artifacts: bool = True,
+    ) -> Dict[str, int]:
+        """Backfill reader state, classification, flat evidence rows, and artifact policy.
+
+        Runs inside the release transaction (or one admin session). It takes no
+        row locks: releases run with writers drained. Artifact reads for the
+        content policy happen while no row lock is held, and an unavailable
+        artifact client records ``unknown`` instead of failing.
+        """
 
         summary = {
             "review_updates": 0,
             "classification_updates": 0,
             "claim_attribution_updates": 0,
             "evidence_contract_updates": 0,
+            "profile_row_updates": 0,
+            "artifact_policy_updates": 0,
         }
         try:
             with (
@@ -509,6 +655,18 @@ class ReportStorageService:
                     self._refresh_review_status(report)
                     if previous_review_status != report.review_status:
                         summary["review_updates"] += 1
+
+                    rows = profile_rows(
+                        report.threat_data, report.web_sources, report.evidence_admissibility
+                    )
+                    if len(report.profile_claims or []) != len(rows.claims) or len(
+                        report.findings or []
+                    ) != len(rows.findings):
+                        summary["profile_row_updates"] += 1
+                    self._write_profile_rows(report, rows)
+                    summary["artifact_policy_updates"] += self._reconcile_artifacts(
+                        report, read_artifacts=read_artifacts
+                    )
                     if row_number % 250 == 0:
                         session.flush()
 
@@ -646,6 +804,27 @@ class ReportStorageService:
                 )
 
                 self._refresh_review_status(report)
+                self._write_profile_rows(
+                    report,
+                    profile_rows(
+                        report_data.get("threat_data"),
+                        report_data.get("web_sources"),
+                        report_data.get("evidence_admissibility"),
+                    ),
+                )
+                self._write_artifact(
+                    report, "markdown", markdown_s3_key, report_data.get("markdown_content")
+                )
+                self._write_artifact(
+                    report,
+                    "trace",
+                    trace_s3_key,
+                    (
+                        json.dumps(report_data["trace_data"], sort_keys=True, default=str)
+                        if "trace_data" in report_data
+                        else None
+                    ),
+                )
 
                 session.add(report)
                 session.commit()
@@ -829,6 +1008,27 @@ class ReportStorageService:
                 report.generation_retryable = None
                 report.generation_failure = None
                 self._refresh_review_status(report)
+                self._write_profile_rows(
+                    report,
+                    profile_rows(
+                        report_data.get("threat_data"),
+                        report_data.get("web_sources"),
+                        report_data.get("evidence_admissibility"),
+                    ),
+                )
+                self._write_artifact(
+                    report, "markdown", markdown_s3_key, report_data.get("markdown_content")
+                )
+                self._write_artifact(
+                    report,
+                    "trace",
+                    trace_s3_key,
+                    (
+                        json.dumps(report_data["trace_data"], sort_keys=True, default=str)
+                        if report_data.get("trace_data")
+                        else None
+                    ),
+                )
 
                 session.commit()
                 logger.info(f"Report finalized successfully: {report_id}")
@@ -1226,6 +1426,11 @@ class ReportStorageService:
             report.threat_data = threat_data
             report.markdown_s3_key = markdown_s3_key
             self._refresh_review_status(report)
+            self._write_profile_rows(
+                report,
+                profile_rows(threat_data, report.web_sources, report.evidence_admissibility),
+            )
+            self._write_artifact(report, "markdown", markdown_s3_key, markdown_content)
             session.commit()
             return True
 
@@ -1321,6 +1526,7 @@ class ReportStorageService:
                     report.evidence_admissibility = evidence
                     report.evidence_admissibility_status = status.value
                     report.evidence_admissibility_version = version
+                    self._write_profile_rows(report, profile_rows(None, None, evidence))
                 self._refresh_review_status(report)
                 session.commit()
                 logger.info(f"Report marked failed: {report_id}")
@@ -1437,6 +1643,8 @@ class ReportStorageService:
                 evaluation_attempt=int(report.evaluation_attempts or 0),
             )
             session.add(event)
+            # The new judgment changes handoff eligibility in this transaction.
+            self._refresh_review_status(report, analyst_disposition=normalized)
             session.flush()
             session.refresh(event)
             payload = event.to_dict(current_evaluation_attempt=int(report.evaluation_attempts or 0))

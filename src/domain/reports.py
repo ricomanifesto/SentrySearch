@@ -352,3 +352,61 @@ def derive_review_status(
     if isinstance(consistency, Mapping) and consistency.get("inconsistencies"):
         return ReviewStatus.NEEDS_ATTENTION
     return ReviewStatus.REVIEWABLE
+
+
+# Bump when any rule that feeds the stored reader state changes; the release
+# reconciliation recomputes every row whose stored version is older.
+READER_STATE_VERSION = 1
+
+
+@dataclass(frozen=True, slots=True)
+class ReaderState:
+    """Derived reader state stored on the report row at write time."""
+
+    review_status: ReviewStatus
+    eligible_for_judgment: bool
+    eligible_for_acceptance: bool
+    eligible_for_handoff: bool
+    version: int = READER_STATE_VERSION
+
+
+def derive_reader_state(
+    *,
+    report_status: ReportStatus | str,
+    evaluation_status: EvaluationStatus | str | None,
+    quality_score: float | None,
+    quality_assessment: Mapping[str, Any] | None,
+    source_count: int,
+    evidence_admissibility_status: EvidenceAdmissibilityStatus | str,
+    analyst_disposition: AnalystDisposition | str,
+) -> ReaderState:
+    """Compute every stored reader-state column from the same domain rules."""
+
+    return ReaderState(
+        review_status=derive_review_status(
+            report_status=report_status,
+            evaluation_status=evaluation_status,
+            quality_score=quality_score,
+            quality_assessment=quality_assessment,
+            source_count=source_count,
+            evidence_admissibility_status=evidence_admissibility_status,
+        ),
+        eligible_for_judgment=is_judgment_eligible(
+            report_status=report_status,
+            evaluation_status=evaluation_status,
+            quality_score=quality_score,
+        ),
+        eligible_for_acceptance=is_reuse_eligible(
+            report_status=report_status,
+            evaluation_status=evaluation_status,
+            quality_score=quality_score,
+            evidence_admissibility_status=evidence_admissibility_status,
+        ),
+        eligible_for_handoff=is_handoff_eligible(
+            report_status=report_status,
+            evaluation_status=evaluation_status,
+            quality_score=quality_score,
+            evidence_admissibility_status=evidence_admissibility_status,
+            analyst_disposition=analyst_disposition,
+        ),
+    )

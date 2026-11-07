@@ -16,10 +16,14 @@ release does not migrate product data into the runtime or change cloud resources
 4. Start API and worker with application credentials. Inspect readiness before
    resuming admission. The worker checks storage before claiming any work.
 
-The command supports empty databases and the existing unversioned additive
-schema. Revision 1 freezes the baseline SQL. DDL, reader-state reconciliation,
-and the revision/checksum marker share one transaction. A failed step rolls back
-the release. A concurrent migrator fails immediately on the advisory lock;
+The command supports empty databases, the existing unversioned additive schema,
+and databases at any earlier supported revision. Revisions are an ordered list in
+`src/storage/schema.py`, one SQL file each under `src/storage/migrations/`, with a
+SHA-256 checksum per file. Applied SQL is never edited; changes are appended as a
+new revision. The applied revisions must be an exact prefix of the supported list,
+otherwise the release refuses to run. DDL for every pending revision, one
+reader-state reconciliation, and every revision/checksum marker share one
+transaction. A failed step rolls back the release. A concurrent migrator fails immediately on the advisory lock;
 database lock waits are limited to 3 seconds and individual statements to 60
 seconds. Re-running an applied revision checks it without repeating the backfill.
 
@@ -28,16 +32,19 @@ transaction's WAL and total duration still scale with retained data. Statement
 limits are not a whole-release deadline; measure the dataset and use an operator
 deadline before a deployed migration. Never perform the release under live writers.
 
-Readiness requires the exact supported revision/checksum and the ability to query
-every model column without reading rows. Missing, newer, or changed SQL revisions
+Readiness requires the exact supported revision/checksum sequence and the ability
+to query every column of every mapped table without reading rows. Missing, newer, or changed SQL revisions
 and missing columns fail closed. The check uses a read-only transaction, 2-second
 statement limits, and a 250-ms lock-wait limit. It is not a full schema, index,
 constraint, row-integrity, or backup audit. It does not repair anything.
 
 The application role needs schema USAGE and SELECT/INSERT/UPDATE/DELETE on
 `reports`, `report_runtime_dispatches`, `report_disposition_events`,
-`report_searches`, and `report_tags`, plus SELECT on
-`sentrysearch_schema_migrations`. It must not own those objects or have schema
+`report_searches`, `report_tags`, and the revision 2 tables `report_sources`,
+`report_claims`, `report_claim_support`, `report_indicator_observations`,
+`report_source_observations`, `report_findings`, and `report_artifacts`, plus
+SELECT on `sentrysearch_schema_migrations`. Without the revision 2 grants the
+read-only check fails closed, because readiness queries every mapped table. It must not own those objects or have schema
 CREATE, role-management, or superuser privileges. The schema-owner role is never
 an API/worker secret. Actual role provisioning and privilege auditing remain
 deployment tasks; the local proof exercises this split in a disposable database.
@@ -45,6 +52,52 @@ deployment tasks; the local proof exercises this split in a disposable database.
 Rollback means pause, drain, and restore a schema-compatible binary/configuration.
 There is no down-migration command. Do not unstamp a revision or restore an older
 database over completed work. After a release failure, correct the cause and rerun.
+
+## Revision 2: flat evidence rows and stored reader state
+
+Revision 2 (`002_profile_rows.sql`) is additive. It drops and rewrites nothing,
+and the existing JSONB columns stay populated during this transition.
+
+| Object | Contents |
+| --- | --- |
+| `reports.reader_state_version`, `eligible_for_judgment`, `eligible_for_acceptance`, `eligible_for_handoff` | Derived reader state alongside `review_status` |
+| `report_sources` | Cited primary sources with snapshot fingerprint and source purpose |
+| `report_claims` | One row per high-risk claim: stable `claim_id`, class, field, `ordinal` (the legacy `claimIndex`), value, evidence role |
+| `report_claim_support` | Verbatim support excerpt per claim and source, with snapshot SHA-256 and verification state |
+| `report_indicator_observations` | Deterministic infrastructure decisions, linked to a claim when one survives |
+| `report_source_observations` | Every researched source's purpose decision, including named exclusions |
+| `report_findings` | Blocking gate findings classified as `safety` or `coverage` |
+| `report_artifacts` | The current Markdown and trace object per report, with `policy_status` and `policy_version` |
+
+Writers compute reader state with the domain rules in `src/domain/reports.py` in
+the same transaction that changes its inputs, on the report row they already
+lock. That covers generation finalization, evaluation completion and failure,
+generation failure, and analyst dispositions, so a new judgment or a new
+evaluation vintage changes handoff eligibility atomically. The evidence rows and
+artifact rows are replaced in those same transactions. No provider call or
+object upload runs while the row lock is held, and lock scope is unchanged.
+
+The release backfill (`reconcile_reader_state`) fills the new tables from the
+stored `threat_data`, `web_sources`, and `evidence_admissibility` JSONB through
+the same profile parser the evidence gate uses. Retained schema-4 support keeps an
+unknown verification state; nothing is inferred. Retained Markdown is read once to
+compute its content policy. The backfill takes no row locks, because the release
+runs with writers drained. If the artifact client is unavailable in the release
+process, the artifact is recorded as `policy_status = 'unknown'` rather than
+failing the release.
+
+### Content policy versioning
+
+The content policy (the virtual-event promotion marker) is evaluated when an
+artifact is written, and the result is stored as `policy_status` (`allowed`,
+`excluded`, or `unknown`) with `policy_version` on the artifact row. Reads filter
+on the stored value instead of downloading content. This is a behavior change: a
+policy change does not take effect on retained artifacts at deploy time. Bump
+`ARTIFACT_POLICY_VERSION` in `src/core/report_content_policy.py` and run the
+existing reconciliation command (the admin categorization endpoint, or the release
+backfill). It recomputes every artifact whose stored version is older, plus any
+`unknown` result. Reader-state rule changes work the same way through
+`READER_STATE_VERSION` in `src/domain/reports.py`.
 
 ## Database configuration
 
@@ -135,6 +188,13 @@ uv run python dev/check_local_setup.py
 uv run python dev/check_runtime_consistency.py --runtime-repo ../sentryruntime
 uv run python dev/check_runtime_consistency.py --runtime-repo ../sentryruntime --tls
 ```
+
+`tests/storage_postgres.py` includes the revision 2 proofs: an empty database
+migrates to `[1, 2]`; a revision-1 database upgrades in place and backfills rows,
+reader state, and `unknown` artifact policy from retained JSONB; missing, future,
+or changed revisions and dropped revision 2 objects fail readiness; and the
+writers dual-write rows and reader state, including handoff withdrawal when a new
+evaluation vintage begins.
 
 The consistency runner requires PostgreSQL 16 installed through Homebrew and the
 companion runtime checkout. It creates disposable databases. The TLS variant also

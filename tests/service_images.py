@@ -40,7 +40,10 @@ API = ["python", "/app/run_api.py"]
 RELEASE = ["python", "-m", "dev.migrate_storage"]
 CHECK = [*RELEASE, "--check"]
 APP_TABLES = (
-    "reports, report_runtime_dispatches, report_disposition_events, report_searches, report_tags"
+    "reports, report_runtime_dispatches, report_disposition_events, report_searches, "
+    "report_tags, report_sources, report_claims, report_claim_support, "
+    "report_indicator_observations, report_source_observations, report_findings, "
+    "report_artifacts"
 )
 
 LOCAL_PROBE = (
