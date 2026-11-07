@@ -115,6 +115,7 @@ _DOCUMENTATION_NETWORKS: tuple[IPv4Network | IPv6Network, ...] = (
     ip_network("198.51.100.0/24"),
     ip_network("203.0.113.0/24"),
     ip_network("2001:db8::/32"),
+    ip_network("3fff::/20"),
 )
 _PRIVATE_NETWORKS: tuple[IPv4Network | IPv6Network, ...] = (
     ip_network("10.0.0.0/8"),
@@ -137,6 +138,19 @@ _SPECIAL_USE_NETWORKS: tuple[IPv4Network | IPv6Network, ...] = (
     ip_network("100::/64"),
     ip_network("fe80::/10"),
     ip_network("ff00::/8"),
+    # Non-global IANA IPv6 blocks that Python 3.11's ``is_global`` does not
+    # cover by network address alone.
+    ip_network("2001::/23"),
+    ip_network("2002::/16"),
+    ip_network("64:ff9b:1::/48"),
+    ip_network("5f00::/16"),
+)
+# Fail closed against the IANA special-purpose registries: an address marked
+# globally reachable inside a non-global block (such as 192.0.0.9/32), or one
+# whose reachability is blank or N/A, is still not admitted.
+_EMBEDDED_IPV4_PREFIXES: tuple[IPv6Network, ...] = (
+    IPv6Network("::ffff:0:0/96"),
+    IPv6Network("64:ff9b::/96"),
 )
 _IPV4_TOKEN = re.compile(r"(?<![0-9.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?:/[0-9]{1,2})?")
 _DOMAIN_TOKEN = re.compile(
@@ -364,15 +378,32 @@ def _network_candidates(value: str) -> list[IPv4Network | IPv6Network]:
     return networks
 
 
+def _embedded_ipv4(candidate: IPv4Network | IPv6Network) -> IPv4Network | IPv6Network:
+    """Classify IPv4-mapped and NAT64 well-known prefix values by their IPv4 part."""
+
+    if isinstance(candidate, IPv6Network) and candidate.prefixlen >= 96:
+        for prefix in _EMBEDDED_IPV4_PREFIXES:
+            if candidate.subnet_of(prefix):
+                embedded = int(candidate.network_address) & 0xFFFFFFFF
+                return IPv4Network((embedded, candidate.prefixlen - 96))
+    return candidate
+
+
 def _network_in(candidate: IPv4Network | IPv6Network, networks: tuple) -> bool:
+    """True when any address the candidate covers lies in one of ``networks``."""
+
     return any(
-        candidate.version == expected.version and candidate.subnet_of(expected)
+        candidate.version == expected.version and candidate.overlaps(expected)
         for expected in networks
     )
 
 
+def _is_global(candidate: IPv4Network | IPv6Network) -> bool:
+    return candidate.network_address.is_global and candidate.broadcast_address.is_global
+
+
 def _classify_ip(value: str) -> tuple[EvidenceDisposition, str, str]:
-    networks = _network_candidates(value)
+    networks = [_embedded_ipv4(network) for network in _network_candidates(value)]
     if not networks:
         return (
             EvidenceDisposition.REJECTED,
@@ -397,7 +428,7 @@ def _classify_ip(value: str) -> tuple[EvidenceDisposition, str, str]:
             "Private addressing is admissible only as victim-environment context.",
             "indicator.ip-private-context",
         )
-    if any(not ip_address(network.network_address).is_global for network in networks):
+    if any(not _is_global(network) for network in networks):
         return (
             EvidenceDisposition.REJECTED,
             "Non-global address space requires an explicit application rule before operational use.",
