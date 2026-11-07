@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import os
 import time
-from threading import Lock
 from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlsplit
@@ -20,10 +19,9 @@ from uuid import uuid4
 import httpx
 from pydantic import ValidationError
 
+from src.domain.model_calls import ModelCall, route_provenance
 from src.domain.model_routes import (
-    ModelRouteAttemptObservation,
     ModelRouteAttemptOutcome,
-    ModelRouteObservation,
     ModelRouteProvenance,
     ModelRoutePurpose,
 )
@@ -216,10 +214,16 @@ class ModelClient:
         self.timeout = timeout
         self.transport = transport
         self._api_key = key
-        self._route_lock = Lock()
-        self._route_observations: list[ModelRouteObservation] = []
-        self._route_attempts: list[ModelRouteAttemptObservation] = []
+        # The run that owns this client binds its own log; appends are atomic,
+        # so the concurrent research requests need no lock.
+        self.call_log: list[ModelCall] = []
         self.messages = _Messages(self)
+
+    def bind_call_log(self, calls: list[ModelCall]) -> list[ModelCall]:
+        """Record every following request attempt into ``calls`` and return it."""
+
+        self.call_log = calls
+        return calls
 
     def create_message(self, **kwargs: Any) -> SimpleNamespace:
         """Generate a message through OpenRouter's Chat Completions API."""
@@ -280,7 +284,7 @@ class ModelClient:
             attempt_request = dict(request)
             if attempt and not attempt_request.get("session_id"):
                 attempt_request["session_id"] = f"sentrysearch-empty-retry-{uuid4().hex}"
-            response, selected_model = self._post_with_model_fallbacks(
+            response, selected_model, started_at = self._post_with_model_fallbacks(
                 attempt_request,
                 fallback_models,
                 route_purpose=route_purpose,
@@ -312,6 +316,7 @@ class ModelClient:
                             selected_model=selected_model,
                             provider=provider,
                             error=last_empty_error,
+                            started_at=started_at,
                         )
                         request["max_tokens"] = next_max_tokens
                         time.sleep(EMPTY_RESPONSE_RETRY_DELAY * (attempt + 1))
@@ -330,6 +335,7 @@ class ModelClient:
                             selected_model=selected_model,
                             provider=provider,
                             error=last_empty_error,
+                            started_at=started_at,
                         )
                         time.sleep(EMPTY_RESPONSE_RETRY_DELAY * (attempt + 1))
                         continue
@@ -350,6 +356,7 @@ class ModelClient:
                     selected_model=selected_model,
                     provider=provider,
                     error=error,
+                    started_at=started_at,
                 )
                 raise
             web_search_sources, tool_events, web_search_calls = self._extract_tool_telemetry(
@@ -371,27 +378,25 @@ class ModelClient:
 
             actual_model = str(body.get("model") or selected_model)
             provider_name = str(body.get("provider") or "")
-            if route_purpose is not None:
-                self._record_route(
-                    ModelRouteObservation(
-                        purpose=route_purpose,
-                        requested_model=str(request["model"]),
-                        selected_model=selected_model,
-                        actual_model=actual_model,
-                        provider=provider_name,
-                        requested_providers=requested_providers,
-                    )
-                )
-                self._record_attempt(
-                    ModelRouteAttemptObservation(
-                        purpose=route_purpose,
-                        requested_model=str(request["model"]),
-                        selected_model=selected_model,
-                        actual_model=actual_model,
-                        provider=provider_name,
-                        outcome=ModelRouteAttemptOutcome.SUCCEEDED,
-                    )
-                )
+            model_call = ModelCall(
+                purpose=route_purpose,
+                requested_model=str(request["model"]),
+                selected_model=selected_model,
+                outcome=ModelRouteAttemptOutcome.SUCCEEDED,
+                started_at=started_at,
+                ended_at=time.time(),
+                actual_model=actual_model,
+                provider=provider_name,
+                requested_providers=requested_providers,
+                input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+                output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+                cached_tokens=int(getattr(usage, "cached_tokens", 0) or 0),
+                cache_write_tokens=int(getattr(usage, "cache_write_tokens", 0) or 0),
+                reasoning_tokens=int(getattr(usage, "reasoning_tokens", 0) or 0),
+                web_search_calls=int(getattr(usage, "web_search_calls", 0) or 0),
+                total_tokens=int(getattr(usage, "total_tokens", 0) or 0),
+            )
+            self.call_log.append(model_call)
 
             return SimpleNamespace(
                 content=content,
@@ -410,6 +415,7 @@ class ModelClient:
                     else {}
                 ),
                 usage=usage,
+                model_call=model_call,
             )
 
         raise last_empty_error or ModelClientError(
@@ -422,7 +428,7 @@ class ModelClient:
         fallback_models: list[str],
         *,
         route_purpose: ModelRoutePurpose | None,
-    ) -> tuple[httpx.Response, str]:
+    ) -> tuple[httpx.Response, str, float]:
         """Retry typed provider failures with explicitly configured model fallbacks."""
 
         candidates = [str(request["model"]), *fallback_models]
@@ -439,8 +445,9 @@ class ModelClient:
                     candidate_request["provider"] = fallback_provider
                 else:
                     candidate_request.pop("provider", None)
+            started_at = time.time()
             try:
-                return self._post(candidate_request), model
+                response = self._post(candidate_request)
             except (ModelRetryableError, ModelUnavailableError) as error:
                 self._record_failed_attempt(
                     route_purpose,
@@ -448,20 +455,15 @@ class ModelClient:
                     selected_model=model,
                     provider=candidate_request.get("provider"),
                     error=error,
+                    started_at=started_at,
                 )
                 last_error = error
+                continue
+            return response, model, started_at
 
         if last_error is not None:
             raise last_error
         raise AssertionError("model fallback loop exited without a request")
-
-    def _record_route(self, observation: ModelRouteObservation) -> None:
-        with self._route_lock:
-            self._route_observations.append(observation)
-
-    def _record_attempt(self, observation: ModelRouteAttemptObservation) -> None:
-        with self._route_lock:
-            self._route_attempts.append(observation)
 
     def _record_failed_attempt(
         self,
@@ -471,6 +473,7 @@ class ModelClient:
         selected_model: str,
         provider: object,
         error: ModelClientError,
+        started_at: float,
     ) -> None:
         if purpose is None:
             return
@@ -478,13 +481,15 @@ class ModelClient:
         if not isinstance(provider_values, (list, tuple)):
             provider_values = ()
         provider_name = ", ".join(str(value) for value in provider_values)
-        self._record_attempt(
-            ModelRouteAttemptObservation(
+        self.call_log.append(
+            ModelCall(
                 purpose=purpose,
                 requested_model=requested_model,
                 selected_model=selected_model,
-                provider=provider_name,
                 outcome=ModelRouteAttemptOutcome.FAILED,
+                started_at=started_at,
+                ended_at=time.time(),
+                provider=provider_name,
                 error_code=str(error.generation_error_code),
                 retryable=bool(error.retryable),
             )
@@ -497,23 +502,13 @@ class ModelClient:
         requested_model: str,
         requested_providers: tuple[str, ...] = (),
     ) -> ModelRouteProvenance:
-        """Summarize successful calls for one report pipeline role."""
+        """Summarize one report pipeline role from the bound call log."""
 
-        normalized_purpose = ModelRoutePurpose(purpose)
-        with self._route_lock:
-            observations = tuple(
-                observation
-                for observation in self._route_observations
-                if observation.purpose is normalized_purpose
-            )
-            attempts = tuple(
-                attempt for attempt in self._route_attempts if attempt.purpose is normalized_purpose
-            )
-        return ModelRouteProvenance.summarize(
-            observations,
+        return route_provenance(
+            tuple(self.call_log),
+            purpose,
             requested_model=requested_model,
             requested_providers=requested_providers,
-            attempts=attempts,
         )
 
     def _post(self, request: dict[str, Any]) -> httpx.Response:

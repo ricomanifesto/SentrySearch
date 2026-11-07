@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 import logging
 
+from src.core.generation_run import GenerationRun, StageSpan
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,32 +54,7 @@ class TraceExporter:
             Trace ID for this execution
         """
         trace_id = str(uuid.uuid4())
-        timestamp = datetime.now(timezone.utc)
-
-        self.current_trace = {
-            "trace_id": trace_id,
-            "timestamp": timestamp.isoformat(),
-            "tool_name": tool_name,
-            "start_time": timestamp,
-            "pipeline_version": "1.0.0",
-            "knowledge_base_version": "2024-06",
-            # Processing stages
-            "stages": {
-                "initialization": {"start_time": timestamp},
-                "web_search": {},
-                "quality_validation": {},
-                "completion": {},
-            },
-            # Results storage
-            "threat_characteristics": None,
-            "final_guidance": "",
-            "web_search_sources": [],
-            "model_tool_events": [],
-            "quality_metrics": {},
-            "processing_times": {},
-            "errors": [],
-            "warnings": [],
-        }
+        self.current_trace = new_trace(trace_id, tool_name, datetime.now(timezone.utc))
 
         logger.debug("Started trace %s for %s", trace_id, tool_name)
         return trace_id
@@ -103,14 +80,9 @@ class TraceExporter:
     def log_threat_characteristics(self, characteristics: Dict[str, Any]):
         """Log extracted threat characteristics"""
         if self.current_trace:
-            self.current_trace["threat_characteristics"] = {
-                "threat_name": characteristics.get("threat_name", self.current_trace["tool_name"]),
-                "threat_type": self._infer_threat_type(characteristics),
-                "attack_vectors": characteristics.get("attack_vectors", []),
-                "target_assets": characteristics.get("target_assets", []),
-                "behavior_patterns": characteristics.get("behavior_patterns", []),
-                "time_characteristics": characteristics.get("time_characteristics", "persistent"),
-            }
+            self.current_trace["threat_characteristics"] = threat_characteristics(
+                characteristics, self.current_trace["tool_name"]
+            )
 
     def log_web_search_sources(self, sources: List[Dict]):
         """Log web search sources used"""
@@ -165,84 +137,181 @@ class TraceExporter:
         if not trace:
             raise ValueError("No active trace to complete")
 
-        # Finalize trace
-        trace["stages"]["completion"]["end_time"] = datetime.now(timezone.utc)
-        total_duration = (
-            trace["stages"]["completion"]["end_time"] - trace["start_time"]
-        ).total_seconds()
-        trace["processing_time_ms"] = int(total_duration * 1000)
-
-        # Auto-flag problematic traces
-        is_flagged, flag_reasons = self._check_for_flags(trace)
-        trace["is_flagged"] = is_flagged
-        trace["flag_reasons"] = flag_reasons
-
-        # Clean up internal fields
-        trace_for_export = trace.copy()
-        trace_for_export.pop("start_time", None)
-
-        # Convert datetime objects to ISO strings
-        self._serialize_datetimes(trace_for_export)
-
-        # Export to file
-        filename = f"trace_{trace['trace_id']}.json"
-        filepath = self.export_dir / filename
-
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(trace_for_export, f, indent=2, default=str)
-
-        logger.debug("Exported trace to %s", filepath)
+        trace_for_export = finalize_trace(trace, datetime.now(timezone.utc))
+        filepath = self.export(trace_for_export)
 
         # Reset current trace
         self.current_trace = None
 
+        return filepath
+
+    def export(self, trace_for_export: Dict[str, Any]) -> str:
+        """Write one finalized trace and return its path."""
+
+        filepath = self.export_dir / f"trace_{trace_for_export['trace_id']}.json"
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(trace_for_export, f, indent=2, default=str)
+        logger.debug("Exported trace to %s", filepath)
         return str(filepath)
 
     def _infer_threat_type(self, characteristics: Dict) -> str:
-        """Infer threat type from characteristics"""
-        category = characteristics.get("category", "").lower()
-
-        threat_type_mapping = {
-            "rat": "malware",
-            "backdoor": "malware",
-            "trojan": "malware",
-            "ransomware": "ransomware",
-            "botnet": "bot",
-            "apt": "apt",
-            "phishing": "phishing",
-        }
-
-        return threat_type_mapping.get(category, "malware")
+        return _infer_threat_type(characteristics)
 
     def _serialize_datetimes(self, obj):
-        """Recursively serialize datetime objects to ISO strings"""
-        if isinstance(obj, dict):
-            for key, value in obj.items():
-                if isinstance(value, datetime):
-                    obj[key] = value.isoformat() + "Z"
-                elif isinstance(value, (dict, list)):
-                    self._serialize_datetimes(value)
-        elif isinstance(obj, list):
-            for i, item in enumerate(obj):
-                if isinstance(item, datetime):
-                    obj[i] = item.isoformat() + "Z"
-                elif isinstance(item, (dict, list)):
-                    self._serialize_datetimes(item)
+        _serialize_datetimes(obj)
 
     def _check_for_flags(self, trace: Dict[str, Any]) -> tuple:
-        """Check if trace should be flagged for review"""
-        flags = []
+        return _check_for_flags(trace)
 
-        # Check for processing errors
-        if trace.get("errors"):
-            flags.append("processing_errors")
 
-        # Check for insufficient guidance
-        final_guidance = trace.get("final_guidance", "").strip()
-        if not final_guidance or len(final_guidance) < 100:
-            flags.append("insufficient_guidance")
+def new_trace(trace_id: str, tool_name: str, timestamp: datetime) -> Dict[str, Any]:
+    """The in-progress trace structure at the start of one generation."""
 
-        return len(flags) > 0, flags
+    return {
+        "trace_id": trace_id,
+        "timestamp": timestamp.isoformat(),
+        "tool_name": tool_name,
+        "start_time": timestamp,
+        "pipeline_version": "1.0.0",
+        "knowledge_base_version": "2024-06",
+        # Processing stages
+        "stages": {
+            "initialization": {"start_time": timestamp},
+            "web_search": {},
+            "quality_validation": {},
+            "completion": {},
+        },
+        # Results storage
+        "threat_characteristics": None,
+        "final_guidance": "",
+        "web_search_sources": [],
+        "model_tool_events": [],
+        "quality_metrics": {},
+        "processing_times": {},
+        "errors": [],
+        "warnings": [],
+    }
+
+
+def threat_characteristics(characteristics: Dict[str, Any], tool_name: str) -> Dict[str, Any]:
+    return {
+        "threat_name": characteristics.get("threat_name", tool_name),
+        "threat_type": _infer_threat_type(characteristics),
+        "attack_vectors": characteristics.get("attack_vectors", []),
+        "target_assets": characteristics.get("target_assets", []),
+        "behavior_patterns": characteristics.get("behavior_patterns", []),
+        "time_characteristics": characteristics.get("time_characteristics", "persistent"),
+    }
+
+
+def finalize_trace(trace: Dict[str, Any], completed_at: datetime) -> Dict[str, Any]:
+    """Close a trace at ``completed_at`` and return its serialized export copy."""
+
+    trace["stages"]["completion"]["end_time"] = completed_at
+    total_duration = (completed_at - trace["start_time"]).total_seconds()
+    trace["processing_time_ms"] = int(total_duration * 1000)
+
+    # Auto-flag problematic traces
+    is_flagged, flag_reasons = _check_for_flags(trace)
+    trace["is_flagged"] = is_flagged
+    trace["flag_reasons"] = flag_reasons
+
+    # Clean up internal fields
+    trace_for_export = trace.copy()
+    trace_for_export.pop("start_time", None)
+
+    # Convert datetime objects to ISO strings
+    _serialize_datetimes(trace_for_export)
+    return trace_for_export
+
+
+def _apply_stage(stage_data: Dict[str, Any], span: StageSpan) -> None:
+    if span.started_at is not None:
+        stage_data["start_time"] = span.started_at
+    if span.ended_at is not None:
+        stage_data["end_time"] = span.ended_at
+        if "start_time" in stage_data:
+            duration = (span.ended_at - stage_data["start_time"]).total_seconds()
+            stage_data["duration_ms"] = int(duration * 1000)
+        stage_data.update(span.metadata)
+
+
+def project_trace(run: GenerationRun) -> Dict[str, Any]:
+    """The exported trace for one generation, computed after it ends."""
+
+    trace = new_trace(run.run_id, run.tool_name, run.started_at)
+    for name, span in run.stages.items():
+        if name in trace["stages"]:
+            _apply_stage(trace["stages"][name], span)
+    if run.tool_events:
+        trace["model_tool_events"] = run.tool_events
+    if run.quality_metrics is not None:
+        trace["quality_metrics"] = run.quality_metrics
+    if run.error is not None:
+        trace["errors"].append(
+            {
+                "error": run.error,
+                "timestamp": (run.error_at or run.started_at).isoformat(),
+                "stage": "main_process",
+            }
+        )
+    if run.completed_profile:
+        trace["threat_characteristics"] = threat_characteristics(
+            run.core_metadata or {}, run.tool_name
+        )
+        trace["final_guidance"] = run.final_guidance
+        if run.validator_sources:
+            trace["web_search_sources"] = run.validator_sources
+    return finalize_trace(trace, run.completed_at or run.started_at)
+
+
+def _infer_threat_type(characteristics: Dict) -> str:
+    """Infer threat type from characteristics"""
+    category = characteristics.get("category", "").lower()
+
+    threat_type_mapping = {
+        "rat": "malware",
+        "backdoor": "malware",
+        "trojan": "malware",
+        "ransomware": "ransomware",
+        "botnet": "bot",
+        "apt": "apt",
+        "phishing": "phishing",
+    }
+
+    return threat_type_mapping.get(category, "malware")
+
+
+def _serialize_datetimes(obj):
+    """Recursively serialize datetime objects to ISO strings"""
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(value, datetime):
+                obj[key] = value.isoformat() + "Z"
+            elif isinstance(value, (dict, list)):
+                _serialize_datetimes(value)
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            if isinstance(item, datetime):
+                obj[i] = item.isoformat() + "Z"
+            elif isinstance(item, (dict, list)):
+                _serialize_datetimes(item)
+
+
+def _check_for_flags(trace: Dict[str, Any]) -> tuple:
+    """Check if trace should be flagged for review"""
+    flags = []
+
+    # Check for processing errors
+    if trace.get("errors"):
+        flags.append("processing_errors")
+
+    # Check for insufficient guidance
+    final_guidance = trace.get("final_guidance", "").strip()
+    if not final_guidance or len(final_guidance) < 100:
+        flags.append("insufficient_guidance")
+
+    return len(flags) > 0, flags
 
 
 def get_trace_exporter(export_dir: str = "./traces") -> TraceExporter:

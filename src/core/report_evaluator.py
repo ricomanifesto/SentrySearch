@@ -54,6 +54,11 @@ def evaluate_saved_report(profile: Mapping[str, Any]) -> SavedReportEvaluation:
     clean_profile.pop("comprehensiveWebSearchSources", None)
 
     client = create_model_client()
+    # The evaluator owns one call log for this attempt; the evaluation route is
+    # projected from it rather than from anything the client accumulated.
+    bind = getattr(client, "bind_call_log", None)
+    if callable(bind):
+        bind([])
     validator = ParallelSectionValidator(client)
     assessment = validator.validate_complete_profile(
         clean_profile,
