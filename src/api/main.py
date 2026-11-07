@@ -403,10 +403,27 @@ def _stored_rows(report: Dict[str, Any], name: str) -> list[Dict[str, Any]] | No
 
 
 def detail_report_sources(report: Dict[str, Any]) -> List[ReportSource]:
-    """The source rail from ``report_sources``; rows without them use the record."""
+    """The source rail from ``report_sources`` when the rows hold every source.
 
+    Rows are keyed by source ID, so a retained source without one, or a repeated
+    ID, cannot be stored. The record is used whenever the rows do not reproduce
+    its ordered source IDs.
+    """
+
+    record = get_report_sources(report)
     rows = _stored_rows(report, "sources")
-    return report_sources_from_rows(rows) if rows else get_report_sources(report)
+    if not rows:
+        return record
+    projected = report_sources_from_rows(rows)
+    if [source.source_id for source in projected] != [source.source_id for source in record]:
+        return record
+    return projected
+
+
+# Schemas 4 and 5 require one attribution record per claim, matched by selector,
+# so claim rows represent their links exactly. Schema 3 may leave claims
+# unattributed and schema 2 records need no selector, so they use the record.
+ROW_PROJECTED_ATTRIBUTION_VERSIONS = frozenset({"4", "5"})
 
 
 def detail_claim_attributions(report: Dict[str, Any]) -> List[ClaimAttributionEntry]:
@@ -415,7 +432,11 @@ def detail_claim_attributions(report: Dict[str, Any]) -> List[ClaimAttributionEn
     if report.get("claim_attribution_status") != ClaimAttributionStatus.ATTRIBUTED.value:
         return []
     claims = _stored_rows(report, "claims")
-    if not claims:
+    if (
+        not claims
+        or str(report.get("claim_attribution_version") or "")
+        not in ROW_PROJECTED_ATTRIBUTION_VERSIONS
+    ):
         return get_claim_attributions(report)
     return claim_attributions_from_rows(claims, _stored_rows(report, "claim_support") or [])
 

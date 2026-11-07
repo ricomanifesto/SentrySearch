@@ -204,3 +204,46 @@ def test_markdown_renderer_never_cites_an_inconsistent_or_legacy_ledger():
         markdown = generate_markdown(profile)
         assert "#source-" not in markdown
         assert "General practice" not in markdown
+
+
+def test_source_rail_keeps_sources_the_rows_cannot_key():
+    report = _report_with_rows()
+    sources = report["threat_data"]["webSearchSources"]["primarySources"]
+    unkeyed = {key: value for key, value in deepcopy(sources[0]).items() if key != "sourceId"}
+    unkeyed["url"] = "https://second.vendor-security.com/analysis"
+    sources.append(unkeyed)
+    report["web_sources"] = sources
+
+    detail = api_main.detail_report_sources(report)
+
+    assert detail == api_main.get_report_sources(report)
+    assert [source.source_id for source in detail] == ["S1", None]
+
+
+def test_claim_links_for_schema_two_records_without_selectors_use_the_record():
+    report = _report_with_rows()
+    attribution = report["threat_data"]["claimAttribution"]
+    attribution["schemaVersion"] = "2"
+    for record in attribution["claims"]:
+        record.pop("claimField", None)
+        record.pop("claimIndex", None)
+        record.pop("supportingEvidence", None)
+    report["claim_attribution_version"] = "2"
+
+    from_detail = api_main.detail_claim_attributions(report)
+
+    assert from_detail == api_main.get_claim_attributions(report)
+    assert any(entry.source_ids == ["S1"] for entry in from_detail)
+
+
+def test_claim_links_for_schema_three_with_an_unattributed_claim_use_the_record():
+    report = _report_with_rows()
+    attribution = report["threat_data"]["claimAttribution"]
+    attribution["schemaVersion"] = "3"
+    attribution["claims"] = attribution["claims"][1:]
+    report["claim_attribution_version"] = "3"
+
+    from_detail = api_main.detail_claim_attributions(report)
+
+    assert from_detail == api_main.get_claim_attributions(report)
+    assert len(from_detail) == 9
