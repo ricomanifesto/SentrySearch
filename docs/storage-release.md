@@ -96,6 +96,37 @@ still the report's current Markdown when the lock is held. A report still locked
 after the application's 3-second lock-wait limit is skipped and counted as
 `locked_report_skips` in the logged summary; run the endpoint again to cover it.
 
+### Revision 2 privileges
+
+Role provisioning stays a deployment task; the migration does not grant or revoke
+anything. In the same maintenance window, after the release command and before the
+read-only check, the schema owner grants the application role access to the new
+tables. On Supabase, tables the owner creates in `public` also inherit default
+privileges for the Data API roles (`anon`, `authenticated`). Only the application
+role reads these tables, so revoke those privileges in the same step:
+
+```sql
+GRANT SELECT, INSERT, UPDATE, DELETE ON report_sources, report_claims,
+  report_claim_support, report_indicator_observations, report_source_observations,
+  report_findings, report_artifacts TO <application role>;
+REVOKE ALL ON report_sources, report_claims, report_claim_support,
+  report_indicator_observations, report_source_observations, report_findings,
+  report_artifacts FROM anon, authenticated;
+```
+
+Omit the `REVOKE` where those roles do not exist. This read-only query lists any
+product table the Data API roles can still read; expect no rows:
+
+```sql
+SELECT c.relname, r.rolname
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_roles r ON r.rolname IN ('anon', 'authenticated')
+WHERE n.nspname = 'public' AND c.relkind = 'r'
+  AND (c.relname LIKE 'report%' OR c.relname = 'sentrysearch_schema_migrations')
+  AND has_table_privilege(r.oid, c.oid, 'SELECT');
+```
+
 ### Content policy versioning
 
 The content policy (the virtual-event promotion marker) is evaluated when an
