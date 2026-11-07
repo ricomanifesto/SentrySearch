@@ -793,3 +793,29 @@ def test_model_client_requires_openrouter_api_key(monkeypatch):
 
     with pytest.raises(ModelClientError, match="OPENROUTER_API_KEY"):
         ModelClient()
+
+
+def test_model_requests_reuse_the_shared_verification_context(monkeypatch):
+    from src.core import tls
+
+    monkeypatch.setattr(tls, "_context", None)
+    verify_contexts = []
+    client_class = httpx.Client
+
+    def recording_client(**kwargs):
+        verify_contexts.append(kwargs.get("verify"))
+        return client_class(**kwargs)
+
+    monkeypatch.setattr("src.core.openrouter_client.httpx.Client", recording_client)
+    client = model_client([(200, chat_response("first"), {}), (200, chat_response("second"), {})])
+
+    for _ in range(2):
+        client.messages.create(
+            model="google/gemma-4-26b-a4b-it:free",
+            system="You are a threat analyst.",
+            messages=[{"role": "user", "content": "Analyze Cobalt Strike"}],
+            max_tokens=1024,
+        )
+
+    shared = tls.default_verify_context()
+    assert verify_contexts == [shared, shared]
