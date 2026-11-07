@@ -86,6 +86,16 @@ runs with writers drained. If the artifact client is unavailable in the release
 process, the artifact is recorded as `policy_status = 'unknown'` rather than
 failing the release.
 
+The admin categorization endpoint runs the same reconciliation online, while
+writers may be active. It never relies on draining. Each report is reread under
+its row lock and committed on its own, so a concurrent finalization or evaluation
+either commits before the reread or waits for that report's reconciliation; its
+rows are never replaced with a projection of older JSONB. A stale Markdown object
+is read with no session open, and the result is recorded only if that object is
+still the report's current Markdown when the lock is held. A report still locked
+after the application's 3-second lock-wait limit is skipped and counted as
+`locked_report_skips` in the logged summary; run the endpoint again to cover it.
+
 ### Content policy versioning
 
 The content policy (the virtual-event promotion marker) is evaluated when an
