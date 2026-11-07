@@ -4,18 +4,36 @@ import remarkGfm from 'remark-gfm';
 
 import { getSafeExternalUrl } from './report-links';
 import { reportHeadingId } from '@/lib/report-content';
+import { applyClaimAttributions } from '@/lib/claim-attribution';
+import type { ClaimAttributionEntry } from '@/lib/api-contracts';
 
 type ReportNarrativeProps = {
   /** Rendered by the backend, including each high-risk claim's source anchor. */
   markdown: string;
+  /**
+   * Claim links for retained Markdown rendered before the backend placed
+   * citations. Ignored when the Markdown already carries source anchors.
+   */
+  claimAttributions?: ClaimAttributionEntry[];
 };
+
+const SOURCE_ANCHOR = /\]\(#source-S[1-9]\d*\)/;
+
+// TODO(retained-narrative-citations): Remove this compatibility path and
+// claim-attribution.ts once no retained report's Markdown lacks server-placed
+// source anchors.
+function narrativeMarkdown(markdown: string, claimAttributions?: ClaimAttributionEntry[]): string {
+  if (!claimAttributions?.length || SOURCE_ANCHOR.test(markdown)) return markdown;
+  return applyClaimAttributions(markdown, claimAttributions);
+}
 
 function safeNarrativeUrl(value: string | undefined): string | null {
   if (value && /^#source-S[1-9]\d*$/.test(value)) return value;
   return getSafeExternalUrl(value);
 }
 
-export function ReportNarrative({ markdown }: ReportNarrativeProps) {
+export function ReportNarrative({ markdown, claimAttributions }: ReportNarrativeProps) {
+  const renderedMarkdown = narrativeMarkdown(markdown, claimAttributions);
   const headingText = (children: ReactNode): string => (
     Array.isArray(children) ? children.join('') : String(children ?? '')
   );
@@ -96,7 +114,7 @@ export function ReportNarrative({ markdown }: ReportNarrativeProps) {
           strong: ({ children }) => <strong className="font-semibold text-zinc-950">{children}</strong>,
         }}
       >
-        {markdown}
+        {renderedMarkdown}
       </ReactMarkdown>
     </div>
   );

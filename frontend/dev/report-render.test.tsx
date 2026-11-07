@@ -287,6 +287,40 @@ test('renders the narrative as stored without adding citations of its own', () =
   assert.match(narrative, /<li[^>]*>Unexpected service creation<\/li>/);
 });
 
+test('cites retained Markdown that predates server-placed citations', () => {
+  const narrative = renderToStaticMarkup(
+    <ReportNarrative
+      markdown="## Detection\n\nUnexpected service creation"
+      claimAttributions={[
+        {
+          claim_class: 'detection_indicator',
+          claim: 'Unexpected service creation',
+          source_ids: ['S1'],
+        },
+      ]}
+    />,
+  );
+
+  assert.match(narrative, /href="#source-S1"/);
+});
+
+test('never adds a second citation to server-cited Markdown', () => {
+  const narrative = renderToStaticMarkup(
+    <ReportNarrative
+      markdown="## Detection\n\n- Unexpected service creation [S1](#source-S1)"
+      claimAttributions={[
+        {
+          claim_class: 'detection_indicator',
+          claim: 'Unexpected service creation',
+          source_ids: ['S1'],
+        },
+      ]}
+    />,
+  );
+
+  assert.equal(narrative.match(/href="#source-S1"/g)?.length, 1);
+});
+
 test('labels canonical sample evidence as a captured snapshot', () => {
   const html = renderToStaticMarkup(
     <SourceEvidence
