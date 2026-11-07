@@ -3,10 +3,13 @@ import socket
 
 import httpx
 
+from src.core import source_snapshot
 from src.core.source_snapshot import (
     MAX_SNAPSHOT_BYTES,
+    MAX_SNAPSHOT_TEXT,
     capture_source_snapshot,
     capture_source_snapshots,
+    visible_source_text,
 )
 
 
@@ -36,6 +39,99 @@ def test_source_snapshot_captures_visible_text_and_fingerprint(monkeypatch):
     assert snapshot["text"] == "Observed Noodle RAT behavior."
     assert len(snapshot["sha256"]) == 64
     assert snapshot["pageAge"] == "2026-08-14"
+
+
+LONG_HTML = (
+    "<html><body>"
+    + "".join(
+        f"<p>Note {index}: 3<5 &amp; x<y&#93;</p><script>no {index}</script><!-- c -->"
+        f"<svg><text>hidden</text></svg>\u00a0tail&notanentity; {index}<br>"
+        for index in range(3000)
+    )
+    + "</body></html>"
+)
+
+
+def test_limited_visible_text_is_the_full_extraction_prefix():
+    full = visible_source_text(LONG_HTML)
+
+    for limit in (0, 1, 17, 1000, MAX_SNAPSHOT_TEXT, len(full) - 1, len(full), len(full) + 1):
+        assert visible_source_text(LONG_HTML, limit=limit) == full[:limit]
+
+
+def test_captured_html_text_matches_a_full_extraction_at_the_word_boundary(monkeypatch):
+    """A separator at the last retained position stays, as it would after full extraction."""
+
+    monkeypatch.setattr("src.core.source_snapshot.socket.getaddrinfo", _public_dns)
+    first = "a" * (MAX_SNAPSHOT_TEXT - 1)
+    html = f"<html><body><p>{first}</p><p>{'b' * 50}</p></body></html>"
+    full = visible_source_text(html)
+    assert full[MAX_SNAPSHOT_TEXT - 1] == " "
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "text/html"}, text=html, request=request
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        snapshot = capture_source_snapshot(
+            {"url": "https://security.example.test/report"},
+            client=client,
+            now=datetime(2026, 8, 15, tzinfo=UTC),
+        )
+
+    assert snapshot["text"] == full[:MAX_SNAPSHOT_TEXT]
+
+
+def test_limited_visible_text_stops_parsing_once_the_prefix_is_final(monkeypatch):
+    seen = []
+    handle_data = source_snapshot._VisibleTextParser.handle_data
+
+    def counting(parser, data):
+        seen.append(data)
+        handle_data(parser, data)
+
+    monkeypatch.setattr(source_snapshot._VisibleTextParser, "handle_data", counting)
+    visible_source_text(LONG_HTML)
+    full_count = len(seen)
+    seen.clear()
+
+    visible_source_text(LONG_HTML, limit=1000)
+
+    assert 0 < len(seen) < full_count / 10
+
+
+def test_owned_snapshot_clients_share_one_verification_context(monkeypatch):
+    monkeypatch.setattr("src.core.source_snapshot.socket.getaddrinfo", _public_dns)
+    monkeypatch.setattr("src.core.tls._context", None)
+    built = []
+    create_ssl_context = httpx.create_ssl_context
+    monkeypatch.setattr(
+        "src.core.tls.httpx.create_ssl_context",
+        lambda: built.append(create_ssl_context()) or built[-1],
+    )
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "text/plain"}, text="Observed.", request=request
+        )
+
+    verify_contexts = []
+    client = httpx.Client
+
+    def owned_client(**kwargs):
+        verify_contexts.append(kwargs["verify"])
+        return client(**kwargs, transport=httpx.MockTransport(handle))
+
+    monkeypatch.setattr("src.core.source_snapshot.httpx.Client", owned_client)
+
+    enriched = capture_source_snapshots(
+        [{"sourceId": f"S{index}", "url": f"https://s{index}.example.test/r"} for index in range(4)]
+    )
+
+    assert [item["contentSnapshot"]["status"] for item in enriched] == ["captured"] * 4
+    assert len(built) == 1
+    assert verify_contexts == [built[0]] * 4
 
 
 def test_source_snapshot_rejects_non_public_resolution(monkeypatch):

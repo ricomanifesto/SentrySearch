@@ -365,3 +365,36 @@ def test_incomplete_coverage_has_its_own_retryable_failure_taxonomy():
     assert failure["error_code"] == "evidence_incomplete"
     assert failure["retryable"] is True
     assert failure["evidence_admissibility"] == assessment
+
+
+@pytest.mark.parametrize(
+    "value,rule_id",
+    [
+        # Networks that contain reserved space without lying inside it.
+        ("203.0.113.0/23", "indicator.ip-documentation"),
+        ("198.0.0.0/7", "indicator.ip-documentation"),
+        ("2000::/3", "indicator.ip-documentation"),
+        ("8.0.0.0/5", "indicator.ip-private-context"),
+        ("96.0.0.0/3", "indicator.ip-special-use"),
+        # IPv4 embedded in NAT64 well-known prefix and IPv4-mapped addresses.
+        ("64:ff9b::c000:201", "indicator.ip-documentation"),
+        ("64:ff9b::7f00:1", "indicator.ip-special-use"),
+        ("64:ff9b::a00:1", "indicator.ip-private-context"),
+        ("::ffff:198.51.100.7", "indicator.ip-documentation"),
+        # Non-global IPv6 blocks the runtime does not recognize, and fail-closed
+        # handling of registry exceptions inside non-global blocks.
+        ("5f00::1", "indicator.ip-special-use"),
+        ("3fff::1", "indicator.ip-documentation"),
+        ("2002:c000:201::1", "indicator.ip-special-use"),
+        ("192.0.0.9", "indicator.ip-special-use"),
+        # Unchanged admissions.
+        ("8.8.8.8", "indicator.ip-public"),
+        ("1.1.1.0/24", "indicator.ip-public"),
+        ("64:ff9b::808:808", "indicator.ip-public"),
+        ("2606:4700:4700::1111", "indicator.ip-public"),
+    ],
+)
+def test_ip_indicator_rule_checks_every_address_a_value_covers(value, rule_id):
+    from src.core.evidence_admissibility import _classify_indicator
+
+    assert _classify_indicator("ips", value)[2] == rule_id

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import uuid
+from urllib.parse import urlsplit
 from contextlib import nullcontext
 from psycopg.errors import LockNotAvailable
 from sqlalchemy import and_, asc, desc, func, or_, select
@@ -111,19 +112,66 @@ class ReportStorageService:
 
     @staticmethod
     def _source_count_from_values(web_sources: Any, threat_data: Any) -> int:
-        if isinstance(web_sources, list) and web_sources:
-            return len(web_sources)
-        if isinstance(threat_data, dict):
-            source_block = threat_data.get("webSearchSources")
-            if isinstance(source_block, dict) and isinstance(
-                source_block.get("primarySources"), list
-            ):
-                return len(source_block["primarySources"])
-        return 0
+        """Count the sources a reader can open, as the API's source rail does."""
+
+        sources = web_sources
+        if not isinstance(sources, list) or not sources:
+            source_block = (
+                threat_data.get("webSearchSources") if isinstance(threat_data, dict) else None
+            )
+            sources = source_block.get("primarySources") if isinstance(source_block, dict) else None
+        if not isinstance(sources, list):
+            return 0
+        count = 0
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            parsed = urlsplit(str(source.get("url") or "").strip())
+            if parsed.scheme in {"http", "https"} and parsed.netloc:
+                count += 1
+        return count
 
     @classmethod
     def _source_count(cls, report: Report) -> int:
         return cls._source_count_from_values(report.web_sources, report.threat_data)
+
+    # Retained records keep some reader-state inputs inside the profile. The
+    # stored state uses the same fallbacks as the API's read projection.
+
+    @staticmethod
+    def _profile_dict(report: Report, key: str) -> Dict[str, Any] | None:
+        threat_data = cast(Any, report).threat_data
+        value = threat_data.get(key) if isinstance(threat_data, dict) else None
+        return value if isinstance(value, dict) else None
+
+    @classmethod
+    def _quality_assessment(cls, report: Report) -> Dict[str, Any] | None:
+        assessment = cast(Any, report).quality_assessment
+        if isinstance(assessment, dict):
+            return assessment
+        return cls._profile_dict(report, "_quality_assessment")
+
+    @classmethod
+    def _evidence_status(cls, report: Report) -> EvidenceAdmissibilityStatus:
+        model = cast(Any, report)
+        evidence = model.evidence_admissibility
+        if not isinstance(evidence, dict):
+            evidence = cls._profile_dict(report, "evidenceAdmissibility")
+        try:
+            status = EvidenceAdmissibilityStatus(
+                model.evidence_admissibility_status
+                or (evidence.get("status") if evidence is not None else None)
+                or EvidenceAdmissibilityStatus.UNASSESSED.value
+            )
+        except ValueError:
+            return EvidenceAdmissibilityStatus.BLOCKED
+        version = str(model.claim_attribution_version or "").strip() or None
+        if (
+            status is EvidenceAdmissibilityStatus.PASSED
+            and version != CLAIM_ATTRIBUTION_SCHEMA_VERSION
+        ):
+            return EvidenceAdmissibilityStatus.UNASSESSED
+        return status
 
     @staticmethod
     def _current_disposition(report: Report) -> AnalystDisposition:
@@ -150,15 +198,16 @@ class ReportStorageService:
         """Recompute every stored reader-state column inside the writing transaction."""
 
         model = cast(Any, report)
+        quality_score = float(model.quality_score) if model.quality_score is not None else None
         state = derive_reader_state(
             report_status=model.status or ReportStatus.COMPLETED.value,
-            evaluation_status=model.evaluation_status,
-            quality_score=(float(model.quality_score) if model.quality_score is not None else None),
-            quality_assessment=model.quality_assessment,
-            source_count=cls._source_count(report),
-            evidence_admissibility_status=(
-                model.evidence_admissibility_status or EvidenceAdmissibilityStatus.UNASSESSED.value
+            evaluation_status=coerce_evaluation_status(
+                model.evaluation_status, quality_score=quality_score
             ),
+            quality_score=quality_score,
+            quality_assessment=cls._quality_assessment(report),
+            source_count=cls._source_count(report),
+            evidence_admissibility_status=cls._evidence_status(report),
             analyst_disposition=analyst_disposition or cls._current_disposition(report),
         )
         model.review_status = state.review_status.value
