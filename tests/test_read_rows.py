@@ -79,63 +79,73 @@ def _report_with_rows() -> dict:
     return {**report, "_rows": rows_view}
 
 
-def test_source_rail_from_rows_matches_the_record():
+def _detail(report: dict, monkeypatch):
+    """Call the report detail endpoint for one stored report."""
+
+    import asyncio
+
+    from src.auth import supabase_auth
+
+    stored = {**report, "user_id": "analyst-user", "created_at": "2026-08-15T12:00:00+00:00"}
+    monkeypatch.setattr(api_main.report_service, "get_report", lambda *args, **kwargs: stored)
+    user = supabase_auth.AuthenticatedUser(
+        user_id="analyst-user", email="analyst@example.com", metadata={"role": "analyst"}
+    )
+    return asyncio.run(api_main.get_report("report", False, user))
+
+
+def test_report_detail_reads_evidence_from_the_validated_record(monkeypatch):
     report = _report_with_rows()
 
-    assert api_main.detail_report_sources(report) == api_main.get_report_sources(report)
+    detail = _detail(report, monkeypatch)
+
+    assert detail.web_sources == api_main.get_report_sources(report)
+    assert detail.claim_attributions == api_main.get_claim_attributions(report)
+    assert len(detail.claim_attributions) == 10
+    assert detail.evidence_admissibility == api_main.get_validated_evidence_admissibility(report)
 
 
-def test_claim_links_from_rows_match_the_record():
+def test_report_detail_keeps_a_source_without_an_id(monkeypatch):
     report = _report_with_rows()
+    sources = report["threat_data"]["webSearchSources"]["primarySources"]
+    unkeyed = {key: value for key, value in deepcopy(sources[0]).items() if key != "sourceId"}
+    unkeyed["url"] = "https://second.vendor-security.com/analysis"
+    sources.append(unkeyed)
+    report["web_sources"] = sources
 
-    from_rows = api_main.detail_claim_attributions(report)
+    detail = _detail(report, monkeypatch)
 
-    assert from_rows == api_main.get_claim_attributions(report)
-    assert len(from_rows) == 10
+    assert [source.source_id for source in detail.web_sources] == ["S1", None]
 
 
 @pytest.mark.parametrize("schema_version", ["2", "3", "4"])
-def test_retained_source_links_without_excerpts_survive_the_row_projection(schema_version):
-    profile = build_threat_profile_data("https://research.vendor-security.com/report")
-    profile["claimAttribution"]["schemaVersion"] = schema_version
-    for record in profile["claimAttribution"]["claims"]:
+def test_report_detail_keeps_retained_source_links_without_excerpts(schema_version, monkeypatch):
+    report = _report_with_rows()
+    attribution = report["threat_data"]["claimAttribution"]
+    attribution["schemaVersion"] = schema_version
+    for record in attribution["claims"]:
         record.pop("supportingEvidence", None)
-    rows = profile_rows(profile, profile["webSearchSources"]["primarySources"], ASSESSMENT)
-    report = {
-        **_report_with_rows(),
-        "threat_data": profile,
-        "claim_attribution_version": schema_version,
-    }
-    report["_rows"] = {**report["_rows"], "claims": list(rows.claims), "claim_support": []}
+        if schema_version == "2":
+            record.pop("claimField", None)
+            record.pop("claimIndex", None)
+    report["claim_attribution_version"] = schema_version
 
-    from_rows = api_main.detail_claim_attributions(report)
+    detail = _detail(report, monkeypatch)
 
-    assert from_rows == api_main.get_claim_attributions(report)
-    assert any(entry.source_ids == ["S1"] for entry in from_rows)
-    assert all(entry.supporting_evidence == [] for entry in from_rows)
+    assert detail.claim_attributions == api_main.get_claim_attributions(report)
+    assert any(entry.source_ids == ["S1"] for entry in detail.claim_attributions)
 
 
-def test_evidence_audit_from_rows_matches_the_record():
+def test_report_detail_accepts_empty_required_observation_text(monkeypatch):
     report = _report_with_rows()
+    observation = report["evidence_admissibility"]["sourceObservations"][1]
+    observation.update({"title": "", "domain": ""})
+    report["threat_data"]["evidenceAdmissibility"] = deepcopy(report["evidence_admissibility"])
 
-    assert api_main.detail_evidence_admissibility(
-        report
-    ) == api_main.get_validated_evidence_admissibility(report)
+    detail = _detail(report, monkeypatch)
 
-
-def test_reports_without_rows_keep_the_record_projection():
-    report = _report_with_rows()
-    report.pop("_rows")
-
-    assert api_main.detail_report_sources(report)
-    assert len(api_main.detail_claim_attributions(report)) == 10
-
-
-def test_unattributed_reports_never_expose_claim_links_from_rows():
-    report = _report_with_rows()
-    report["claim_attribution_status"] = "legacy"
-
-    assert api_main.detail_claim_attributions(report) == []
+    assert detail.evidence_admissibility is not None
+    assert detail.evidence_admissibility == api_main.get_validated_evidence_admissibility(report)
 
 
 def test_stored_reader_state_is_read_instead_of_recomputed():
@@ -204,46 +214,3 @@ def test_markdown_renderer_never_cites_an_inconsistent_or_legacy_ledger():
         markdown = generate_markdown(profile)
         assert "#source-" not in markdown
         assert "General practice" not in markdown
-
-
-def test_source_rail_keeps_sources_the_rows_cannot_key():
-    report = _report_with_rows()
-    sources = report["threat_data"]["webSearchSources"]["primarySources"]
-    unkeyed = {key: value for key, value in deepcopy(sources[0]).items() if key != "sourceId"}
-    unkeyed["url"] = "https://second.vendor-security.com/analysis"
-    sources.append(unkeyed)
-    report["web_sources"] = sources
-
-    detail = api_main.detail_report_sources(report)
-
-    assert detail == api_main.get_report_sources(report)
-    assert [source.source_id for source in detail] == ["S1", None]
-
-
-def test_claim_links_for_schema_two_records_without_selectors_use_the_record():
-    report = _report_with_rows()
-    attribution = report["threat_data"]["claimAttribution"]
-    attribution["schemaVersion"] = "2"
-    for record in attribution["claims"]:
-        record.pop("claimField", None)
-        record.pop("claimIndex", None)
-        record.pop("supportingEvidence", None)
-    report["claim_attribution_version"] = "2"
-
-    from_detail = api_main.detail_claim_attributions(report)
-
-    assert from_detail == api_main.get_claim_attributions(report)
-    assert any(entry.source_ids == ["S1"] for entry in from_detail)
-
-
-def test_claim_links_for_schema_three_with_an_unattributed_claim_use_the_record():
-    report = _report_with_rows()
-    attribution = report["threat_data"]["claimAttribution"]
-    attribution["schemaVersion"] = "3"
-    attribution["claims"] = attribution["claims"][1:]
-    report["claim_attribution_version"] = "3"
-
-    from_detail = api_main.detail_claim_attributions(report)
-
-    assert from_detail == api_main.get_claim_attributions(report)
-    assert len(from_detail) == 9

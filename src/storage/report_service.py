@@ -185,30 +185,6 @@ class ReportStorageService:
         model.findings = [ReportFindingRow(**row) for row in rows.findings]
 
     @staticmethod
-    def _row_snapshot(report: Report) -> Dict[str, list[Dict[str, Any]]]:
-        """Plain column dictionaries for the detail projection's evidence rows."""
-
-        def columns(rows: Any) -> list[Dict[str, Any]]:
-            return [
-                {
-                    column.key: getattr(row, column.key)
-                    for column in row.__table__.columns
-                    if column.key != "report_id"
-                }
-                for row in rows or []
-            ]
-
-        model = cast(Any, report)
-        return {
-            "sources": columns(model.profile_sources),
-            "claims": columns(model.profile_claims),
-            "claim_support": columns(model.claim_support),
-            "indicator_observations": columns(model.indicator_observations),
-            "source_observations": columns(model.source_observations),
-            "findings": columns(model.findings),
-        }
-
-    @staticmethod
     def _write_tags(report: Report, search_tags: Any) -> None:
         """Keep ``report_tags`` equal to the report's search tags."""
 
@@ -1679,7 +1655,6 @@ class ReportStorageService:
                     return None
 
                 report_dict = self._attach_disposition_state(session, [report])[0]
-                report_dict["_rows"] = self._row_snapshot(report)
                 # Load content from S3 if requested
                 if include_content:
                     if report.markdown_s3_key:

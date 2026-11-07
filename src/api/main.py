@@ -28,11 +28,6 @@ from src.core.report_content_policy import (
     public_report_content,
     reader_safe_threat_data,
 )
-from src.api.report_rows import (
-    claim_attributions_from_rows,
-    evidence_admissibility_from_rows,
-    report_sources_from_rows,
-)
 from src.core.sample_bounds import half_width
 from src.core.threat_profile_generator import ThreatProfileGenerator
 from src.core.report_evaluator import evaluate_saved_report
@@ -392,69 +387,6 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
         "eligible_for_handoff": reader_state["eligible_for_handoff"],
         "content_preview": report.get("content_preview"),
     }
-
-
-def _stored_rows(report: Dict[str, Any], name: str) -> list[Dict[str, Any]] | None:
-    rows = report.get("_rows")
-    if not isinstance(rows, dict):
-        return None
-    value = rows.get(name)
-    return value if isinstance(value, list) and value else None
-
-
-def detail_report_sources(report: Dict[str, Any]) -> List[ReportSource]:
-    """The source rail from ``report_sources`` when the rows hold every source.
-
-    Rows are keyed by source ID, so a retained source without one, or a repeated
-    ID, cannot be stored. The record is used whenever the rows do not reproduce
-    its ordered source IDs.
-    """
-
-    record = get_report_sources(report)
-    rows = _stored_rows(report, "sources")
-    if not rows:
-        return record
-    projected = report_sources_from_rows(rows)
-    if [source.source_id for source in projected] != [source.source_id for source in record]:
-        return record
-    return projected
-
-
-# Schemas 4 and 5 require one attribution record per claim, matched by selector,
-# so claim rows represent their links exactly. Schema 3 may leave claims
-# unattributed and schema 2 records need no selector, so they use the record.
-ROW_PROJECTED_ATTRIBUTION_VERSIONS = frozenset({"4", "5"})
-
-
-def detail_claim_attributions(report: Dict[str, Any]) -> List[ClaimAttributionEntry]:
-    """Claim links from ``report_claims`` and ``report_claim_support``."""
-
-    if report.get("claim_attribution_status") != ClaimAttributionStatus.ATTRIBUTED.value:
-        return []
-    claims = _stored_rows(report, "claims")
-    if (
-        not claims
-        or str(report.get("claim_attribution_version") or "")
-        not in ROW_PROJECTED_ATTRIBUTION_VERSIONS
-    ):
-        return get_claim_attributions(report)
-    return claim_attributions_from_rows(claims, _stored_rows(report, "claim_support") or [])
-
-
-def detail_evidence_admissibility(report: Dict[str, Any]) -> EvidenceAdmissibility | None:
-    """The audit record with observations and findings read from rows."""
-
-    assessment = get_evidence_admissibility(report)
-    if assessment is None or not isinstance(report.get("_rows"), dict):
-        return get_validated_evidence_admissibility(report)
-    projected = evidence_admissibility_from_rows(
-        assessment,
-        _stored_rows(report, "source_observations") or [],
-        _stored_rows(report, "indicator_observations") or [],
-        _stored_rows(report, "findings") or [],
-    )
-    EvidenceAdmissibility.model_validate(projected)
-    return EvidenceAdmissibility.model_validate(reader_evidence_admissibility(projected))
 
 
 async def report_collection_fields(
@@ -1006,15 +938,15 @@ async def get_report(
             **report_response_fields(report),
             markdown_content=report.get("markdown_content") if include_content else None,
             threat_data=reader_safe_threat_data(report),
-            web_sources=detail_report_sources(report),
+            web_sources=get_report_sources(report),
             search_tags=report.get("search_tags", []),
             generation_route=report.get("generation_route"),
             research_route=report.get("research_route"),
             synthesis_route=report.get("synthesis_route"),
             evaluation_route=report.get("evaluation_route"),
             quality_assessment=get_quality_assessment(report),
-            claim_attributions=detail_claim_attributions(report),
-            evidence_admissibility=detail_evidence_admissibility(report),
+            claim_attributions=get_claim_attributions(report),
+            evidence_admissibility=get_validated_evidence_admissibility(report),
             current_disposition=report.get("current_disposition"),
             disposition_history=report.get("disposition_history", []),
         )
