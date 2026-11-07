@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS report_claims (
 	ordinal INTEGER NOT NULL,
 	value TEXT NOT NULL,
 	evidence_role VARCHAR(30),
+	source_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
 	PRIMARY KEY (report_id, claim_id)
 );
 

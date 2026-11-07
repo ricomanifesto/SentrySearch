@@ -337,6 +337,8 @@ class ReportClaimRow(Base):
     ordinal = Column(Integer, nullable=False)
     value = Column(Text, nullable=False)
     evidence_role = Column(String(30))
+    # The attribution record's explicit cited IDs, kept even without excerpts.
+    source_ids = Column(JSONB, nullable=False, default=list, server_default="[]")
 
 
 class ReportClaimSupportRow(Base):

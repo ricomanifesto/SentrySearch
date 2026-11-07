@@ -59,6 +59,42 @@ def test_retained_schema_four_support_is_never_marked_verified():
     assert rows.claim_support and all(row["verified"] is None for row in rows.claim_support)
 
 
+@pytest.mark.parametrize("schema_version", ["2", "3", "4"])
+def test_retained_source_links_without_excerpts_are_kept_on_claim_rows(schema_version):
+    profile = build_threat_profile_data()
+    attribution = profile["claimAttribution"]
+    attribution["schemaVersion"] = schema_version
+    for record in attribution["claims"]:
+        record.pop("supportingEvidence", None)
+    expected = {
+        (record["claimField"], record["claimIndex"]): record["sourceIds"]
+        for record in attribution["claims"]
+    }
+
+    rows = profile_rows(profile)
+
+    assert rows.claim_support == ()
+    assert {(row["claim_field"], row["ordinal"]): row["source_ids"] for row in rows.claims} == (
+        expected
+    )
+    rendered = render_claims(
+        profile, rows.claims, rows.claim_support, schema_version=schema_version
+    )
+    assert {
+        (record["claimField"], record["claimIndex"]): record["sourceIds"]
+        for record in rendered["claimAttribution"]["claims"]
+    } == expected
+
+
+def test_claims_without_an_attribution_record_have_no_source_links():
+    profile = build_threat_profile_data()
+    profile["claimAttribution"]["claims"] = []
+
+    rows = profile_rows(profile)
+
+    assert rows.claims and all(row["source_ids"] == [] for row in rows.claims)
+
+
 def test_assessment_rows_keep_exclusions_named_and_classify_findings():
     assessment = {
         "sourceObservations": [

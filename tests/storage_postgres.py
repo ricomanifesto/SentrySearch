@@ -304,6 +304,13 @@ def test_revision_one_database_upgrades_and_backfills_rows_from_jsonb(database):
         ).all()
         assert len(claims) == 10
         assert claims[0] == ("riskFactors", 0, "Remote access", "direct_evidence")
+        assert conn.execute(
+            text(
+                "SELECT source_ids FROM report_claims WHERE report_id=:id "
+                "AND evidence_role='direct_evidence' ORDER BY position LIMIT 1"
+            ),
+            {"id": report_id},
+        ).scalar() == ["S1"]
         assert (
             conn.execute(
                 text("SELECT count(*) FROM report_claim_support WHERE report_id=:id AND verified"),
