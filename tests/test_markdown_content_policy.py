@@ -2,6 +2,7 @@ from copy import deepcopy
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, Mock
+from uuid import uuid4
 
 import pytest
 
@@ -13,6 +14,7 @@ from src.core.evidence_admissibility import (
 )
 from src.storage.models import Report
 from src.storage.report_service import ReportStorageService
+from src.core import promotion_content
 from src.core.promotion_content import has_promotion_marker
 from tests.test_virtual_event_promotions import OPERATIONAL_SOURCE, collection_report
 
@@ -90,6 +92,23 @@ def test_fields_and_source_records_are_never_joined_into_a_marker():
 )
 def test_html_block_and_break_whitespace_within_one_field(html):
     assert has_promotion_marker(html, representation="html")
+
+
+def test_repeated_gate_checks_render_each_field_once(monkeypatch):
+    renders = []
+    render = promotion_content._AUTHORED.render
+    monkeypatch.setattr(
+        promotion_content._AUTHORED, "render", lambda value: renders.append(value) or render(value)
+    )
+    text = f"Captured source {uuid4()} checked at every evidence gate."
+
+    checks = [
+        contains_virtual_event_promotion({"contentSnapshot": {"text": text}}) for _ in range(5)
+    ]
+
+    assert checks == [False] * 5
+    assert renders == [text]
+    assert contains_virtual_event_promotion({"text": f"{text} [Virtual Event]"})
 
 
 def test_metadata_records_remain_separate_from_narrative():

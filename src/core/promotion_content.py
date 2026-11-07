@@ -1,5 +1,6 @@
 """Representation-aware text projection for the explicit promotion marker."""
 
+from functools import lru_cache
 from html import escape
 from html.parser import HTMLParser
 import re
@@ -65,11 +66,14 @@ _AUTHORED = _parser().disable("text_join")
 _AUTHORED.add_render_rule("text_special", _source_special)
 
 
+@lru_cache(maxsize=512)
 def has_promotion_marker(value: str, *, representation: Representation = "authored") -> bool:
     """Check one field, never concatenate records or reparse rendered text.
 
     Authored prose has no stored format attestation: check both reader Markdown
     and source HTML semantics. Explicit formats use only their own projection.
+    The result depends only on the arguments, so it is cached: generation checks
+    each captured source several times, and every check renders it twice.
     """
     if representation == "text":
         return bool(_MARKER.search(value))
