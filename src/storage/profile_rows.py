@@ -181,6 +181,8 @@ def profile_rows(
             "reason": _text(item.get("reason")),
             "snapshot_status": _text(item.get("snapshotStatus")),
             "snapshot_sha256": _text(item.get("snapshotSha256")),
+            "snapshot_captured_at": _text(item.get("snapshotCapturedAt")),
+            "snapshot_final_url": _text(item.get("snapshotFinalUrl")),
             "page_age": _text(item.get("pageAge")),
         }
         for position, item in enumerate(

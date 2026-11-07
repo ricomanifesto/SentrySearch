@@ -387,6 +387,8 @@ class ReportSourceObservationRow(Base):
     reason = Column(Text)
     snapshot_status = Column(String(20))
     snapshot_sha256 = Column(String(64))
+    snapshot_captured_at = Column(Text)
+    snapshot_final_url = Column(Text)
     page_age = Column(Text)
 
 

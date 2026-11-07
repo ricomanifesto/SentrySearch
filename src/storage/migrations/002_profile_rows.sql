@@ -85,6 +85,8 @@ CREATE TABLE IF NOT EXISTS report_source_observations (
 	reason TEXT,
 	snapshot_status VARCHAR(20),
 	snapshot_sha256 VARCHAR(64),
+	snapshot_captured_at TEXT,
+	snapshot_final_url TEXT,
 	page_age TEXT,
 	PRIMARY KEY (report_id, position)
 );
