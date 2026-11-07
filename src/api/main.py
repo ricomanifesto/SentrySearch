@@ -27,6 +27,7 @@ from src.core.report_content_policy import (
     public_report_content,
     reader_safe_threat_data,
 )
+from src.core.sample_bounds import half_width
 from src.core.threat_profile_generator import ThreatProfileGenerator
 from src.core.report_evaluator import evaluate_saved_report
 from src.core.markdown_generator import generate_markdown
@@ -605,8 +606,20 @@ def build_analytics_trends(
     }
 
 
+# Stored quality scores are the evaluator's weighted mean of 0-5 rubric scores.
+QUALITY_SCORE_MIN = 0.0
+QUALITY_SCORE_MAX = 5.0
+# Two-sided 95% intervals for per-route mean quality.
+ROUTE_QUALITY_DELTA = 0.05
+
+
 def build_route_performance(records: List[ReportAnalyticsRecord]) -> List[Dict[str, Any]]:
-    """Compare reader-visible quality and latency by recorded generation route."""
+    """Compare reader-visible quality and latency by recorded generation route.
+
+    Each scored route carries a distribution-free (Hoeffding) 95% interval for
+    its mean quality, and names the routes whose intervals do not overlap, so
+    small samples are not read as a route ranking.
+    """
 
     grouped: Dict[str, List[ReportAnalyticsRecord]] = {
         "primary": [],
@@ -629,6 +642,7 @@ def build_route_performance(records: List[ReportAnalyticsRecord]) -> List[Dict[s
             route = "unrecorded"
         grouped[route].append(record)
 
+    intervals: Dict[str, tuple[float, float]] = {}
     results = []
     for route, route_records in grouped.items():
         quality_scores = [
@@ -639,20 +653,42 @@ def build_route_performance(records: List[ReportAnalyticsRecord]) -> List[Dict[s
             for record in route_records
             if record.processing_time_ms is not None
         ]
+        avg_quality: Optional[float] = None
+        quality_half_width: Optional[float] = None
+        if quality_scores:
+            avg_quality = sum(quality_scores) / len(quality_scores)
+            quality_half_width = half_width(len(quality_scores), ROUTE_QUALITY_DELTA) * (
+                QUALITY_SCORE_MAX - QUALITY_SCORE_MIN
+            )
+            intervals[route] = (
+                max(QUALITY_SCORE_MIN, avg_quality - quality_half_width),
+                min(QUALITY_SCORE_MAX, avg_quality + quality_half_width),
+            )
         results.append(
             {
                 "route": route,
                 "report_count": len(route_records),
                 "scored_report_count": len(quality_scores),
                 "runtime_recorded_count": len(processing_times),
-                "avg_quality_score": (
-                    sum(quality_scores) / len(quality_scores) if quality_scores else None
-                ),
+                "avg_quality_score": avg_quality,
                 "avg_processing_time_ms": (
                     sum(processing_times) / len(processing_times) if processing_times else None
                 ),
+                "quality_half_width": quality_half_width,
+                "quality_interval": list(intervals[route]) if route in intervals else None,
+                "distinguishable_from": [],
             }
         )
+
+    for result in results:
+        interval = intervals.get(result["route"])
+        if interval is None:
+            continue
+        result["distinguishable_from"] = [
+            other
+            for other, (other_low, other_high) in intervals.items()
+            if other != result["route"] and (other_high < interval[0] or other_low > interval[1])
+        ]
     return results
 
 

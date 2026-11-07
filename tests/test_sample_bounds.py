@@ -1,4 +1,5 @@
 import math
+from typing import Any, cast
 
 import pytest
 
@@ -38,4 +39,4 @@ def test_half_width_rejects_delta_outside_open_unit_interval(delta):
 
 def test_half_width_rejects_unknown_sidedness():
     with pytest.raises(ValueError):
-        half_width(20, 0.05, sided="both")  # type: ignore[arg-type]
+        half_width(20, 0.05, sided=cast(Any, "both"))
