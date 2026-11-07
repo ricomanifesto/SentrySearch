@@ -19,6 +19,7 @@ from uuid import uuid4
 import httpx
 from pydantic import ValidationError
 
+from src.core.tls import default_verify_context
 from src.domain.model_calls import ModelCall, route_provenance
 from src.domain.model_routes import (
     ModelRouteAttemptOutcome,
@@ -517,6 +518,7 @@ class ModelClient:
                 base_url=self.base_url,
                 timeout=self.timeout,
                 transport=self.transport,
+                verify=default_verify_context(),
             ) as client:
                 response = client.post(
                     "/chat/completions",
