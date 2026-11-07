@@ -147,7 +147,7 @@ backfill). It recomputes every artifact whose stored version is older, plus any
 - **Popular tags:** counted with `GROUP BY` over `report_tags`. Writers keep `report_tags` equal to each report's search tags, and the reconciliation backfills it for retained reports.
 - **Quality-score buckets:** computed with `width_bucket` in one aggregate query.
 - **Analytics records:** select scalar columns only, including the stored `review_status`.
-- **Report detail:** projects the source rail, claim links, and evidence observations and findings from the row tables. `threat_data` remains a rendered artifact for the inspection panel. The detail and download paths still read the Markdown object, because they return it.
+- **Report detail:** projects the source rail, claim links, and evidence observations and findings from the row tables. A claim's source links come from its stored `source_ids`, so a retained schema 2–4 claim that cites a source without an excerpt keeps that link; support rows supply the excerpts. `threat_data` remains a rendered artifact for the inspection panel. The detail and download paths still read the Markdown object, because they return it.
 - **Citations:** the Markdown renderer places each attributed high-risk claim's citation (`[S1](#source-S1)`, or **General practice**) beside the claim. The reader no longer re-attaches citations by text search. Retained Markdown rendered before this change keeps its stored text without inline citations; the source rail and claim ledger are unchanged.
 
 ## Database configuration

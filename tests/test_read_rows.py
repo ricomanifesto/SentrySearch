@@ -2,6 +2,8 @@
 
 from copy import deepcopy
 
+import pytest
+
 from src.api import main as api_main
 from src.storage.profile_rows import profile_rows
 from src.storage.report_service import ReportStorageService
@@ -90,6 +92,27 @@ def test_claim_links_from_rows_match_the_record():
 
     assert from_rows == api_main.get_claim_attributions(report)
     assert len(from_rows) == 10
+
+
+@pytest.mark.parametrize("schema_version", ["2", "3", "4"])
+def test_retained_source_links_without_excerpts_survive_the_row_projection(schema_version):
+    profile = build_threat_profile_data("https://research.vendor-security.com/report")
+    profile["claimAttribution"]["schemaVersion"] = schema_version
+    for record in profile["claimAttribution"]["claims"]:
+        record.pop("supportingEvidence", None)
+    rows = profile_rows(profile, profile["webSearchSources"]["primarySources"], ASSESSMENT)
+    report = {
+        **_report_with_rows(),
+        "threat_data": profile,
+        "claim_attribution_version": schema_version,
+    }
+    report["_rows"] = {**report["_rows"], "claims": list(rows.claims), "claim_support": []}
+
+    from_rows = api_main.detail_claim_attributions(report)
+
+    assert from_rows == api_main.get_claim_attributions(report)
+    assert any(entry.source_ids == ["S1"] for entry in from_rows)
+    assert all(entry.supporting_evidence == [] for entry in from_rows)
 
 
 def test_evidence_audit_from_rows_matches_the_record():

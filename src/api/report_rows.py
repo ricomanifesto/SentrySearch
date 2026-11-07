@@ -56,7 +56,9 @@ def claim_attributions_from_rows(
                 claim_class=claim["claim_class"],
                 claim=claim["value"],
                 evidence_role=claim.get("evidence_role"),
-                source_ids=[row["source_id"] for row in supports],
+                # Explicit cited IDs are stored on the claim; retained schema 2-4
+                # records can cite a source without any support excerpt.
+                source_ids=[str(source_id) for source_id in claim.get("source_ids") or []],
                 supporting_evidence=[
                     {
                         "source_id": row["source_id"],
