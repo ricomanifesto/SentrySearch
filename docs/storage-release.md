@@ -62,7 +62,7 @@ and the existing JSONB columns stay populated during this transition.
 | --- | --- |
 | `reports.reader_state_version`, `eligible_for_judgment`, `eligible_for_acceptance`, `eligible_for_handoff` | Derived reader state alongside `review_status` |
 | `report_sources` | Cited primary sources: identity, display fields, snapshot fingerprint and capture metadata, source purpose |
-| `report_claims` | One row per high-risk claim: stable `claim_id`, class, field, `ordinal` (the legacy `claimIndex`), value, evidence role, and the attribution record's explicit `source_ids` (kept even when a retained schema 2–4 record has no support excerpt) |
+| `report_claims` | One row per high-risk claim: stable `claim_id`, class, field, `ordinal` (the legacy `claimIndex`), value, evidence role, and the attribution record's explicit `source_ids` (kept even when a retained schema 3 or 4 record has no support excerpt). Schema 2 records attribute prose by text without selectors, so their citations stay only in the stored record |
 | `report_claim_support` | Verbatim support excerpt per claim and source, with snapshot SHA-256 and verification state |
 | `report_indicator_observations` | Deterministic infrastructure decisions, linked to a claim when one survives |
 | `report_source_observations` | Every researched source's purpose decision, including named exclusions |
