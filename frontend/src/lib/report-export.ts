@@ -1,4 +1,5 @@
 import type { ExportConfig, ReportDetail } from './api-contracts';
+import { portableCitations } from './portable-markdown';
 
 type ExportRecord = Record<string, unknown>;
 
@@ -45,7 +46,14 @@ function projectReport(report: ReportDetail, config: ExportConfig): ExportRecord
           evidence_admissibility: report.evidence_admissibility ?? null,
         }
       : {}),
-    ...(config.include_content ? { markdown_content: report.markdown_content ?? null } : {}),
+    ...(config.include_content
+      ? {
+          markdown_content:
+            report.markdown_content == null
+              ? null
+              : portableCitations(report.markdown_content, report.web_sources),
+        }
+      : {}),
   };
 }
 

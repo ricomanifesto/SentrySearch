@@ -37,7 +37,7 @@ const expectations = [
   {
     name: 'uses the production markdown renderer',
     source: sample,
-    pattern: /<ReportNarrative[\s\S]*markdown=\{SAMPLE_REPORT\.markdown_content \?\? ''\}[\s\S]*claimAttributions=\{SAMPLE_REPORT\.claim_attributions\}/,
+    pattern: /<ReportNarrative markdown=\{SAMPLE_REPORT\.markdown_content \?\? ''\} \/>/,
   },
   {
     name: 'renders inspectable structured source links',
@@ -50,9 +50,14 @@ const expectations = [
     pattern: /dateLabel="Captured"/,
   },
   {
+    name: 'carries server-placed claim citations in the sample narrative',
+    source: sampleReport,
+    pattern: /intrusion chain\. \[S3\]\(#source-S3\)[\s\S]*sleep and jitter\. \[S1\]\(#source-S1\) \[S2\]\(#source-S2\)/,
+  },
+  {
     name: 'demonstrates versioned claim attribution against the source rail',
     source: sample,
-    pattern: /claimAttributions=\{SAMPLE_REPORT\.claim_attributions\}[\s\S]*attributionStatus=\{SAMPLE_REPORT\.claim_attribution_status\}/,
+    pattern: /<ReportNarrative markdown=\{SAMPLE_REPORT\.markdown_content[\s\S]*attributionStatus=\{SAMPLE_REPORT\.claim_attribution_status\}/,
   },
   {
     name: 'derives the threat family from the canonical sample report',

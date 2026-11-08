@@ -16,6 +16,7 @@ import { Dialog, DialogPanel, DialogTitle } from '@headlessui/react';
 
 import { api, type GenerationStage, type ReportDetail, type StoredAnalystDisposition } from '@/lib/api';
 import { formatDate, formatRelativeTime, formatProcessingTime, downloadAsFile } from '@/lib/utils';
+import { portableCitations } from '@/lib/portable-markdown';
 import { SAMPLE_REPORT } from '@/lib/sample-report';
 import { formatTaxonomyLabel, getQualityLabel } from '@/lib/report-query';
 import { getReportSectionLinks, splitReportContent } from '@/lib/report-content';
@@ -515,7 +516,11 @@ function ReportDetailContent({ fixtureReport }: { fixtureReport?: ReportDetail }
   const handleDownload = () => {
     if (!report?.markdown_content || !report.eligible_for_handoff) return;
     const filename = `${report.tool_name.replace(/[^a-zA-Z0-9]/g, '_')}_report.md`;
-    downloadAsFile(report.markdown_content, filename, 'text/markdown');
+    downloadAsFile(
+      portableCitations(report.markdown_content, report.web_sources),
+      filename,
+      'text/markdown',
+    );
   };
 
   const handleDelete = () => {

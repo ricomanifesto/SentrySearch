@@ -164,11 +164,21 @@ class Report(Base):
         passive_deletes=True,
         order_by="ReportFindingRow.position",
     )
+    # Collections read the stored policy decision for every listed row, so it
+    # loads with one batched SELECT per query instead of one per row.
     artifacts = relationship(
         "ReportArtifact",
         cascade="all, delete-orphan",
         passive_deletes=True,
         order_by="ReportArtifact.kind",
+        lazy="selectin",
+    )
+    # report_tags predates foreign keys; the ORM owns its lifecycle.
+    tags = relationship(
+        "ReportTag",
+        primaryjoin="Report.id == foreign(ReportTag.report_id)",
+        cascade="all, delete-orphan",
+        order_by="ReportTag.tag",
     )
     disposition_events = relationship(
         "ReportDispositionEvent",
@@ -199,6 +209,10 @@ class Report(Base):
             "generation_retryable": self.generation_retryable,
             "generation_failure": self.generation_failure,
             "review_status": self.review_status,
+            "reader_state_version": self.reader_state_version,
+            "eligible_for_judgment": self.eligible_for_judgment,
+            "eligible_for_acceptance": self.eligible_for_acceptance,
+            "eligible_for_handoff": self.eligible_for_handoff,
             "generation_route": self.generation_route,
             "research_route": self.research_route,
             "synthesis_route": self.synthesis_route,

@@ -48,7 +48,7 @@ const expectations = [
   { name: 'grounds source transparency in structured source evidence', pattern: /report\.web_sources\.length > 0/ },
   { name: 'renders structured source evidence beside the narrative', pattern: /<SourceEvidence[\s\S]*sources=\{report\.web_sources\}/ },
   { name: 'renders the application-owned evidence-admissibility record', pattern: /evidenceAdmissibility=\{report\.evidence_admissibility\}/ },
-  { name: 'links explicit high-risk claims to the canonical source rail', pattern: /claimAttributions=\{report\.claim_attributions\}[\s\S]*attributionStatus=\{report\.claim_attribution_status\}/ },
+  { name: 'renders claim citations beside the canonical source rail', pattern: /<ReportNarrative[\s\S]*markdown=\{contentParts\.narrative\}[\s\S]*claimAttributions=\{report\.claim_attributions\}[\s\S]*attributionStatus=\{report\.claim_attribution_status\}/ },
   { name: 'frames raw technical data as structured extraction data', pattern: /Structured extraction data/ },
   { name: 'contains long structured data output', pattern: /JSON\.stringify\(report\.threat_data, null, 2\)/ },
   { name: 'uses a canonical source review checklist collection', pattern: /const sourceReviewChecklist/ },

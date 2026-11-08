@@ -104,17 +104,9 @@ test('renders structured source evidence as inspectable links', () => {
 });
 
 test('links explicit claim attribution to source identity without duplicating the ledger', () => {
+  // The backend renderer places each claim's citation beside the claim it supports.
   const narrative = renderToStaticMarkup(
-    <ReportNarrative
-      markdown="## Detection\n\nUnexpected service creation"
-      claimAttributions={[
-        {
-          claim_class: 'detection_indicator',
-          claim: 'Unexpected service creation',
-          source_ids: ['S1'],
-        },
-      ]}
-    />,
+    <ReportNarrative markdown="## Detection\n\n- Unexpected service creation [S1](#source-S1)" />,
   );
   const sources = renderToStaticMarkup(
     <SourceEvidence
@@ -242,16 +234,7 @@ test('names indicators quarantined before operational reuse', () => {
 
 test('places forensic-artifact citations outside inline code', () => {
   const narrative = renderToStaticMarkup(
-    <ReportNarrative
-      markdown="## Forensic artifacts\n\nObserved `payload.dll` in the injected process."
-      claimAttributions={[
-        {
-          claim_class: 'forensic_artifact',
-          claim: 'payload.dll',
-          source_ids: ['S1'],
-        },
-      ]}
-    />,
+    <ReportNarrative markdown={'## Forensic artifacts\n\n- `payload.dll` [S1](#source-S1)'} />,
   );
 
   assert.match(narrative, /<code[^>]*>payload\.dll<\/code> <a href="#source-S1"/);
@@ -268,13 +251,6 @@ test('does not inject claim citations into fenced detection rules', () => {
         'Image: payload.dll',
         '```',
       ].join('\n')}
-      claimAttributions={[
-        {
-          claim_class: 'forensic_artifact',
-          claim: 'payload.dll',
-          source_ids: ['S1'],
-        },
-      ]}
     />,
   );
 
@@ -288,21 +264,9 @@ test('attributes overlapping claims once without rescanning inserted citations',
       markdown={[
         '## Forensic artifacts',
         '',
-        '- `Process hollowing and injection artifacts`',
-        '- Process hollowing and injection',
+        '- `Process hollowing and injection artifacts` [S8](#source-S8)',
+        '- Process hollowing and injection [S8](#source-S8)',
       ].join('\n')}
-      claimAttributions={[
-        {
-          claim_class: 'forensic_artifact',
-          claim: 'Process hollowing and injection artifacts',
-          source_ids: ['S8'],
-        },
-        {
-          claim_class: 'detection_indicator',
-          claim: 'Process hollowing and injection',
-          source_ids: ['S8'],
-        },
-      ]}
     />,
   );
 
@@ -313,6 +277,48 @@ test('attributes overlapping claims once without rescanning inserted citations',
   );
   assert.match(narrative, /<li[^>]*>Process hollowing and injection <a href="#source-S8"/);
   assert.doesNotMatch(narrative, /<code[^>]*>[^<]*\[S8\]/);
+});
+
+test('renders the narrative as stored without adding citations of its own', () => {
+  const markdown = '## Detection\n\n- Unexpected service creation';
+  const narrative = renderToStaticMarkup(<ReportNarrative markdown={markdown} />);
+
+  assert.doesNotMatch(narrative, /href="#source-/);
+  assert.match(narrative, /<li[^>]*>Unexpected service creation<\/li>/);
+});
+
+test('cites retained Markdown that predates server-placed citations', () => {
+  const narrative = renderToStaticMarkup(
+    <ReportNarrative
+      markdown="## Detection\n\nUnexpected service creation"
+      claimAttributions={[
+        {
+          claim_class: 'detection_indicator',
+          claim: 'Unexpected service creation',
+          source_ids: ['S1'],
+        },
+      ]}
+    />,
+  );
+
+  assert.match(narrative, /href="#source-S1"/);
+});
+
+test('never adds a second citation to server-cited Markdown', () => {
+  const narrative = renderToStaticMarkup(
+    <ReportNarrative
+      markdown="## Detection\n\n- Unexpected service creation [S1](#source-S1)"
+      claimAttributions={[
+        {
+          claim_class: 'detection_indicator',
+          claim: 'Unexpected service creation',
+          source_ids: ['S1'],
+        },
+      ]}
+    />,
+  );
+
+  assert.equal(narrative.match(/href="#source-S1"/g)?.length, 1);
 });
 
 test('labels canonical sample evidence as a captured snapshot', () => {
@@ -393,4 +399,25 @@ test('discloses the actual route when report generation uses fallback', () => {
   assert.match(html, /google\/gemma-4-26b-a4b-it/);
   assert.match(html, /Google AI Studio/);
   assert.match(html, /Report authoring/);
+});
+
+test('exported narratives cite source URLs instead of in-page anchors', async () => {
+  const { portableCitations } = await import('../src/lib/portable-markdown');
+  const markdown = [
+    '- Service creation [S1](#source-S1) [S2](#source-S2)',
+    '- Unknown [S9](#source-S9)',
+  ].join('\n');
+
+  const portable = portableCitations(markdown, [
+    { source_id: 'S1', url: 'https://research.example.com/report' },
+    { source_id: 'S2', url: 'javascript:alert(1)' },
+  ]);
+
+  assert.equal(
+    portable,
+    [
+      '- Service creation [S1](<https://research.example.com/report>) [S2]',
+      '- Unknown [S9]',
+    ].join('\n'),
+  );
 });

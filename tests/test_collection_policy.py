@@ -136,8 +136,13 @@ def test_activity_stops_after_one_hundred_stored_rows(monkeypatch, dashboard):
     service.list_analytics_records.return_value = []
     service.get_threat_type_stats.return_value = {}
     service.get_quality_score_distribution.return_value = {}
+    # Each artifact's policy decision was stored when it was written.
     service.list_reports.side_effect = lambda *, limit, offset=0, **_: [
-        {**collection_report(str(i)), "_markdown_s3_key": f"{i}.md"}
+        {
+            **collection_report(str(i)),
+            "_markdown_s3_key": f"{i}.md",
+            "_markdown_policy_status": "excluded",
+        }
         for i in range(offset, offset + limit)
     ]
     service.s3_manager.download_content.return_value = "[Virtual Event] Register now"
@@ -146,24 +151,25 @@ def test_activity_stops_after_one_hundred_stored_rows(monkeypatch, dashboard):
         api.get_dashboard_analytics(USER) if dashboard else api.get_analytics("30d", USER)
     )
     assert result["recent_activity"] == []
-    assert service.s3_manager.download_content.call_count == 100
+    service.s3_manager.download_content.assert_not_called()
     assert result["recent_activity_excluded_count"] == 100
     assert result["recent_activity_scan_limited"] is True
 
 
-def test_activity_deadline_cancels_wait_without_releasing_running_object_capacity(monkeypatch):
-    from src.storage.retained_content import RetainedContentReader, RetainedContentUnavailable
-
+def test_activity_never_reads_objects_even_when_an_object_read_would_block(monkeypatch):
     release = Event()
     calls = []
-    reader = RetainedContentReader(max_workers=4, timeout_seconds=0.06)
     service = Mock()
     service.count_reports.return_value = 1000
     service.list_analytics_records.return_value = []
     service.get_threat_type_stats.return_value = {}
     service.get_quality_score_distribution.return_value = {}
     service.list_reports.side_effect = lambda *, limit, offset=0, **_: [
-        {**collection_report(str(i)), "_markdown_s3_key": f"{i}.md"}
+        {
+            **collection_report(str(i)),
+            "_markdown_s3_key": f"{i}.md",
+            "_markdown_policy_status": "allowed",
+        }
         for i in range(offset, offset + limit)
     ]
 
@@ -174,20 +180,10 @@ def test_activity_deadline_cancels_wait_without_releasing_running_object_capacit
 
     service.s3_manager.download_content.side_effect = load
     monkeypatch.setattr(api, "report_service", service)
-    monkeypatch.setattr(api, "retained_content_reader", reader)
-    monkeypatch.setattr(api, "RECENT_ACTIVITY_TIMEOUT_SECONDS", 0.02, raising=False)
-
-    async def check():
-        result = await api.get_dashboard_analytics(USER)
-        assert result["recent_activity"] == []
-        assert result["recent_activity_scan_limited"] is True
-        with pytest.raises(RetainedContentUnavailable):
-            await reader.read_many(["probe"], load)
-        assert len(calls) == 4
-        assert "probe" not in calls
-
     try:
-        asyncio.run(check())
+        result = asyncio.run(api.get_dashboard_analytics(USER))
     finally:
         release.set()
-        reader.close()
+    assert [item["id"] for item in result["recent_activity"]] == [str(i) for i in range(5)]
+    assert result["recent_activity_scan_limited"] is False
+    assert calls == []

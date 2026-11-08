@@ -418,6 +418,91 @@ def test_writers_dual_write_rows_and_reader_state_in_their_transactions(database
     assert state()[2] is False
 
 
+def test_collections_filter_policy_in_sql_and_never_read_artifacts(database):
+    from typing import Any, cast
+    from unittest.mock import Mock
+
+    from src.core.markdown_generator import generate_markdown
+    from src.core.source_ledger import canonicalize_profile_sources
+    from src.storage.s3_manager import S3StorageManager
+    from tests.conftest import build_threat_profile_data
+
+    database.migrate_schema()
+    service = ReportStorageService()
+    service.db_manager = database
+
+    class Client:
+        def put_object(self, **kwargs):
+            return None
+
+    store = S3StorageManager()
+    store._initialized = True
+    store.s3_client = cast(Any, Client())
+    service.s3_manager = store
+
+    profile, sources = canonicalize_profile_sources(
+        build_threat_profile_data("https://research.vendor-security.com/report")
+    )
+    ids = {}
+    for name, score, tags in (
+        ("clean", 5.0, ["rat", "loader"]),
+        ("second", 2.5, ["rat"]),
+        ("hidden", 4.6, ["rat", "hidden-tag"]),
+    ):
+        ids[name] = str(uuid.uuid4())
+        service.store_report(
+            {
+                "id": ids[name],
+                "tool_name": name,
+                "threat_data": profile,
+                "web_sources": sources,
+                "markdown_content": generate_markdown(profile),
+                "quality_score": score,
+                "search_tags": tags,
+            },
+            user_id="owner",
+        )
+    with database.engine.begin() as conn:
+        conn.execute(
+            text("UPDATE report_artifacts SET policy_status='excluded' WHERE report_id=:id"),
+            {"id": ids["hidden"]},
+        )
+    # Any artifact read from a collection path is a failure.
+    artifact_reads = Mock(side_effect=AssertionError("artifact read"))
+    cast(Any, service.s3_manager).download_content = artifact_reads
+
+    listed = service.list_reports(user_id="owner")
+    searched = service.search_reports(user_id="owner", search_query="e")
+
+    assert {row["tool_name"] for row in listed} == {"clean", "second"}
+    assert all(row["_markdown_policy_status"] == "allowed" for row in listed)
+    assert {row["tool_name"] for row in searched} == {"clean", "second"}
+    assert service.count_reports(user_id="owner") == 2
+    assert service.get_popular_tags(user_id="owner") == ["rat", "loader"]
+    distribution = service.get_quality_score_distribution(user_id="owner")
+    assert distribution["distribution"] == {
+        "0.0-1.0": 0,
+        "1.0-2.0": 0,
+        "2.0-3.0": 1,
+        "3.0-4.0": 0,
+        "4.0-5.0": 1,
+    }
+    assert distribution["total_scored"] == 2
+    records = service.list_analytics_records(created_after=datetime_epoch(), user_id="owner")
+    assert {record.review_status.value for record in records if record.review_status} <= {
+        "needs_evaluation",
+        "needs_attention",
+        "reviewable",
+    }
+    artifact_reads.assert_not_called()
+
+
+def datetime_epoch():
+    from datetime import datetime, timezone
+
+    return datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
 class _ObjectStore:
     """In-memory artifact client: what is put can be read back."""
 

@@ -7,6 +7,9 @@ import re
 from datetime import datetime
 from typing import Any, Mapping
 from src.core.evidence_admissibility import reader_evidence_admissibility
+from src.core.profile_tables import flatten
+from src.core.source_ledger import attribution_status
+from src.domain.reports import ClaimAttributionStatus
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +125,41 @@ def render_quality_assessment(quality: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+_SOURCE_ID = re.compile(r"^S[1-9][0-9]*$")
+
+
+def claim_citations(data: Mapping[str, Any]) -> dict[tuple[str, int], str]:
+    """Citation suffix for each attributed high-risk claim, keyed by (field, index).
+
+    Claims are stored rows, so the renderer places each citation beside the item
+    it supports instead of searching rendered text for the claim later. Only a
+    consistent attribution ledger produces citations.
+    """
+
+    tables = flatten(data)
+    status, _ = attribution_status(tables)
+    if status is not ClaimAttributionStatus.ATTRIBUTED:
+        return {}
+    citations: dict[tuple[str, int], str] = {}
+    for record in tables.attributions:
+        index = record.claim_index
+        if record.claim_id is None or not isinstance(index, int):
+            continue
+        if record.evidence_role == "general_practice":
+            suffix = " **General practice**"
+        else:
+            links = [
+                f"[{source_id}](#source-{source_id})"
+                for source_id in record.source_ids or ()
+                if _SOURCE_ID.fullmatch(source_id)
+            ]
+            if not links:
+                continue
+            suffix = " " + " ".join(links)
+        citations[(record.claim_field, index)] = suffix
+    return citations
+
+
 def generate_markdown(data):
     """Generate markdown report from threat intelligence data"""
 
@@ -129,6 +167,10 @@ def generate_markdown(data):
         return "# Error\n\nNo valid threat intelligence data provided."
 
     md = []
+    citations = claim_citations(data)
+
+    def cite(field: str, index: int) -> str:
+        return citations.get((field, index), "")
 
     try:
         # Header with core metadata
@@ -418,8 +460,8 @@ def generate_markdown(data):
                 risk_factors = risk.get("riskFactors", [])
                 if risk_factors and isinstance(risk_factors, list):
                     md.append("**Risk Factors**:")
-                    for factor in risk_factors:
-                        md.append(f"- {factor}")
+                    for index, factor in enumerate(risk_factors):
+                        md.append(f"- {factor}{cite('riskFactors', index)}")
                     md.append("")
 
             # Entities
@@ -476,8 +518,8 @@ def generate_markdown(data):
                 if artifacts and isinstance(artifacts, list):
                     md.append(f"### {title}")
                     md.append("")
-                    for artifact in artifacts:
-                        md.append(f"- `{artifact}`")
+                    for index, artifact in enumerate(artifacts):
+                        md.append(f"- `{artifact}`{cite(key, index)}")
                     md.append("")
 
         # Detection and Mitigation
@@ -523,8 +565,8 @@ def generate_markdown(data):
                     ioc_list = iocs.get(key, [])
                     if ioc_list and isinstance(ioc_list, list):
                         md.append(f"**{title}**:")
-                        for ioc in ioc_list:
-                            md.append(f"- `{ioc}`")
+                        for index, ioc in enumerate(ioc_list):
+                            md.append(f"- `{ioc}`{cite(key, index)}")
                         md.append("")
 
             # Behavioral Indicators
@@ -532,8 +574,8 @@ def generate_markdown(data):
             if behavioral and isinstance(behavioral, list):
                 md.append("### Behavioral Indicators")
                 md.append("")
-                for indicator in behavioral:
-                    md.append(f"- {indicator}")
+                for index, indicator in enumerate(behavioral):
+                    md.append(f"- {indicator}{cite('behavioralIndicators', index)}")
                 md.append("")
 
         # Continue with remaining sections...
@@ -557,8 +599,8 @@ def generate_markdown(data):
                 if items and isinstance(items, list):
                     md.append(f"### {title}")
                     md.append("")
-                    for item in items:
-                        md.append(f"- {item}")
+                    for index, item in enumerate(items):
+                        md.append(f"- {item}{cite(key, index)}")
                     md.append("")
 
         # References and Intelligence Sharing

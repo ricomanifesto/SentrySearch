@@ -22,6 +22,7 @@ from src.storage.report_service import report_service
 from src.storage.database import db_manager
 from src.storage.retained_content import retained_content_reader
 from src.core.report_content_policy import (
+    ARTIFACT_POLICY_ALLOWED,
     assert_report_content_allowed,
     load_checked_report,
     public_report_content,
@@ -67,6 +68,7 @@ from src.domain.model_routes import generation_fallback_state
 from src.execution.config import ExecutionMode, execution_mode_from_environment
 from src.domain.execution import GenerationLease, GenerationLeaseLost
 from src.domain.reports import (
+    READER_STATE_VERSION,
     AnalystDisposition,
     ClaimAttributionStatus,
     ClassificationStatus,
@@ -258,10 +260,38 @@ async def checked_report_snapshot(report: Dict[str, Any]) -> Dict[str, Any]:
     return snapshot
 
 
+def markdown_policy_allows(report: Dict[str, Any]) -> bool:
+    """The stored content-policy decision for the row's current Markdown artifact.
+
+    A row with Markdown and no ``allowed`` decision (``excluded``, ``unknown``,
+    or not yet reconciled) fails closed. No object is read.
+    """
+
+    if not report.get("_markdown_s3_key"):
+        return True
+    return report.get("_markdown_policy_status") == ARTIFACT_POLICY_ALLOWED
+
+
+def stored_reader_state(report: Dict[str, Any]) -> Dict[str, Any] | None:
+    """Reader state written by the writers, when it is at the current version."""
+
+    if report.get("reader_state_version") != READER_STATE_VERSION:
+        return None
+    try:
+        return {
+            "review_status": ReviewStatus(report["review_status"]),
+            "eligible_for_judgment": bool(report["eligible_for_judgment"]),
+            "eligible_for_acceptance": bool(report["eligible_for_acceptance"]),
+            "eligible_for_handoff": bool(report["eligible_for_handoff"]),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
     """Project one stored row through the same lifecycle contract on every surface."""
 
-    assert_report_content_allowed(report)
+    public_report_content(report)
     quality_score = get_quality_score(report)
     sources = get_report_sources(report)
     evaluation_status = get_evaluation_status(report)
@@ -287,6 +317,37 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
     analyst_disposition = AnalystDisposition(
         report.get("analyst_disposition") or AnalystDisposition.UNREVIEWED.value
     )
+    # Writers store reader state in the writing transaction. Rows that have not
+    # been reconciled to the current version (unreachable after a release)
+    # derive it here from the same domain rules.
+    reader_state = stored_reader_state(report) or {
+        "review_status": derive_review_status(
+            report_status=report_status,
+            evaluation_status=evaluation_status,
+            quality_score=quality_score,
+            quality_assessment=assessment,
+            source_count=len(sources),
+            evidence_admissibility_status=evidence_status,
+        ),
+        "eligible_for_judgment": is_judgment_eligible(
+            report_status=report_status,
+            evaluation_status=evaluation_status,
+            quality_score=quality_score,
+        ),
+        "eligible_for_acceptance": is_reuse_eligible(
+            report_status=report_status,
+            evaluation_status=evaluation_status,
+            quality_score=quality_score,
+            evidence_admissibility_status=evidence_status,
+        ),
+        "eligible_for_handoff": is_handoff_eligible(
+            report_status=report_status,
+            evaluation_status=evaluation_status,
+            quality_score=quality_score,
+            evidence_admissibility_status=evidence_status,
+            analyst_disposition=analyst_disposition,
+        ),
+    }
     return {
         "id": report["id"],
         "tool_name": report["tool_name"],
@@ -319,33 +380,11 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
         "evaluation_error_code": report.get("evaluation_error_code"),
         "evaluation_attempts": report.get("evaluation_attempts") or 0,
         "evaluated_at": report.get("evaluated_at"),
-        "review_status": derive_review_status(
-            report_status=get_report_status(report),
-            evaluation_status=evaluation_status,
-            quality_score=quality_score,
-            quality_assessment=assessment,
-            source_count=len(sources),
-            evidence_admissibility_status=evidence_status,
-        ),
+        "review_status": reader_state["review_status"],
         "analyst_disposition": analyst_disposition,
-        "eligible_for_judgment": is_judgment_eligible(
-            report_status=report_status,
-            evaluation_status=evaluation_status,
-            quality_score=quality_score,
-        ),
-        "eligible_for_acceptance": is_reuse_eligible(
-            report_status=report_status,
-            evaluation_status=evaluation_status,
-            quality_score=quality_score,
-            evidence_admissibility_status=evidence_status,
-        ),
-        "eligible_for_handoff": is_handoff_eligible(
-            report_status=report_status,
-            evaluation_status=evaluation_status,
-            quality_score=quality_score,
-            evidence_admissibility_status=evidence_status,
-            analyst_disposition=analyst_disposition,
-        ),
+        "eligible_for_judgment": reader_state["eligible_for_judgment"],
+        "eligible_for_acceptance": reader_state["eligible_for_acceptance"],
+        "eligible_for_handoff": reader_state["eligible_for_handoff"],
         "content_preview": report.get("content_preview"),
     }
 
@@ -353,19 +392,18 @@ def report_response_fields(report: Dict[str, Any]) -> Dict[str, Any]:
 async def report_collection_fields(
     reports: List[Dict[str, Any]],
 ) -> tuple[list[tuple[Dict[str, Any], Dict[str, Any]]], int]:
-    """Project each stored record, omitting only explicit content-policy exclusions."""
+    """Project each stored record, omitting only explicit content-policy exclusions.
 
-    candidates = []
+    Collections never read report objects: the Markdown policy decision is
+    stored on the artifact row when the artifact is written.
+    """
+
+    projected = []
     excluded_count = 0
     for report in reports:
-        try:
-            public_report_content(report)
-        except ContentPolicyExclusion:
+        if not markdown_policy_allows(report):
             excluded_count += 1
             continue
-        candidates.append(report)
-    projected = []
-    for report in await load_retained_contents(candidates):
         try:
             fields = report_response_fields(report)
         except ContentPolicyExclusion:
@@ -376,45 +414,45 @@ async def report_collection_fields(
 
 
 RECENT_ACTIVITY_SCAN_LIMIT = 100
-RECENT_ACTIVITY_TIMEOUT_SECONDS = 10.0
 
 
 async def recent_report_fields(
     *, limit: int, stored_total: int, user_id: Optional[str]
 ) -> tuple[list[tuple[Dict[str, Any], Dict[str, Any]]], int, bool]:
-    """Fill a feed within one row/read deadline budget; disclose incomplete scans."""
+    """Fill a feed from at most 100 stored rows; disclose an incomplete scan."""
     visible = []
     excluded_count = 0
     offset = 0
     scan_limit = min(stored_total, RECENT_ACTIVITY_SCAN_LIMIT)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + RECENT_ACTIVITY_TIMEOUT_SECONDS
     while len(visible) < limit and offset < scan_limit:
-        if loop.time() >= deadline:
-            return visible, excluded_count, True
         remaining = min(limit - len(visible), scan_limit - offset)
         rows = report_service.list_reports(
             limit=remaining, offset=offset, sort_by="created_at", sort_order="desc", user_id=user_id
         )
         if not rows:
             return visible, excluded_count, False
-        time_left = deadline - loop.time()
-        if time_left <= 0:
-            return visible, excluded_count, True
-        try:
-            projected, excluded = await asyncio.wait_for(
-                report_collection_fields(rows), timeout=time_left
-            )
-        except TimeoutError:
-            # Cancellation stops awaiting the batch, not the SDK calls that still
-            # own physical capacity. Only fully validated batches are returned.
-            return visible, excluded_count, True
+        projected, excluded = await report_collection_fields(rows)
         visible.extend(projected)
         excluded_count += excluded
         offset += len(rows)
         if len(rows) < remaining:
             return visible, excluded_count, False
     return visible, excluded_count, len(visible) < limit and offset < stored_total
+
+
+def analytics_review_status(record: ReportAnalyticsRecord) -> ReviewStatus:
+    """The stored review state; records built without one derive it."""
+
+    if record.review_status is not None:
+        return record.review_status
+    return derive_review_status(
+        report_status=record.status,
+        evaluation_status=record.evaluation_status,
+        quality_score=record.quality_score,
+        quality_assessment=record.quality_assessment,
+        source_count=record.source_count,
+        evidence_admissibility_status=record.evidence_admissibility_status,
+    )
 
 
 def reader_threat_distribution(user_id: Optional[str] = None) -> Dict[str, int]:
@@ -1512,17 +1550,7 @@ async def get_analytics(
             if terminal_records
             else None
         )
-        review_states = [
-            derive_review_status(
-                report_status=record.status,
-                evaluation_status=record.evaluation_status,
-                quality_score=record.quality_score,
-                quality_assessment=record.quality_assessment,
-                source_count=record.source_count,
-                evidence_admissibility_status=record.evidence_admissibility_status,
-            )
-            for record in records
-        ]
+        review_states = [analytics_review_status(record) for record in records]
 
         # Recent activity
         projected, excluded_count, scan_limited = await recent_report_fields(
@@ -1639,17 +1667,7 @@ async def get_dashboard_analytics(user: AuthenticatedUser = Depends(verify_jwt_t
             user_id=user_id,
         )
         scored_reports = sum(record.quality_score is not None for record in records)
-        review_states = [
-            derive_review_status(
-                report_status=record.status,
-                evaluation_status=record.evaluation_status,
-                quality_score=record.quality_score,
-                quality_assessment=record.quality_assessment,
-                source_count=record.source_count,
-                evidence_admissibility_status=record.evidence_admissibility_status,
-            )
-            for record in records
-        ]
+        review_states = [analytics_review_status(record) for record in records]
 
         # Get recent activity
         projected, excluded_count, scan_limited = await recent_report_fields(

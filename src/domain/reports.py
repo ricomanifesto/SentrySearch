@@ -203,6 +203,8 @@ class ReportAnalyticsRecord:
     )
     generation_error_code: GenerationErrorCode | None = None
     generation_failure_stage: GenerationStage | None = None
+    # Stored at write time; analytics reads it instead of recomputing it.
+    review_status: "ReviewStatus | None" = None
 
 
 def derive_generation_route_scope(

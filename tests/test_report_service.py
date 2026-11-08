@@ -342,10 +342,11 @@ def test_handoff_filter_requires_current_acceptance_and_passed_evidence():
         for expression in ReportStorageService._report_filter_expressions(filters)
     )
 
-    assert "reports.status = 'completed'" in compiled
-    assert "reports.evidence_admissibility_status = 'passed'" in compiled
-    assert "report_disposition_events.disposition" in compiled
-    assert "accepted" in compiled
+    # Completion, scoring, passed evidence, and current acceptance are stored in
+    # eligible_for_handoff at write time by the domain rules; the filter reads it.
+    assert "reports.eligible_for_handoff IS true" in compiled
+    assert "report_artifacts.policy_status = 'allowed'" in compiled
+    assert "reports.evidence_admissibility_status" not in compiled
 
 
 def test_fresh_evaluation_vintage_returns_to_unreviewed_without_deleting_history():
