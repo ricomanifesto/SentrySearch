@@ -655,33 +655,40 @@ class ReportStorageService:
             stale.append((kind, key))
         return stale
 
-    def _reconcile_artifacts(self, report: Any, markdown_policy: Dict[str, str]) -> int:
+    def _reconcile_artifacts(self, report: Any, artifact_policy: Dict[str, str]) -> int:
         """Bring artifact rows to the current policy version; returns rows changed.
 
-        ``markdown_policy`` maps an object key to the policy read for it. A key
+        ``artifact_policy`` maps an object key to the policy read for it. A key
         without an entry, such as one published after the read, records
         ``unknown`` and is retried by the next reconciliation.
         """
 
-        stale = self._stale_artifact_kinds(report)
-        for kind, key in stale:
-            status = (
-                markdown_policy.get(key, ARTIFACT_POLICY_UNKNOWN)
-                if kind == "markdown"
-                else ARTIFACT_POLICY_UNKNOWN
+        changed = 0
+        for kind, key in self._stale_artifact_kinds(report):
+            status = artifact_policy.get(key, ARTIFACT_POLICY_UNKNOWN)
+            current = next(
+                (artifact for artifact in (report.artifacts or []) if artifact.kind == kind),
+                None,
             )
+            if (
+                current is not None
+                and current.s3_key == key
+                and current.policy_version == ARTIFACT_POLICY_VERSION
+                and current.policy_status == status
+            ):
+                continue
             self._write_artifact(report, kind, key, None, policy_status=status)
-        return len(stale)
+            changed += 1
+        return changed
 
-    def _read_markdown_policy(self, report: Any, *, read_artifacts: bool) -> Dict[str, str]:
-        """Read the stale Markdown object, if any, for its content policy."""
+    def _read_artifact_policy(self, report: Any, *, read_artifacts: bool) -> Dict[str, str]:
+        """Read every stale artifact object for its content policy."""
 
         if not read_artifacts:
             return {}
         return {
             key: self._artifact_policy_from_storage(key)
-            for kind, key in self._stale_artifact_kinds(report)
-            if kind == "markdown"
+            for _, key in self._stale_artifact_kinds(report)
         }
 
     def _reconcile_report(self, report: Any, summary: Dict[str, int]) -> None:
@@ -795,7 +802,7 @@ class ReportStorageService:
             report = cast(Any, row)
             self._reconcile_report(report, summary)
             summary["artifact_policy_updates"] += self._reconcile_artifacts(
-                report, self._read_markdown_policy(report, read_artifacts=read_artifacts)
+                report, self._read_artifact_policy(report, read_artifacts=read_artifacts)
             )
             if row_number % 250 == 0:
                 session.flush()
@@ -806,17 +813,17 @@ class ReportStorageService:
             report_ids = session.scalars(select(Report.id).order_by(Report.id)).all()
 
         for report_id in report_ids:
-            # 1. Find a stale Markdown object, then read it with no session open.
+            # 1. Find stale artifact objects, then read them with no session open.
             with self.db_manager.get_session() as session:
                 report = session.get(Report, report_id)
                 if report is None:
                     continue
-                stale_keys = [
-                    key
-                    for kind, key in self._stale_artifact_kinds(cast(Any, report))
-                    if kind == "markdown" and read_artifacts
-                ]
-            markdown_policy = {key: self._artifact_policy_from_storage(key) for key in stale_keys}
+                stale_keys = (
+                    [key for _, key in self._stale_artifact_kinds(cast(Any, report))]
+                    if read_artifacts
+                    else []
+                )
+            artifact_policy = {key: self._artifact_policy_from_storage(key) for key in stale_keys}
 
             # 2. Under the row lock: reread and recompute from committed data.
             try:
@@ -826,7 +833,7 @@ class ReportStorageService:
                         continue
                     self._reconcile_report(report, summary)
                     summary["artifact_policy_updates"] += self._reconcile_artifacts(
-                        report, markdown_policy
+                        report, artifact_policy
                     )
                     session.commit()
             except OperationalError as exc:

@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from contextlib import contextmanager
+from types import SimpleNamespace
 from typing import Any, cast
 import uuid
 
@@ -19,7 +20,13 @@ from src.domain.reports import (
     SortOrder,
 )
 from src.storage.report_service import ReportStorageService
-from src.storage.models import Report, ReportDispositionEvent, ReportRuntimeDispatch
+from src.core.report_content_policy import ARTIFACT_POLICY_VERSION
+from src.storage.models import (
+    Report,
+    ReportArtifact,
+    ReportDispositionEvent,
+    ReportRuntimeDispatch,
+)
 from src.storage.database import DatabaseManager
 
 
@@ -788,3 +795,46 @@ def test_runtime_backlog_uses_a_single_statement_and_stable_clock():
     assert len(statements) == 1
     assert "statement_timestamp()" in statements[0]
     assert "clock_timestamp()" not in statements[0]
+
+
+def _report_with_unknown_trace() -> Report:
+    return Report(
+        id="r1",
+        markdown_s3_key="r1.md",
+        trace_s3_key="r1.json",
+        artifacts=[
+            ReportArtifact(
+                kind="markdown",
+                s3_key="r1.md",
+                policy_status="allowed",
+                policy_version=ARTIFACT_POLICY_VERSION,
+            ),
+            ReportArtifact(
+                kind="trace",
+                s3_key="r1.json",
+                policy_status="unknown",
+                policy_version=ARTIFACT_POLICY_VERSION,
+            ),
+        ],
+    )
+
+
+def test_reconciliation_resolves_an_unknown_trace_artifact():
+    service = ReportStorageService.__new__(ReportStorageService)
+    report = cast(Any, _report_with_unknown_trace())
+    service.s3_manager = SimpleNamespace(download_content=lambda key: '{"steps": []}')
+
+    policy = service._read_artifact_policy(report, read_artifacts=True)
+
+    assert policy == {"r1.json": "allowed"}
+    assert service._reconcile_artifacts(report, policy) == 1
+    assert [artifact.policy_status for artifact in report.artifacts] == ["allowed", "allowed"]
+    assert service._reconcile_artifacts(report, {}) == 0
+
+
+def test_reconciliation_does_not_rewrite_an_unresolved_unknown_artifact():
+    service = ReportStorageService.__new__(ReportStorageService)
+    report = cast(Any, _report_with_unknown_trace())
+
+    assert service._reconcile_artifacts(report, {}) == 0
+    assert report.artifacts[1].policy_status == "unknown"
