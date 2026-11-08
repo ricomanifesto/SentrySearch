@@ -400,3 +400,24 @@ test('discloses the actual route when report generation uses fallback', () => {
   assert.match(html, /Google AI Studio/);
   assert.match(html, /Report authoring/);
 });
+
+test('exported narratives cite source URLs instead of in-page anchors', async () => {
+  const { portableCitations } = await import('../src/lib/portable-markdown');
+  const markdown = [
+    '- Service creation [S1](#source-S1) [S2](#source-S2)',
+    '- Unknown [S9](#source-S9)',
+  ].join('\n');
+
+  const portable = portableCitations(markdown, [
+    { source_id: 'S1', url: 'https://research.example.com/report' },
+    { source_id: 'S2', url: 'javascript:alert(1)' },
+  ]);
+
+  assert.equal(
+    portable,
+    [
+      '- Service creation [S1](<https://research.example.com/report>) [S2]',
+      '- Unknown [S9]',
+    ].join('\n'),
+  );
+});
