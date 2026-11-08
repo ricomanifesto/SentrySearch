@@ -269,3 +269,23 @@ def test_source_rows_keep_every_reader_field():
     assert source["key_findings"] == "Observed behavior and mitigations."
     assert source["snapshot_captured_at"] == "2026-08-15T12:00:00+00:00"
     assert source["snapshot_final_url"] is None
+
+
+def test_source_rows_accept_snake_case_source_keys():
+    profile = build_threat_profile_data()
+    retained = {
+        "source_id": "S1",
+        "url": "https://example.com/report",
+        "access_date": "2026-08-11",
+        "relevance_score": "High",
+        "content_type": "Report",
+        "key_findings": "Observed behavior and mitigations.",
+    }
+
+    [source] = profile_rows(profile, [retained]).sources
+
+    assert source["source_id"] == "S1"
+    assert source["access_date"] == "2026-08-11"
+    assert source["relevance_score"] == "High"
+    assert source["content_type"] == "Report"
+    assert source["key_findings"] == "Observed behavior and mitigations."

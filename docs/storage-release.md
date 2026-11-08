@@ -80,8 +80,9 @@ object upload runs while the row lock is held, and lock scope is unchanged.
 The release backfill (`reconcile_reader_state`) fills the new tables from the
 stored `threat_data`, `web_sources`, and `evidence_admissibility` JSONB through
 the same profile parser the evidence gate uses. Retained schema-4 support keeps an
-unknown verification state; nothing is inferred. Retained Markdown is read once to
-compute its content policy. The backfill takes no row locks, because the release
+unknown verification state; nothing is inferred. Retained Markdown and trace
+objects are read once to compute their content policy. A row whose recomputed
+status is unchanged is not rewritten. The backfill takes no row locks, because the release
 runs with writers drained. If the artifact client is unavailable in the release
 process, the artifact is recorded as `policy_status = 'unknown'` rather than
 failing the release.
