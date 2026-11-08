@@ -119,7 +119,7 @@ def profile_rows(
     for source in primary:
         if not isinstance(source, Mapping):
             continue
-        source_id = _text(source.get("sourceId"))
+        source_id = _text(source.get("sourceId") or source.get("source_id"))
         url = _text(source.get("url"))
         if not source_id or not url or source_id in seen_sources:
             continue
@@ -131,10 +131,12 @@ def profile_rows(
                 "url": url,
                 "domain": _text(source.get("domain")),
                 "title": _text(source.get("title")),
-                "access_date": _text(source.get("accessDate")),
-                "relevance_score": _text(source.get("relevanceScore")),
-                "content_type": _text(source.get("contentType")),
-                "key_findings": _text(source.get("keyFindings")),
+                "access_date": _text(source.get("accessDate") or source.get("access_date")),
+                "relevance_score": _text(
+                    source.get("relevanceScore") or source.get("relevance_score")
+                ),
+                "content_type": _text(source.get("contentType") or source.get("content_type")),
+                "key_findings": _text(source.get("keyFindings") or source.get("key_findings")),
                 "snapshot_status": _text(source.get("evidenceSnapshotStatus")),
                 "snapshot_sha256": _text(source.get("evidenceSnapshotSha256")),
                 "snapshot_captured_at": _text(source.get("evidenceSnapshotCapturedAt")),
