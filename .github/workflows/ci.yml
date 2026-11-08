@@ -65,7 +65,7 @@ jobs:
       - name: Install the pinned Lean toolchain
         working-directory: formal
         run: |
-          for attempt in 1 2 3 4 5; do
+          for _ in 1 2 3 4 5; do
             elan toolchain install "$(cat lean-toolchain)" && exit 0
             sleep 15
           done
