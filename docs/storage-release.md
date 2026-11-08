@@ -117,6 +117,15 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON report_sources, report_claims,
   report_findings, report_artifacts TO <application role>;
 ```
 
+Where product tables use row-level security for the application role, as on a
+Supabase deployment whose application role does not bypass RLS, enable RLS on the
+new tables in the same step and add policies that permit the application role.
+This release also writes `report_tags` (writers keep it equal to each report's
+search tags), so the application role needs `INSERT` and `DELETE` on it and, under
+RLS, matching policies. The read-only check cannot detect a missing policy:
+a `SELECT` that RLS filters returns no rows rather than an error. Exercise a write
+as the application role before deploying.
+
 Tables from already-applied revisions are not changed by a release. This
 read-only query lists any product table the Data API roles can still read; expect
 no rows:
