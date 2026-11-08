@@ -191,6 +191,19 @@ def test_tags_mirror_search_tags_without_duplicates():
     assert [tag.tag for tag in report.tags] == ["Cobalt Strike", "cobalt strike"]
 
 
+def test_tags_are_stored_only_as_exact_search_tag_values():
+    """An advertised tag must match its report through the search-tag filter."""
+
+    from src.storage.models import Report
+
+    report = Report(id="r", tool_name="t")
+    long_tag = "x" * 101
+
+    ReportStorageService._write_tags(report, ["  padded tool ", long_tag, "ok", 7])
+
+    assert [tag.tag for tag in report.tags] == ["  padded tool ", "ok"]
+
+
 def test_markdown_renderer_places_each_claim_citation_beside_its_claim():
     from src.core.markdown_generator import generate_markdown
 

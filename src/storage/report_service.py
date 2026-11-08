@@ -235,14 +235,19 @@ class ReportStorageService:
 
     @staticmethod
     def _write_tags(report: Report, search_tags: Any) -> None:
-        """Keep ``report_tags`` equal to the report's search tags."""
+        """Keep ``report_tags`` equal to the search tags it can hold exactly.
+
+        Popular tags are offered as filters that match ``search_tags`` exactly,
+        so a value is stored unchanged or not at all: non-string, blank, and
+        over-length tags are left out rather than rewritten.
+        """
 
         model = cast(Any, report)
         wanted = list(
             dict.fromkeys(
-                str(tag).strip()[:100]
+                tag
                 for tag in (search_tags if isinstance(search_tags, list) else [])
-                if str(tag).strip()
+                if isinstance(tag, str) and tag.strip() and len(tag) <= 100
             )
         )
         current = {tag.tag: tag for tag in (model.tags or [])}
