@@ -1,0 +1,6 @@
+name = "SentrySearchSpec"
+version = "0.1.0"
+defaultTargets = ["SentrySearchSpec"]
+
+[[lean_lib]]
+name = "SentrySearchSpec"

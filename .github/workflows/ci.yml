@@ -43,3 +43,15 @@ jobs:
           python-version: "3.11"
       - run: uv sync --locked
       - run: uv run python dev/check_local_setup.py
+
+  formal:
+    name: Lean specification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: leanprover/lean-action@ba3fdfe5c4476c925da13bf11a005ddb47e47aee # v1.7.1
+        with:
+          lake-package-directory: formal
+          use-mathlib-cache: "false"
