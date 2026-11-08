@@ -27,7 +27,7 @@ inductive Verdict where
   | specialUse
   | privateContext
   | nonGlobal
-  | public
+  | publicAddress
 deriving DecidableEq, Repr
 
 /-- The reserved range lists the rule checks, in precedence order. -/
@@ -50,7 +50,7 @@ def classify (rs : Ranges) (isGlobal : Nat → Bool) (cands : List Net) : Verdic
   else if touches cands rs.specialUse then .specialUse
   else if touches cands rs.privateUse then .privateContext
   else if anyNonGlobal isGlobal cands then .nonGlobal
-  else .public
+  else .publicAddress
 
 theorem not_touches {cands rs : List Net} (h : touches cands rs = false) :
     ∀ c ∈ cands, ∀ r ∈ rs, overlaps c r = false := by
@@ -66,8 +66,8 @@ theorem not_touches {cands rs : List Net} (h : touches cands rs = false) :
 
 /-- A public verdict means no candidate overlaps any reserved range and every candidate's first and
 last addresses are globally reachable. -/
-theorem public_sound {rs : Ranges} {isGlobal : Nat → Bool} {cands : List Net}
-    (h : classify rs isGlobal cands = .public) :
+theorem publicAddress_sound {rs : Ranges} {isGlobal : Nat → Bool} {cands : List Net}
+    (h : classify rs isGlobal cands = .publicAddress) :
     ∀ c ∈ cands,
       (∀ r ∈ rs.documentation ++ rs.specialUse ++ rs.privateUse, overlaps c r = false) ∧
       isGlobal c.lo = true ∧ isGlobal c.hi = true := by

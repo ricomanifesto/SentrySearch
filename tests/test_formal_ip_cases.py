@@ -14,7 +14,7 @@ RULE_IDS = {
     "specialUse": "indicator.ip-special-use",
     "privateContext": "indicator.ip-private-context",
     "nonGlobal": "indicator.ip-non-global",
-    "public": "indicator.ip-public",
+    "publicAddress": "indicator.ip-public",
 }
 
 

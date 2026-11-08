@@ -41,8 +41,8 @@ structure Case where
 def entry (value : String) (n : Net) (expected : Verdict) : Case := ⟨value, [n], expected⟩
 
 def entries : List Case := [
-  entry "8.8.8.8" (host 8 8 8 8) .public,
-  entry "1.1.1.0/24" (cidr 1 1 1 0 24) .public,
+  entry "8.8.8.8" (host 8 8 8 8) .publicAddress,
+  entry "1.1.1.0/24" (cidr 1 1 1 0 24) .publicAddress,
   entry "203.0.113.7" (host 203 0 113 7) .documentation,
   entry "203.0.112.0/23" (cidr 203 0 112 0 23) .documentation,
   entry "198.0.0.0/7" (cidr 198 0 0 0 7) .documentation,
@@ -52,7 +52,7 @@ def entries : List Case := [
   entry "100.64.0.1" (host 100 64 0 1) .specialUse,
   entry "8.0.0.0/5" (cidr 8 0 0 0 5) .privateContext,
   entry "10.20.30.40" (host 10 20 30 40) .privateContext,
-  entry "172.15.255.255" (host 172 15 255 255) .public
+  entry "172.15.255.255" (host 172 15 255 255) .publicAddress
 ]
 
 theorem entries_hold :
