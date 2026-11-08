@@ -43,3 +43,33 @@ jobs:
           python-version: "3.11"
       - run: uv sync --locked
       - run: uv run python dev/check_local_setup.py
+
+  formal:
+    name: Lean specification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install elan
+        run: |
+          set -euo pipefail
+          url=https://raw.githubusercontent.com/leanprover/elan/227caca133724d5516bee25c2aeb3e609478f2d8/elan-init.sh # v4.2.4
+          curl --retry 5 --retry-all-errors -sSfL "$url" -o "$RUNNER_TEMP/elan-init.sh"
+          for attempt in 1 2 3 4 5; do
+            sh "$RUNNER_TEMP/elan-init.sh" -y --default-toolchain none --no-modify-path && break
+            [ "$attempt" = 5 ] && exit 1
+            sleep 15
+          done
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Install the pinned Lean toolchain
+        working-directory: formal
+        run: |
+          for _ in 1 2 3 4 5; do
+            elan toolchain install "$(cat lean-toolchain)" && exit 0
+            sleep 15
+          done
+          exit 1
+      - name: Build and check the proofs
+        working-directory: formal
+        run: lake build
