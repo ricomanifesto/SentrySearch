@@ -748,3 +748,168 @@ def test_online_reconciliation_skips_a_report_locked_past_the_wait_limit(databas
     assert summary["locked_report_skips"] == 1
     assert _evidence_state(database, locked_id)[3] == 0
     assert _evidence_state(database, free_id)[3] == 10
+
+
+DATA_API_ROLES = ("anon", "authenticated")
+REVISION_TWO_TABLES = (
+    "report_sources",
+    "report_claims",
+    "report_claim_support",
+    "report_indicator_observations",
+    "report_source_observations",
+    "report_findings",
+    "report_artifacts",
+)
+
+
+def _supabase_style_defaults(database, *, public: bool = True) -> None:
+    """Create the Data API roles and grant them every new table, as Supabase does."""
+
+    with database.engine.begin() as conn:
+        existing = set(
+            conn.execute(
+                text("SELECT rolname FROM pg_roles WHERE rolname = ANY(:roles)"),
+                {"roles": list(DATA_API_ROLES)},
+            ).scalars()
+        )
+        for role in DATA_API_ROLES:
+            if role not in existing:
+                conn.execute(text(f'CREATE ROLE "{role}" NOLOGIN'))
+        conn.execute(
+            text(
+                "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
+                "GRANT ALL ON TABLES TO anon, authenticated"
+            )
+        )
+        if public:
+            conn.execute(
+                text("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO PUBLIC")
+            )
+
+
+def _exposed_tables(database, tables) -> list[tuple[str, str]]:
+    with database.engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT c.relname, r.rolname FROM pg_class c "
+                "JOIN pg_roles r ON r.rolname = ANY(:roles) "
+                "WHERE c.relnamespace = 'public'::regnamespace AND c.relname = ANY(:tables) "
+                "AND has_table_privilege(r.oid, c.oid, 'SELECT, INSERT, UPDATE, DELETE') "
+                "UNION ALL "
+                "SELECT c.relname, 'PUBLIC' FROM pg_class c, "
+                "LATERAL aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) a "
+                "WHERE c.relnamespace = 'public'::regnamespace AND c.relname = ANY(:tables) "
+                "AND a.grantee = 0"
+            ),
+            {"roles": list(DATA_API_ROLES), "tables": list(tables)},
+        ).all()
+    return sorted((str(table), str(role)) for table, role in rows)
+
+
+def _retained_report(database) -> None:
+    import json
+
+    from tests.conftest import build_threat_profile_data
+
+    profile = build_threat_profile_data("https://research.vendor-security.com/report")
+    with database.engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO reports(id, tool_name, status, threat_data, web_sources) "
+                "VALUES (:id, 'Retained', 'completed', CAST(:td AS JSONB), CAST(:ws AS JSONB))"
+            ),
+            {
+                "id": uuid.uuid4(),
+                "td": json.dumps(profile),
+                "ws": json.dumps(profile["webSearchSources"]["primarySources"]),
+            },
+        )
+
+
+def test_release_commits_new_tables_without_data_api_access(database):
+    from psycopg.errors import InsufficientPrivilege
+    from sqlalchemy.exc import ProgrammingError
+
+    _apply_revision_one_only(database)
+    _supabase_style_defaults(database)
+    _retained_report(database)
+
+    database.migrate_schema()
+
+    # Nothing is readable by the Data API roles or PUBLIC at the moment of commit.
+    assert _exposed_tables(database, REVISION_TWO_TABLES) == []
+    with database.engine.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM report_claims")).scalar() == 10
+        conn.execute(text("SET ROLE anon"))
+        with pytest.raises(ProgrammingError) as denied:
+            conn.execute(text("SELECT count(*) FROM report_claims"))
+        assert isinstance(denied.value.orig, InsufficientPrivilege)
+    # Repeating the release changes nothing and keeps the tables withheld.
+    database.migrate_schema()
+    assert _exposed_tables(database, REVISION_TWO_TABLES) == []
+
+
+def test_release_keeps_explicit_application_role_access(database):
+    _supabase_style_defaults(database)
+    database.migrate_schema()
+    role = "app_" + uuid.uuid4().hex[:12]
+    with database.engine.begin() as conn:
+        conn.execute(text(f'CREATE ROLE "{role}" NOLOGIN'))
+        conn.execute(text(f'GRANT USAGE ON SCHEMA public TO "{role}"'))
+        conn.execute(text(f'GRANT SELECT, INSERT, UPDATE, DELETE ON {APP_TABLES} TO "{role}"'))
+    try:
+        with database.engine.connect() as conn:
+            conn.execute(text(f'SET ROLE "{role}"'))
+            assert conn.execute(text("SELECT count(*) FROM report_claims")).scalar() == 0
+    finally:
+        with database.engine.begin() as conn:
+            conn.execute(text(f'DROP OWNED BY "{role}"'))
+            conn.execute(text(f'DROP ROLE "{role}"'))
+
+
+def test_release_refuses_tables_still_reachable_through_an_inherited_grant(database):
+    leaky = "leaky_" + uuid.uuid4().hex[:12]
+    _apply_revision_one_only(database)
+    _supabase_style_defaults(database, public=False)
+    with database.engine.begin() as conn:
+        conn.execute(text(f'CREATE ROLE "{leaky}" NOLOGIN'))
+        conn.execute(
+            text(f'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO "{leaky}"')
+        )
+        conn.execute(text(f'GRANT "{leaky}" TO anon'))
+    try:
+        with pytest.raises(RuntimeError, match="Storage migration failed"):
+            database.migrate_schema()
+        with database.engine.connect() as conn:
+            assert conn.execute(text("SELECT to_regclass('public.report_claims')")).scalar() is None
+            assert (
+                conn.execute(
+                    text("SELECT max(version) FROM sentrysearch_schema_migrations")
+                ).scalar()
+                == 1
+            )
+    finally:
+        with database.engine.begin() as conn:
+            conn.execute(text(f'REVOKE "{leaky}" FROM anon'))
+            conn.execute(
+                text(
+                    f'ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE SELECT ON TABLES FROM "{leaky}"'
+                )
+            )
+
+
+def test_failed_release_leaves_no_withheld_or_exposed_tables(database, monkeypatch):
+    _apply_revision_one_only(database)
+    _supabase_style_defaults(database)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("backfill failed")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(ReportStorageService, "reconcile_reader_state", fail)
+        with pytest.raises(RuntimeError, match="Storage migration failed"):
+            database.migrate_schema()
+    with database.engine.connect() as conn:
+        assert conn.execute(text("SELECT to_regclass('public.report_claims')")).scalar() is None
+    database.migrate_schema()
+    assert _exposed_tables(database, REVISION_TWO_TABLES) == []

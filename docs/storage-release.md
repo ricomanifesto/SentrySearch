@@ -98,24 +98,28 @@ after the application's 3-second lock-wait limit is skipped and counted as
 
 ### Revision 2 privileges
 
-Role provisioning stays a deployment task; the migration does not grant or revoke
-anything. In the same maintenance window, after the release command and before the
-read-only check, the schema owner grants the application role access to the new
-tables. On Supabase, tables the owner creates in `public` also inherit default
-privileges for the Data API roles (`anon`, `authenticated`). Only the application
-role reads these tables, so revoke those privileges in the same step:
+The release withholds every table a pending revision creates from the Supabase
+Data API roles (`anon` and `authenticated`, when they exist) and from `PUBLIC`.
+This happens inside the release transaction, after the DDL and before the
+backfill writes any row. Supabase grants those roles every new table in
+`public` through default privileges, and the tables become visible to other
+sessions only when the release commits, so they are never readable through the
+Data API. If any of those roles can still reach a new table, for example through
+a role it inherits from, the release fails and rolls back. Only the application
+role reads product tables; the frontend uses Supabase for authentication only.
+
+Granting the application role remains a deployment step in the same maintenance
+window, after the release command and before the read-only check:
 
 ```sql
 GRANT SELECT, INSERT, UPDATE, DELETE ON report_sources, report_claims,
   report_claim_support, report_indicator_observations, report_source_observations,
   report_findings, report_artifacts TO <application role>;
-REVOKE ALL ON report_sources, report_claims, report_claim_support,
-  report_indicator_observations, report_source_observations, report_findings,
-  report_artifacts FROM anon, authenticated;
 ```
 
-Omit the `REVOKE` where those roles do not exist. This read-only query lists any
-product table the Data API roles can still read; expect no rows:
+Tables from already-applied revisions are not changed by a release. This
+read-only query lists any product table the Data API roles can still read; expect
+no rows:
 
 ```sql
 SELECT c.relname, r.rolname

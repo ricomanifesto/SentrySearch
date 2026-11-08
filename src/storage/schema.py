@@ -19,6 +19,8 @@ class Revision:
 
     version: int
     filename: str
+    # Tables the revision creates; the release withholds them from Data API roles.
+    tables: tuple[str, ...] = ()
 
     @property
     def path(self) -> Path:
@@ -35,9 +37,36 @@ class Revision:
 
 
 REVISIONS: tuple[Revision, ...] = (
-    Revision(1, "001_release.sql"),
-    Revision(2, "002_profile_rows.sql"),
+    Revision(
+        1,
+        "001_release.sql",
+        (
+            "report_searches",
+            "report_tags",
+            "reports",
+            "report_disposition_events",
+            "report_runtime_dispatches",
+            "sentrysearch_schema_migrations",
+        ),
+    ),
+    Revision(
+        2,
+        "002_profile_rows.sql",
+        (
+            "report_sources",
+            "report_claims",
+            "report_claim_support",
+            "report_indicator_observations",
+            "report_source_observations",
+            "report_findings",
+            "report_artifacts",
+        ),
+    ),
 )
+# Supabase's Data API serves the public schema to these roles, using the public
+# anon key or a signed-in session, and its default privileges grant them every
+# new table. Only the application role reads product tables.
+DATA_API_ROLES = ("anon", "authenticated")
 SCHEMA_VERSION = REVISIONS[-1].version
 # Retained for callers that referenced the baseline file directly.
 MIGRATION_SQL = REVISIONS[0].path
@@ -100,6 +129,41 @@ def _pending_revisions(applied: list[tuple[int, str]]) -> list[Revision]:
     return list(REVISIONS[len(applied) :])
 
 
+def _withhold_from_data_api(connection: Connection, tables: list[str]) -> None:
+    """Revoke Data API and PUBLIC access to new tables inside the release transaction.
+
+    The tables become visible to other sessions only when the release commits, so
+    they are never readable by those roles. Any access still remaining, such as
+    through a role they inherit from, fails the release instead.
+    """
+
+    roles = list(
+        connection.execute(
+            text("SELECT rolname FROM pg_roles WHERE rolname = ANY(:roles)"),
+            {"roles": list(DATA_API_ROLES)},
+        ).scalars()
+    )
+    for table in tables:
+        # Names come from the fixed revision list, never from input.
+        connection.execute(text(f'REVOKE ALL ON TABLE public."{table}" FROM PUBLIC'))
+        for role in roles:
+            connection.execute(text(f'REVOKE ALL ON TABLE public."{table}" FROM "{role}"'))
+    exposed = connection.execute(
+        text(
+            "SELECT c.relname FROM pg_class c "
+            "WHERE c.relnamespace = 'public'::regnamespace AND c.relname = ANY(:tables) "
+            "AND (EXISTS (SELECT 1 FROM aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) a "
+            "WHERE a.grantee = 0) "
+            "OR EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname = ANY(:roles) "
+            "AND has_table_privilege(r.oid, c.oid, "
+            "'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')))"
+        ),
+        {"tables": tables, "roles": roles},
+    ).first()
+    if exposed is not None:
+        raise RuntimeError("A new table remains reachable by a Data API role")
+
+
 def migrate(engine: Engine) -> None:
     # Import only in the release process; neither probing nor constructing an
     # engine needs product reconciliation or provider clients.
@@ -128,6 +192,10 @@ def migrate(engine: Engine) -> None:
                 for revision in pending:
                     for statement in revision.statements():
                         connection.execute(text(statement))
+                # Before any row is backfilled, and in the same transaction.
+                _withhold_from_data_api(
+                    connection, [table for revision in pending for table in revision.tables]
+                )
                 with Session(bind=connection) as session:
                     ReportStorageService().reconcile_reader_state(session=session)
                     session.flush()
