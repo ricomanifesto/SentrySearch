@@ -8,8 +8,11 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import uuid
+from urllib.parse import urlsplit
 from contextlib import nullcontext
+from psycopg.errors import LockNotAvailable
 from sqlalchemy import and_, asc, desc, func, or_, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from src.domain.execution import EVALUATION_LEASE_SECONDS, GenerationLease, GenerationLeaseLost
@@ -28,9 +31,10 @@ from src.domain.reports import (
     ReportStatus,
     ReviewStatus,
     SortOrder,
+    READER_STATE_VERSION,
     coerce_evaluation_status,
     derive_generation_route_scope,
-    derive_review_status,
+    derive_reader_state,
     evaluation_conflict_count,
     is_judgment_eligible,
     is_reuse_eligible,
@@ -43,12 +47,29 @@ from src.core.source_ledger import (
     claim_attribution_status,
 )
 from src.core.evidence_admissibility import assert_no_virtual_event_promotions
-from src.core.report_content_policy import load_checked_report
+from src.core.report_content_policy import (
+    ARTIFACT_POLICY_UNKNOWN,
+    ARTIFACT_POLICY_VERSION,
+    artifact_policy_status,
+    load_checked_report,
+)
 from src.domain.model_routes import generation_fallback_state
 from src.domain.threat_classification import classify_category_text, classify_tool_name
 
 from .database import db_manager
-from .models import Report, ReportDispositionEvent, ReportRuntimeDispatch
+from .models import (
+    Report,
+    ReportArtifact,
+    ReportClaimRow,
+    ReportClaimSupportRow,
+    ReportDispositionEvent,
+    ReportFindingRow,
+    ReportIndicatorObservationRow,
+    ReportRuntimeDispatch,
+    ReportSourceObservationRow,
+    ReportSourceRow,
+)
+from .profile_rows import ProfileRows, content_address, profile_rows
 from .s3_manager import s3_manager
 
 logger = logging.getLogger(__name__)
@@ -89,35 +110,163 @@ class ReportStorageService:
 
     @staticmethod
     def _source_count_from_values(web_sources: Any, threat_data: Any) -> int:
-        if isinstance(web_sources, list) and web_sources:
-            return len(web_sources)
-        if isinstance(threat_data, dict):
-            source_block = threat_data.get("webSearchSources")
-            if isinstance(source_block, dict) and isinstance(
-                source_block.get("primarySources"), list
-            ):
-                return len(source_block["primarySources"])
-        return 0
+        """Count the sources a reader can open, as the API's source rail does."""
+
+        sources = web_sources
+        if not isinstance(sources, list) or not sources:
+            source_block = (
+                threat_data.get("webSearchSources") if isinstance(threat_data, dict) else None
+            )
+            sources = source_block.get("primarySources") if isinstance(source_block, dict) else None
+        if not isinstance(sources, list):
+            return 0
+        count = 0
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            parsed = urlsplit(str(source.get("url") or "").strip())
+            if parsed.scheme in {"http", "https"} and parsed.netloc:
+                count += 1
+        return count
 
     @classmethod
     def _source_count(cls, report: Report) -> int:
         return cls._source_count_from_values(report.web_sources, report.threat_data)
 
+    # Retained records keep some reader-state inputs inside the profile. The
+    # stored state uses the same fallbacks as the API's read projection.
+
+    @staticmethod
+    def _profile_dict(report: Report, key: str) -> Dict[str, Any] | None:
+        threat_data = cast(Any, report).threat_data
+        value = threat_data.get(key) if isinstance(threat_data, dict) else None
+        return value if isinstance(value, dict) else None
+
     @classmethod
-    def _refresh_review_status(cls, report: Report) -> ReviewStatus:
+    def _quality_assessment(cls, report: Report) -> Dict[str, Any] | None:
+        assessment = cast(Any, report).quality_assessment
+        if isinstance(assessment, dict):
+            return assessment
+        return cls._profile_dict(report, "_quality_assessment")
+
+    @classmethod
+    def _evidence_status(cls, report: Report) -> EvidenceAdmissibilityStatus:
         model = cast(Any, report)
-        status = derive_review_status(
-            report_status=model.status or ReportStatus.COMPLETED.value,
-            evaluation_status=model.evaluation_status,
-            quality_score=(float(model.quality_score) if model.quality_score is not None else None),
-            quality_assessment=model.quality_assessment,
-            source_count=cls._source_count(report),
-            evidence_admissibility_status=(
-                model.evidence_admissibility_status or EvidenceAdmissibilityStatus.UNASSESSED.value
-            ),
-        )
-        model.review_status = status.value
+        evidence = model.evidence_admissibility
+        if not isinstance(evidence, dict):
+            evidence = cls._profile_dict(report, "evidenceAdmissibility")
+        try:
+            status = EvidenceAdmissibilityStatus(
+                model.evidence_admissibility_status
+                or (evidence.get("status") if evidence is not None else None)
+                or EvidenceAdmissibilityStatus.UNASSESSED.value
+            )
+        except ValueError:
+            return EvidenceAdmissibilityStatus.BLOCKED
+        version = str(model.claim_attribution_version or "").strip() or None
+        if (
+            status is EvidenceAdmissibilityStatus.PASSED
+            and version != CLAIM_ATTRIBUTION_SCHEMA_VERSION
+        ):
+            return EvidenceAdmissibilityStatus.UNASSESSED
         return status
+
+    @staticmethod
+    def _current_disposition(report: Report) -> AnalystDisposition:
+        """The latest judgment on the report's current evaluation vintage."""
+
+        model = cast(Any, report)
+        current_attempt = int(model.evaluation_attempts or 0)
+        events = [
+            event
+            for event in (getattr(report, "disposition_events", None) or [])
+            if event.evaluation_attempt == current_attempt
+        ]
+        return (
+            AnalystDisposition(events[-1].disposition) if events else AnalystDisposition.UNREVIEWED
+        )
+
+    @classmethod
+    def _refresh_review_status(
+        cls,
+        report: Report,
+        *,
+        analyst_disposition: AnalystDisposition | None = None,
+    ) -> ReviewStatus:
+        """Recompute every stored reader-state column inside the writing transaction."""
+
+        model = cast(Any, report)
+        quality_score = float(model.quality_score) if model.quality_score is not None else None
+        state = derive_reader_state(
+            report_status=model.status or ReportStatus.COMPLETED.value,
+            evaluation_status=coerce_evaluation_status(
+                model.evaluation_status, quality_score=quality_score
+            ),
+            quality_score=quality_score,
+            quality_assessment=cls._quality_assessment(report),
+            source_count=cls._source_count(report),
+            evidence_admissibility_status=cls._evidence_status(report),
+            analyst_disposition=analyst_disposition or cls._current_disposition(report),
+        )
+        model.review_status = state.review_status.value
+        model.eligible_for_judgment = state.eligible_for_judgment
+        model.eligible_for_acceptance = state.eligible_for_acceptance
+        model.eligible_for_handoff = state.eligible_for_handoff
+        model.reader_state_version = state.version
+        return state.review_status
+
+    @staticmethod
+    def _write_profile_rows(report: Report, rows: ProfileRows) -> None:
+        """Replace the report's flat evidence rows; the caller holds the row lock."""
+
+        model = cast(Any, report)
+        model.profile_sources = [ReportSourceRow(**row) for row in rows.sources]
+        model.profile_claims = [ReportClaimRow(**row) for row in rows.claims]
+        model.claim_support = [ReportClaimSupportRow(**row) for row in rows.claim_support]
+        model.indicator_observations = [
+            ReportIndicatorObservationRow(**row) for row in rows.indicator_observations
+        ]
+        model.source_observations = [
+            ReportSourceObservationRow(**row) for row in rows.source_observations
+        ]
+        model.findings = [ReportFindingRow(**row) for row in rows.findings]
+
+    @staticmethod
+    def _write_artifact(
+        report: Report,
+        kind: str,
+        s3_key: str | None,
+        content: str | None,
+        *,
+        policy_status: str | None = None,
+    ) -> None:
+        """Record the current object of one kind with its content-policy decision."""
+
+        if not s3_key:
+            return
+        model = cast(Any, report)
+        sha256 = content_address(s3_key) or (
+            hashlib.sha256(content.encode("utf-8")).hexdigest() if content is not None else None
+        )
+        status = policy_status or artifact_policy_status(content)
+        existing = next(
+            (artifact for artifact in (model.artifacts or []) if artifact.kind == kind), None
+        )
+        if existing is None:
+            model.artifacts.append(
+                ReportArtifact(
+                    kind=kind,
+                    s3_key=s3_key,
+                    sha256=sha256,
+                    policy_status=status,
+                    policy_version=ARTIFACT_POLICY_VERSION,
+                )
+            )
+            return
+        existing.s3_key = s3_key
+        existing.sha256 = sha256
+        existing.policy_status = status
+        existing.policy_version = ARTIFACT_POLICY_VERSION
 
     @staticmethod
     def _latest_disposition_expression():
@@ -437,87 +586,214 @@ class ReportStorageService:
         # pass either, so the tool name is the only remaining signal.
         return classify_tool_name(tool_name) or ("unknown", "unknown")
 
-    def reconcile_reader_state(self, *, session: Session | None = None) -> Dict[str, int]:
-        """Backfill queryable review state and explicit classification provenance."""
+    def _artifact_policy_from_storage(self, s3_key: str) -> str:
+        """Read one stored object for the content policy; never fail the caller."""
+
+        try:
+            return artifact_policy_status(self.s3_manager.download_content(s3_key))
+        except Exception:
+            # An unavailable artifact client must not fail a release. ``unknown``
+            # stays excluded from handoff and is retried by the next reconciliation.
+            return ARTIFACT_POLICY_UNKNOWN
+
+    @staticmethod
+    def _stale_artifact_kinds(report: Any) -> List[tuple[str, str]]:
+        """Artifact kinds whose row is missing, outdated, or ``unknown`` for the current key."""
+
+        current = {artifact.kind: artifact for artifact in (report.artifacts or [])}
+        stale = []
+        for kind, key in (("markdown", report.markdown_s3_key), ("trace", report.trace_s3_key)):
+            if not key:
+                continue
+            artifact = current.get(kind)
+            if (
+                artifact is not None
+                and artifact.s3_key == key
+                and artifact.policy_version == ARTIFACT_POLICY_VERSION
+                and artifact.policy_status != ARTIFACT_POLICY_UNKNOWN
+            ):
+                continue
+            stale.append((kind, key))
+        return stale
+
+    def _reconcile_artifacts(self, report: Any, markdown_policy: Dict[str, str]) -> int:
+        """Bring artifact rows to the current policy version; returns rows changed.
+
+        ``markdown_policy`` maps an object key to the policy read for it. A key
+        without an entry, such as one published after the read, records
+        ``unknown`` and is retried by the next reconciliation.
+        """
+
+        stale = self._stale_artifact_kinds(report)
+        for kind, key in stale:
+            status = (
+                markdown_policy.get(key, ARTIFACT_POLICY_UNKNOWN)
+                if kind == "markdown"
+                else ARTIFACT_POLICY_UNKNOWN
+            )
+            self._write_artifact(report, kind, key, None, policy_status=status)
+        return len(stale)
+
+    def _read_markdown_policy(self, report: Any, *, read_artifacts: bool) -> Dict[str, str]:
+        """Read the stale Markdown object, if any, for its content policy."""
+
+        if not read_artifacts:
+            return {}
+        return {
+            key: self._artifact_policy_from_storage(key)
+            for kind, key in self._stale_artifact_kinds(report)
+            if kind == "markdown"
+        }
+
+    def _reconcile_report(self, report: Any, summary: Dict[str, int]) -> None:
+        """Recompute one report's derived columns and evidence rows from its stored JSONB."""
+
+        old_classification = (
+            report.category,
+            report.threat_type,
+            report.classification_status,
+        )
+        category, threat_type, classification_status = self.resolve_classification(
+            tool_name=report.tool_name,
+            threat_data=report.threat_data,
+            stored_category=report.category,
+            stored_threat_type=report.threat_type,
+            stored_status=report.classification_status,
+            legacy=True,
+        )
+        report.category = category
+        report.threat_type = threat_type
+        report.classification_status = classification_status.value
+        if old_classification != (
+            report.category,
+            report.threat_type,
+            report.classification_status,
+        ):
+            summary["classification_updates"] += 1
+
+        old_attribution = (
+            report.claim_attribution_status,
+            report.claim_attribution_version,
+        )
+        attribution_status, attribution_version = claim_attribution_status(report.threat_data)
+        report.claim_attribution_status = attribution_status.value
+        report.claim_attribution_version = attribution_version
+        if old_attribution != (
+            report.claim_attribution_status,
+            report.claim_attribution_version,
+        ):
+            summary["claim_attribution_updates"] += 1
+
+        if (
+            report.evidence_admissibility_status == EvidenceAdmissibilityStatus.PASSED.value
+            and attribution_version != CLAIM_ATTRIBUTION_SCHEMA_VERSION
+        ):
+            report.evidence_admissibility_status = EvidenceAdmissibilityStatus.UNASSESSED.value
+            summary["evidence_contract_updates"] += 1
+
+        previous_review_status = report.review_status
+        self._refresh_review_status(report)
+        if previous_review_status != report.review_status:
+            summary["review_updates"] += 1
+
+        rows = profile_rows(report.threat_data, report.web_sources, report.evidence_admissibility)
+        if len(report.profile_claims or []) != len(rows.claims) or len(
+            report.findings or []
+        ) != len(rows.findings):
+            summary["profile_row_updates"] += 1
+        self._write_profile_rows(report, rows)
+
+    def reconcile_reader_state(
+        self,
+        *,
+        session: Session | None = None,
+        read_artifacts: bool = True,
+    ) -> Dict[str, int]:
+        """Backfill reader state, classification, flat evidence rows, and artifact policy.
+
+        With ``session``, this is the release backfill: it runs inside the release
+        transaction, takes no row locks, and relies on writers being drained.
+
+        Without ``session``, this is the online reconciliation used by the admin
+        endpoint while writers may be active. Each report is reread under its row
+        lock and committed on its own, so a concurrent writer is either finished
+        before the reread or waits for the reconciliation. A report still locked
+        after the lock-wait limit is skipped and counted in ``locked_report_skips``.
+
+        Artifact reads for the content policy never run while a row lock is held,
+        and an unavailable artifact client records ``unknown`` instead of failing.
+        """
 
         summary = {
             "review_updates": 0,
             "classification_updates": 0,
             "claim_attribution_updates": 0,
             "evidence_contract_updates": 0,
+            "profile_row_updates": 0,
+            "artifact_policy_updates": 0,
         }
         try:
-            with (
-                nullcontext(session) if session is not None else self.db_manager.get_session()
-            ) as session:
-                # The release transaction owns backfill and version publication.
-                # Admin reconciliation remains explicit, never a startup scan.
-                reports = session.query(Report).yield_per(250)
-                for row_number, row in enumerate(reports, start=1):
-                    # Legacy declarative models expose Column types to static
-                    # checkers; ORM instances carry the corresponding values.
-                    report = cast(Any, row)
-                    old_classification = (
-                        report.category,
-                        report.threat_type,
-                        report.classification_status,
-                    )
-                    category, threat_type, classification_status = self.resolve_classification(
-                        tool_name=report.tool_name,
-                        threat_data=report.threat_data,
-                        stored_category=report.category,
-                        stored_threat_type=report.threat_type,
-                        stored_status=report.classification_status,
-                        legacy=True,
-                    )
-                    report.category = category
-                    report.threat_type = threat_type
-                    report.classification_status = classification_status.value
-                    if old_classification != (
-                        report.category,
-                        report.threat_type,
-                        report.classification_status,
-                    ):
-                        summary["classification_updates"] += 1
-
-                    old_attribution = (
-                        report.claim_attribution_status,
-                        report.claim_attribution_version,
-                    )
-                    attribution_status, attribution_version = claim_attribution_status(
-                        report.threat_data
-                    )
-                    report.claim_attribution_status = attribution_status.value
-                    report.claim_attribution_version = attribution_version
-                    if old_attribution != (
-                        report.claim_attribution_status,
-                        report.claim_attribution_version,
-                    ):
-                        summary["claim_attribution_updates"] += 1
-
-                    if (
-                        report.evidence_admissibility_status
-                        == EvidenceAdmissibilityStatus.PASSED.value
-                        and attribution_version != CLAIM_ATTRIBUTION_SCHEMA_VERSION
-                    ):
-                        report.evidence_admissibility_status = (
-                            EvidenceAdmissibilityStatus.UNASSESSED.value
-                        )
-                        summary["evidence_contract_updates"] += 1
-
-                    previous_review_status = report.review_status
-                    self._refresh_review_status(report)
-                    if previous_review_status != report.review_status:
-                        summary["review_updates"] += 1
-                    if row_number % 250 == 0:
-                        session.flush()
-
-                session.flush()
+            if session is None:
+                summary["locked_report_skips"] = 0
+                self._reconcile_online(summary, read_artifacts=read_artifacts)
+            else:
+                self._reconcile_drained(session, summary, read_artifacts=read_artifacts)
             logger.info("Reader-state reconciliation complete: %s", summary)
             return summary
         except Exception:
             logger.error("Reader-state reconciliation failed")
             raise
+
+    def _reconcile_drained(
+        self, session: Session, summary: Dict[str, int], *, read_artifacts: bool
+    ) -> None:
+        # The release transaction owns backfill and version publication.
+        reports = session.query(Report).yield_per(250)
+        for row_number, row in enumerate(reports, start=1):
+            # Legacy declarative models expose Column types to static
+            # checkers; ORM instances carry the corresponding values.
+            report = cast(Any, row)
+            self._reconcile_report(report, summary)
+            summary["artifact_policy_updates"] += self._reconcile_artifacts(
+                report, self._read_markdown_policy(report, read_artifacts=read_artifacts)
+            )
+            if row_number % 250 == 0:
+                session.flush()
+        session.flush()
+
+    def _reconcile_online(self, summary: Dict[str, int], *, read_artifacts: bool) -> None:
+        with self.db_manager.get_session() as session:
+            report_ids = session.scalars(select(Report.id).order_by(Report.id)).all()
+
+        for report_id in report_ids:
+            # 1. Find a stale Markdown object, then read it with no session open.
+            with self.db_manager.get_session() as session:
+                report = session.get(Report, report_id)
+                if report is None:
+                    continue
+                stale_keys = [
+                    key
+                    for kind, key in self._stale_artifact_kinds(cast(Any, report))
+                    if kind == "markdown" and read_artifacts
+                ]
+            markdown_policy = {key: self._artifact_policy_from_storage(key) for key in stale_keys}
+
+            # 2. Under the row lock: reread and recompute from committed data.
+            try:
+                with self.db_manager.get_session() as session:
+                    report = self._locked_report(session, str(report_id))
+                    if report is None:
+                        continue
+                    self._reconcile_report(report, summary)
+                    summary["artifact_policy_updates"] += self._reconcile_artifacts(
+                        report, markdown_policy
+                    )
+                    session.commit()
+            except OperationalError as exc:
+                if not isinstance(exc.orig, LockNotAvailable):
+                    raise
+                summary["locked_report_skips"] += 1
+                logger.warning("Reconciliation skipped a report held by another writer")
 
     def update_existing_categorizations(self) -> int:
         """Compatibility wrapper for the admin categorization endpoint."""
@@ -646,6 +922,27 @@ class ReportStorageService:
                 )
 
                 self._refresh_review_status(report)
+                self._write_profile_rows(
+                    report,
+                    profile_rows(
+                        report_data.get("threat_data"),
+                        report_data.get("web_sources"),
+                        report_data.get("evidence_admissibility"),
+                    ),
+                )
+                self._write_artifact(
+                    report, "markdown", markdown_s3_key, report_data.get("markdown_content")
+                )
+                self._write_artifact(
+                    report,
+                    "trace",
+                    trace_s3_key,
+                    (
+                        json.dumps(report_data["trace_data"], sort_keys=True, default=str)
+                        if "trace_data" in report_data
+                        else None
+                    ),
+                )
 
                 session.add(report)
                 session.commit()
@@ -829,6 +1126,27 @@ class ReportStorageService:
                 report.generation_retryable = None
                 report.generation_failure = None
                 self._refresh_review_status(report)
+                self._write_profile_rows(
+                    report,
+                    profile_rows(
+                        report_data.get("threat_data"),
+                        report_data.get("web_sources"),
+                        report_data.get("evidence_admissibility"),
+                    ),
+                )
+                self._write_artifact(
+                    report, "markdown", markdown_s3_key, report_data.get("markdown_content")
+                )
+                self._write_artifact(
+                    report,
+                    "trace",
+                    trace_s3_key,
+                    (
+                        json.dumps(report_data["trace_data"], sort_keys=True, default=str)
+                        if report_data.get("trace_data")
+                        else None
+                    ),
+                )
 
                 session.commit()
                 logger.info(f"Report finalized successfully: {report_id}")
@@ -1226,6 +1544,11 @@ class ReportStorageService:
             report.threat_data = threat_data
             report.markdown_s3_key = markdown_s3_key
             self._refresh_review_status(report)
+            self._write_profile_rows(
+                report,
+                profile_rows(threat_data, report.web_sources, report.evidence_admissibility),
+            )
+            self._write_artifact(report, "markdown", markdown_s3_key, markdown_content)
             session.commit()
             return True
 
@@ -1321,6 +1644,7 @@ class ReportStorageService:
                     report.evidence_admissibility = evidence
                     report.evidence_admissibility_status = status.value
                     report.evidence_admissibility_version = version
+                    self._write_profile_rows(report, profile_rows(None, None, evidence))
                 self._refresh_review_status(report)
                 session.commit()
                 logger.info(f"Report marked failed: {report_id}")
@@ -1437,6 +1761,8 @@ class ReportStorageService:
                 evaluation_attempt=int(report.evaluation_attempts or 0),
             )
             session.add(event)
+            # The new judgment changes handoff eligibility in this transaction.
+            self._refresh_review_status(report, analyst_disposition=normalized)
             session.flush()
             session.refresh(event)
             payload = event.to_dict(current_evaluation_attempt=int(report.evaluation_attempts or 0))

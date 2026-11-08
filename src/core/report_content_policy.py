@@ -53,6 +53,24 @@ PUBLIC_FIELDS = frozenset(
 )
 
 
+# Bump when the artifact content rule changes. Stored artifacts with an older
+# version are recomputed by the reader-state reconciliation command.
+ARTIFACT_POLICY_VERSION = 1
+ARTIFACT_POLICY_ALLOWED = "allowed"
+ARTIFACT_POLICY_EXCLUDED = "excluded"
+ARTIFACT_POLICY_UNKNOWN = "unknown"
+
+
+def artifact_policy_status(content: str | None) -> str:
+    """Evaluate the content policy once, when an artifact is written or read back."""
+
+    if content is None:
+        return ARTIFACT_POLICY_UNKNOWN
+    if contains_virtual_event_promotion(content):
+        return ARTIFACT_POLICY_EXCLUDED
+    return ARTIFACT_POLICY_ALLOWED
+
+
 def reader_safe_threat_data(report: dict[str, Any]) -> dict[str, Any] | None:
     profile = report.get("threat_data")
     if not isinstance(profile, dict):
