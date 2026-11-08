@@ -59,7 +59,7 @@ def test_retained_schema_four_support_is_never_marked_verified():
     assert rows.claim_support and all(row["verified"] is None for row in rows.claim_support)
 
 
-@pytest.mark.parametrize("schema_version", ["2", "3", "4"])
+@pytest.mark.parametrize("schema_version", ["3", "4"])
 def test_retained_source_links_without_excerpts_are_kept_on_claim_rows(schema_version):
     profile = build_threat_profile_data()
     attribution = profile["claimAttribution"]
@@ -84,6 +84,26 @@ def test_retained_source_links_without_excerpts_are_kept_on_claim_rows(schema_ve
         (record["claimField"], record["claimIndex"]): record["sourceIds"]
         for record in rendered["claimAttribution"]["claims"]
     } == expected
+
+
+def test_schema_two_attributions_stay_only_in_the_stored_record():
+    """Schema 2 attributes prose by text, without selectors, so rows carry no links.
+
+    The authoritative record keeps those citations; the detail response reads it.
+    """
+
+    profile = build_threat_profile_data()
+    attribution = profile["claimAttribution"]
+    attribution["schemaVersion"] = "2"
+    for record in attribution["claims"]:
+        for key in ("claimField", "claimIndex", "supportingEvidence"):
+            record.pop(key, None)
+
+    rows = profile_rows(profile)
+
+    assert rows.claims and all(row["source_ids"] == [] for row in rows.claims)
+    assert rows.claim_support == ()
+    assert any(record["sourceIds"] == ["S1"] for record in attribution["claims"])
 
 
 def test_claims_without_an_attribution_record_have_no_source_links():
