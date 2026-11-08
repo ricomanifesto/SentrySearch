@@ -54,7 +54,7 @@ jobs:
       - name: Install elan
         run: |
           set -euo pipefail
-          url=https://raw.githubusercontent.com/leanprover/elan/e9268f8b213e09a99768befe548049c046074225/elan-init.sh # v4.2.4
+          url=https://raw.githubusercontent.com/leanprover/elan/227caca133724d5516bee25c2aeb3e609478f2d8/elan-init.sh # v4.2.4
           curl --retry 5 --retry-all-errors -sSfL "$url" -o "$RUNNER_TEMP/elan-init.sh"
           for attempt in 1 2 3 4 5; do
             sh "$RUNNER_TEMP/elan-init.sh" -y --default-toolchain none --no-modify-path && break
