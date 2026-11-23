@@ -220,10 +220,18 @@ def test_failed_evidence_withholds_acceptance_and_handoff_even_when_accepted():
 
 def test_revisions_are_an_ordered_append_only_sequence():
     assert [revision.version for revision in REVISIONS] == list(range(1, len(REVISIONS) + 1))
-    assert SCHEMA_VERSION == REVISIONS[-1].version == 2
-    # Applied SQL is frozen: the baseline checksum must never change.
+    assert SCHEMA_VERSION == REVISIONS[-1].version == 3
+    assert [revision.filename for revision in REVISIONS] == [
+        "001_release.sql",
+        "002_profile_rows.sql",
+        "003_report_creation_admission.sql",
+    ]
+    # Previously applied SQL is frozen when another revision is appended.
     assert REVISIONS[0].checksum == (
         "ce8d3e907a8bd97b914b0e07df28d571aa5d8107b8e1c7b2463b3f1ac4d83a03"
+    )
+    assert REVISIONS[1].checksum == (
+        "a4a72730e76d38ff4ae9a1bafc590439b5f60391b347c01373f73806aee029bf"
     )
     for revision in REVISIONS:
         assert revision.statements(), revision.filename
@@ -238,7 +246,7 @@ def test_pending_revisions_require_an_exact_applied_prefix():
     for applied in (
         [(1, "changed")],
         [expected[1]],
-        [*expected, (3, "future")],
+        [*expected, (4, "future")],
         [expected[0], (2, "changed")],
     ):
         with pytest.raises(RuntimeError):

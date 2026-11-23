@@ -389,7 +389,7 @@ def test_evaluation_retry_claims_saved_report_without_restarting_generation(
     monkeypatch.setattr(
         api_main.report_service,
         "get_report",
-        lambda report_id, include_content=False: {
+        lambda report_id, include_content=False, owner_user_id=None: {
             "id": report_id,
             "user_id": "analyst-user",
         },
@@ -430,7 +430,7 @@ def test_analyst_disposition_endpoint_appends_current_evaluation_judgment(monkey
     monkeypatch.setattr(
         api_main.report_service,
         "get_report",
-        lambda report_id, include_content=False: {
+        lambda report_id, include_content=False, owner_user_id=None: {
             "id": report_id,
             "user_id": "analyst-user",
             "tool_name": "Security event analysis",
@@ -502,7 +502,7 @@ def test_evaluator_only_job_preserves_sources_and_persists_new_score(monkeypatch
     monkeypatch.setattr(
         api_main.report_service,
         "get_report",
-        lambda report_id, include_content=False: {
+        lambda report_id, include_content=False, owner_user_id=None: {
             "id": report_id,
             "user_id": "analyst-user",
             "threat_data": profile,

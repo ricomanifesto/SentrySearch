@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.0"
+  required_version = ">= 1.9"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -89,49 +89,38 @@ resource "aws_s3_bucket_lifecycle_configuration" "sentrysearch_reports" {
   }
 }
 
-# Get default VPC
-data "aws_vpc" "default" {
-  default = true
-}
-
-# Get default VPC subnets
-data "aws_subnets" "default" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
-  }
-}
-
-# Security Group for RDS
+# Database networking is supplied by the operator; no default VPC discovery.
 resource "aws_security_group" "sentrysearch_db" {
   name_prefix = "${var.project_name}-db-"
-  vpc_id      = data.aws_vpc.default.id
+  vpc_id      = var.database_vpc_id
   description = "Security group for SentrySearch PostgreSQL database"
 
-  ingress {
-    description = "PostgreSQL"
-    from_port   = 5432
-    to_port     = 5432
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] # Note: Restrict this in production
-  }
+  # Manage the empty list explicitly so an existing broad rule is also removed.
+  ingress = [for group_id in var.database_client_security_group_ids : {
+    description      = "PostgreSQL from an approved application security group"
+    from_port        = 5432
+    to_port          = 5432
+    protocol         = "tcp"
+    security_groups  = [group_id]
+    cidr_blocks      = []
+    ipv6_cidr_blocks = []
+    prefix_list_ids  = []
+    self             = false
+  }]
 
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+  # PostgreSQL responses use stateful ingress; no outbound connections are required.
+  egress = []
 
   tags = {
-    Name = "${var.project_name}-db-security-group"
+    Name    = "${var.project_name}-db-security-group"
+    Project = var.project_name
   }
 }
 
 # RDS Subnet Group
 resource "aws_db_subnet_group" "sentrysearch" {
   name       = "${var.project_name}-subnet-group"
-  subnet_ids = data.aws_subnets.default.ids
+  subnet_ids = var.database_subnet_ids
 
   tags = {
     Name = "${var.project_name} DB subnet group"
@@ -162,7 +151,7 @@ resource "aws_db_instance" "sentrysearch" {
   # Network configuration
   vpc_security_group_ids = [aws_security_group.sentrysearch_db.id]
   db_subnet_group_name   = aws_db_subnet_group.sentrysearch.name
-  publicly_accessible    = true
+  publicly_accessible    = false
 
   # Backup configuration
   backup_retention_period = 7
@@ -177,8 +166,10 @@ resource "aws_db_instance" "sentrysearch" {
   performance_insights_enabled = true
 
   # Deletion protection
-  deletion_protection = false # Set to true in production
-  skip_final_snapshot = true  # Set to false in production
+  deletion_protection       = var.enable_deletion_protection
+  skip_final_snapshot       = false
+  final_snapshot_identifier = var.db_final_snapshot_identifier
+  copy_tags_to_snapshot     = true
 
   tags = {
     Name = "${var.project_name} Database"

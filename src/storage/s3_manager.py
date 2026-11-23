@@ -157,25 +157,25 @@ class S3StorageManager:
             raise
 
     def delete_report_files(self, report_id: str):
-        """Delete all files for a report"""
+        """Delete current report objects; version retention remains bucket-owned."""
         self._ensure_initialized()
         assert self.s3_client is not None
 
         try:
-            # List all objects with the report prefix
-            response = self.s3_client.list_objects_v2(
+            deleted = 0
+            for page in self.s3_client.get_paginator("list_objects_v2").paginate(
                 Bucket=self.bucket_name, Prefix=f"reports/{report_id}/"
-            )
-
-            if "Contents" in response:
-                # Delete all objects
-                objects_to_delete = [{"Key": obj["Key"]} for obj in response["Contents"]]
-                self.s3_client.delete_objects(
-                    Bucket=self.bucket_name, Delete={"Objects": objects_to_delete}
-                )
-                logger.info(f"Deleted {len(objects_to_delete)} files for report: {report_id}")
-            else:
-                logger.info(f"No files found for report: {report_id}")
+            ):
+                objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+                for start in range(0, len(objects), 1000):
+                    batch = objects[start : start + 1000]
+                    result = self.s3_client.delete_objects(
+                        Bucket=self.bucket_name, Delete={"Objects": batch}
+                    )
+                    if result.get("Errors"):
+                        raise RuntimeError("Report artifact cleanup incomplete; retry deletion")
+                    deleted += len(batch)
+            logger.info("Deleted %d current files for report: %s", deleted, report_id)
         except ClientError as e:
             logger.error(f"Error deleting report files: {e}")
             raise
@@ -186,14 +186,13 @@ class S3StorageManager:
         assert self.s3_client is not None
 
         try:
-            response = self.s3_client.list_objects_v2(
-                Bucket=self.bucket_name, Prefix=f"reports/{report_id}/"
-            )
-
-            if "Contents" in response:
-                return [obj["Key"] for obj in response["Contents"]]
-            else:
-                return []
+            return [
+                obj["Key"]
+                for page in self.s3_client.get_paginator("list_objects_v2").paginate(
+                    Bucket=self.bucket_name, Prefix=f"reports/{report_id}/"
+                )
+                for obj in page.get("Contents", [])
+            ]
         except ClientError as e:
             logger.error(f"Error listing report files: {e}")
             raise

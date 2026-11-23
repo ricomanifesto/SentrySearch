@@ -3,6 +3,13 @@ import test from 'node:test';
 
 import { getGenerationErrorMessage } from '../src/lib/generation-errors';
 
+test('explains the report creation limit and keeps saved work available', () => {
+  const message = getGenerationErrorMessage({ isAxiosError: true, response: { status: 429 } });
+  assert.match(message, /report creation limit/i);
+  assert.match(message, /saved reports/i);
+  assert.match(message, /try again later/i);
+});
+
 test('blames target input only for a validation response', () => {
   const message = getGenerationErrorMessage({ isAxiosError: true, response: { status: 422 } });
   assert.match(message, /Check the target name/);

@@ -63,7 +63,11 @@ function csvCell(value: unknown): string {
     : value === null || value === undefined
       ? ''
       : String(value);
-  return `"${serialized.replaceAll('"', '""')}"`;
+  // Quoting alone does not stop a spreadsheet from interpreting cell text.
+  const literal = typeof value === 'string' && (/^[\t\r\n]/.test(serialized) || /^\s*[=+\-@]/.test(serialized))
+    ? `'${serialized}`
+    : serialized;
+  return `"${literal.replaceAll('"', '""')}"`;
 }
 
 function asCsv(records: ExportRecord[]): string {

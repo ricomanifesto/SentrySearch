@@ -7,6 +7,7 @@ Handles JWT verification and user API key retrieval.
 import os
 import logging
 import jwt
+from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Header, Depends
 from typing import Optional, Dict, Any
 from supabase import create_client, Client
@@ -36,6 +37,8 @@ class AuthenticatedUser:
     """Represents an authenticated user from Supabase"""
 
     def __init__(self, user_id: str, email: str, metadata: Optional[Dict[str, Any]] = None):
+        if not isinstance(user_id, str) or not user_id.strip():
+            raise ValueError("Authenticated user ID is required")
         self.id = user_id
         self.email = email
         self.metadata = metadata or {}
@@ -68,7 +71,7 @@ async def verify_jwt_token(authorization: Optional[str] = Header(None)) -> Authe
 
     try:
         # Verify token with Supabase
-        response = supabase.auth.get_user(token)
+        response = await run_in_threadpool(supabase.auth.get_user, token)
 
         if not response or not response.user:
             raise HTTPException(status_code=401, detail="Invalid or expired token")

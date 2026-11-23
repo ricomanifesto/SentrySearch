@@ -708,6 +708,7 @@ def test_generation_separates_web_research_from_structured_synthesis(
     assert result["_evaluation_route"]["requested_models"] == ["google/gemma-4-31b-it:free"]
     assert result["_evaluation_route"]["requested_providers"] == ["google-ai-studio"]
     assert len(messages.requests) == 4
+    assert all("literal data" in request["system"] for request in messages.requests)
     research_requests = [request for request in messages.requests if request.get("tools")]
     synthesis_request = next(
         request for request in messages.requests if request.get("response_format") is ThreatProfile
@@ -988,7 +989,12 @@ def test_generation_sends_canonical_evidence_correction_schema_in_json_mode(
     assert len(requests) == 2
     correction_request = requests[1]
     assert correction_request["response_format"] == {"type": "json_object"}
-    correction_text = correction_request["messages"][0]["content"][0]["text"]
+    assert correction_request["messages"][0]["role"] == "system"
+    assert "literal data" in correction_request["messages"][0]["content"]
+    correction_message = next(
+        message for message in correction_request["messages"] if message["role"] == "user"
+    )
+    correction_text = correction_message["content"][0]["text"]
     _, marker, schema_and_catalog = correction_text.partition(
         "\nBEGIN EVIDENCE CORRECTION JSON SCHEMA\n"
     )

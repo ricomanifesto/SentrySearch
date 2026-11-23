@@ -36,6 +36,46 @@ when the API has explicit legacy admission and no runtime URL. Runtime admission
 never sends a legacy report to the inline evaluator. Legacy-report migration is
 not part of this change.
 
+### Per-user creation budget
+
+Report creation uses the same PostgreSQL transaction for admission, the pending
+report, and any runtime dispatch intent. Each user can admit at most six reports
+in a rolling hour and retain at most two reports currently marked `generating`.
+The limits apply to verified administrators too. Limit responses are HTTP 429
+with `Retry-After` in seconds; the UI keeps saved reports available and suggests
+retrying later. These limits are fixed application policy, with no environment
+switch that disables them.
+
+The active-report cap counts retained database rows, rather than proving how
+many jobs are still running. Deletion can remove such a row, and interrupted
+legacy work can leave one behind until its lifecycle is reconciled. The rolling
+admission budget survives report deletion and bounds new accepted work in both
+execution modes independently of that lifecycle limitation. Evaluation retries
+continue to use their existing lease and admission rules.
+
+One `report_creation_admissions` row per user stores at most six timestamps.
+An upsert and row lock serialize reservations across API processes under an
+explicit `READ COMMITTED` transaction. The database clock is read after the lock
+is acquired. A failed report or outbox write rolls back its reservation. Each
+successful admission prunes at most 100 expired users, skipping locked rows;
+expired rows for inactive accounts can remain until later admissions prune them.
+No provider call runs while the admission lock is held.
+
+Revision 3 must be released before this binary starts. Pause admission and drain
+older writers, apply the migration, grant the application role access to
+`report_creation_admissions`, and run the read-only storage compatibility check
+before resuming. The migration seeds the last hour from retained reports, keeping
+at most six timestamps per user; previously deleted history is unavailable.
+Readiness fails until the revision and table are present. See the
+[storage release contract](storage-release.md).
+
+Browser API requests are allowed from the two explicit production frontends
+(`https://sentry-search.vercel.app` and `https://sentrysearch.ricomanifesto.com`)
+and local development on ports 3000 and 3003. Vercel preview origins are no longer
+implicitly trusted. A preview that needs API access requires an explicitly
+reviewed exact origin in the application allowlist. The generation UI does not
+read `Retry-After`, so that header is not exposed to cross-origin JavaScript.
+
 ## Worker transport
 
 Configure exactly one endpoint in the worker environment:

@@ -1,8 +1,11 @@
 """Threat profile generator backed by OpenRouter's native HTTP API."""
 
 import os
+import errno
 import json
 import logging
+from pathlib import Path
+import re
 from copy import deepcopy
 from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17,6 +20,7 @@ from src.core.openrouter_client import (
     synthesis_request_options,
 )
 from src.core.model_retry import RetryPolicy, RetryingModelRequests
+from src.core.prompt_boundaries import TARGET_DATA_BOUNDARY
 from typing import Dict, Any, Callable
 from datetime import datetime
 import time
@@ -191,8 +195,10 @@ def _embedded_evidence_correction_request(
     findings = "\n".join(f"- {finding}" for finding in error.findings[:12])
     schema = json.dumps(EmbeddedEvidenceCorrection.model_json_schema(), separators=(",", ":"))
     return f"""CORRECTION ATTEMPT AFTER A FAILED EVIDENCE GATE:
-Repair only the high-risk evidence arrays for {tool_name}; do not regenerate the
+Repair only the high-risk evidence arrays for the target below; do not regenerate the
 rest of the report.
+
+tool_name: {json.dumps(tool_name)}
 
 Deterministic findings:
 {findings}
@@ -294,7 +300,9 @@ def synthesis_prompt(
 ) -> str:
     """Return the structured-synthesis instructions, JSON skeleton, and evidence."""
 
-    return f"""Create a detailed threat intelligence profile for: {tool_name}
+    return f"""Create a detailed threat intelligence profile for the target below.
+
+tool_name: {json.dumps(tool_name)}
 
 Today's date is {datetime.now().strftime('%B %d, %Y')}.
 
@@ -308,10 +316,10 @@ Based on your comprehensive research findings, create a detailed profile in the 
 
 {{
   "coreMetadata": {{
-    "name": "{tool_name}",
+    "name": {json.dumps(tool_name)},
     "version": "Latest known version from research",
     "category": "Tool category (RAT/Backdoor/Trojan/etc)",
-    "profileId": "TI_{tool_name.upper().replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}",
+    "profileId": {json.dumps(f"TI_{tool_name.upper().replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}")},
     "profileAuthor": "OpenRouter model pipeline",
     "createdDate": "{datetime.now().strftime('%Y-%m-%d')}",
     "lastUpdated": "{datetime.now().strftime('%Y-%m-%d')}",
@@ -625,14 +633,16 @@ class ThreatProfileGenerator(RetryingModelRequests):
 
         today = datetime.now().strftime("%B %d, %Y")
         prompts = [
-            f"""Research {tool_name} as a threat intelligence analyst.
+            f"""Research the target identified below as a threat intelligence analyst.
+
+tool_name: {json.dumps(tool_name)}
 
 Today's date is {today}.
 
 You MUST use web search to investigate this focus area comprehensively. Use several specific queries, prefer authoritative and current sources, retain useful historical technical sources, and cross-check important claims. Do not invent facts or URLs.
 
 FOCUS AREA:
-{focus.format(tool_name=tool_name)}
+{focus.format(tool_name='<tool_name>')}
 
 Return a compact but technically dense evidence dossier. Include concrete findings, uncertainty, publication dates when known, and inline citations. Do not produce the final JSON profile."""
             for focus in RESEARCH_FOCUSES
@@ -649,6 +659,7 @@ Return a compact but technically dense evidence dossier. Include concrete findin
                     # Preserve a small planning budget without allowing Gemini's
                     # hidden thinking to consume the evidence-dossier response.
                     reasoning={"max_tokens": 1024},
+                    system=TARGET_DATA_BOUNDARY,
                     messages=[{"role": "user", "content": prompt}],
                     tools=[{"type": "web_search"}],
                 ): index
@@ -898,6 +909,7 @@ Return a compact but technically dense evidence dossier. Include concrete findin
                     # bounded evidence-correction pass. A stable session also keeps
                     # that pass on the provider route that succeeded.
                     session_id=synthesis_session_id,
+                    system=TARGET_DATA_BOUNDARY,
                     messages=[{"role": "user", "content": request_content}],
                     response_format=ThreatProfile,
                 )
@@ -993,6 +1005,7 @@ Return a compact but technically dense evidence dossier. Include concrete findin
                         # schema mode marks the completion invalid.
                         strict_response_schema=False,
                         session_id=synthesis_session_id,
+                        system=TARGET_DATA_BOUNDARY,
                         messages=[
                             {
                                 "role": "user",
@@ -1190,11 +1203,32 @@ Return a compact but technically dense evidence dossier. Include concrete findin
 
     def save_to_file(self, data: Dict[str, Any], filename: str | None = None) -> str:
         """Save the threat intelligence data to a JSON file."""
+        generated_filename = filename is None
         if filename is None:
             tool_name = data.get("coreMetadata", {}).get("name", "threat_intel")
-            filename = f"{tool_name.lower().replace(' ', '_')}_threat_intel.json"
+            stem = re.sub(r"[^a-z0-9]+", "_", str(tool_name).lower()).strip("_")[:80]
+            filename = f"{stem or 'threat_intel'}_threat_intel.json"
+            if Path(filename).resolve().parent != Path.cwd().resolve():
+                raise ValueError("Generated artifact must remain in the output directory")
 
-        with open(filename, "w") as f:
+        def open_generated(path: str, flags: int) -> int:
+            # Containment is enforced at open time too, if the name is replaced
+            # with a symlink after the resolved-path check.
+            try:
+                return os.open(path, flags | os.O_NOFOLLOW, 0o666)
+            except OSError as error:
+                if error.errno == errno.ELOOP:
+                    raise ValueError(
+                        "Generated artifact must remain in the output directory"
+                    ) from None
+                raise
+
+        with open(
+            filename,
+            "w",
+            encoding="utf-8",
+            opener=open_generated if generated_filename else None,
+        ) as f:
             json.dump(data, f, indent=2)
 
         return filename

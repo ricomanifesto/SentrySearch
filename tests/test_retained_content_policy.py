@@ -1,3 +1,4 @@
+from src.domain.report_access import ReportAccessScope
 import asyncio
 from copy import deepcopy
 from threading import Event, Lock
@@ -64,10 +65,10 @@ def test_retained_download_checks_stored_policy_fields_before_signing(blocked, f
     service.s3_manager.download_content.return_value = "Security analysis"
     if blocked:
         with pytest.raises(ContentPolicyExclusion):
-            service.get_download_url("retained")
+            service.get_download_url("retained", owner_user_id=ReportAccessScope.ALL)
         service.s3_manager.get_presigned_url.assert_not_called()
     else:
-        service.get_download_url("retained")
+        service.get_download_url("retained", owner_user_id=ReportAccessScope.ALL)
         service.s3_manager.get_presigned_url.assert_called_once()
     session.commit.assert_not_called()
 
@@ -255,7 +256,7 @@ def test_private_trace_access_preserves_the_original_audit():
     session.query.return_value.filter.return_value.first.return_value = report
     service.s3_manager = Mock()
     original = deepcopy(report.to_dict())
-    service.get_download_url("retained", "trace")
+    service.get_download_url("retained", "trace", owner_user_id=ReportAccessScope.ALL)
     service.s3_manager.get_presigned_url.assert_called_once_with("private.json")
     service.s3_manager.download_content.assert_not_called()
     assert report.to_dict() == original
@@ -506,7 +507,7 @@ def test_markdown_download_checks_historical_dispositions_before_signing(monkeyp
         ReportDispositionEvent
     ).filter.return_value.order_by.return_value.all.return_value = [event]
     with pytest.raises(ContentPolicyExclusion):
-        service.get_download_url("blocked")
+        service.get_download_url("blocked", owner_user_id=ReportAccessScope.ALL)
     service.s3_manager.get_presigned_url.assert_not_called()
     session.commit.assert_not_called()
 

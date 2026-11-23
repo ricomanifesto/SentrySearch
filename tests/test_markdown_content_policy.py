@@ -1,3 +1,4 @@
+from src.domain.report_access import ReportAccessScope
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -70,7 +71,7 @@ def test_rendered_marker_is_excluded_at_every_shared_boundary(surface, markdown)
         )
         service.s3_manager.download_content.return_value = markdown
         with pytest.raises(ContentPolicyExclusion):
-            service.get_download_url("retained")
+            service.get_download_url("retained", owner_user_id=ReportAccessScope.ALL)
         service.s3_manager.get_presigned_url.assert_not_called()
         session.commit.assert_not_called()
 

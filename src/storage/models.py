@@ -6,6 +6,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     Column,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    text,
 )
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -42,8 +44,30 @@ def _content_preview(value: Any, threat_data: Any) -> str | None:
     return compact if len(compact) <= 240 else f"{compact[:237].rstrip()}..."
 
 
+class ReportCreationAdmission(Base):
+    """At most one rolling, bounded creation budget per authenticated user."""
+
+    __tablename__ = "report_creation_admissions"
+    __table_args__ = (
+        Index("ix_report_creation_admissions_updated", "updated_at"),
+        CheckConstraint(
+            "jsonb_typeof(request_times) = 'array' AND jsonb_array_length(request_times) <= 6",
+            name="ck_report_creation_admissions_bounded_times",
+        ),
+    )
+
+    user_id = Column(String(100), primary_key=True)
+    request_times = Column(JSONB, nullable=False, default=list, server_default="[]")
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class Report(Base):
     __tablename__ = "reports"
+    __table_args__ = (
+        Index(
+            "ix_reports_user_generating", "user_id", postgresql_where=text("status = 'generating'")
+        ),
+    )
 
     # Primary identifiers
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

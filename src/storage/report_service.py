@@ -8,14 +8,24 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import uuid
+import math
 from urllib.parse import urlsplit
 from contextlib import nullcontext
 from psycopg.errors import LockNotAvailable
 from sqlalchemy import and_, asc, desc, func, or_, select
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from src.domain.execution import EVALUATION_LEASE_SECONDS, GenerationLease, GenerationLeaseLost
+from src.domain.report_access import ReportAccessScope, require_report_owner
+from src.domain.report_admission import (
+    ADMISSION_PRUNE_BATCH,
+    MAX_GENERATING_REPORTS_PER_USER,
+    REPORT_CREATIONS_PER_WINDOW,
+    REPORT_CREATION_WINDOW_SECONDS,
+    ReportAdmissionLimitError,
+)
 
 from src.domain.reports import (
     AnalystDisposition,
@@ -60,6 +70,7 @@ from src.domain.threat_classification import classify_category_text, classify_to
 from .database import db_manager
 from .models import (
     Report,
+    ReportCreationAdmission,
     ReportArtifact,
     ReportClaimRow,
     ReportClaimSupportRow,
@@ -1002,6 +1013,68 @@ class ReportStorageService:
             logger.error(f"Error storing report: {e}")
             raise
 
+    def _reserve_report_creation(self, session: Session, user_id: str | None) -> None:
+        """Reserve one creation in the same transaction as its report and outbox.
+
+        READ COMMITTED gives the row-lock waiter a fresh snapshot after the
+        preceding admission commits. The upsert also serializes a user's first
+        two admissions without relying on an in-process lock or a missing row.
+        """
+
+        if not isinstance(user_id, str) or not user_id.strip():
+            raise ValueError("Report creation requires an authenticated user")
+        session.connection(execution_options={"isolation_level": "READ COMMITTED"})
+        session.execute(
+            insert(ReportCreationAdmission)
+            .values(user_id=user_id, request_times=[])
+            .on_conflict_do_update(
+                index_elements=[ReportCreationAdmission.user_id], set_={"user_id": user_id}
+            )
+        )
+        admission = cast(
+            Any,
+            (
+                session.query(ReportCreationAdmission)
+                .filter(ReportCreationAdmission.user_id == user_id)
+                .with_for_update()
+                .one()
+            ),
+        )
+        # Read the database clock after acquiring the lock, never the start of a
+        # transaction that may have waited for a different API process.
+        now = session.execute(select(func.clock_timestamp())).scalar_one()
+        cutoff = now.timestamp() - REPORT_CREATION_WINDOW_SECONDS
+        recent = sorted(float(value) for value in admission.request_times if float(value) > cutoff)
+        if len(recent) >= REPORT_CREATIONS_PER_WINDOW:
+            raise ReportAdmissionLimitError(
+                retry_after=math.ceil(recent[0] + REPORT_CREATION_WINDOW_SECONDS - now.timestamp())
+            )
+        active = (
+            session.query(Report)
+            .filter(Report.user_id == user_id, Report.status == ReportStatus.GENERATING.value)
+            .count()
+        )
+        if active >= MAX_GENERATING_REPORTS_PER_USER:
+            raise ReportAdmissionLimitError(retry_after=60)
+        admission.request_times = [*recent, now.timestamp()]
+        admission.updated_at = now
+        # Bound storage cleanup work. Skip locked rows so cleanup cannot form a
+        # cycle with another user's reservation. No report row is locked here.
+        expired = (
+            session.query(ReportCreationAdmission)
+            .filter(
+                ReportCreationAdmission.user_id != user_id,
+                ReportCreationAdmission.updated_at
+                < now - timedelta(seconds=REPORT_CREATION_WINDOW_SECONDS),
+            )
+            .order_by(ReportCreationAdmission.updated_at)
+            .limit(ADMISSION_PRUNE_BATCH)
+            .with_for_update(skip_locked=True)
+            .all()
+        )
+        for row in expired:
+            session.delete(row)
+
     def create_pending_report(
         self,
         report_id: str,
@@ -1022,6 +1095,7 @@ class ReportStorageService:
                 threat_data=None,
             )
             with self.db_manager.get_session() as session:
+                self._reserve_report_creation(session, user_id)
                 report = Report(
                     id=report_id,
                     tool_name=tool_name,
@@ -1706,11 +1780,21 @@ class ReportStorageService:
             logger.error(f"Error marking report failed: {e}")
             return False
 
-    def get_report(self, report_id: str, include_content: bool = False) -> Optional[Dict[str, Any]]:
+    def get_report(
+        self,
+        report_id: str,
+        include_content: bool = False,
+        *,
+        owner_user_id: str | ReportAccessScope,
+    ) -> Optional[Dict[str, Any]]:
         """Get report by ID with optional content loading"""
         try:
             with self.db_manager.get_session() as session:
-                report = session.query(Report).filter(Report.id == report_id).first()
+                query = session.query(Report).filter(Report.id == report_id)
+                owner = require_report_owner(owner_user_id)
+                if owner is not None:
+                    query = query.filter(Report.user_id == owner)
+                report = query.first()
 
                 if not report:
                     return None
@@ -1746,7 +1830,7 @@ class ReportStorageService:
         disposition: AnalystDisposition | str,
         note: str | None,
         reviewer_user_id: str,
-        owner_user_id: str | None,
+        owner_user_id: str | ReportAccessScope,
     ) -> Dict[str, Any] | None:
         """Append an analyst judgment without overwriting earlier review history."""
 
@@ -1760,8 +1844,9 @@ class ReportStorageService:
 
         with self.db_manager.get_session() as session:
             query = session.query(Report).filter(Report.id == report_id)
-            if owner_user_id is not None:
-                query = query.filter(Report.user_id == owner_user_id)
+            owner = require_report_owner(owner_user_id)
+            if owner is not None:
+                query = query.filter(Report.user_id == owner)
             report = query.with_for_update().first()
             if report is None:
                 return None
@@ -1910,20 +1995,21 @@ class ReportStorageService:
             logger.error(f"Error getting report stats: {e}")
             raise
 
-    def delete_report(self, report_id: str) -> bool:
+    def delete_report(self, report_id: str, *, owner_user_id: str | ReportAccessScope) -> bool:
         """Delete a report and its associated files"""
         try:
             with self.db_manager.get_session() as session:
-                report = session.query(Report).filter(Report.id == report_id).first()
+                query = session.query(Report).filter(Report.id == report_id)
+                owner = require_report_owner(owner_user_id)
+                if owner is not None:
+                    query = query.filter(Report.user_id == owner)
+                report = query.with_for_update().first()
 
                 if not report:
                     return False
 
-                # Delete S3 files
-                try:
-                    self.s3_manager.delete_report_files(report_id)
-                except Exception as e:
-                    logger.warning(f"Could not delete S3 files: {e}")
+                # Retain the row on cleanup failure so an owner can safely retry.
+                self.s3_manager.delete_report_files(report_id)
 
                 # Delete database record
                 session.query(ReportDispositionEvent).filter(
@@ -1942,11 +2028,21 @@ class ReportStorageService:
     def download_report_content(self, key: str) -> str:
         return self.s3_manager.download_content(key)
 
-    def get_download_url(self, report_id: str, content_type: str = "markdown") -> Optional[str]:
+    def get_download_url(
+        self,
+        report_id: str,
+        content_type: str = "markdown",
+        *,
+        owner_user_id: str | ReportAccessScope,
+    ) -> Optional[str]:
         """Get presigned URL for downloading report content"""
         try:
             with self.db_manager.get_session() as session:
-                report = session.query(Report).filter(Report.id == report_id).first()
+                query = session.query(Report).filter(Report.id == report_id)
+                owner = require_report_owner(owner_user_id)
+                if owner is not None:
+                    query = query.filter(Report.user_id == owner)
+                report = query.first()
 
                 if not report:
                     return None

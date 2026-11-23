@@ -22,6 +22,47 @@ variable "project_name" {
   }
 }
 
+variable "database_vpc_id" {
+  description = "VPC containing the selected private database subnets and application clients"
+  type        = string
+
+  validation {
+    condition     = can(regex("^vpc-[0-9a-f]+$", var.database_vpc_id))
+    error_message = "Select an explicit VPC ID for the database."
+  }
+}
+
+variable "database_subnet_ids" {
+  description = "Private subnets in the selected VPC, spanning at least two Availability Zones"
+  type        = set(string)
+
+  validation {
+    condition     = length(var.database_subnet_ids) >= 2 && alltrue([for id in var.database_subnet_ids : can(regex("^subnet-[0-9a-f]+$", id))])
+    error_message = "Provide at least two private subnet IDs; verify their VPC, routes, and Availability Zones before applying."
+  }
+}
+
+variable "database_client_security_group_ids" {
+  description = "Approved application security groups with private connectivity to the database; empty denies all clients"
+  type        = set(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for id in var.database_client_security_group_ids : can(regex("^sg-[0-9a-f]+$", id))])
+    error_message = "Database clients must be explicitly identified by security group IDs."
+  }
+}
+
+variable "db_final_snapshot_identifier" {
+  description = "Unique final snapshot name for an authorized database deletion or replacement"
+  type        = string
+
+  validation {
+    condition     = startswith(var.db_final_snapshot_identifier, "${var.project_name}-final-") && length(var.db_final_snapshot_identifier) <= 255 && can(regex("^[a-zA-Z][a-zA-Z0-9-]*[a-zA-Z0-9]$", var.db_final_snapshot_identifier)) && !strcontains(var.db_final_snapshot_identifier, "--")
+    error_message = "Use a unique project-final- prefixed snapshot name, at most 255 characters, starting with a letter, without consecutive or trailing hyphens."
+  }
+}
+
 variable "db_password" {
   description = "Password for the PostgreSQL database master user"
   type        = string
@@ -132,9 +173,7 @@ variable "cloudwatch_log_retention_days" {
 variable "enable_deletion_protection" {
   description = "Enable deletion protection for RDS instance"
   type        = bool
-  default     = false
-
-  # Note: Set to true in production environments
+  default     = true
 }
 
 variable "enable_performance_insights" {

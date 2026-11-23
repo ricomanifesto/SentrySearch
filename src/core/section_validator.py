@@ -11,6 +11,7 @@ from threading import Lock
 from typing import Any, Callable, List, Optional
 
 from src.core.model_retry import RetryingModelRequests
+from src.core.prompt_boundaries import TARGET_DATA_BOUNDARY
 from src.core.openrouter_client import (
     evaluation_request_options,
     synthesis_request_options,
@@ -692,11 +693,11 @@ class SectionValidator(RetryingModelRequests):
             prompt = f"""You are a cybersecurity expert enhancing a threat intelligence section. Use web search to find additional verified information to improve this section.
 
 Section: {section_name}
-Tool/Threat: {tool_name}
+tool_name: {json.dumps(tool_name)}
 Current Content: {json.dumps(content, indent=2)}
 
 INSTRUCTIONS:
-1. Use the web search tool with these specific queries: {search_queries}
+1. Use the web search tool with these specific queries: {json.dumps(search_queries)}
 2. Find recent, authoritative sources with technical details
 3. Look for specific IOCs, technical specifications, detection methods
 4. Focus on actionable intelligence that security teams can use
@@ -724,6 +725,7 @@ Your entire response must be valid JSON that can be directly parsed."""
                 **synthesis_request_options(),
                 max_tokens=4000,  # Increased to allow for complete JSON responses
                 temperature=0.3,
+                system=TARGET_DATA_BOUNDARY,
                 messages=[{"role": "user", "content": prompt}],
                 tools=[{"type": "web_search"}],
             )
@@ -830,7 +832,7 @@ Your entire response must be valid JSON that can be directly parsed."""
         quality_checks = "\n- ".join(criteria.quality_checks)
         prompt = f"""Improve one section of a threat intelligence profile using only the attested evidence below.
 
-Tool or threat: {tool_name}
+tool_name: {json.dumps(tool_name)}
 Section: {section_name}
 Current section:
 {json.dumps(content, indent=2)}
@@ -853,6 +855,7 @@ END ATTESTED EVIDENCE"""
             **synthesis_request_options(),
             max_tokens=4096,
             temperature=0.2,
+            system=TARGET_DATA_BOUNDARY,
             messages=[{"role": "user", "content": prompt}],
             response_format=section_model,
         )

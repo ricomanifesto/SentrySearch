@@ -9,6 +9,10 @@ export function getGenerationErrorMessage(error: unknown): string {
     return 'Check the target name, remove unsupported characters, and try again.';
   }
 
+  if (error.response?.status === 429) {
+    return 'Your report creation limit has been reached. Review saved reports while current work finishes, then try again later.';
+  }
+
   if (error.code === 'ECONNABORTED') {
     return 'The research service did not respond in time. The first run can take longer while the service wakes; try again in a moment.';
   }

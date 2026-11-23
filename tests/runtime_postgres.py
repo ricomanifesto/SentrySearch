@@ -1,3 +1,5 @@
+from src.domain.report_access import ReportAccessScope
+
 """Explicit integration suite; run with dev/check_runtime_consistency.py."""
 
 import io
@@ -105,7 +107,9 @@ def test_completed_report_cannot_be_downgraded(reports):
         )
     assert service.mark_report_failed(report_id) is False
     assert service.update_generation_stage(report_id, "researching") is False
-    assert service.get_report(report_id)["status"] == "completed"
+    assert (
+        service.get_report(report_id, owner_user_id=ReportAccessScope.ALL)["status"] == "completed"
+    )
 
 
 @pytest.mark.parametrize("owner", ["first", "worker-" + "x" * 300])
@@ -124,7 +128,9 @@ def test_replacement_attempt_fences_the_old_writer(reports, artifact, owner):
     assert objects == {}
 
     service.finalize_report(report_id, artifact, generation_lease=second)
-    assert service.get_report(report_id)["status"] == "completed"
+    assert (
+        service.get_report(report_id, owner_user_id=ReportAccessScope.ALL)["status"] == "completed"
+    )
 
 
 def test_runtime_failure_and_exhaustion_are_reconciled_without_regeneration(reports):
@@ -153,9 +159,14 @@ def test_runtime_failure_and_exhaustion_are_reconciled_without_regeneration(repo
             error_summary="test failure",
         )
         # Simulate a process dying before it can persist product failure.
-        assert service.get_report(report_id)["status"] == "generating"
+        assert (
+            service.get_report(report_id, owner_user_id=ReportAccessScope.ALL)["status"]
+            == "generating"
+        )
         assert reconcile_runtime_reports(producer, service) == 1
-        assert service.get_report(report_id)["status"] == "failed"
+        assert (
+            service.get_report(report_id, owner_user_id=ReportAccessScope.ALL)["status"] == "failed"
+        )
         assert reconcile_runtime_reports(producer, service) == 0
         service.mark_runtime_dispatch_submitted(report_id, run.run_id)
         with service.db_manager.get_session() as session:
@@ -185,7 +196,10 @@ def test_runtime_failure_and_exhaustion_are_reconciled_without_regeneration(repo
         time.sleep(1.1)
         assert worker.claim("recovery-worker", lease_seconds=60) is None
         assert reconcile_runtime_reports(producer, service) == 1
-        assert service.get_report(abandoned_id)["status"] == "failed"
+        assert (
+            service.get_report(abandoned_id, owner_user_id=ReportAccessScope.ALL)["status"]
+            == "failed"
+        )
     finally:
         worker.close()
         producer.close()
@@ -307,7 +321,10 @@ def test_worker_passes_the_registered_fence_to_generation(reports, artifact):
         assert worker.run_once()
         assert len(seen) == 1
         assert producer.get_run(seen[0].run_id).state == "succeeded"
-        assert service.get_report(report_id)["status"] == "completed"
+        assert (
+            service.get_report(report_id, owner_user_id=ReportAccessScope.ALL)["status"]
+            == "completed"
+        )
     finally:
         producer.close()
         runtime.close()
@@ -353,7 +370,7 @@ def test_interrupted_evaluation_is_reclaimed_and_old_results_are_fenced(reports,
         service.fail_report_evaluation(report_id, evaluation_lease=first, error_code="late_failure")
         is False
     )
-    result = service.get_report(report_id)
+    result = service.get_report(report_id, owner_user_id=ReportAccessScope.ALL)
     assert result["evaluation_status"] == "completed"
     assert result["evaluation_attempts"] == 2
     assert result["status"] == "completed"
@@ -374,8 +391,14 @@ def test_evaluation_crash_recovery_has_a_budget_and_manual_retry(reports, artifa
                 {"id": report_id},
             )
     assert service.claim_report_evaluation(report_id, user_id="owner") is None
-    assert service.get_report(report_id)["evaluation_status"] == "failed"
-    assert service.get_report(report_id)["evaluation_error_code"] == "evaluation_recovery_exhausted"
+    assert (
+        service.get_report(report_id, owner_user_id=ReportAccessScope.ALL)["evaluation_status"]
+        == "failed"
+    )
+    assert (
+        service.get_report(report_id, owner_user_id=ReportAccessScope.ALL)["evaluation_error_code"]
+        == "evaluation_recovery_exhausted"
+    )
     assert service.begin_report_evaluation(report_id, user_id="owner")
     assert service.claim_report_evaluation(report_id, user_id="owner")
 
@@ -397,7 +420,10 @@ def test_unclaimed_evaluation_cannot_publish_with_a_missing_token(reports, artif
     assert not service.fail_report_evaluation(
         report_id, evaluation_lease="None", error_code="unclaimed_failure"
     )
-    assert service.get_report(report_id)["evaluation_status"] == "pending"
+    assert (
+        service.get_report(report_id, owner_user_id=ReportAccessScope.ALL)["evaluation_status"]
+        == "pending"
+    )
     assert objects == before
 
 
@@ -445,8 +471,8 @@ def test_reconciliation_rotates_nonterminal_unavailable_and_stale_runs(reports):
     service, _objects = reports
     ids = [str(uuid.uuid4()) for _ in range(3)]
     runs = [str(uuid.uuid4()) for _ in ids]
-    for report_id, run_id in zip(ids, runs):
-        service.create_pending_report(report_id, "Example", "owner", runtime_dispatch=True)
+    for index, (report_id, run_id) in enumerate(zip(ids, runs)):
+        service.create_pending_report(report_id, "Example", f"owner-{index}", runtime_dispatch=True)
         service.begin_runtime_attempt(report_id, GenerationLease(run_id, "worker", 2))
     assert service.get_runtime_reconciliation_batch(limit=1) == [(ids[0], runs[0])]
     assert not service.apply_runtime_observation(
@@ -459,7 +485,10 @@ def test_reconciliation_rotates_nonterminal_unavailable_and_stale_runs(reports):
         ids[2], runs[2], state="failed", lease_version=1, error_code="worker_lost"
     )
     assert service.get_runtime_reconciliation_batch(limit=1) == [(ids[0], runs[0])]
-    assert all(service.get_report(report_id)["status"] == "generating" for report_id in ids)
+    assert all(
+        service.get_report(report_id, owner_user_id=ReportAccessScope.ALL)["status"] == "generating"
+        for report_id in ids
+    )
 
 
 def test_evaluation_takeover_during_upload_keeps_the_winning_score(reports, artifact, monkeypatch):
@@ -550,7 +579,7 @@ def test_recovered_evaluation_uses_saved_evidence_without_generation(
     api.run_report_evaluation(report_id, "owner")
     assert len(calls) == 1
     assert service.get_pending_runtime_evaluations() == []
-    report = service.get_report(report_id)
+    report = service.get_report(report_id, owner_user_id=ReportAccessScope.ALL)
     assert report["evaluation_status"] == "completed"
     assert report["quality_score"] == 4.25
     assert report["web_sources"] == artifact["web_sources"]
@@ -592,9 +621,13 @@ def test_runtime_backlog_reports_counts_without_report_contents(reports, artifac
 
     service, _objects = reports
     pending, evaluating, legacy = [str(uuid.uuid4()) for _ in range(3)]
-    for report_id in (pending, evaluating, legacy):
+    for report_id, owner_id in (
+        (pending, "pending-owner"),
+        (evaluating, "private-owner"),
+        (legacy, "legacy-owner"),
+    ):
         service.create_pending_report(
-            report_id, "Private tool name", "private-owner", runtime_dispatch=report_id != legacy
+            report_id, "Private tool name", owner_id, runtime_dispatch=report_id != legacy
         )
     lease = GenerationLease(str(uuid.uuid4()), "worker", 1)
     service.begin_runtime_attempt(evaluating, lease)
@@ -691,7 +724,9 @@ def test_evaluation_deadline_leaves_a_recoverable_product_lease(
     assert supervisor.run() == 124
     assert supervisor.status.snapshot()["error_code"] == "evaluation_deadline_exceeded"
     assert supervisor.status.snapshot()["backlog"]["counts"]["active_evaluations"] == 1
-    assert service.get_report(report_id)["status"] == "completed"
+    assert (
+        service.get_report(report_id, owner_user_id=ReportAccessScope.ALL)["status"] == "completed"
+    )
     assert service.claim_report_evaluation(report_id, user_id="owner") is None
     assert service.get_runtime_backlog()["active_evaluations"] == 1
     with service.db_manager.get_session() as session:
@@ -713,7 +748,7 @@ def test_evaluation_deadline_leaves_a_recoverable_product_lease(
     monkeypatch.setattr(api, "report_service", service)
     monkeypatch.setattr(api, "evaluate_saved_report", judge)
     api.run_report_evaluation(report_id, "owner")
-    result = service.get_report(report_id)
+    result = service.get_report(report_id, owner_user_id=ReportAccessScope.ALL)
     assert calls == [True]
     assert result["evaluation_status"] == "completed"
     assert result["evaluation_attempts"] == 2
@@ -750,7 +785,9 @@ def test_paused_api_does_not_reserve_reports_or_evaluation(reports, artifact, mo
     report_id = str(uuid.uuid4())
     service.create_pending_report(report_id, "Example", "owner")
     service.finalize_report(report_id, artifact)
-    before = service.get_report(report_id, include_content=False)
+    before = service.get_report(
+        report_id, include_content=False, owner_user_id=ReportAccessScope.ALL
+    )
     monkeypatch.setattr(api, "report_service", service)
     monkeypatch.setenv("SENTRYSEARCH_EXECUTION_MODE", "paused")
     user = AuthenticatedUser(user_id="owner", email="owner@example.com", metadata={})
@@ -763,7 +800,10 @@ def test_paused_api_does_not_reserve_reports_or_evaluation(reports, artifact, mo
             asyncio.run(action())
         assert error.value.status_code == 503
     assert tasks.tasks == []
-    assert service.get_report(report_id, include_content=False) == before
+    assert (
+        service.get_report(report_id, include_content=False, owner_user_id=ReportAccessScope.ALL)
+        == before
+    )
     with service.db_manager.get_session() as session:
         assert session.query(Report).count() == 1
         assert session.query(ReportRuntimeDispatch).count() == 0
@@ -796,7 +836,12 @@ def test_accepted_intent_survives_outage_and_drains_during_admission_pause(
 
     assert dispatch_pending_reports(Outage(), service) == 0
     assert service.get_pending_runtime_dispatches() == [report_id]
-    assert service.get_report(report_id, include_content=False)["status"] == "generating"
+    assert (
+        service.get_report(report_id, include_content=False, owner_user_id=ReportAccessScope.ALL)[
+            "status"
+        ]
+        == "generating"
+    )
     monkeypatch.setenv("SENTRYSEARCH_EXECUTION_MODE", "paused")
     assert dispatch_pending_reports(producer, service) == 1
 
@@ -811,6 +856,11 @@ def test_accepted_intent_survives_outage_and_drains_during_admission_pause(
         lease_seconds=60,
     )
     assert worker.run_once()
-    assert service.get_report(report_id, include_content=False)["status"] == "completed"
+    assert (
+        service.get_report(report_id, include_content=False, owner_user_id=ReportAccessScope.ALL)[
+            "status"
+        ]
+        == "completed"
+    )
     assert service.get_pending_runtime_dispatches() == []
     assert service.get_pending_runtime_evaluations() == [(report_id, "owner")]

@@ -1,96 +1,62 @@
 #!/bin/bash
 
-# SentrySearch Terraform Deployment Script
-# This script helps deploy and configure the AWS infrastructure for SentrySearch
-
-set -e
+# Review and deploy the original AWS stack only after its prerequisites are met.
+# Disable tracing before handling credentials, including when invoked with bash -x.
+set +x
+set -euo pipefail
+umask 077
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
 echo "SentrySearch Terraform Deployment"
-echo "===================================="
+echo "Review the private network, migration, and state prerequisites in README.md first."
 
-# Check if AWS CLI is configured
 if ! aws sts get-caller-identity > /dev/null 2>&1; then
-    echo "AWS CLI not configured. Please run 'aws configure' first."
+    echo "AWS CLI credentials are unavailable. Configure your approved AWS profile first."
     exit 1
 fi
 
-# Check if terraform.tfvars exists
-if [[ ! -f "terraform.tfvars" ]]; then
-    echo "terraform.tfvars not found. Please create it with your configuration."
-    echo "   You can copy from the README.md example or check the variables.tf file."
-    exit 1
-fi
-
-# Display current AWS identity
 echo "Current AWS Identity:"
 aws sts get-caller-identity
 
-echo ""
-echo "Current Configuration:"
-echo "  Region: $(grep 'aws_region' terraform.tfvars | cut -d'=' -f2 | tr -d ' "' || echo 'Not set')"
-echo "  Project: $(grep 'project_name' terraform.tfvars | cut -d'=' -f2 | tr -d ' "' || echo 'Not set')"
+# Keep the password out of command arguments, shell history, and tfvars files.
+# Terraform still stores it in state and saved plans; protect the state backend.
+if [[ -z ${TF_VAR_db_password:-} ]]; then
+    read -r -s -p "RDS master password: " TF_VAR_db_password
+    printf '\n'
+fi
+export TF_VAR_db_password
 
-# Ask for confirmation
-echo ""
-read -p "This will create AWS resources that incur costs (~$18-30/month). Continue? (y/N): " -n 1 -r
-echo ""
+plan_dir=$(mktemp -d "${TMPDIR:-/tmp}/sentrysearch-tfplan.XXXXXXXX")
+cleanup() {
+    rm -f -- "$plan_dir/tfplan"
+    rmdir -- "$plan_dir"
+    unset TF_VAR_db_password
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+echo "Initializing Terraform..."
+terraform init
+
+echo "Validating configuration..."
+terraform validate
+
+echo "Planning deployment..."
+terraform plan -input=false -out="$plan_dir/tfplan"
+
+# Approval applies to the actual saved plan, after its changes have been displayed.
+printf 'Apply this reviewed plan and incur AWS charges? (y/N): '
+read -r reply
+if [[ ! $reply =~ ^[Yy]$ ]]; then
     echo "Deployment cancelled."
     exit 1
 fi
 
-# Initialize Terraform
-echo "Initializing Terraform..."
-terraform init
+terraform apply -input=false "$plan_dir/tfplan"
 
-# Validate configuration
-echo "Validating configuration..."
-terraform validate
-
-# Plan deployment
-echo "Planning deployment..."
-terraform plan -out=tfplan
-
-# Apply deployment
-echo "Applying deployment..."
-terraform apply tfplan
-
-# Clean up plan file
-rm -f tfplan
-
-echo ""
-echo "Deployment Complete!"
-echo "======================="
-
-# Display outputs
-echo ""
-echo "Deployment Summary:"
+echo "Deployment complete. Non-secret resource summary:"
 terraform output deployment_summary
-
-echo ""
-echo "Environment Configuration:"
-echo "Copy these values to your .env file:"
-echo ""
 terraform output environment_configuration
-
-echo ""
-echo "AWS Secret Access Key (copy securely):"
-terraform output aws_secret_access_key
-
-echo ""
-echo "Estimated Monthly Cost:"
-terraform output estimated_monthly_cost
-
-echo ""
-echo "Next Steps:"
-echo "1. Copy the AWS Secret Access Key to your .env file"
-echo "2. Update your .env file with the database endpoint and other values"
-echo "3. Test the database connection"
-echo "4. Deploy your application"
-
-echo ""
-echo "Useful commands:"
-echo "  terraform output                     # View all outputs"
-echo "  terraform show                       # View current state"
-echo "  terraform destroy                    # Delete all resources (careful!)"
+echo "Provision application credentials through the approved secret store."
+echo "This script does not print access keys. Terraform state and saved backups remain sensitive."

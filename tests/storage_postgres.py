@@ -19,7 +19,7 @@ APP_TABLES = (
     "reports, report_runtime_dispatches, report_disposition_events, report_searches, "
     "report_tags, report_sources, report_claims, report_claim_support, "
     "report_indicator_observations, report_source_observations, report_findings, "
-    "report_artifacts"
+    "report_artifacts, report_creation_admissions"
 )
 
 
@@ -51,7 +51,7 @@ def test_empty_database_is_unready_then_migrated_once(database, monkeypatch):
     with database.engine.begin() as conn:
         assert conn.execute(
             text("SELECT version FROM sentrysearch_schema_migrations")
-        ).scalars().all() == [1, 2]
+        ).scalars().all() == [1, 2, 3]
     monkeypatch.setattr(
         ReportStorageService,
         "reconcile_reader_state",
@@ -83,8 +83,8 @@ def test_failed_backfill_rolls_back_schema_and_version(database, monkeypatch, ca
     [
         "DELETE FROM sentrysearch_schema_migrations",
         "DELETE FROM sentrysearch_schema_migrations WHERE version=2",
-        "UPDATE sentrysearch_schema_migrations SET version=3 WHERE version=2",
-        "INSERT INTO sentrysearch_schema_migrations(version, checksum) VALUES (3, 'future')",
+        "UPDATE sentrysearch_schema_migrations SET version=4 WHERE version=3",
+        "INSERT INTO sentrysearch_schema_migrations(version, checksum) VALUES (4, 'future')",
         "UPDATE sentrysearch_schema_migrations SET checksum='changed'",
         "UPDATE sentrysearch_schema_migrations SET checksum='changed' WHERE version=2",
         "ALTER TABLE reports DROP COLUMN content_preview",
@@ -140,13 +140,13 @@ def test_backfill_spans_batches_and_failed_release_preserves_existing_rows(datab
 def test_future_schema_migration_refused(database):
     database.migrate_schema()
     with database.engine.begin() as conn:
-        conn.execute(text("UPDATE sentrysearch_schema_migrations SET version=3 WHERE version=2"))
+        conn.execute(text("UPDATE sentrysearch_schema_migrations SET version=4 WHERE version=3"))
     with pytest.raises(RuntimeError):
         database.migrate_schema()
     with database.engine.connect() as conn:
         assert conn.execute(
             text("SELECT version FROM sentrysearch_schema_migrations ORDER BY version")
-        ).scalars().all() == [1, 3]
+        ).scalars().all() == [1, 2, 4]
 
 
 def test_concurrent_release_lock_fails_without_waiting(database):
@@ -294,7 +294,7 @@ def test_revision_one_database_upgrades_and_backfills_rows_from_jsonb(database):
     with database.engine.connect() as conn:
         assert conn.execute(
             text("SELECT version FROM sentrysearch_schema_migrations ORDER BY version")
-        ).scalars().all() == [1, 2]
+        ).scalars().all() == [1, 2, 3]
         claims = conn.execute(
             text(
                 "SELECT claim_field, ordinal, value, evidence_role FROM report_claims "
@@ -751,7 +751,7 @@ def test_online_reconciliation_skips_a_report_locked_past_the_wait_limit(databas
 
 
 DATA_API_ROLES = ("anon", "authenticated")
-REVISION_TWO_TABLES = (
+NEW_TABLES = (
     "report_sources",
     "report_claims",
     "report_claim_support",
@@ -759,6 +759,7 @@ REVISION_TWO_TABLES = (
     "report_source_observations",
     "report_findings",
     "report_artifacts",
+    "report_creation_admissions",
 )
 
 
@@ -837,7 +838,7 @@ def test_release_commits_new_tables_without_data_api_access(database):
     database.migrate_schema()
 
     # Nothing is readable by the Data API roles or PUBLIC at the moment of commit.
-    assert _exposed_tables(database, REVISION_TWO_TABLES) == []
+    assert _exposed_tables(database, NEW_TABLES) == []
     with database.engine.connect() as conn:
         assert conn.execute(text("SELECT count(*) FROM report_claims")).scalar() == 10
         conn.execute(text("SET ROLE anon"))
@@ -846,7 +847,7 @@ def test_release_commits_new_tables_without_data_api_access(database):
         assert isinstance(denied.value.orig, InsufficientPrivilege)
     # Repeating the release changes nothing and keeps the tables withheld.
     database.migrate_schema()
-    assert _exposed_tables(database, REVISION_TWO_TABLES) == []
+    assert _exposed_tables(database, NEW_TABLES) == []
 
 
 def test_release_keeps_explicit_application_role_access(database):
@@ -912,4 +913,4 @@ def test_failed_release_leaves_no_withheld_or_exposed_tables(database, monkeypat
     with database.engine.connect() as conn:
         assert conn.execute(text("SELECT to_regclass('public.report_claims')")).scalar() is None
     database.migrate_schema()
-    assert _exposed_tables(database, REVISION_TWO_TABLES) == []
+    assert _exposed_tables(database, NEW_TABLES) == []

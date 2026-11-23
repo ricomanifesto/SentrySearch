@@ -42,12 +42,24 @@ The application role needs schema USAGE and SELECT/INSERT/UPDATE/DELETE on
 `reports`, `report_runtime_dispatches`, `report_disposition_events`,
 `report_searches`, `report_tags`, and the revision 2 tables `report_sources`,
 `report_claims`, `report_claim_support`, `report_indicator_observations`,
-`report_source_observations`, `report_findings`, and `report_artifacts`, plus
-SELECT on `sentrysearch_schema_migrations`. Without the revision 2 grants the
+`report_source_observations`, `report_findings`, and `report_artifacts`, and the
+revision 3 table `report_creation_admissions`, plus SELECT on
+`sentrysearch_schema_migrations`. Without these grants the
 read-only check fails closed, because readiness queries every mapped table. It must not own those objects or have schema
 CREATE, role-management, or superuser privileges. The schema-owner role is never
 an API/worker secret. Actual role provisioning and privilege auditing remain
 deployment tasks; the local proof exercises this split in a disposable database.
+
+Revision 3 adds the durable per-user creation budget and its expiry index, plus a
+partial `reports(user_id)` index for rows whose status is `generating`. It changes
+no report ownership or lifecycle fields. The release withholds the new table
+from Data API roles and `PUBLIC` in the migration transaction. In the same
+maintenance window, grant the restricted application role
+`SELECT, INSERT, UPDATE, DELETE` on `report_creation_admissions` (and matching
+application-only RLS policies where the deployment uses RLS). An older binary
+must remain drained: it does not reserve the new budget. The current binary's
+readiness gate requires revision 3 before it serves traffic. See the
+[creation policy and retention bounds](runtime-admission.md#per-user-creation-budget).
 
 Rollback means pause, drain, and restore a schema-compatible binary/configuration.
 There is no down-migration command. Do not unstamp a revision or restore an older

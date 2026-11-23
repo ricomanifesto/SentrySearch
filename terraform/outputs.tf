@@ -51,6 +51,7 @@ output "iam_user_arn" {
 output "aws_access_key_id" {
   description = "AWS Access Key ID for application"
   value       = aws_iam_access_key.sentrysearch_app.id
+  sensitive   = true
 }
 
 output "aws_secret_access_key" {
@@ -80,13 +81,12 @@ output "database_security_group_id" {
 output "environment_configuration" {
   description = "Environment variables configuration for the application"
   value = {
-    DB_HOST           = aws_db_instance.sentrysearch.endpoint
-    DB_PORT           = aws_db_instance.sentrysearch.port
-    DB_NAME           = aws_db_instance.sentrysearch.db_name
-    DB_USER           = aws_db_instance.sentrysearch.username
-    AWS_REGION        = var.aws_region
-    AWS_S3_BUCKET     = aws_s3_bucket.sentrysearch_reports.id
-    AWS_ACCESS_KEY_ID = aws_iam_access_key.sentrysearch_app.id
+    DB_HOST       = aws_db_instance.sentrysearch.address
+    DB_PORT       = aws_db_instance.sentrysearch.port
+    DB_NAME       = aws_db_instance.sentrysearch.db_name
+    DB_USER       = aws_db_instance.sentrysearch.username
+    AWS_REGION    = var.aws_region
+    AWS_S3_BUCKET = aws_s3_bucket.sentrysearch_reports.id
   }
 }
 
@@ -112,7 +112,6 @@ output "deployment_summary" {
     database_endpoint = aws_db_instance.sentrysearch.endpoint
     s3_bucket         = aws_s3_bucket.sentrysearch_reports.id
     iam_user          = aws_iam_user.sentrysearch_app.name
-    setup_complete    = "Run 'terraform output aws_secret_access_key' to get the secret key"
-    next_steps        = "Configure .env file with the output values"
+    next_steps        = "Provision credentials through the approved secret store; review private database connectivity before starting the application"
   }
 }

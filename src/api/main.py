@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, HTTPException, Query, Depends, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
 import uvicorn
@@ -67,6 +68,8 @@ from src.api.contracts import (
 from src.domain.model_routes import generation_fallback_state
 from src.execution.config import ExecutionMode, execution_mode_from_environment
 from src.domain.execution import GenerationLease, GenerationLeaseLost
+from src.domain.report_access import ReportAccessScope
+from src.domain.report_admission import ReportAdmissionLimitError
 from src.domain.reports import (
     READER_STATE_VERSION,
     AnalystDisposition,
@@ -134,7 +137,6 @@ app.add_middleware(
         "https://sentry-search.vercel.app",
         "https://sentrysearch.ricomanifesto.com",
     ],
-    allow_origin_regex=r"https://[a-zA-Z0-9-]+\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -162,6 +164,11 @@ def get_report_user_id(user: AuthenticatedUser) -> str | None:
     if user.metadata.get("role") == "admin":
         return None
     return user.id
+
+
+def get_report_access_scope(user: AuthenticatedUser) -> str | ReportAccessScope:
+    """Translate verified admin authority explicitly for ID operations."""
+    return ReportAccessScope.ALL if get_report_user_id(user) is None else user.id
 
 
 def get_quality_score(report: Dict[str, Any]) -> float | None:
@@ -924,7 +931,9 @@ async def get_report(
 ):
     """Get specific report by ID"""
     try:
-        report = report_service.get_report(report_id, include_content=False)
+        report = report_service.get_report(
+            report_id, include_content=False, owner_user_id=get_report_access_scope(user)
+        )
 
         if not report:
             raise HTTPException(status_code=404, detail="Report not found")
@@ -973,7 +982,9 @@ async def append_report_disposition(
     """Append a judgment to the current evaluation vintage."""
 
     try:
-        report = report_service.get_report(report_id, include_content=False)
+        report = report_service.get_report(
+            report_id, include_content=False, owner_user_id=get_report_access_scope(user)
+        )
         if report is None or (get_report_user_id(user) and report.get("user_id") != user.id):
             raise HTTPException(status_code=404, detail="Report not found")
         try:
@@ -988,7 +999,7 @@ async def append_report_disposition(
             disposition=request.disposition,
             note=request.note,
             reviewer_user_id=user.id,
-            owner_user_id=get_report_user_id(user),
+            owner_user_id=get_report_access_scope(user),
         )
         if event is None:
             raise HTTPException(status_code=404, detail="Report not found")
@@ -1015,7 +1026,9 @@ async def retry_report_evaluation(
 
     mode = require_execution_admission()
     try:
-        report = report_service.get_report(report_id, include_content=False)
+        report = report_service.get_report(
+            report_id, include_content=False, owner_user_id=get_report_access_scope(user)
+        )
         if report is None:
             raise HTTPException(status_code=404, detail="Report not found")
         if get_report_user_id(user) and report.get("user_id") != user.id:
@@ -1191,7 +1204,7 @@ def run_report_generation(
 def run_report_evaluation(report_id: str, user_id: str) -> None:
     """Retry only the quality judge for an existing synthesized report."""
 
-    report = report_service.get_report(report_id, include_content=False)
+    report = report_service.get_report(report_id, include_content=False, owner_user_id=user_id)
     if report is None or report.get("user_id") != user_id:
         return
     try:
@@ -1303,18 +1316,26 @@ async def create_report(
     try:
         report_id = str(uuid.uuid4())
         if mode == "runtime":
-            report_service.create_pending_report(
+            await run_in_threadpool(
+                report_service.create_pending_report,
                 report_id=report_id,
                 tool_name=report_request.tool_name,
                 user_id=user.id,
                 runtime_dispatch=True,
             )
         else:
-            report_service.create_pending_report(
+            await run_in_threadpool(
+                report_service.create_pending_report,
                 report_id=report_id,
                 tool_name=report_request.tool_name,
                 user_id=user.id,
             )
+    except ReportAdmissionLimitError as error:
+        raise HTTPException(
+            status_code=429,
+            detail="Report creation limit reached; try again later",
+            headers={"Retry-After": str(error.retry_after)},
+        ) from error
     except Exception as e:
         raise internal_server_error("Failed to start report generation", e)
 
@@ -1340,7 +1361,9 @@ async def delete_report(report_id: str, user: AuthenticatedUser = Depends(verify
     """Delete specific report"""
     try:
         # First check if report exists and user owns it
-        report = report_service.get_report(report_id, include_content=False)
+        report = report_service.get_report(
+            report_id, include_content=False, owner_user_id=get_report_access_scope(user)
+        )
 
         if not report:
             raise HTTPException(status_code=404, detail="Report not found")
@@ -1349,7 +1372,9 @@ async def delete_report(report_id: str, user: AuthenticatedUser = Depends(verify
         if get_report_user_id(user) and report.get("user_id") != user.id:
             raise HTTPException(status_code=404, detail="Report not found")
 
-        success = report_service.delete_report(report_id)
+        success = await run_in_threadpool(
+            report_service.delete_report, report_id, owner_user_id=get_report_access_scope(user)
+        )
 
         if not success:
             raise HTTPException(status_code=404, detail="Report not found")

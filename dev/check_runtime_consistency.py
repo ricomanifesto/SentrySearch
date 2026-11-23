@@ -157,6 +157,7 @@ def main() -> None:
                     "pytest",
                     "tests/runtime_postgres.py",
                     "tests/storage_postgres.py",
+                    "tests/report_admission_postgres.py",
                     *(["tests/storage_tls_postgres.py"] if args.tls else []),
                     "-v",
                 ],

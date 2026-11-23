@@ -62,6 +62,7 @@ REVISIONS: tuple[Revision, ...] = (
             "report_artifacts",
         ),
     ),
+    Revision(3, "003_report_creation_admission.sql", ("report_creation_admissions",)),
 )
 # Supabase's Data API serves the public schema to these roles, using the public
 # anon key or a signed-in session, and its default privileges grant them every

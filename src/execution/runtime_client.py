@@ -21,6 +21,10 @@ class RuntimeUnavailable(RuntimeError):
     """The runtime could not accept a request."""
 
 
+class RuntimeConflict(RuntimeUnavailable):
+    """An unrecognized conflict needs reconciliation before another attempt."""
+
+
 class RuntimeAccessDenied(RuntimeError):
     """Service credentials or scope need operator correction, not a retry."""
 
@@ -227,6 +231,8 @@ class RuntimeClient:
                 body = {}
             if isinstance(body, dict) and body.get("code") == "lease_fenced":
                 raise RuntimeLeaseFenced("runtime lease was superseded or finalized")
+            if method == "POST" and re.fullmatch(r"/v1/runs/[^/]+/(heartbeat|complete|fail)", path):
+                raise RuntimeConflict("runtime request conflicted; reconciliation is required")
         if response.is_client_error and not (method == "GET" and response.status_code == 404):
             raise RuntimeAccessDenied("runtime request was rejected")
         return response

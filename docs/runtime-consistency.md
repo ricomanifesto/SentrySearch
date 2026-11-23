@@ -28,6 +28,14 @@ cannot overwrite the winning content through these storage methods. Existing
 stored keys remain readable. This is content addressing, not S3 Object Lock or
 an exactly-once guarantee: rejected uploads can leave unreferenced objects.
 
+Report deletion removes the current objects under the report prefix across all
+listed pages before deleting the product row. A listing, request, or per-object
+deletion error fails the operation and keeps the row available for an authorized
+retry; already removed objects are not restored. This is logical deletion of
+current keys, not a physical purge: noncurrent versions and delete markers follow
+the bucket's existing retention policy. Uploads already in flight can still stage
+unreferenced objects after listing; deletion does not claim to erase those bytes.
+
 ## Recovery behavior
 
 The worker polls submitted intents in oldest-check order, including those whose
@@ -42,6 +50,7 @@ bound run ID or move a terminal dispatch back to submitted.
 | Report already complete; runtime failed | Preserve the report and record `runtime_failed_after_publication`. |
 | Runtime unavailable, run missing, or references disagree | Preserve the intent and record an error for operator inspection. Never silently bind another run. |
 | Runtime credentials or scope rejected | Stop the worker for operator correction. |
+| Runtime lease mutation returns an unrecognized or malformed conflict | Preserve report evidence and retry after reconciliation; do not infer lease loss or credential rejection. |
 
 The runtime terminalizes expired, exhausted runs during claim scans. Merely
 reading an expired run does not trigger that transition. Product recovery needs
@@ -165,6 +174,9 @@ reconciliation after runtime failure and lease exhaustion, evaluation takeover,
 saved-evidence evaluation recovery, aggregate backlog, and additive migration
 backfills. It also kills a supervised evaluator at its deadline, verifies the
 report survives, and reclaims evaluation from saved evidence after lease expiry.
+The admission proofs cover concurrent per-user reservations, rolling-budget
+retention after report removal, write rollback, bounded expiry cleanup, and the
+revision 3 cutover backfill against the same disposable socket-only cluster.
 The regular gate includes process/HTTP tests for live probes, SIGTERM drain,
 forced deadlines, parent death, error redaction, and signal-lock reentrancy.
 The HTTPS variant uses disposable certificates and the worker's remote-client

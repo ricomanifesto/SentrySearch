@@ -276,7 +276,7 @@ def test_worker_acknowledges_completed_report_replay_without_regeneration():
             raise AssertionError("completed replay must not fail")
 
     class Reports:
-        def get_report(self, report_id: str, include_content: bool = False):
+        def get_report(self, report_id: str, include_content: bool = False, **_scope):
             assert report_id == "report-1"
             assert include_content is False
             return {

@@ -79,3 +79,36 @@ def test_dispatch_stops_between_submissions():
 
     assert dispatch_pending_reports(Runtime(), Reports(), should_stop=stop.is_set) == 1
     assert calls == ["report-1"]
+
+
+def test_retryable_conflict_does_not_stop_the_worker_or_skip_reconciliation(monkeypatch):
+    from src.execution.runtime_client import RuntimeConflict
+
+    events = []
+    closed = []
+    reconciliations = []
+    producer = SimpleNamespace(close=lambda: closed.append("producer"))
+    runtime = SimpleNamespace(close=lambda: closed.append("worker"))
+    reports = SimpleNamespace(
+        get_runtime_backlog=lambda: {},
+        get_pending_runtime_evaluations=lambda **_kwargs: [],
+    )
+
+    class Worker:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_once(self):
+            raise RuntimeConflict()
+
+    monkeypatch.setattr(runner, "load_jobs", lambda: (reports, None, None))
+    monkeypatch.setattr(runner, "runtime_clients_from_environment", lambda: (producer, runtime))
+    monkeypatch.setattr(runner, "DurableGenerationWorker", Worker)
+    monkeypatch.setattr(runner, "dispatch_pending_reports", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(
+        runner, "reconcile_runtime_reports", lambda *_args: reconciliations.append(True) or 0
+    )
+    assert runner.run_worker_loop(WorkerSettings(once=True), threading.Event(), events.append) == 0
+    assert len(reconciliations) == 2
+    assert {"event": "error", "code": "runtime_unavailable"} in events
+    assert sorted(closed) == ["producer", "worker"]

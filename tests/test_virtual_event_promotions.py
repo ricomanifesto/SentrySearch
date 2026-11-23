@@ -1,3 +1,4 @@
+from src.domain.report_access import ReportAccessScope
 from copy import deepcopy
 import asyncio
 from datetime import datetime, timezone
@@ -416,7 +417,7 @@ def test_retained_markdown_cannot_bypass_guard_through_presigned_export(
     if surface == "narrative":
         threat_profile_data["toolOverview"]["description"] = "[Virtual Event] Register now"
     with pytest.raises(ValueError, match="virtual-event promotion"):
-        service.get_download_url("retained")
+        service.get_download_url("retained", owner_user_id=ReportAccessScope.ALL)
     service.s3_manager.get_presigned_url.assert_not_called()
     session.commit.assert_not_called()
 
@@ -875,7 +876,7 @@ def test_owned_excluded_report_can_still_be_deleted(monkeypatch):
     service.delete_report.return_value = True
     user = AuthenticatedUser(user_id="reader", email="reader@example.com", metadata={})
     asyncio.run(api_main.delete_report("retained", user))
-    service.delete_report.assert_called_once_with("retained")
+    service.delete_report.assert_called_once_with("retained", owner_user_id="reader")
     service.s3_manager.download_content.assert_not_called()
 
 

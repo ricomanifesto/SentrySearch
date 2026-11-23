@@ -143,7 +143,7 @@ def test_additive_migration_creates_model_route_columns():
     )
 
 
-def test_pending_report_and_runtime_dispatch_are_added_before_one_commit():
+def test_pending_report_and_runtime_dispatch_are_added_before_one_commit(monkeypatch):
     added: list[Any] = []
     commits = 0
 
@@ -162,6 +162,7 @@ def test_pending_report_and_runtime_dispatch_are_added_before_one_commit():
 
     service = ReportStorageService.__new__(ReportStorageService)
     service.db_manager = cast(Any, FakeDatabaseManager())
+    monkeypatch.setattr(service, "_reserve_report_creation", lambda *_: None)
 
     service.create_pending_report(
         "ad0a93e1-4d27-4388-83f0-c1c8fa688a2e",

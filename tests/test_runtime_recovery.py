@@ -10,6 +10,7 @@ from src.execution.reconciler import reconcile_runtime_reports
 from src.execution.runtime_client import (
     RuntimeAccessDenied,
     RuntimeClient,
+    RuntimeConflict,
     RuntimeLeaseFenced,
     RuntimeRun,
     RuntimeRunMissing,
@@ -59,7 +60,7 @@ class Reports:
         self.errors = []
         self.observations = []
 
-    def get_report(self, report_id: str, include_content: bool = False):
+    def get_report(self, report_id: str, include_content: bool = False, **_scope):
         return {"status": "generating", "tool_name": "Example", "user_id": "owner"}
 
     def begin_runtime_attempt(self, report_id: str, lease: GenerationLease) -> bool:
@@ -137,7 +138,7 @@ def test_worker_does_not_classify_a_fence_as_a_generation_failure(error):
     assert worker.run_once()
 
 
-@pytest.mark.parametrize("error", [RuntimeAccessDenied(), RuntimeLeaseFenced()])
+@pytest.mark.parametrize("error", [RuntimeAccessDenied(), RuntimeLeaseFenced(), RuntimeConflict()])
 def test_heartbeat_failure_is_propagated_and_thread_stopped(error):
     runtime = Runtime(error=error)
     heartbeat = LeaseHeartbeat(runtime, RUN, lease_seconds=3, interval_seconds=0.01)
@@ -199,3 +200,58 @@ def test_runtime_client_distinguishes_missing_fenced_and_other_conflicts(status,
         client = RuntimeClient("http://127.0.0.1:8080", http_client=transport)
         with pytest.raises(error):
             client.get_run(RUN.run_id)
+
+
+def test_runtime_client_keeps_non_json_conflicts_retryable_without_claiming_a_fence():
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda _req: httpx.Response(409, text="Conflict"))
+    ) as transport:
+        client = RuntimeClient("http://127.0.0.1:8080", http_client=transport)
+        with pytest.raises(RuntimeConflict) as error:
+            client.complete(
+                RUN.run_id, RUN.lease_owner, RUN.lease_version, {"report_id": "report-1"}
+            )
+        assert isinstance(error.value, RuntimeUnavailable)
+        assert not isinstance(error.value, RuntimeLeaseFenced)
+
+
+@pytest.mark.parametrize("body", [{}, {"code": "different_conflict"}, ["ordinary conflict"]])
+@pytest.mark.parametrize("operation", ["heartbeat", "complete", "fail"])
+def test_runtime_client_keeps_ambiguous_lease_mutation_conflicts_retryable(body, operation):
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda _req: httpx.Response(409, json=body))
+    ) as transport:
+        client = RuntimeClient("http://127.0.0.1:8080", http_client=transport)
+        kwargs = {
+            "heartbeat": {"lease_seconds": 3},
+            "complete": {"output_ref": {"report_id": "report-1"}},
+            "fail": {"error_code": "worker_error", "error_summary": "generation failed"},
+        }[operation]
+        with pytest.raises(RuntimeConflict):
+            getattr(client, operation)(RUN.run_id, RUN.lease_owner, RUN.lease_version, **kwargs)
+
+
+@pytest.mark.parametrize("operation", ["submit_report", "claim"])
+def test_runtime_client_does_not_soften_unrelated_conflicts(operation):
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _req: httpx.Response(409, json={"code": "different_conflict"})
+        )
+    ) as transport:
+        client = RuntimeClient("http://127.0.0.1:8080", http_client=transport)
+        with pytest.raises(RuntimeAccessDenied):
+            if operation == "submit_report":
+                client.submit_report("report-1")
+            else:
+                client.claim("worker", lease_seconds=3)
+
+
+def test_worker_leaves_conflicted_generation_for_reconciliation():
+    def generate(*_args):
+        raise RuntimeConflict()
+
+    worker = DurableGenerationWorker(
+        runtime=Runtime(), reports=Reports(), generate=generate, worker_id="worker", lease_seconds=3
+    )
+    with pytest.raises(RuntimeConflict):
+        worker.run_once()

@@ -13,8 +13,14 @@ from src.core.generation_failures import build_generation_failure
 from src.core.evidence_admissibility import ContentPolicyExclusion
 from src.core.report_content_policy import load_checked_report
 from src.domain.reports import ReportStatus
+from src.domain.report_access import ReportAccessScope
 from src.domain.execution import GenerationLease, GenerationLeaseLost
-from src.execution.runtime_client import RuntimeAccessDenied, RuntimeLeaseFenced, RuntimeRun
+from src.execution.runtime_client import (
+    RuntimeAccessDenied,
+    RuntimeConflict,
+    RuntimeLeaseFenced,
+    RuntimeRun,
+)
 from src.storage.retained_content import RetainedContentUnavailable
 
 logger = logging.getLogger(__name__)
@@ -58,6 +64,8 @@ class ReportPort(Protocol):
         self,
         report_id: str,
         include_content: bool = False,
+        *,
+        owner_user_id: str | ReportAccessScope,
     ) -> dict[str, Any] | None: ...
 
     def mark_report_failed(
@@ -115,7 +123,7 @@ class LeaseHeartbeat:
                     self.run.lease_version,
                     lease_seconds=self.lease_seconds,
                 )
-            except (RuntimeAccessDenied, RuntimeLeaseFenced) as error:
+            except (RuntimeAccessDenied, RuntimeConflict, RuntimeLeaseFenced) as error:
                 self._failure = error
                 return
             except Exception as error:  # pragma: no cover - defensive logging boundary
@@ -177,7 +185,9 @@ class DurableGenerationWorker:
         if not isinstance(report_id, str) or not report_id:
             self._fail_invalid_input(run, "runtime input is invalid")
             return True
-        report = self.reports.get_report(report_id, include_content=False)
+        report = self.reports.get_report(
+            report_id, include_content=False, owner_user_id=ReportAccessScope.ALL
+        )
         if report is None:
             self._fail_invalid_input(run, "report input is unavailable")
             return True
@@ -188,7 +198,7 @@ class DurableGenerationWorker:
                 if not callable(loader):
                     raise RuntimeError("Retained report content is unavailable")
                 return loader(key)
-            except (GenerationLeaseLost, RuntimeLeaseFenced, RuntimeAccessDenied):
+            except (GenerationLeaseLost, RuntimeLeaseFenced, RuntimeConflict, RuntimeAccessDenied):
                 raise
             except Exception as error:
                 raise RetainedContentUnavailable(
@@ -244,10 +254,12 @@ class DurableGenerationWorker:
                 interval_seconds=self.heartbeat_interval_seconds,
             ):
                 self.generate(report_id, tool_name, user_id, lease)
-            finalized = self.reports.get_report(report_id, include_content=False)
+            finalized = self.reports.get_report(
+                report_id, include_content=False, owner_user_id=ReportAccessScope.ALL
+            )
             if finalized is None or finalized.get("status") != ReportStatus.COMPLETED.value:
                 raise RuntimeError("generation returned without a completed report")
-        except (GenerationLeaseLost, RuntimeLeaseFenced, RuntimeAccessDenied):
+        except (GenerationLeaseLost, RuntimeLeaseFenced, RuntimeConflict, RuntimeAccessDenied):
             raise
         except Exception as error:
             carried_failure = getattr(error, "generation_failure", None)
